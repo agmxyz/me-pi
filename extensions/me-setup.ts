@@ -68,7 +68,7 @@ function listAgents(): string[] {
 function availableModels(): { provider: string; models: string[] }[] {
 	const auth = readJson(join(PI_AGENT, "auth.json"));
 	const providers: string[] = auth ? Object.keys(auth) : [];
-	const store = readJson(join(PI_AGENT, "..", "models-store.json")) ?? {};
+	const store = readJson(join(PI_AGENT, "models-store.json")) ?? {};
 	return providers
 		.map((p) => ({ provider: p, models: (store[p]?.models ?? []).map((m: any) => m.id).filter(Boolean).slice(0, 40) }))
 		.filter((p) => p.models.length > 0);
@@ -85,10 +85,22 @@ async function assignModel(pi: ExtensionAPI, ctx: any, agent: string, value: str
 	} else {
 		// accept "provider/model" or bare model id (keeps current provider preference)
 		const [prov, ...rest] = value.split("/");
-		const looksQualified = rest.length > 0 && (readJson(join(PI_AGENT, "auth.json")) ?? {})[prov];
-		settings.subagents.agentOverrides[agent] = looksQualified
-			? { model: rest.join("/"), defaultProvider: prov }
-			: { model: value };
+		const auth = readJson(join(PI_AGENT, "auth.json")) ?? {};
+		const looksQualified = rest.length > 0 && auth[prov];
+		if (looksQualified) {
+			const model = rest.join("/");
+			const known = (readJson(join(PI_AGENT, "models-store.json")) ?? {})
+				?.[prov]?.models?.some((m: any) => m.id === model);
+			if (!known) {
+				const avail = (readJson(join(PI_AGENT, "models-store.json")) ?? {})
+					?.[prov]?.models?.map((m: any) => m.id).slice(0, 10).join(", ");
+				say(ctx, `✗ unknown model "${model}" for provider "${prov}" — not saved. Some options: ${avail}…`);
+				return;
+			}
+			settings.subagents.agentOverrides[agent] = { model, defaultProvider: prov };
+		} else {
+			settings.subagents.agentOverrides[agent] = { model: value };
+		}
 	}
 	const { writeFileSync } = await import("node:fs");
 	writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
