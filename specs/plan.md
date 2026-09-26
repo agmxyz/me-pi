@@ -37,7 +37,7 @@ Agents may: edit repo files, run tests, **commit on: clean known starting diff +
 ## Rollout
 
 - **0. Baseline ticket**: one real ticket, fully manual (no agents). Record: effort, rework, context use. The yardstick.
-- 1. Skim pi-subagents source → install **pinned** version → verify against this pi fork + all three providers → smoke test one scout.
+- 1. ✅ **done** — skim clean (no telemetry, recursion-guarded at entry, spawns local pi only) → installed `npm:pi-subagents@0.71.0` (pinned) → role→model overrides in live settings → smoke test: scout resolved to gpt-5.4-mini, contract-compliant output.
 - 2. Vendored damage-control-continue + rules YAML (denylist above).
 - 3. Role→model config in live settings; document intended values here.
 - 4. **2-week stock warmup** on real tickets; log model-fit (defects caught, rework, wrong-model signs, handoff loss) into `specs/trial-log.md`. Compaction (built-in) before any ledger thoughts.
