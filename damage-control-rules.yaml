@@ -253,6 +253,9 @@ readOnlyPaths:
   - "*.min.css"
   - "*.bundle.js"
   - "*.chunk.js"
+
+noDeletePaths:
+  # build outputs: deletion protected, but reads/greps must flow
   - dist/
   - build/
   - .next/
@@ -262,8 +265,6 @@ readOnlyPaths:
   - .venv/
   - venv/
   - target/
-
-noDeletePaths:
   # the rig itself (matches any dir named me-pi)
   - "me-pi"
   - ~/.claude/
