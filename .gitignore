@@ -1,0 +1,22 @@
+# Secrets — NEVER commit
+auth.json
+*.pem
+.env
+.env.*
+
+# Machine state / churn
+models-store.json
+sessions/
+trust.json
+logs/
+cache/
+*.db
+*.db-shm
+*.db-wal
+
+# Backups
+*backup*
+* Backup */
+
+# OS noise
+.DS_Store
