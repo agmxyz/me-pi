@@ -79,21 +79,32 @@ async function pickModelAndThinking(
 	label: string,
 	current: string | undefined,
 ): Promise<{ model?: string; defaultProvider?: string; thinking?: string } | null> {
-	const options: string[] = [
-		...(current ? [`(keep current: ${current})`] : []),
-		...authedProviders().flatMap((p) => modelsFor(p).slice(0, 20).map((m) => `${p}/${m}`)),
-	];
-	const model = await ctx.ui.select(`${label} — model`, options);
-	if (!model) return null;
-	if (model.startsWith("(keep current")) {
-		const [prov, ...rest] = current!.split("/");
-		const thinking = await ctx.ui.select(`${label} — thinking level`, THINKING_LEVELS);
-		if (thinking === undefined) return null;
-		return { model: rest.join("/"), defaultProvider: prov, ...(thinking !== "inherit" ? { thinking } : {}) };
+	// pi-native feel: flat list, `id [provider]` labels, ✓ marks the current value
+	const valueByLabel = new Map<string, string>();
+	const options: string[] = [];
+	for (const p of authedProviders()) {
+		for (const m of modelsFor(p).slice(0, 20)) {
+			const value = `${p}/${m}`;
+			const isCurrent = value === current;
+			const label = `${isCurrent ? "✓ " : "  "}${m} [${p}]`;
+			valueByLabel.set(label, value);
+			options.push(label);
+		}
 	}
-	const [prov, ...rest] = model.split("/");
-	const thinking = await ctx.ui.select(`${label} — thinking level`, THINKING_LEVELS);
-	if (thinking === undefined) return null;
+	options.sort((a, b) => (a.startsWith("✓") ? -1 : b.startsWith("✓") ? 1 : a.localeCompare(b)));
+
+	const chosen = await ctx.ui.select(`${label} — model`, options);
+	if (!chosen) return null;
+	const value = valueByLabel.get(chosen) ?? current;
+	if (!value) return null;
+	const [prov, ...rest] = value.split("/");
+
+	const currentThinking = current && current.split(":")[1];
+	const tOptions = THINKING_LEVELS.map((t) => `${t === currentThinking ? "✓ " : "  "}${t}`);
+	const tChosen = await ctx.ui.select(`${label} — thinking level`, tOptions);
+	if (tChosen === undefined) return null;
+	const thinking = tChosen.replace("✓ ", "").trim();
+
 	return { model: rest.join("/"), defaultProvider: prov, ...(thinking !== "inherit" ? { thinking } : {}) };
 }
 
