@@ -1,33 +1,34 @@
 /**
- * me-setup — pre-flight check for the me-pi rig.
+ * me-setup — rig control panel.
  *
- * Usage: /me-setup   (inside a pi session)
+ * /me-setup            → model chooser: set agent default model+thinking, override agents as needed
+ * /me-setup status     → full pre-flight report (read-only)
+ * /me-setup default <provider/model> <thinking>   → set default directly
+ * /me-setup models <agent> <provider/model> [thinking] → override one agent
+ * /me-setup reset <agent> → agent inherits default again
  *
- * Read-only. Verifies symlinks, extensions, packages, rtk, auth presence,
- * agents/prompts/skills inventory, role→model overrides, guardrail rules.
- * Never reads secret file contents (auth.json keys/names only).
+ * Writes only ~/.pi/agent/settings.json subagents.* on explicit user action.
+ * Model options come from models-store.json filtered by authed providers.
+ * Never reads auth.json values (keys only). Never reads secret contents.
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-const HERE = dirname(realpathSync(fileURLToPath(import.meta.url))); // follow symlink → repo
+const HERE = dirname(realpathSync(fileURLToPath(import.meta.url))); // follows symlink → repo
 const REPO = resolve(HERE, "..");
 const HOME = homedir();
 const PI_AGENT = join(HOME, ".pi", "agent");
 const AGENTS_HOME = join(HOME, ".agents");
+const THINKING_LEVELS = ["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-const STOCK_AGENTS = ["scout", "researcher", "worker", "reviewer", "oracle", "delegate"];
-
-type Status = "ok" | "warn" | "fail";
-const ICON: Record<Status, string> = { ok: "✓", warn: "⚠", fail: "✗" };
-
-function line(s: Status, label: string, detail = ""): string {
-	return `${ICON[s]} ${label}${detail ? ` — ${detail}` : ""}`;
+function say(ctx: any, msg: string): void {
+	if (ctx.hasUI || ctx.mode === "tui") ctx.ui.notify(msg, "info");
+	else console.log(msg); // print/json modes: notify is invisible
 }
 
 function readJson(path: string): any | null {
@@ -38,228 +39,249 @@ function readJson(path: string): any | null {
 	}
 }
 
-function dirField(needle: string): string {
-	try {
-		const names = readdirSync(needle);
-		const md = names.filter((n) => n.endsWith(".md")).map((n) => n.replace(/\.md$/, ""));
-		return md.length ? md.join(", ") : "(empty)";
-	} catch {
-		return "(unreadable)";
-	}
+function authedProviders(): string[] {
+	const auth = readJson(join(PI_AGENT, "auth.json"));
+	return auth ? Object.keys(auth) : [];
 }
 
-function say(ctx: any, msg: string): void {
-	if (ctx.hasUI || ctx.mode === "tui") ctx.ui.notify(msg, "info");
-	else console.log(msg); // print/json modes: notify is invisible
+function modelsFor(provider: string): string[] {
+	const store = readJson(join(PI_AGENT, "models-store.json")) ?? {};
+	return (store[provider]?.models ?? []).map((m: any) => m.id).filter(Boolean);
 }
 
 function listAgents(): string[] {
 	try {
 		const dir = join(PI_AGENT, "agents");
-		return readdirSync(dir).filter((n) => n.endsWith(".md")).map((n) => {
-			const fm = readFileSync(join(dir, n), "utf8").split("---")[1] ?? "";
-			return fm.match(/^name:\s*(.+)$/m)?.[1]?.trim() || n.replace(/\.md$/, "");
-		});
+		return readdirSync(dir)
+			.filter((n) => n.endsWith(".md"))
+			.map((n) => {
+				const fm = readFileSync(join(dir, n), "utf8").split("---")[1] ?? "";
+				return fm.match(/^name:\s*(.+)$/m)?.[1]?.trim() || n.replace(/\.md$/, "");
+			});
 	} catch {
 		return [];
 	}
 }
 
-function availableModels(): { provider: string; models: string[] }[] {
-	const auth = readJson(join(PI_AGENT, "auth.json"));
-	const providers: string[] = auth ? Object.keys(auth) : [];
-	const store = readJson(join(PI_AGENT, "models-store.json")) ?? {};
-	return providers
-		.map((p) => ({ provider: p, models: (store[p]?.models ?? []).map((m: any) => m.id).filter(Boolean).slice(0, 40) }))
-		.filter((p) => p.models.length > 0);
+function loadSettings(): any {
+	const s = readJson(join(PI_AGENT, "settings.json"));
+	if (!s) throw new Error("settings.json unreadable");
+	s.subagents = s.subagents ?? {};
+	return s;
 }
 
-async function assignModel(pi: ExtensionAPI, ctx: any, agent: string, value: string): Promise<void> {
-	const settingsPath = join(PI_AGENT, "settings.json");
-	const settings = readJson(settingsPath);
-	if (!settings) throw new Error("settings.json unreadable");
-	settings.subagents = settings.subagents ?? {};
-	settings.subagents.agentOverrides = settings.subagents.agentOverrides ?? {};
-	if (value === "inherit" || value === "reset") {
-		delete settings.subagents.agentOverrides[agent];
-	} else {
-		// accept "provider/model" or bare model id (keeps current provider preference)
-		const [prov, ...rest] = value.split("/");
-		const auth = readJson(join(PI_AGENT, "auth.json")) ?? {};
-		const looksQualified = rest.length > 0 && auth[prov];
-		if (looksQualified) {
-			const model = rest.join("/");
-			const known = (readJson(join(PI_AGENT, "models-store.json")) ?? {})
-				?.[prov]?.models?.some((m: any) => m.id === model);
-			if (!known) {
-				const avail = (readJson(join(PI_AGENT, "models-store.json")) ?? {})
-					?.[prov]?.models?.map((m: any) => m.id).slice(0, 10).join(", ");
-				say(ctx, `✗ unknown model "${model}" for provider "${prov}" — not saved. Some options: ${avail}…`);
-				return;
-			}
-			settings.subagents.agentOverrides[agent] = { model, defaultProvider: prov };
+function saveSettings(settings: any): void {
+	writeFileSync(join(PI_AGENT, "settings.json"), JSON.stringify(settings, null, 2) + "\n");
+}
+
+async function pickModelAndThinking(
+	ctx: any,
+	label: string,
+	current: string | undefined,
+): Promise<{ model?: string; defaultProvider?: string; thinking?: string } | null> {
+	const providers = authedProviders();
+	const provider = await ctx.ui.select(`${label} — provider`, providers);
+	if (!provider) return null;
+
+	const currentModel = current?.startsWith(`${provider}/`) ? current.slice(provider.length + 1) : undefined;
+	const model = await ctx.ui.select(
+		`${label} — model (${provider})`,
+		[...(currentModel ? [`(keep current: ${currentModel})`] : []), ...modelsFor(provider).slice(0, 40)],
+	);
+	if (!model) return null;
+	const modelValue = model.startsWith("(keep current") ? currentModel! : model;
+
+	const thinking = await ctx.ui.select(`${label} — thinking level`, THINKING_LEVELS);
+	if (thinking === undefined) return null;
+
+	const out: any = { model: modelValue };
+	if (thinking !== "inherit") out.thinking = thinking;
+	return out;
+}
+
+function describe(eff: any): string {
+	if (!eff || (!eff.model && !eff.thinking)) return "inherit";
+	const m = eff.model ? (eff.defaultProvider ? `${eff.model} via ${eff.defaultProvider}` : eff.model) : undefined;
+	return [m, eff.thinking ? `thinking ${eff.thinking}` : undefined].filter(Boolean).join(", ");
+}
+
+async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
+	const settings = loadSettings();
+	const sub = settings.subagents;
+
+	// Step 1 — default (what every agent inherits)
+	const keep = `(keep current: ${describe(sub.defaultModel ? { model: sub.defaultModel, defaultProvider: sub.defaultProvider, thinking: sub.defaultThinking } : null)})`;
+	const first = await ctx.ui.select("Default model for ALL agents", [keep, "choose another…"]);
+	if (!first) return;
+	if (first === "choose another…") {
+		const pick = await pickModelAndThinking(ctx, "Default", sub.defaultModel ? `${sub.defaultProvider ?? ""}/${sub.defaultModel}` : undefined);
+		if (pick) {
+			sub.defaultModel = pick.model;
+			sub.defaultProvider = pick.defaultProvider;
+			if (pick.thinking) sub.defaultThinking = pick.thinking;
+			else delete sub.defaultThinking;
+		}
+	}
+
+	// Step 2 — override only what needs it
+	for (;;) {
+		const agents = [...new Set([...listAgents(), "worker", "scout", "researcher", "reviewer", "oracle", "delegate"])];
+		const options = ["✓ done — save", ...agents.map((a) => `${a}  (${describe(sub.agentOverrides?.[a])})`)];
+		const choice = await ctx.ui.select("Override an agent? (others inherit the default)", options);
+		if (!choice || choice.startsWith("✓ done")) break;
+		const agent = choice.split("  ")[0];
+		const current = sub.agentOverrides?.[agent]?.model
+			? `${sub.agentOverrides[agent].defaultProvider ?? ""}/${sub.agentOverrides[agent].model}`.replace(/^\//, "")
+			: undefined;
+		const pick = await pickModelAndThinking(ctx, agent, current);
+		if (!pick) continue;
+		sub.agentOverrides = sub.agentOverrides ?? {};
+		if (pick.model === current) {
+			if (pick.thinking) sub.agentOverrides[agent] = { ...sub.agentOverrides[agent], thinking: pick.thinking };
 		} else {
-			settings.subagents.agentOverrides[agent] = { model: value };
+			const [prov, ...rest] = pick.model.split("/");
+			if (rest.length && authedProviders().includes(prov)) {
+				sub.agentOverrides[agent] = { model: rest.join("/"), defaultProvider: prov, ...(pick.thinking ? { thinking: pick.thinking } : {}) };
+			} else {
+				sub.agentOverrides[agent] = { model: pick.model, ...(pick.thinking ? { thinking: pick.thinking } : {}) };
+			}
 		}
 	}
-	const { writeFileSync } = await import("node:fs");
-	writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-	const eff = settings.subagents.agentOverrides[agent];
-	say(ctx, `✓ ${agent} → ${eff ? `${eff.model}${eff.defaultProvider ? ` via ${eff.defaultProvider}` : ""}` : "inherit (session model)"}`, "info");
+
+	saveSettings(settings);
+
+	// Step 3 — result table
+	const overrides = sub.agentOverrides ?? {};
+	const table = [
+		`default: ${describe({ model: sub.defaultModel, defaultProvider: sub.defaultProvider, thinking: sub.defaultThinking })}`,
+		...Object.entries(overrides).map(([a, v]) => `${a}: ${describe(v)}`),
+	];
+	say(ctx, `Saved to settings.json. New sessions pick this up.\n\n${table.join("\n")}`);
 }
 
-async function modelsSubcommand(rest: string[], pi: ExtensionAPI, ctx: any): Promise<void> {
-	const agents = [...new Set([...listAgents(), ...STOCK_AGENTS])];
-
-	// direct form: models <agent> <value>
-	if (rest.length >= 2) {
-		if (rest[0] === "reset") {
-			return await assignModel(pi, ctx, rest[1], "reset");
+async function statusReport(ctx: any): Promise<void> {
+	const out: string[] = [`rig: ${REPO}`];
+	const links: [string, string][] = [
+		["extensions", join(PI_AGENT, "extensions")],
+		["agents", join(PI_AGENT, "agents")],
+		["prompts", join(PI_AGENT, "prompts")],
+		["skills", join(AGENTS_HOME, "skills")],
+		["APPEND_SYSTEM.md", join(PI_AGENT, "APPEND_SYSTEM.md")],
+		["damage-control-rules.yaml", join(HOME, ".pi", "damage-control-rules.yaml")],
+	];
+	for (const [label, p] of links) {
+		try {
+			if (!existsSync(p)) out.push(`✗ ${label} — missing — run install.sh`);
+			else if (!lstatSync(p).isSymbolicLink()) out.push(`⚠ ${label} — not a symlink (drift risk)`);
+			else {
+				const t = realpathSync(p);
+				out.push(`${t === REPO || t.startsWith(REPO + "/") ? "✓" : "⚠"} ${label}`);
+			}
+		} catch {
+			out.push(`✗ ${label} — unreadable`);
 		}
-		return await assignModel(pi, ctx, rest[0], rest[1]);
 	}
-
-	// interactive form
-	if (!ctx.hasUI && ctx.mode !== "tui") {
-		say(ctx, "No UI in this mode. Use: /me-setup models <agent> <provider/model|inherit>", "warn");
-		return;
+	try {
+		out.push(`✓ extensions — ${readdirSync(join(PI_AGENT, "extensions")).filter((n) => n.endsWith(".ts")).join(", ")}`);
+	} catch {
+		out.push("✗ extensions — unreadable");
 	}
-	for (const agent of agents) {
-		const pick = await ctx.ui.select(
-			`Model for "${agent}" — current override or inherit`,
-			["skip (leave as is)", "inherit (session model)", ...availableModels().flatMap((p) => p.models.slice(0, 12).map((m) => `${p.provider}/${m}`))],
-		);
-		if (!pick || pick.startsWith("skip")) continue;
-		const value = pick.startsWith("inherit") ? "inherit" : pick;
-		await assignModel(pi, ctx, agent, value);
+	const settings = readJson(join(PI_AGENT, "settings.json"));
+	const pkgs: string[] = settings?.packages ?? [];
+	out.push(`${pkgs.length ? "✓" : "⚠"} packages — ${pkgs.join(", ") || "(none)"}`);
+	try {
+		out.push(`✓ rtk — ${execFileSync("rtk", ["--version"], { timeout: 2000, encoding: "utf8" }).trim()}`);
+	} catch {
+		out.push("⚠ rtk — not in PATH (brew install rtk)");
 	}
-	say(ctx, "Model assignments saved to settings.json (new sessions pick them up).", "info");
+	try {
+		out.push(`✓ auth — ${authedProviders().join(", ")}`);
+	} catch {
+		out.push("✗ auth — unreadable");
+	}
+	try {
+		out.push(`✓ agents — ${listAgents().join(", ")}`);
+		out.push(`✓ prompts — ${readdirSync(join(PI_AGENT, "prompts")).filter((n) => n.endsWith(".md")).map((n) => `/${n.replace(/\.md$/, "")}`).join(", ")}`);
+		out.push(`✓ skills — ${readdirSync(join(AGENTS_HOME, "skills")).length} (shared with codex)`);
+	} catch {
+		out.push("⚠ inventory — unreadable");
+	}
+	try {
+		const rules = readFileSync(join(HOME, ".pi", "damage-control-rules.yaml"), "utf8");
+		out.push(`✓ guardrails — ${(rules.match(/pattern:/g) ?? []).length} bash deny-patterns`);
+	} catch {
+		out.push("⚠ guardrails — rules file missing");
+	}
+	try {
+		const head = execFileSync("git", ["-C", REPO, "log", "--oneline", "-1"], { encoding: "utf8" }).trim();
+		const dirty = execFileSync("git", ["-C", REPO, "status", "--porcelain"], { encoding: "utf8" }).trim();
+		out.push(`✓ rig git — ${head}${dirty ? "  (uncommitted)" : "  (clean)"}`);
+	} catch {
+		out.push("⚠ rig git — not a repo?");
+	}
+	say(ctx, out.join("\n"));
 }
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("me-setup", {
-		description: "Show what the me-pi rig has wired (read-only pre-flight)",
+		description: "Choose agent models & thinking levels (status: /me-setup status)",
 		handler: async (args: string, ctx: any) => {
 			const argv = args.trim().split(/\s+/).filter(Boolean);
-			if (argv[0] === "models") {
-				return await modelsSubcommand(argv.slice(1), pi, ctx);
-			}
-			const out: string[] = [];
-			out.push(`rig: ${REPO}`);
+			if (argv[0] === "status") return await statusReport(ctx);
 
-			// 1. symlinks
-			const links: [string, string][] = [
-				["extensions", join(PI_AGENT, "extensions")],
-				["agents", join(PI_AGENT, "agents")],
-				["prompts", join(PI_AGENT, "prompts")],
-				["skills", join(AGENTS_HOME, "skills")],
-				["APPEND_SYSTEM.md", join(PI_AGENT, "APPEND_SYSTEM.md")],
-				["damage-control-rules.yaml", join(HOME, ".pi", "damage-control-rules.yaml")],
-			];
-			for (const [label, p] of links) {
-				try {
-					if (!existsSync(p)) {
-						out.push(line("fail", label, "missing — run install.sh"));
-					} else if (!lstatSync(p).isSymbolicLink()) {
-						out.push(line("warn", label, "exists but is NOT a symlink (drift risk)"));
-					} else {
-						const target = realpathSync(p);
-						const ok = target === REPO || target.startsWith(REPO + "/");
-						out.push(line(ok ? "ok" : "warn", label, ok ? "" : `→ ${target} (outside repo)`));
-					}
-				} catch {
-					out.push(line("fail", label, "unreadable"));
+			const settings = loadSettings();
+			const sub = settings.subagents;
+
+			if (argv[0] === "default") {
+				// default <provider/model> [thinking]
+				if (!argv[1]) return say(ctx, "usage: /me-setup default <provider/model> [thinking]");
+				const [prov, ...rest] = argv[1].split("/");
+				if (rest.length && authedProviders().includes(prov)) {
+					sub.defaultModel = rest.join("/");
+					sub.defaultProvider = prov;
+				} else {
+					sub.defaultModel = argv[1];
 				}
+				if (argv[2]) sub.defaultThinking = argv[2];
+				saveSettings(settings);
+				return say(ctx, `✓ default → ${sub.defaultModel}${sub.defaultProvider ? ` via ${sub.defaultProvider}` : ""}${sub.defaultThinking ? `, thinking ${sub.defaultThinking}` : ""}`);
 			}
 
-			// 2. extensions
-			try {
-				const exts = readdirSync(join(PI_AGENT, "extensions")).filter((n) => n.endsWith(".ts") || n.endsWith(".js"));
-				out.push(line("ok", "extensions", exts.join(", ") || "(none)"));
-			} catch {
-				out.push(line("fail", "extensions", "dir unreadable"));
+			if (argv[0] === "models") {
+				// models <agent> <provider/model> [thinking]
+				if (argv.length < 3) return say(ctx, "usage: /me-setup models <agent> <provider/model> [thinking]");
+				const agent = argv[1];
+				const [prov, ...rest] = argv[2].split("/");
+				let entry: any;
+				if (rest.length && authedProviders().includes(prov)) {
+					const model = rest.join("/");
+					const known = modelsFor(prov).includes(model);
+					if (!known) {
+						return say(ctx, `✗ unknown model "${model}" for "${prov}" — not saved. Options: ${modelsFor(prov).slice(0, 10).join(", ")}…`);
+					}
+					entry = { model, defaultProvider: prov };
+				} else {
+					entry = { model: argv[2] };
+				}
+				if (argv[3]) entry.thinking = argv[3];
+				sub.agentOverrides = sub.agentOverrides ?? {};
+				sub.agentOverrides[agent] = entry;
+				saveSettings(settings);
+				return say(ctx, `✓ ${agent} → ${describe(entry)}`);
 			}
 
-			// 3. packages
-			const settings = readJson(join(PI_AGENT, "settings.json"));
-			const pkgs: string[] = settings?.packages ?? [];
-			out.push(line(pkgs.length ? "ok" : "warn", "packages", pkgs.join(", ") || "(none installed)"));
-
-			// 4. rtk
-			try {
-				const v = execFileSync("rtk", ["--version"], { timeout: 2000, encoding: "utf8" }).trim();
-				const minor = Number(v.match(/(\d+)\.(\d+)/)?.[2] ?? 0);
-				out.push(line(minor >= 23 ? "ok" : "warn", "rtk", `${v}${minor < 23 ? " (too old, need ≥0.23)" : ""}`));
-			} catch {
-				out.push(line("warn", "rtk", "not in PATH — bash rewriting disabled (brew install rtk)"));
+			if (argv[0] === "reset") {
+				if (!argv[1]) return say(ctx, "usage: /me-setup reset <agent>");
+				sub.agentOverrides = sub.agentOverrides ?? {};
+				delete sub.agentOverrides[argv[1]];
+				saveSettings(settings);
+				return say(ctx, `✓ ${argv[1]} → inherit`);
 			}
 
-			// 5. auth providers (names only)
-			try {
-				const auth = readJson(join(PI_AGENT, "auth.json"));
-				const provs = auth ? Object.keys(auth) : [];
-				out.push(line(provs.length ? "ok" : "fail", "auth", provs.length ? provs.join(", ") : "no providers — run pi auth"));
-			} catch {
-				out.push(line("fail", "auth", "auth.json unreadable"));
+			if (!ctx.hasUI && ctx.mode !== "tui") {
+				return say(ctx, "Interactive chooser needs a TUI session. Direct forms:\n  /me-setup default <provider/model> [thinking]\n  /me-setup models <agent> <provider/model> [thinking]\n  /me-setup reset <agent>\n  /me-setup status");
 			}
-
-			// 6. agents (+ model overrides)
-			const overrides = settings?.subagents?.agentOverrides ?? {};
-			try {
-				const agentDir = join(PI_AGENT, "agents");
-				const names = readdirSync(agentDir).filter((n) => n.endsWith(".md")).map((n) => {
-					const fm = readFileSync(join(agentDir, n), "utf8").split("---")[1] ?? "";
-					const name = fm.match(/^name:\s*(.+)$/m)?.[1]?.trim();
-					return name || n.replace(/\.md$/, "");
-				});
-				const ovr = names.filter((n) => overrides[n]?.model).map((n) => `${n}→${overrides[n].model}`);
-				out.push(line(names.length ? "ok" : "warn", "agents", names.join(", ") || "(none)"));
-				if (ovr.length) out.push(line("ok", "model overrides", ovr.join(", ")));
-				out.push(line("ok", "other agents", "inherit session model (worker/delegate/scout/researcher/delegate)"));
-			} catch {
-				out.push(line("warn", "agents", "dir unreadable — pi-subagents builtins only"));
-			}
-
-			// 7. prompts
-			try {
-				out.push(line("ok", "prompts", dirField(join(PI_AGENT, "prompts"))));
-			} catch {
-				out.push(line("warn", "prompts", "dir unreadable"));
-			}
-
-			// 8. skills
-			try {
-				const n = readdirSync(join(AGENTS_HOME, "skills")).length;
-				out.push(line(n > 0 ? "ok" : "warn", "skills", `${n} (shared with codex via ~/.agents/skills)`));
-			} catch {
-				out.push(line("fail", "skills", "~/.agents/skills missing — run install.sh"));
-			}
-
-			// 10. guardrails rules
-			try {
-				const rules = readFileSync(join(HOME, ".pi", "damage-control-rules.yaml"), "utf8");
-				const patterns = (rules.match(/pattern:/g) ?? []).length;
-				out.push(line(patterns > 0 ? "ok" : "warn", "guardrails", `${patterns} bash deny-patterns`));
-			} catch {
-				out.push(line("warn", "guardrails", "rules file missing — guardrail extension will notify"));
-			}
-
-			// footer: git state of the rig
-			try {
-				const head = execFileSync("git", ["-C", REPO, "log", "--oneline", "-1"], { encoding: "utf8" }).trim();
-				const dirty = execFileSync("git", ["-C", REPO, "status", "--porcelain"], { encoding: "utf8" }).trim();
-				out.push(line("ok", "rig git", `${head}${dirty ? "  (uncommitted changes)" : "  (clean)"}`));
-			} catch {
-				out.push(line("warn", "rig git", "not a git repo?"));
-			}
-
-			const report = out.join("\n");
-			if (ctx.hasUI || ctx.mode === "tui") {
-				ctx.ui.notify(report, "info");
-			} else {
-				console.log(report); // print/json modes: notify is invisible
-			}
+			return await chooser(pi, ctx);
 		},
 	});
 }
-
