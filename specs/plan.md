@@ -41,8 +41,8 @@ Agents may: edit repo files, run tests, **commit on: clean known starting diff +
 - 2. Vendored damage-control-continue + rules YAML (denylist above).
 - 3. Role→model config in live settings; document intended values here.
 - 4. **2-week stock warmup** on real tickets; log model-fit (defects caught, rework, wrong-model signs, handoff loss) into `specs/trial-log.md`. Compaction (built-in) before any ledger thoughts.
-- 5. Author personas: implementer (implement+tdd), reviewer (code-review+Fowler), devils-advocate (grilling) — thin bodies, skill-bind first line, output contracts.
-- 6. Prompts: `/implement-and-review`, `/scout-and-plan` in `rig/prompts/`.
+- 5. ✅ **done** — personas live in `agents/`: implementer (implement+tdd), reviewer (code-review, overrides builtin), devils-advocate (grilling; opus). Contracts enforced (reviewer initially drifted → contract-precedence rule added). Integration-tested.
+- 6. ✅ **done** — `/implement-and-review` (verified end-to-end: implement→review→commit→SHA, no push) and `/scout-and-plan` in `prompts/`.
 - 7. Review session vs baseline: decide council (Pragmatist[luna]+Risk[opus] parallel → DA → user synthesizes; rare, ceremony-threshold only) and whether ledger/`/recall` is earned. Fresh-machine install check + settings-drift verification added to install.sh around here.
 
 ## Non-goals (v1)
