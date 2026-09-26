@@ -20,3 +20,6 @@ cache/
 
 # OS noise
 .DS_Store
+
+# node deps for extensions
+node_modules/
