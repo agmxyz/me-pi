@@ -79,24 +79,22 @@ async function pickModelAndThinking(
 	label: string,
 	current: string | undefined,
 ): Promise<{ model?: string; defaultProvider?: string; thinking?: string } | null> {
-	const providers = authedProviders();
-	const provider = await ctx.ui.select(`${label} — provider`, providers);
-	if (!provider) return null;
-
-	const currentModel = current?.startsWith(`${provider}/`) ? current.slice(provider.length + 1) : undefined;
-	const model = await ctx.ui.select(
-		`${label} — model (${provider})`,
-		[...(currentModel ? [`(keep current: ${currentModel})`] : []), ...modelsFor(provider).slice(0, 40)],
-	);
+	const options: string[] = [
+		...(current ? [`(keep current: ${current})`] : []),
+		...authedProviders().flatMap((p) => modelsFor(p).slice(0, 20).map((m) => `${p}/${m}`)),
+	];
+	const model = await ctx.ui.select(`${label} — model`, options);
 	if (!model) return null;
-	const modelValue = model.startsWith("(keep current") ? currentModel! : model;
-
+	if (model.startsWith("(keep current")) {
+		const [prov, ...rest] = current!.split("/");
+		const thinking = await ctx.ui.select(`${label} — thinking level`, THINKING_LEVELS);
+		if (thinking === undefined) return null;
+		return { model: rest.join("/"), defaultProvider: prov, ...(thinking !== "inherit" ? { thinking } : {}) };
+	}
+	const [prov, ...rest] = model.split("/");
 	const thinking = await ctx.ui.select(`${label} — thinking level`, THINKING_LEVELS);
 	if (thinking === undefined) return null;
-
-	const out: any = { model: modelValue };
-	if (thinking !== "inherit") out.thinking = thinking;
-	return out;
+	return { model: rest.join("/"), defaultProvider: prov, ...(thinking !== "inherit" ? { thinking } : {}) };
 }
 
 function describe(eff: any): string {
