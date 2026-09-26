@@ -1,0 +1,7 @@
+{
+  "$comment": "Template — install.sh copies this on first run. Live file at ~/.pi/agent/settings.json may drift with machine state (lastChangelogVersion etc.). Commit meaningful changes back here.",
+  "theme": "dark",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-luna",
+  "defaultThinkingLevel": "medium"
+}
