@@ -21,6 +21,8 @@ const HOME = homedir();
 const PI_AGENT = join(HOME, ".pi", "agent");
 const AGENTS_HOME = join(HOME, ".agents");
 
+const STOCK_AGENTS = ["scout", "researcher", "worker", "reviewer", "oracle", "delegate"];
+
 type Status = "ok" | "warn" | "fail";
 const ICON: Record<Status, string> = { ok: "✓", warn: "⚠", fail: "✗" };
 
@@ -46,10 +48,90 @@ function dirField(needle: string): string {
 	}
 }
 
+function say(ctx: any, msg: string): void {
+	if (ctx.hasUI || ctx.mode === "tui") ctx.ui.notify(msg, "info");
+	else console.log(msg); // print/json modes: notify is invisible
+}
+
+function listAgents(): string[] {
+	try {
+		const dir = join(PI_AGENT, "agents");
+		return readdirSync(dir).filter((n) => n.endsWith(".md")).map((n) => {
+			const fm = readFileSync(join(dir, n), "utf8").split("---")[1] ?? "";
+			return fm.match(/^name:\s*(.+)$/m)?.[1]?.trim() || n.replace(/\.md$/, "");
+		});
+	} catch {
+		return [];
+	}
+}
+
+function availableModels(): { provider: string; models: string[] }[] {
+	const auth = readJson(join(PI_AGENT, "auth.json"));
+	const providers: string[] = auth ? Object.keys(auth) : [];
+	const store = readJson(join(PI_AGENT, "..", "models-store.json")) ?? {};
+	return providers
+		.map((p) => ({ provider: p, models: (store[p]?.models ?? []).map((m: any) => m.id).filter(Boolean).slice(0, 40) }))
+		.filter((p) => p.models.length > 0);
+}
+
+async function assignModel(pi: ExtensionAPI, ctx: any, agent: string, value: string): Promise<void> {
+	const settingsPath = join(PI_AGENT, "settings.json");
+	const settings = readJson(settingsPath);
+	if (!settings) throw new Error("settings.json unreadable");
+	settings.subagents = settings.subagents ?? {};
+	settings.subagents.agentOverrides = settings.subagents.agentOverrides ?? {};
+	if (value === "inherit" || value === "reset") {
+		delete settings.subagents.agentOverrides[agent];
+	} else {
+		// accept "provider/model" or bare model id (keeps current provider preference)
+		const [prov, ...rest] = value.split("/");
+		const looksQualified = rest.length > 0 && (readJson(join(PI_AGENT, "auth.json")) ?? {})[prov];
+		settings.subagents.agentOverrides[agent] = looksQualified
+			? { model: rest.join("/"), defaultProvider: prov }
+			: { model: value };
+	}
+	const { writeFileSync } = await import("node:fs");
+	writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+	const eff = settings.subagents.agentOverrides[agent];
+	say(ctx, `✓ ${agent} → ${eff ? `${eff.model}${eff.defaultProvider ? ` via ${eff.defaultProvider}` : ""}` : "inherit (session model)"}`, "info");
+}
+
+async function modelsSubcommand(rest: string[], pi: ExtensionAPI, ctx: any): Promise<void> {
+	const agents = [...new Set([...listAgents(), ...STOCK_AGENTS])];
+
+	// direct form: models <agent> <value>
+	if (rest.length >= 2) {
+		if (rest[0] === "reset") {
+			return await assignModel(pi, ctx, rest[1], "reset");
+		}
+		return await assignModel(pi, ctx, rest[0], rest[1]);
+	}
+
+	// interactive form
+	if (!ctx.hasUI && ctx.mode !== "tui") {
+		say(ctx, "No UI in this mode. Use: /me-setup models <agent> <provider/model|inherit>", "warn");
+		return;
+	}
+	for (const agent of agents) {
+		const pick = await ctx.ui.select(
+			`Model for "${agent}" — current override or inherit`,
+			["skip (leave as is)", "inherit (session model)", ...availableModels().flatMap((p) => p.models.slice(0, 12).map((m) => `${p.provider}/${m}`))],
+		);
+		if (!pick || pick.startsWith("skip")) continue;
+		const value = pick.startsWith("inherit") ? "inherit" : pick;
+		await assignModel(pi, ctx, agent, value);
+	}
+	say(ctx, "Model assignments saved to settings.json (new sessions pick them up).", "info");
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("me-setup", {
 		description: "Show what the me-pi rig has wired (read-only pre-flight)",
-		handler: async (_args: string, ctx: any) => {
+		handler: async (args: string, ctx: any) => {
+			const argv = args.trim().split(/\s+/).filter(Boolean);
+			if (argv[0] === "models") {
+				return await modelsSubcommand(argv.slice(1), pi, ctx);
+			}
 			const out: string[] = [];
 			out.push(`rig: ${REPO}`);
 

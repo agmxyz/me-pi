@@ -1,6 +1,17 @@
-# Spec: /me-setup — rig pre-flight check
+# Spec: /me-setup — rig pre-flight + model control
 
-A `/` command that shows what the rig has wired before the user starts working. Read-only.
+A `/` command that shows what the rig has wired, and assigns role→model. Read-only unless invoked with `models` subcommand.
+
+## Subcommands
+
+| Invocation | Behavior |
+|---|---|
+| `/me-setup` | status report (read-only) |
+| `/me-setup models` | interactive: per agent → pick provider → pick model (or `inherit`, or `skip`); writes `settings.json subagents.agentOverrides` |
+| `/me-setup models <agent> <provider/model\|inherit>` | direct assignment (print-mode friendly) |
+| `/me-setup models reset <agent>` | remove override (agent inherits session model) |
+
+Model options come from `models-store.json`, filtered to authed providers (auth.json keys). Never touches auth values. ADR-0003: assignments are deliberate decisions.
 
 ## Checks
 
@@ -23,4 +34,4 @@ Compact checklist, ✓ / ⚠ (works with caveat) / ✗ (broken + fix hint). Foot
 
 ## Non-goals
 
-No mutation, no auto-fix, no network. `--json` mode deferred (v2 if needed).
+No auto-fix, no network. One settings.json write per explicit user action.
