@@ -2,6 +2,9 @@
   "name": "me-pi-extensions",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
   "dependencies": {
     "@earendil-works/pi-tui": "^0.87.1",
     "yaml": "^2.9.0"

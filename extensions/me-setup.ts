@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Container, Input, Spacer, Text, fuzzyFilter, getKeybindings } from "@earendil-works/pi-tui";
+import { Container, Input, Spacer, Text, fuzzyFilter } from "@earendil-works/pi-tui";
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url))); // follows symlink → repo
 const REPO = resolve(HERE, "..");
@@ -78,6 +78,7 @@ function saveSettings(settings: any): void {
 // ── native-feel picker (mirrors pi's ModelSelectorComponent) ──
 
 type PickerItem = { value: string; search: string; row: string; badge?: string };
+type ModelChoice = { model: string; defaultProvider: string; thinking?: string };
 
 class ModelPicker extends Container {
 	private searchInput = new Input();
@@ -86,12 +87,14 @@ class ModelPicker extends Container {
 	private filtered: PickerItem[] = [];
 	private selectedIndex = 0;
 	private theme: any;
+	private keybindings: any;
 	private done: (v: string | undefined) => void;
 	private title: string;
 
-	constructor(tui: any, theme: any, title: string, items: PickerItem[], current: string | undefined, done: (v: string | undefined) => void) {
+	constructor(tui: any, theme: any, keybindings: any, title: string, items: PickerItem[], current: string | undefined, done: (v: string | undefined) => void) {
 		super();
 		this.theme = theme;
+		this.keybindings = keybindings;
 		this.title = title;
 		this.done = done;
 		this.items = items;
@@ -142,11 +145,15 @@ class ModelPicker extends Container {
 	}
 
 	handleInput(data: any) {
-		const kb = getKeybindings();
-		if (kb.matches(data, "tui.select.up")) {
+		const kb = this.keybindings;
+		const up = kb.matches(data, "tui.select.up");
+		const down = kb.matches(data, "tui.select.down");
+		if (up) {
 			if (this.filtered.length) this.selectedIndex = this.selectedIndex === 0 ? this.filtered.length - 1 : this.selectedIndex - 1;
-		} else if (kb.matches(data, "tui.select.down")) {
+			this.updateList();
+		} else if (down) {
 			if (this.filtered.length) this.selectedIndex = this.selectedIndex === this.filtered.length - 1 ? 0 : this.selectedIndex + 1;
+			this.updateList();
 		} else if (kb.matches(data, "tui.select.confirm")) {
 			const sel = this.filtered[this.selectedIndex];
 			if (sel) this.done(sel.value);
@@ -164,16 +171,17 @@ class ModelPicker extends Container {
 }
 
 function pick(ctx: any, title: string, items: PickerItem[], current?: string): Promise<string | undefined> {
-	return ctx.ui.custom<string | undefined>((tui: any, theme: any, _kb: any, done: (v: string | undefined) => void) => {
-		return new ModelPicker(tui, theme, title, items, current, done);
+	return ctx.ui.custom<string | undefined>((tui: any, theme: any, keybindings: any, done: (v: string | undefined) => void) => {
+		return new ModelPicker(tui, theme, keybindings, title, items, current, done);
 	});
 }
 
 async function pickModelAndThinking(
 	ctx: any,
 	label: string,
-	current: string | undefined,
-): Promise<{ model?: string; defaultProvider?: string; thinking?: string } | null> {
+	currentModel?: string,
+	currentThinking?: string,
+): Promise<ModelChoice | null> {
 	// model: flat list across authed providers, pi-native labels, relevance-ordered
 	const settings = readJson(join(PI_AGENT, "settings.json")) ?? {};
 	const inUse = new Set<string>([
@@ -186,7 +194,7 @@ async function pickModelAndThinking(
 	for (const p of authedProviders()) {
 		for (const m of modelsFor(p)) {
 			const value = `${p}/${m}`;
-			const isCurrent = value === current;
+			const isCurrent = value === currentModel;
 			items.push({
 				value,
 				search: `${m} ${p} ${isCurrent ? "current" : ""}`,
@@ -204,28 +212,38 @@ async function pickModelAndThinking(
 		if (rank(pa) !== rank(pb)) return rank(pa) - rank(pb);
 		return (idx.get(a.value) ?? 0) - (idx.get(b.value) ?? 0);
 	});
-	const modelValue = await pick(ctx, `${label} — model`, items, current);
+	const modelValue = await pick(ctx, `${label} — model`, items, currentModel);
 	if (!modelValue) return null;
 	const [prov, ...rest] = modelValue.split("/");
 
 	// thinking: same picker over the levels
-	const currentThinking = current && current.includes(":") ? current.split(":")[1] : undefined;
+	const markedThinking = currentThinking && THINKING_LEVELS.includes(currentThinking) ? currentThinking : "inherit";
 	const tItems: PickerItem[] = THINKING_LEVELS.map((t) => ({
 		value: t,
 		search: t,
 		row: t,
-		badge: t === (currentThinking ?? "inherit") ? "current" : undefined,
+		badge: t === markedThinking ? "current" : undefined,
 	}));
-	const thinking = await pick(ctx, `${label} — thinking level`, tItems, currentThinking ?? "inherit");
+	const thinking = await pick(ctx, `${label} — thinking level`, tItems, markedThinking);
 	if (thinking === undefined) return null;
 
 	return { model: rest.join("/"), defaultProvider: prov, ...(thinking !== "inherit" ? { thinking } : {}) };
 }
 
-function describe(eff: any): string {
-	if (!eff || (!eff.model && !eff.thinking)) return "inherit";
-	const m = eff.model ? (eff.defaultProvider ? `${eff.model} via ${eff.defaultProvider}` : eff.model) : undefined;
-	return [m, eff.thinking ? `thinking ${eff.thinking}` : undefined].filter(Boolean).join(", ");
+function describe(eff: any, inheritedProvider?: string, inheritLabel = "default"): string {
+	if (!eff || (!eff.model && !eff.thinking)) return `inherit ${inheritLabel}`;
+	const provider = eff.defaultProvider === false ? undefined : eff.defaultProvider ?? inheritedProvider;
+	const providerLabel = eff.defaultProvider === false ? " (provider preference cleared)" : provider ? ` via ${provider}` : "";
+	const model = eff.model ? `${eff.model}${providerLabel}` : `model inherits ${inheritLabel}`;
+	const thinking = eff.thinking ? `thinking ${eff.thinking}` : `thinking inherits ${inheritLabel}`;
+	return `${model}, ${thinking}`;
+}
+
+export function applyAgentPick(existing: Record<string, any> | undefined, pick: ModelChoice): Record<string, any> {
+	const next = { ...(existing ?? {}), model: pick.model, defaultProvider: pick.defaultProvider };
+	if (pick.thinking !== undefined) next.thinking = pick.thinking;
+	else delete next.thinking;
+	return next;
 }
 
 async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
@@ -233,12 +251,13 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 	const sub = settings.subagents;
 
 	// Step 1 — default (what every agent inherits)
-	const keep = `(keep current: ${describe(sub.defaultModel ? { model: sub.defaultModel, defaultProvider: sub.defaultProvider, thinking: sub.defaultThinking } : null)})`;
+	const keep = `(keep current: ${describe({ model: sub.defaultModel, defaultProvider: sub.defaultProvider, thinking: sub.defaultThinking }, undefined, "parent session")})`;
 	const first = await ctx.ui.select("Default model for ALL agents", [keep, "choose another…"]);
 	if (!first) return;
 	if (first === "choose another…") {
-		const cur = sub.defaultModel ? `${sub.defaultProvider ?? settings.defaultProvider ?? ""}/${sub.defaultModel}` : undefined;
-		const pick = await pickModelAndThinking(ctx, "Default", cur);
+		const provider = sub.defaultProvider ?? ctx.model?.provider ?? settings.defaultProvider ?? "";
+		const cur = sub.defaultModel ? `${provider}/${sub.defaultModel}` : undefined;
+		const pick = await pickModelAndThinking(ctx, "Default", cur, sub.defaultThinking);
 		if (pick) {
 			sub.defaultModel = pick.model;
 			sub.defaultProvider = pick.defaultProvider;
@@ -250,37 +269,30 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 	// Step 2 — override only what needs it
 	for (;;) {
 		const agents = [...new Set([...listAgents(), "worker", "scout", "researcher", "reviewer", "oracle", "delegate"])];
-		const options = ["✓ done — save", ...agents.map((a) => `${a}  (${describe(sub.agentOverrides?.[a])})`)];
+		const options = ["✓ done — save", ...agents.map((a) => `${a}  (${describe(sub.agentOverrides?.[a], sub.defaultProvider)})`)];
 		const choice = await ctx.ui.select("Override an agent? (others inherit the default)", options);
 		if (!choice || choice.startsWith("✓ done")) break;
 		const agent = choice.split("  ")[0];
-		const current = sub.agentOverrides?.[agent]?.model
-			? `${sub.agentOverrides[agent].defaultProvider ?? settings.defaultProvider ?? ""}/${sub.agentOverrides[agent].model}`.replace(/^\//, "")
-			: undefined;
-		const pick = await pickModelAndThinking(ctx, agent, current);
+		const override = sub.agentOverrides?.[agent];
+		const provider = sub.defaultProvider ?? ctx.model?.provider ?? settings.defaultProvider ?? "";
+		const currentProvider = override?.defaultProvider === false ? "" : override?.defaultProvider ?? provider;
+		const current = override?.model ? `${currentProvider}/${override.model}`.replace(/^\//, "") : undefined;
+		const pick = await pickModelAndThinking(ctx, agent, current, override?.thinking);
 		if (!pick) continue;
 		sub.agentOverrides = sub.agentOverrides ?? {};
-		if (pick.model === current) {
-			if (pick.thinking) sub.agentOverrides[agent] = { ...sub.agentOverrides[agent], thinking: pick.thinking };
-		} else {
-			const [prov, ...rest] = pick.model.split("/");
-			if (rest.length && authedProviders().includes(prov)) {
-				sub.agentOverrides[agent] = { model: rest.join("/"), defaultProvider: prov, ...(pick.thinking ? { thinking: pick.thinking } : {}) };
-			} else {
-				sub.agentOverrides[agent] = { model: pick.model, ...(pick.thinking ? { thinking: pick.thinking } : {}) };
-			}
-		}
+		sub.agentOverrides[agent] = applyAgentPick(sub.agentOverrides[agent], pick);
 	}
 
 	saveSettings(settings);
 
 	// Step 3 — result table
-	const overrides = sub.agentOverrides ?? {};
+	const overrides = Object.entries(sub.agentOverrides ?? {});
 	const table = [
-		`default: ${describe({ model: sub.defaultModel, defaultProvider: sub.defaultProvider, thinking: sub.defaultThinking })}`,
-		...Object.entries(overrides).map(([a, v]) => `${a}: ${describe(v)}`),
+		`default (inherited by agents without overrides): ${describe({ model: sub.defaultModel, defaultProvider: sub.defaultProvider, thinking: sub.defaultThinking }, undefined, "parent session")}`,
+		"overrides:",
+		...(overrides.length ? overrides.map(([a, v]) => `${a}: ${describe(v, sub.defaultProvider)}`) : ["(none)"]),
 	];
-	say(ctx, `Saved to settings.json. New sessions pick this up.\n\n${table.join("\n")}`);
+	say(ctx, `Saved to ~/.pi/agent/settings.json · applies to new sessions; current session unchanged.\n\n${table.join("\n")}`);
 }
 
 async function statusReport(ctx: any): Promise<void> {
