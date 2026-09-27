@@ -268,7 +268,7 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 
 	// Step 2 — override only what needs it
 	for (;;) {
-		const agents = [...new Set([...listAgents(), "worker", "scout", "researcher", "reviewer", "oracle", "delegate"])];
+		const agents = [...new Set([...listAgents(), "scout", "researcher", "reviewer", "oracle", "delegate"])];
 		const options = ["✓ done — save", ...agents.map((a) => `${a}  (${describe(sub.agentOverrides?.[a], sub.defaultProvider)})`)];
 		const choice = await ctx.ui.select("Override an agent? (others inherit the default)", options);
 		if (!choice || choice.startsWith("✓ done")) break;

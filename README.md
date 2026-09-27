@@ -1,34 +1,25 @@
-# me-pi — personal pi agent rig
+# me-pi
 
-Single source of truth for my pi coding-agent config. Live dirs symlink here; edit the repo, both drivers see it.
+A Pi coding-agent setup that uses Matt Pocock's engineering skills. The main session handles small fixes and coordinates agents for larger work.
 
-## Layout
-
-```
-extensions/   pi extensions (TypeScript, self-contained — publishable)
-agents/       subagent definitions (.md, frontmatter + system prompt)
-prompts/      workflow prompt templates
-skills/       shared skill set (~/.agents/skills — discovered by pi AND codex)
-settings.json template (installed on first run; live file not symlinked)
-APPEND_SYSTEM.md  global system-prompt addendum
-install.sh    idempotent installer (symlinks everything into place)
-```
-
-## Install (new machine)
+## Install
 
 ```bash
 git clone git@github.com:0bmario/me-pi.git
-cd me-pi && ./install.sh
+cd me-pi
+./install.sh
 ```
 
-## Conventions
+The installer symlinks extensions, agents, prompts, and `APPEND_SYSTEM.md` into `~/.pi/agent/`, and skills into `~/.agents/skills/`. It copies `settings.json` only if no live settings file exists. Restart pi sessions after installation.
 
-- **Secrets never enter this repo.** `auth.json`, `models-store.json`, `sessions/` live in `~/.pi/agent/` and are gitignored. `.gitignore` was the first commit.
-- **Extensions stay self-contained** (single file or dir with `index.ts`, no cross-imports, no hardcoded personal paths) so any one of them can be extracted into a publishable pi package (`pi install npm:...`, keyword `pi-package`).
-- **Skills are harness-agnostic** — this `skills/` dir is the spec location `~/.agents/skills` (symlinked), consumed natively by pi and Codex. Keep descriptions neutral ("the agent", not "Codex").
-- Subagent model assignment lives in `~/.pi/agent/settings.json` under `subagents.*` (role → model), not hardcoded in agent files.
+Keep credentials and live settings in `~/.pi/agent/`, not this repo. The tracked `settings.json` is a first-install template.
 
-## Contents
+## Layout
 
-- extensions: `rtk.ts` (bash → rtk rewrites), `interactive-shell.ts` (`!nvim`, `!lazygit`…)
-- agents: (populated during subagent rollout — implementer, reviewer, devil's advocate, council)
+- `extensions/`: pi extensions
+- `agents/`: implementer, reviewer, and devil's advocate definitions
+- `prompts/`: reusable workflows
+- `skills/`: shared skills linked at `~/.agents/skills/`
+- `settings.json`: initial settings template
+- `APPEND_SYSTEM.md`: main-session system addendum
+- `docs/`: architecture decision records
