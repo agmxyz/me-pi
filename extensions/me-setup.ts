@@ -174,7 +174,14 @@ async function pickModelAndThinking(
 	label: string,
 	current: string | undefined,
 ): Promise<{ model?: string; defaultProvider?: string; thinking?: string } | null> {
-	// model: flat list across authed providers, pi-native labels
+	// model: flat list across authed providers, pi-native labels, relevance-ordered
+	const settings = readJson(join(PI_AGENT, "settings.json")) ?? {};
+	const inUse = new Set<string>([
+		...(settings.subagents?.defaultModel ? [`${settings.subagents.defaultProvider ?? settings.defaultProvider ?? ""}/${settings.subagents.defaultModel}`.replace(/^\//, "")] : []),
+		...Object.values(settings.subagents?.agentOverrides ?? {}).flatMap((o: any) => o?.model ? [`${o.defaultProvider ?? settings.defaultProvider ?? ""}/${o.model}`.replace(/^\//, "")] : []),
+	]);
+	const provOrder = authedProviders();
+	const rank = (p: string) => (p === settings.defaultProvider ? -1 : provOrder.indexOf(p));
 	const items: PickerItem[] = [];
 	for (const p of authedProviders()) {
 		for (const m of modelsFor(p)) {
@@ -184,12 +191,19 @@ async function pickModelAndThinking(
 				value,
 				search: `${m} ${p} ${isCurrent ? "current" : ""}`,
 				row: `${m} [${p}]`,
-				badge: isCurrent ? "current" : undefined,
+				badge: isCurrent ? "current" : inUse.has(value) ? "in use" : undefined,
 			});
 		}
 	}
-	// current first, then by provider
-	items.sort((a, b) => (a.badge ? -1 : b.badge ? 1 : a.value.localeCompare(b.value)));
+	const idx = new Map(items.map((it, i) => [it.value, i]));
+	items.sort((a, b) => {
+		const w = (it: PickerItem) => it.badge === "current" ? 0 : it.badge === "in use" ? 1 : 2;
+		const wa = w(a), wb = w(b);
+		if (wa !== wb) return wa - wb;
+		const pa = a.value.split("/")[0], pb = b.value.split("/")[0];
+		if (rank(pa) !== rank(pb)) return rank(pa) - rank(pb);
+		return (idx.get(a.value) ?? 0) - (idx.get(b.value) ?? 0);
+	});
 	const modelValue = await pick(ctx, `${label} — model`, items, current);
 	if (!modelValue) return null;
 	const [prov, ...rest] = modelValue.split("/");
@@ -223,7 +237,8 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 	const first = await ctx.ui.select("Default model for ALL agents", [keep, "choose another…"]);
 	if (!first) return;
 	if (first === "choose another…") {
-		const pick = await pickModelAndThinking(ctx, "Default", sub.defaultModel ? `${sub.defaultProvider ?? ""}/${sub.defaultModel}` : undefined);
+		const cur = sub.defaultModel ? `${sub.defaultProvider ?? settings.defaultProvider ?? ""}/${sub.defaultModel}` : undefined;
+		const pick = await pickModelAndThinking(ctx, "Default", cur);
 		if (pick) {
 			sub.defaultModel = pick.model;
 			sub.defaultProvider = pick.defaultProvider;
@@ -240,7 +255,7 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 		if (!choice || choice.startsWith("✓ done")) break;
 		const agent = choice.split("  ")[0];
 		const current = sub.agentOverrides?.[agent]?.model
-			? `${sub.agentOverrides[agent].defaultProvider ?? ""}/${sub.agentOverrides[agent].model}`.replace(/^\//, "")
+			? `${sub.agentOverrides[agent].defaultProvider ?? settings.defaultProvider ?? ""}/${sub.agentOverrides[agent].model}`.replace(/^\//, "")
 			: undefined;
 		const pick = await pickModelAndThinking(ctx, agent, current);
 		if (!pick) continue;
