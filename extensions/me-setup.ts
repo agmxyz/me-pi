@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Container, Input, Spacer, Text, fuzzyFilter, getKeybindings } from "@earendil-works/pi-tui";
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url))); // follows symlink → repo
 const REPO = resolve(HERE, "..");
@@ -74,36 +75,135 @@ function saveSettings(settings: any): void {
 	writeFileSync(join(PI_AGENT, "settings.json"), JSON.stringify(settings, null, 2) + "\n");
 }
 
+// ── native-feel picker (mirrors pi's ModelSelectorComponent) ──
+
+type PickerItem = { value: string; search: string; row: string; badge?: string };
+
+class ModelPicker extends Container {
+	private searchInput = new Input();
+	private listContainer = new Container();
+	private items: PickerItem[] = [];
+	private filtered: PickerItem[] = [];
+	private selectedIndex = 0;
+	private theme: any;
+	private done: (v: string | undefined) => void;
+	private title: string;
+
+	constructor(tui: any, theme: any, title: string, items: PickerItem[], current: string | undefined, done: (v: string | undefined) => void) {
+		super();
+		this.theme = theme;
+		this.title = title;
+		this.done = done;
+		this.items = items;
+		this.searchInput.focused = true;
+		this.addChild(new Text(theme.fg("muted", "  type to filter · ↑/↓ move · enter select · esc cancel"), 0, 0));
+		this.addChild(new Spacer(1));
+		this.addChild(this.searchInput);
+		this.addChild(new Spacer(1));
+		this.addChild(this.listContainer);
+		const withCurrent = items.find((i) => i.value === current);
+		this.filtered = items;
+		this.selectedIndex = withCurrent ? items.indexOf(withCurrent) : 0;
+		this.updateList();
+	}
+
+	get focused() {
+		return this.searchInput.focused;
+	}
+	set focused(v: boolean) {
+		this.searchInput.focused = v;
+	}
+
+	private filter(query: string) {
+		this.filtered = query ? fuzzyFilter(this.items, query, (i) => i.search) : this.items;
+		this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filtered.length - 1));
+		this.updateList();
+	}
+
+	private updateList() {
+		this.listContainer.clear();
+		const maxVisible = 10;
+		const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filtered.length - maxVisible));
+		const end = Math.min(start + maxVisible, this.filtered.length);
+		for (let i = start; i < end; i++) {
+			const item = this.filtered[i];
+			const isSelected = i === this.selectedIndex;
+			const cursor = isSelected ? this.theme.fg("accent", "→ ") : "  ";
+			const id = isSelected ? this.theme.fg("accent", item.row) : item.row;
+			const badge = item.badge ? this.theme.fg("muted", ` · ${item.badge}`) : "";
+			this.listContainer.addChild(new Text(`${cursor}${id}${badge}`, 0, 0));
+		}
+		if (start > 0 || end < this.filtered.length) {
+			this.listContainer.addChild(new Text(this.theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filtered.length})`), 0, 0));
+		}
+		if (this.filtered.length === 0) {
+			this.listContainer.addChild(new Text(this.theme.fg("muted", "  No matching models"), 0, 0));
+		}
+	}
+
+	handleInput(data: any) {
+		const kb = getKeybindings();
+		if (kb.matches(data, "tui.select.up")) {
+			if (this.filtered.length) this.selectedIndex = this.selectedIndex === 0 ? this.filtered.length - 1 : this.selectedIndex - 1;
+		} else if (kb.matches(data, "tui.select.down")) {
+			if (this.filtered.length) this.selectedIndex = this.selectedIndex === this.filtered.length - 1 ? 0 : this.selectedIndex + 1;
+		} else if (kb.matches(data, "tui.select.confirm")) {
+			const sel = this.filtered[this.selectedIndex];
+			if (sel) this.done(sel.value);
+			else this.done(undefined);
+			return;
+		} else if (kb.matches(data, "tui.select.cancel")) {
+			this.done(undefined);
+			return;
+		} else {
+			this.searchInput.handleInput(data);
+			this.filter(this.searchInput.getValue());
+		}
+		this.invalidate();
+	}
+}
+
+function pick(ctx: any, title: string, items: PickerItem[], current?: string): Promise<string | undefined> {
+	return ctx.ui.custom<string | undefined>((tui: any, theme: any, _kb: any, done: (v: string | undefined) => void) => {
+		return new ModelPicker(tui, theme, title, items, current, done);
+	});
+}
+
 async function pickModelAndThinking(
 	ctx: any,
 	label: string,
 	current: string | undefined,
 ): Promise<{ model?: string; defaultProvider?: string; thinking?: string } | null> {
-	// pi-native feel: flat list, `id [provider]` labels, ✓ marks the current value
-	const valueByLabel = new Map<string, string>();
-	const options: string[] = [];
+	// model: flat list across authed providers, pi-native labels
+	const items: PickerItem[] = [];
 	for (const p of authedProviders()) {
-		for (const m of modelsFor(p).slice(0, 20)) {
+		for (const m of modelsFor(p)) {
 			const value = `${p}/${m}`;
 			const isCurrent = value === current;
-			const label = `${isCurrent ? "✓ " : "  "}${m} [${p}]`;
-			valueByLabel.set(label, value);
-			options.push(label);
+			items.push({
+				value,
+				search: `${m} ${p} ${isCurrent ? "current" : ""}`,
+				row: `${m} [${p}]`,
+				badge: isCurrent ? "current" : undefined,
+			});
 		}
 	}
-	options.sort((a, b) => (a.startsWith("✓") ? -1 : b.startsWith("✓") ? 1 : a.localeCompare(b)));
+	// current first, then by provider
+	items.sort((a, b) => (a.badge ? -1 : b.badge ? 1 : a.value.localeCompare(b.value)));
+	const modelValue = await pick(ctx, `${label} — model`, items, current);
+	if (!modelValue) return null;
+	const [prov, ...rest] = modelValue.split("/");
 
-	const chosen = await ctx.ui.select(`${label} — model`, options);
-	if (!chosen) return null;
-	const value = valueByLabel.get(chosen) ?? current;
-	if (!value) return null;
-	const [prov, ...rest] = value.split("/");
-
-	const currentThinking = current && current.split(":")[1];
-	const tOptions = THINKING_LEVELS.map((t) => `${t === currentThinking ? "✓ " : "  "}${t}`);
-	const tChosen = await ctx.ui.select(`${label} — thinking level`, tOptions);
-	if (tChosen === undefined) return null;
-	const thinking = tChosen.replace("✓ ", "").trim();
+	// thinking: same picker over the levels
+	const currentThinking = current && current.includes(":") ? current.split(":")[1] : undefined;
+	const tItems: PickerItem[] = THINKING_LEVELS.map((t) => ({
+		value: t,
+		search: t,
+		row: t,
+		badge: t === (currentThinking ?? "inherit") ? "current" : undefined,
+	}));
+	const thinking = await pick(ctx, `${label} — thinking level`, tItems, currentThinking ?? "inherit");
+	if (thinking === undefined) return null;
 
 	return { model: rest.join("/"), defaultProvider: prov, ...(thinking !== "inherit" ? { thinking } : {}) };
 }

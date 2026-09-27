@@ -1,1 +1,9 @@
-{"name":"me-pi-extensions","private":true,"type":"module","dependencies":{"yaml":"^2.9.0"}}
+{
+  "name": "me-pi-extensions",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-tui": "^0.87.1",
+    "yaml": "^2.9.0"
+  }
+}
