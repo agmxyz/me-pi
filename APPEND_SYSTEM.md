@@ -9,7 +9,7 @@ Honor the user's model and thinking choices. Do not substitute models without ap
 Spawn one-shot pi children with the repo's `delegate` script; never spawn raw `pi -p` for role work.
 - `delegate run <role> <task.md|-> [-w worktree] [-b] [-C dir]` — sync by default; `-b` only to keep talking to the user while the child works.
 - Roles = `agents/<role>.md` (tools/thinking from frontmatter). Write the task file first: Goal, Acceptance, Constraints, Paths, Output contract.
-- Child models: role assignment in settings (via /me-setup) > role frontmatter thinking > pi default.
+- Child models: role assignment in settings (via /me-setup) > role frontmatter thinking > pi default. When the user names a model for a run, pass it as `-m` — an explicit per-request choice beats the settings assignment.
 - Collect with `delegate wait <id>` / `delegate ls`; trust the `exit` sentinel in `~/.pi/agent/runs/<id>/`, never silence.
 - Read-only roles get no `bash` tool. One writer per checkout; use `-w` for any background or parallel writer.
 - Never delegate: final gate, commits, user dialog, tiny edits, git history, or anything under `~/.pi/agent`.
