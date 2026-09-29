@@ -1,7 +1,7 @@
 /**
  * Compact model and context-usage footer.
  *
- * Adapted from disler/pi-vs-claude-code. See THIRD_PARTY_NOTICES.md.
+ * Inspired by disler/pi-vs-claude-code (see README Credits).
  * Uses the rig's TUI package and preserves its configured theme and title.
  */
 

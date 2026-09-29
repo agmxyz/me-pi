@@ -153,7 +153,7 @@ migrate_legacy_extensions() {
     [ -e "$source" ] || continue
     name="$(basename "$source")"
     case "$name" in
-      me-setup.ts|minimal.ts|*.test.*|package.json|package-lock.json|node_modules|THIRD_PARTY_NOTICES.md)
+      me-setup.ts|minimal.ts|*.test.*|package.json|package-lock.json|node_modules)
         continue
         ;;
     esac
