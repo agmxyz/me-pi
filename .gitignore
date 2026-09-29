@@ -1,5 +1,6 @@
 # Secrets — NEVER commit
 auth.json
+models.json
 *.pem
 .env
 .env.*
@@ -20,6 +21,11 @@ cache/
 
 # OS noise
 .DS_Store
+
+# RTK and Pi example extensions are installed into the live config; ignore them
+# if an old whole-directory symlink is still active before migration.
+/extensions/rtk.ts
+/extensions/interactive-shell.ts
 
 # node deps for extensions
 node_modules/

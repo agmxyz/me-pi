@@ -1,15 +1,16 @@
 /**
  * me-setup — rig control panel.
  *
- * /me-setup            → model chooser: set agent default model+thinking, override agents as needed
+ * /me-setup            → interactive model chooser
  * /me-setup status     → full pre-flight report (read-only)
- * /me-setup default <provider/model> <thinking>   → set default directly
- * /me-setup models <agent> <provider/model> [thinking] → override one agent
+ * /me-setup default <provider/model> [thinking]   → set default directly
+ * /me-setup models     → interactive model chooser (alias)
+ * /me-setup models <agent> <provider/model|inherit> [thinking] → set or reset one agent
  * /me-setup reset <agent> → agent inherits default again
  *
  * Writes only ~/.pi/agent/settings.json subagents.* on explicit user action.
- * Model options come from models-store.json filtered by authed providers.
- * Never reads auth.json values (keys only). Never reads secret contents.
+ * Model options come from models-store.json filtered by provider keys in auth.json.
+ * Credential values are never displayed, returned, or modified.
  */
 
 import { execFileSync } from "node:child_process";
@@ -17,7 +18,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, writeFi
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Input, Spacer, Text, fuzzyFilter } from "@earendil-works/pi-tui";
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url))); // follows symlink → repo
@@ -72,7 +73,19 @@ function loadSettings(): any {
 }
 
 function saveSettings(settings: any): void {
-	writeFileSync(join(PI_AGENT, "settings.json"), JSON.stringify(settings, null, 2) + "\n");
+	const settingsPath = join(PI_AGENT, "settings.json");
+	if (lstatSync(settingsPath).isSymbolicLink()) throw new Error("refusing to write through a symlinked settings.json");
+	const liveAgentDir = realpathSync(PI_AGENT); // follows symlinked ancestors too
+	if (liveAgentDir === REPO || liveAgentDir.startsWith(REPO + "/")) {
+		throw new Error("refusing to write: ~/.pi/agent resolves into the rig repo");
+	}
+	writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+}
+
+function resetAgentOverride(settings: any, agent: string): void {
+	settings.subagents.agentOverrides = settings.subagents.agentOverrides ?? {};
+	delete settings.subagents.agentOverrides[agent];
+	saveSettings(settings);
 }
 
 // ── native-feel picker (mirrors pi's ModelSelectorComponent) ──
@@ -99,6 +112,7 @@ class ModelPicker extends Container {
 		this.done = done;
 		this.items = items;
 		this.searchInput.focused = true;
+		this.addChild(new Text(theme.fg("accent", title), 0, 0));
 		this.addChild(new Text(theme.fg("muted", "  type to filter · ↑/↓ move · enter select · esc cancel"), 0, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(this.searchInput);
@@ -205,9 +219,9 @@ async function pickModelAndThinking(
 	}
 	const idx = new Map(items.map((it, i) => [it.value, i]));
 	items.sort((a, b) => {
-		const w = (it: PickerItem) => it.badge === "current" ? 0 : it.badge === "in use" ? 1 : 2;
-		const wa = w(a), wb = w(b);
-		if (wa !== wb) return wa - wb;
+		const badgeRank = (it: PickerItem) => it.badge === "current" ? 0 : it.badge === "in use" ? 1 : 2;
+		const ra = badgeRank(a), rb = badgeRank(b);
+		if (ra !== rb) return ra - rb;
 		const pa = a.value.split("/")[0], pb = b.value.split("/")[0];
 		if (rank(pa) !== rank(pb)) return rank(pa) - rank(pb);
 		return (idx.get(a.value) ?? 0) - (idx.get(b.value) ?? 0);
@@ -246,9 +260,25 @@ export function applyAgentPick(existing: Record<string, any> | undefined, pick: 
 	return next;
 }
 
+export function parseModelAssignment(
+	input: string,
+	providers: string[],
+	getModels: (provider: string) => string[],
+): { model: string; defaultProvider: string } | { error: string } {
+	const slash = input.indexOf("/");
+	if (slash <= 0 || slash === input.length - 1) return { error: "expected provider/model" };
+	const provider = input.slice(0, slash);
+	const model = input.slice(slash + 1);
+	if (!providers.includes(provider)) return { error: `provider "${provider}" is not authenticated` };
+	const available = getModels(provider);
+	if (!available.includes(model)) return { error: `unknown model "${model}" for "${provider}". Options: ${available.slice(0, 10).join(", ") || "(none)"}` };
+	return { model, defaultProvider: provider };
+}
+
 async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 	const settings = loadSettings();
 	const sub = settings.subagents;
+	let changed = false;
 
 	// Step 1 — default (what every agent inherits)
 	const keep = `(keep current: ${describe({ model: sub.defaultModel, defaultProvider: sub.defaultProvider, thinking: sub.defaultThinking }, undefined, "parent session")})`;
@@ -259,10 +289,13 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 		const cur = sub.defaultModel ? `${provider}/${sub.defaultModel}` : undefined;
 		const pick = await pickModelAndThinking(ctx, "Default", cur, sub.defaultThinking);
 		if (pick) {
+			const before = JSON.stringify({ model: sub.defaultModel, provider: sub.defaultProvider, thinking: sub.defaultThinking });
 			sub.defaultModel = pick.model;
 			sub.defaultProvider = pick.defaultProvider;
 			if (pick.thinking) sub.defaultThinking = pick.thinking;
 			else delete sub.defaultThinking;
+			const after = JSON.stringify({ model: sub.defaultModel, provider: sub.defaultProvider, thinking: sub.defaultThinking });
+			changed ||= before !== after;
 		}
 	}
 
@@ -279,11 +312,15 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 		const current = override?.model ? `${currentProvider}/${override.model}`.replace(/^\//, "") : undefined;
 		const pick = await pickModelAndThinking(ctx, agent, current, override?.thinking);
 		if (!pick) continue;
-		sub.agentOverrides = sub.agentOverrides ?? {};
-		sub.agentOverrides[agent] = applyAgentPick(sub.agentOverrides[agent], pick);
+		const next = applyAgentPick(override, pick);
+		if (JSON.stringify(override) !== JSON.stringify(next)) {
+			sub.agentOverrides = sub.agentOverrides ?? {};
+			sub.agentOverrides[agent] = next;
+			changed = true;
+		}
 	}
 
-	saveSettings(settings);
+	if (changed) saveSettings(settings);
 
 	// Step 3 — result table
 	const overrides = Object.entries(sub.agentOverrides ?? {});
@@ -292,61 +329,108 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 		"overrides:",
 		...(overrides.length ? overrides.map(([a, v]) => `${a}: ${describe(v, sub.defaultProvider)}`) : ["(none)"]),
 	];
-	say(ctx, `Saved to ~/.pi/agent/settings.json · applies to new sessions; current session unchanged.\n\n${table.join("\n")}`);
+	say(ctx, `${changed ? "Saved to ~/.pi/agent/settings.json" : "No changes; settings unchanged"} · applies to new sessions; current session unchanged.\n\n${table.join("\n")}`);
+}
+
+function linkedEntryReport(sourceDir: string, liveDir: string, include: (name: string, isDirectory: boolean) => boolean): { linked: number; expected: number; unlinked: string[] } {
+	let linked = 0;
+	let expected = 0;
+	const unlinked: string[] = [];
+	try {
+		for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+			if (!include(entry.name, entry.isDirectory())) continue;
+			expected++;
+			const livePath = join(liveDir, entry.name);
+			try {
+				if (lstatSync(livePath).isSymbolicLink() && realpathSync(livePath) === realpathSync(join(sourceDir, entry.name))) linked++;
+				else unlinked.push(entry.name);
+			} catch {
+				unlinked.push(entry.name);
+			}
+		}
+	} catch {
+		// A missing source directory yields zero links; the status line will warn.
+	}
+	return { linked, expected, unlinked };
+}
+
+function isLocalExtensionPackage(entry: any): boolean {
+	const source = typeof entry === "string" ? entry : entry?.source;
+	if (typeof source !== "string") return false;
+	try {
+		const path = source.startsWith("file://")
+			? fileURLToPath(source)
+			: source.startsWith("~")
+				? join(HOME, source.slice(1))
+				: source.startsWith("/")
+					? source
+					: resolve(PI_AGENT, source);
+		return realpathSync(path) === realpathSync(join(REPO, "extensions"));
+	} catch {
+		return false;
+	}
 }
 
 async function statusReport(ctx: any): Promise<void> {
 	const out: string[] = [`rig: ${REPO}`];
-	const links: [string, string][] = [
-		["extensions", join(PI_AGENT, "extensions")],
-		["agents", join(PI_AGENT, "agents")],
-		["prompts", join(PI_AGENT, "prompts")],
-		["skills", join(AGENTS_HOME, "skills")],
-		["APPEND_SYSTEM.md", join(PI_AGENT, "APPEND_SYSTEM.md")],
-		["damage-control-rules.yaml", join(HOME, ".pi", "damage-control-rules.yaml")],
-	];
-	for (const [label, p] of links) {
-		try {
-			if (!existsSync(p)) out.push(`✗ ${label} — missing — run install.sh`);
-			else if (!lstatSync(p).isSymbolicLink()) out.push(`⚠ ${label} — not a symlink (drift risk)`);
-			else {
-				const t = realpathSync(p);
-				out.push(`${t === REPO || t.startsWith(REPO + "/") ? "✓" : "⚠"} ${label}`);
-			}
-		} catch {
-			out.push(`✗ ${label} — unreadable`);
+	const liveExtensions = join(PI_AGENT, "extensions");
+	try {
+		if (!existsSync(liveExtensions)) out.push("✗ live extensions — missing — run install.sh");
+		else {
+			const target = realpathSync(liveExtensions);
+			const pointsIntoRepo = target === REPO || target.startsWith(REPO + "/");
+			out.push(`${pointsIntoRepo ? "⚠" : "✓"} live extensions dir — ${pointsIntoRepo ? "points into rig; external installers can write to repo" : target}`);
+			out.push(`✓ live extensions — ${readdirSync(liveExtensions).filter((n) => n.endsWith(".ts")).join(", ") || "(none)"}`);
 		}
+	} catch {
+		out.push("✗ live extensions — unreadable");
+	}
+
+	const settings = readJson(join(PI_AGENT, "settings.json"));
+	const packages = Array.isArray(settings?.packages) ? settings.packages : [];
+	out.push(`${packages.some(isLocalExtensionPackage) ? "✓" : "⚠"} me-pi extension package — ${packages.some(isLocalExtensionPackage) ? "registered" : "missing — run install.sh"}`);
+	const packageNames = packages.map((entry: any) => typeof entry === "string" ? entry : entry?.source ?? "(unknown)");
+	out.push(`${packages.length ? "✓" : "⚠"} Pi packages — ${packageNames.join(", ") || "(none)"}`);
+	const subagents = settings?.subagents ?? {};
+	const overrides = Object.entries(subagents.agentOverrides ?? {});
+	const agentModels = [
+		`default: ${describe({ model: subagents.defaultModel, defaultProvider: subagents.defaultProvider, thinking: subagents.defaultThinking }, settings?.defaultProvider, "parent session")}`,
+		...overrides.map(([agent, value]) => `${agent}: ${describe(value, subagents.defaultProvider)}`),
+	];
+	out.push(`✓ agent models — ${agentModels.join("; ")}`);
+	out.push(`${existsSync(join(liveExtensions, "rtk.ts")) ? "✓" : "⚠"} RTK extension — ${existsSync(join(liveExtensions, "rtk.ts")) ? "installed" : "missing — run rtk init --global --agent pi"}`);
+	out.push(`${existsSync(join(liveExtensions, "interactive-shell.ts")) ? "✓" : "⚠"} interactive shell — ${existsSync(join(liveExtensions, "interactive-shell.ts")) ? "installed" : "missing"}`);
+
+	const agentLinks = linkedEntryReport(join(REPO, "agents"), join(PI_AGENT, "agents"), (name, isDirectory) => !isDirectory && name.endsWith(".md"));
+	out.push(`${agentLinks.unlinked.length === 0 ? "✓" : "⚠"} repo agent links — ${agentLinks.linked}/${agentLinks.expected}${agentLinks.unlinked.length ? ` (unlinked: ${agentLinks.unlinked.join(", ")})` : ""}`);
+	const skillLinks = linkedEntryReport(join(REPO, "skills"), join(AGENTS_HOME, "skills"), (_name, isDirectory) => isDirectory);
+	out.push(`${skillLinks.unlinked.length === 0 ? "✓" : "⚠"} repo skill links — ${skillLinks.linked}/${skillLinks.expected}${skillLinks.unlinked.length ? ` (unlinked: ${skillLinks.unlinked.join(", ")})` : ""} (shared with Codex)`);
+	const appendSystem = join(PI_AGENT, "APPEND_SYSTEM.md");
+	try {
+		out.push(`${existsSync(appendSystem) && lstatSync(appendSystem).isSymbolicLink() && realpathSync(appendSystem) === realpathSync(join(REPO, "APPEND_SYSTEM.md")) ? "✓" : "⚠"} APPEND_SYSTEM.md link`);
+	} catch {
+		out.push("✗ APPEND_SYSTEM.md — missing or unreadable");
 	}
 	try {
-		out.push(`✓ extensions — ${readdirSync(join(PI_AGENT, "extensions")).filter((n) => n.endsWith(".ts")).join(", ")}`);
+		out.push(`✓ agents — ${listAgents().join(", ")}`);
 	} catch {
-		out.push("✗ extensions — unreadable");
+		out.push("⚠ agents — unreadable");
 	}
-	const settings = readJson(join(PI_AGENT, "settings.json"));
-	const pkgs: string[] = settings?.packages ?? [];
-	out.push(`${pkgs.length ? "✓" : "⚠"} packages — ${pkgs.join(", ") || "(none)"}`);
 	try {
 		out.push(`✓ rtk — ${execFileSync("rtk", ["--version"], { timeout: 2000, encoding: "utf8" }).trim()}`);
 	} catch {
 		out.push("⚠ rtk — not in PATH (brew install rtk)");
 	}
 	try {
-		out.push(`✓ auth — ${authedProviders().join(", ")}`);
+		const providers = authedProviders();
+		out.push(`${providers.length ? "✓" : "⚠"} auth — ${providers.join(", ") || "no provider keys in ~/.pi/agent/auth.json"}`);
 	} catch {
 		out.push("✗ auth — unreadable");
 	}
 	try {
-		out.push(`✓ agents — ${listAgents().join(", ")}`);
-		out.push(`✓ prompts — ${readdirSync(join(PI_AGENT, "prompts")).filter((n) => n.endsWith(".md")).map((n) => `/${n.replace(/\.md$/, "")}`).join(", ")}`);
-		out.push(`✓ skills — ${readdirSync(join(AGENTS_HOME, "skills")).length} (shared with codex)`);
+		out.push(`✓ skills — ${readdirSync(join(AGENTS_HOME, "skills")).length} (shared with Codex)`);
 	} catch {
-		out.push("⚠ inventory — unreadable");
-	}
-	try {
-		const rules = readFileSync(join(HOME, ".pi", "damage-control-rules.yaml"), "utf8");
-		out.push(`✓ guardrails — ${(rules.match(/pattern:/g) ?? []).length} bash deny-patterns`);
-	} catch {
-		out.push("⚠ guardrails — rules file missing");
+		out.push("⚠ skills — unreadable");
 	}
 	try {
 		const head = execFileSync("git", ["-C", REPO, "log", "--oneline", "-1"], { encoding: "utf8" }).trim();
@@ -371,35 +455,39 @@ export default function (pi: ExtensionAPI) {
 			if (argv[0] === "default") {
 				// default <provider/model> [thinking]
 				if (!argv[1]) return say(ctx, "usage: /me-setup default <provider/model> [thinking]");
-				const [prov, ...rest] = argv[1].split("/");
-				if (rest.length && authedProviders().includes(prov)) {
-					sub.defaultModel = rest.join("/");
-					sub.defaultProvider = prov;
-				} else {
-					sub.defaultModel = argv[1];
-				}
-				if (argv[2]) sub.defaultThinking = argv[2];
+				const assignment = parseModelAssignment(argv[1], authedProviders(), modelsFor);
+				if ("error" in assignment) return say(ctx, `✗ ${assignment.error} — not saved`);
+				if (argv[2] && !THINKING_LEVELS.includes(argv[2])) return say(ctx, `✗ unknown thinking level "${argv[2]}" — not saved`);
+				sub.defaultModel = assignment.model;
+				sub.defaultProvider = assignment.defaultProvider;
+				if (argv[2] === "inherit") delete sub.defaultThinking;
+				else if (argv[2]) sub.defaultThinking = argv[2];
 				saveSettings(settings);
-				return say(ctx, `✓ default → ${sub.defaultModel}${sub.defaultProvider ? ` via ${sub.defaultProvider}` : ""}${sub.defaultThinking ? `, thinking ${sub.defaultThinking}` : ""}`);
+				return say(ctx, `✓ default → ${sub.defaultModel} via ${sub.defaultProvider}${sub.defaultThinking ? `, thinking ${sub.defaultThinking}` : ""}`);
 			}
 
 			if (argv[0] === "models") {
-				// models <agent> <provider/model> [thinking]
-				if (argv.length < 3) return say(ctx, "usage: /me-setup models <agent> <provider/model> [thinking]");
-				const agent = argv[1];
-				const [prov, ...rest] = argv[2].split("/");
-				let entry: any;
-				if (rest.length && authedProviders().includes(prov)) {
-					const model = rest.join("/");
-					const known = modelsFor(prov).includes(model);
-					if (!known) {
-						return say(ctx, `✗ unknown model "${model}" for "${prov}" — not saved. Options: ${modelsFor(prov).slice(0, 10).join(", ")}…`);
-					}
-					entry = { model, defaultProvider: prov };
-				} else {
-					entry = { model: argv[2] };
+				// models <agent> <provider/model|inherit> [thinking]
+				if (argv.length === 1) {
+					if (!ctx.hasUI && ctx.mode !== "tui") return say(ctx, "Interactive chooser needs a TUI session. Use /me-setup models <agent> <provider/model|inherit> [thinking].");
+					return await chooser(pi, ctx);
 				}
-				if (argv[3]) entry.thinking = argv[3];
+				if (argv[1] === "reset") {
+					if (!argv[2]) return say(ctx, "usage: /me-setup models reset <agent>");
+					resetAgentOverride(settings, argv[2]);
+					return say(ctx, `✓ ${argv[2]} → inherit`);
+				}
+				if (argv.length < 3) return say(ctx, "usage: /me-setup models <agent> <provider/model|inherit> [thinking]");
+				const agent = argv[1];
+				if (argv[2] === "inherit") {
+					resetAgentOverride(settings, agent);
+					return say(ctx, `✓ ${agent} → inherit`);
+				}
+				const assignment = parseModelAssignment(argv[2], authedProviders(), modelsFor);
+				if ("error" in assignment) return say(ctx, `✗ ${assignment.error} — not saved`);
+				if (argv[3] && !THINKING_LEVELS.includes(argv[3])) return say(ctx, `✗ unknown thinking level "${argv[3]}" — not saved`);
+				const entry: any = { model: assignment.model, defaultProvider: assignment.defaultProvider };
+				if (argv[3] && argv[3] !== "inherit") entry.thinking = argv[3];
 				sub.agentOverrides = sub.agentOverrides ?? {};
 				sub.agentOverrides[agent] = entry;
 				saveSettings(settings);
@@ -408,14 +496,12 @@ export default function (pi: ExtensionAPI) {
 
 			if (argv[0] === "reset") {
 				if (!argv[1]) return say(ctx, "usage: /me-setup reset <agent>");
-				sub.agentOverrides = sub.agentOverrides ?? {};
-				delete sub.agentOverrides[argv[1]];
-				saveSettings(settings);
+				resetAgentOverride(settings, argv[1]);
 				return say(ctx, `✓ ${argv[1]} → inherit`);
 			}
 
 			if (!ctx.hasUI && ctx.mode !== "tui") {
-				return say(ctx, "Interactive chooser needs a TUI session. Direct forms:\n  /me-setup default <provider/model> [thinking]\n  /me-setup models <agent> <provider/model> [thinking]\n  /me-setup reset <agent>\n  /me-setup status");
+				return say(ctx, "Interactive chooser needs a TUI session. Direct forms:\n  /me-setup default <provider/model> [thinking]\n  /me-setup models <agent> <provider/model|inherit> [thinking]\n  /me-setup models reset <agent>\n  /me-setup reset <agent> (alias)\n  /me-setup status");
 			}
 			return await chooser(pi, ctx);
 		},

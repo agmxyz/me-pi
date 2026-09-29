@@ -5,8 +5,25 @@
   "scripts": {
     "test": "node --test"
   },
-  "dependencies": {
-    "@earendil-works/pi-tui": "^0.87.1",
-    "yaml": "^2.9.0"
+  "pi": {
+    "extensions": [
+      "./me-setup.ts",
+      "./minimal.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-tui": "^0.87.1"
   }
 }

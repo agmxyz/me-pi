@@ -1,6 +1,6 @@
 # me-pi
 
-A Pi coding-agent setup that uses Matt Pocock's engineering skills. The main session handles small fixes and coordinates agents for larger work.
+A Pi coding-agent setup for me.
 
 ## Install
 
@@ -10,16 +10,28 @@ cd me-pi
 ./install.sh
 ```
 
-The installer symlinks extensions, agents, prompts, and `APPEND_SYSTEM.md` into `~/.pi/agent/`, and skills into `~/.agents/skills/`. It copies `settings.json` only if no live settings file exists. Restart pi sessions after installation.
+The installer registers `extensions/` as a local Pi package; installs pinned `pi-subagents` and `pi-web-access` (with bundled `pi-subagents` prompts disabled); links tracked agent and skill entries individually into machine-owned directories; and seeds `settings.json` only if no live file exists. It copies Pi's interactive-shell example into the live extension directory if missing, and runs RTK's Pi setup when `rtk` is available. Existing user entries are preserved; name collisions are reported rather than overwritten. To refresh the interactive-shell copy, remove it from `~/.pi/agent/extensions/` and rerun the installer.
 
-Keep credentials and live settings in `~/.pi/agent/`, not this repo. The tracked `settings.json` is a first-install template.
+External installers write to live user directories, not this repo. The installer detaches legacy whole-directory links into this repo without copying their contents back, and refuses a symlinked `settings.json` or package-store links into the repo. Review any collision it reports. Install the `rtk` binary separately if you want its integration. Restart Pi after installation.
+
+Keep credentials and live settings in `~/.pi/agent/`, not this repo. The tracked `settings.json` is a first-install template; `pi install` records package sources in the live settings.
+
+## Commands
+
+- `/me-setup`: choose default and per-agent models; `/me-setup status`: inspect the rig.
+
+## Tests
+
+```bash
+npm ci --prefix extensions
+npm test --prefix extensions
+```
 
 ## Layout
 
-- `extensions/`: pi extensions
+- `extensions/`: local Pi package with project-maintained extensions
 - `agents/`: implementer, reviewer, and devil's advocate definitions
-- `prompts/`: reusable workflows
-- `skills/`: shared skills linked at `~/.agents/skills/`
+- `skills/`: curated skills shared with Codex through per-skill links
 - `settings.json`: initial settings template
 - `APPEND_SYSTEM.md`: main-session system addendum
-- `docs/`: architecture decision records
+- `docs/`: architecture decisions and research

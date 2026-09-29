@@ -1,5 +1,7 @@
-# Single source of truth for agent skills
+# Shared skill sources, isolated live directory
 
-Both pi and Codex natively discover the Agent-Skills spec directory `~/.agents/skills`. Divergent per-driver copies (codex fork, claude symlink farm) caused drift and stale skills (caveman surviving in three places). We consolidated to one copy of each skill at `~/.agents/skills`, realized as a symlink into the `me-pi` rig repo, so skill edits are git-versioned and every harness sees them.
+Pi and Codex both discover the Agent Skills directory at `~/.agents/skills`. Keep the rig's curated skill sources in this repo so edits are versioned and both harnesses use the same content; do not maintain per-driver forks.
 
-Considered: keeping per-driver forks (rejected: drift bit within weeks); publishing skills as packages (rejected: personal config, not products). Per-driver extras are allowed when a skill names harness-specific machinery (e.g. Vercel UI skills stay Codex-only).
+`install.sh` keeps `~/.agents/skills` machine-owned and links each repo skill directory into it individually. Skills installed by external tools remain separate entries in the live directory. Never symlink the entire live directory to the repo or adopt live entries into the repo. On a name collision, preserve the existing live skill and report it for manual resolution.
+
+Considered: publishing the rig's personal skill set as a package (rejected: it is a personal shared config, not a product). Per-driver extras are allowed when a skill names harness-specific machinery (e.g. Vercel UI skills stay Codex-only).
