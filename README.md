@@ -35,3 +35,8 @@ npm test --prefix extensions
 - `settings.json`: initial settings template
 - `APPEND_SYSTEM.md`: main-session system addendum
 - `docs/`: architecture decisions and research
+
+## Credits
+
+- `skills/`: most engineering and productivity skills are vendored from [`mattpocock/skills`](https://github.com/mattpocock/skills) (MIT), then customized. The rest are local.
+- `extensions/minimal.ts`: inspired by the minimal footer in [`disler/pi-vs-claude-code`](https://github.com/disler/pi-vs-claude-code).

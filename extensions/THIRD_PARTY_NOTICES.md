@@ -2,7 +2,7 @@
 
 ## Minimal footer
 
-Adapted from [`minimal.ts`](https://github.com/disler/pi-vs-claude-code/blob/0ed11f44932fdef29bd98467700019762298f50d/extensions/minimal.ts) in `disler/pi-vs-claude-code`.
+Inspired by [`minimal.ts`](https://github.com/disler/pi-vs-claude-code/blob/0ed11f44932fdef29bd98467700019762298f50d/extensions/minimal.ts) in `disler/pi-vs-claude-code`.
 
 MIT License
 
