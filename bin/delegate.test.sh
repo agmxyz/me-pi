@@ -160,5 +160,82 @@ d ask "$bg_id" "status?" 2>/dev/null | grep -q "TASK-DONE-MARKER" && echo "✓ a
 # ── 10. child failure propagates ───────────────────────────────────────
 ME_PI_TEST_EXIT=3 d run reviewer - -C "$TMP" > "$TMP/fail.out" 2>&1 && { echo "✗ nonzero child exit propagates"; fails=$((fails+1)); } || echo "✓ nonzero child exit propagates"
 
+# ── 11. ls shows cwd ───────────────────────────────────────────────────
+d ls | grep -q "$TMP" && echo "✓ ls shows cwd column" || { echo "✗ ls shows cwd column"; fails=$((fails+1)); }
+
+# ── 12. harvest (fixture: real git repo + worktree + synthetic run dir) ─
+H="$TMP/h"; HRUNS="$H/runs"; HWTS="$H/wt"
+mkdir -p "$HRUNS" "$HWTS"
+hd() { HOME="$TMP/home" PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$HRUNS" ME_PI_WT_ROOT="$HWTS" "$DELEGATE" "$@"; }
+git init -q "$H/main"
+git -C "$H/main" config user.email t@t; git -C "$H/main" config user.name t
+printf 'one\ntwo\nthree\n' > "$H/main/a.txt"
+git -C "$H/main" add a.txt; git -C "$H/main" commit -q -m init
+mkrun() { # <id> <wt> <origin> — synthetic finished run dir
+  mkdir -p "$HRUNS/$1"
+  printf 'cwd: %s\nwt: %s\norigin: %s\n' "$2" "$2" "$3" > "$HRUNS/$1/meta"
+  echo 0 > "$HRUNS/$1/exit"
+}
+git -C "$H/main" worktree add -q --detach "$HWTS/w1" HEAD
+mkrun r-ok "$HWTS/w1" "$H/main"
+printf 'one\nTWO\nthree\n' > "$HWTS/w1/a.txt"
+printf 'brand new\n' > "$HWTS/w1/new.txt"
+hd harvest r-ok > "$TMP/h1.out" 2>&1 && rc=0 || rc=$?
+[ "$rc" -eq 0 ] && grep -q "a.txt" "$TMP/h1.out" && echo "✓ harvest succeeds and prints what it applied" || { echo "✗ harvest succeeds (rc=$rc)"; cat "$TMP/h1.out"; fails=$((fails+1)); }
+check "harvest applied edit to main checkout" grep -q '^TWO$' "$H/main/a.txt"
+check "harvest applied new file to main checkout" test -f "$H/main/new.txt"
+[ -z "$(git -C "$H/main" log --format=%H HEAD..HEAD)" ] && [ "$(git -C "$H/main" rev-list --count HEAD)" = 1 ] && echo "✓ harvest did not commit" || { echo "✗ harvest did not commit"; fails=$((fails+1)); }
+check "harvest keeps worktree" test -d "$HWTS/w1"
+
+# conflict: main diverges from what the worktree patch expects → refuse, apply nothing
+git -C "$H/main" checkout -q -- a.txt; rm -f "$H/main/new.txt"
+git -C "$H/main" worktree add -q --detach "$HWTS/w2" HEAD
+mkrun r-conflict "$HWTS/w2" "$H/main"
+printf 'one\nW2\nthree\n' > "$HWTS/w2/a.txt"
+printf 'other\n' > "$HWTS/w2/b.txt"
+printf 'one\nMAIN\nthree\n' > "$H/main/a.txt"
+hd harvest r-conflict > "$TMP/h2.out" 2>&1 && rc=0 || rc=$?
+[ "$rc" -ne 0 ] && echo "✓ harvest refuses conflicting patch" || { echo "✗ harvest refuses conflicting patch"; fails=$((fails+1)); }
+[ ! -e "$H/main/b.txt" ] && grep -q '^MAIN$' "$H/main/a.txt" && echo "✓ conflict leaves main untouched (no partial apply)" || { echo "✗ conflict leaves main untouched"; fails=$((fails+1)); }
+git -C "$H/main" checkout -q -- a.txt
+
+# refusals: missing worktree, unregistered dir, no exit sentinel, unknown id
+mkrun r-gone "$HWTS/nope" "$H/main"
+hd harvest r-gone >/dev/null 2>&1 && { echo "✗ harvest refuses missing worktree"; fails=$((fails+1)); } || echo "✓ harvest refuses missing worktree"
+mkdir -p "$HWTS/plain"; git init -q "$HWTS/plain"; printf 'x\n' > "$HWTS/plain/x.txt"
+mkrun r-unreg "$HWTS/plain" "$H/main"
+hd harvest r-unreg >/dev/null 2>&1 && { echo "✗ harvest refuses unregistered worktree"; fails=$((fails+1)); } || echo "✓ harvest refuses unregistered worktree"
+[ ! -e "$H/main/x.txt" ] || { echo "✗ unregistered worktree leaked"; fails=$((fails+1)); }
+mkrun r-live "$HWTS/w2" "$H/main"; rm "$HRUNS/r-live/exit"
+hd harvest r-live >/dev/null 2>&1 && { echo "✗ harvest refuses unfinished run"; fails=$((fails+1)); } || echo "✓ harvest refuses unfinished run"
+hd harvest nonexistent >/dev/null 2>&1 && { echo "✗ harvest refuses unknown run"; fails=$((fails+1)); } || echo "✓ harvest refuses unknown run"
+
+# ── 13. prune ──────────────────────────────────────────────────────────
+rm -rf "$HRUNS"/*
+git -C "$H/main" worktree add -q --detach "$HWTS/old" HEAD
+git -C "$H/main" worktree add -q --detach "$HWTS/fresh" HEAD
+git -C "$H/main" worktree add -q --detach "$HWTS/livewt" HEAD
+mkrun p-old "$HWTS/old" "$H/main";     touch -t 200001010000 "$HRUNS/p-old/exit"
+mkrun p-fresh "$HWTS/fresh" "$H/main"
+mkrun p-running "$HWTS/livewt" "$H/main"; rm "$HRUNS/p-running/exit"
+touch -t 200001010000 "$HRUNS/p-running"
+mkrun p-alive "$HWTS/livewt" "$H/main"; touch -t 200001010000 "$HRUNS/p-alive/exit"
+sleep 60 & alive_pid=$!
+echo "$alive_pid" > "$HRUNS/p-alive/pid"
+
+hd prune --dry-run > "$TMP/p1.out" 2>&1
+grep -q "would prune p-old" "$TMP/p1.out" && echo "✓ dry-run lists old run" || { echo "✗ dry-run lists old run"; fails=$((fails+1)); }
+[ -d "$HRUNS/p-old" ] && [ -d "$HWTS/old" ] && echo "✓ dry-run removes nothing" || { echo "✗ dry-run removes nothing"; fails=$((fails+1)); }
+hd prune > "$TMP/p2.out" 2>&1
+[ ! -d "$HRUNS/p-old" ] && [ ! -d "$HWTS/old" ] && echo "✓ prune removes old finished run + its worktree" || { echo "✗ prune removes old run + worktree"; cat "$TMP/p2.out"; fails=$((fails+1)); }
+git -C "$H/main" worktree list | grep -q "/old" && { echo "✗ prune unregisters worktree"; fails=$((fails+1)); } || echo "✓ prune unregisters worktree"
+[ -d "$HRUNS/p-fresh" ] && [ -d "$HWTS/fresh" ] && echo "✓ prune keeps recent run" || { echo "✗ prune keeps recent run"; fails=$((fails+1)); }
+[ -d "$HRUNS/p-running" ] && echo "✓ prune keeps run without exit sentinel" || { echo "✗ prune keeps run without exit sentinel"; fails=$((fails+1)); }
+[ -d "$HRUNS/p-alive" ] && [ -d "$HWTS/livewt" ] && grep -q "skip p-alive" "$TMP/p2.out" && echo "✓ prune refuses run with live pid" || { echo "✗ prune refuses run with live pid"; fails=$((fails+1)); }
+kill "$alive_pid" 2>/dev/null || true
+hd prune --days 0 > "$TMP/p3.out" 2>&1 || true
+[ ! -d "$HRUNS/p-alive" ] && [ -d "$HRUNS/p-running" ] && echo "✓ prune after pid death removes run; --days honoured" || { echo "✗ prune after pid death"; cat "$TMP/p3.out"; fails=$((fails+1)); }
+hd prune --days x >/dev/null 2>&1 && { echo "✗ prune rejects bad --days"; fails=$((fails+1)); } || echo "✓ prune rejects bad --days"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "delegate smoke test: all passed"; else echo "delegate smoke test: $fails failure(s)"; exit 1; fi

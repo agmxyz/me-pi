@@ -152,6 +152,34 @@ bg_id=""
 #   then compare `cost=` in the trailer of out.md with the 0.10 cap; overshoot = cost - 0.10.
 # Budget several dollars; do not enable in the default suite.
 
+# ── 6. harvest round-trip: -w implementer writes a file; harvest applies it ─
+REPO6="$TMP/repo6"
+git init -q "$REPO6" && git -C "$REPO6" config user.email t@t && git -C "$REPO6" config user.name t
+printf 'seed\n' > "$REPO6/seed.txt"
+git -C "$REPO6" add seed.txt && git -C "$REPO6" commit -q -m init
+HCODE="HARVEST-$RANDOM"
+task6="$TMP/task6.md"
+cat > "$task6" <<EOT
+# Goal
+Integration probe. Skip the usual method steps: do NOT read any skill files and do not run tests.
+Use the write tool to create the file harvest-probe.txt in your working directory containing exactly the single line: $HCODE
+Then reply with exactly: DONE
+EOT
+"$DELEGATE" run "$ROLE" "$task6" -w -C "$REPO6" -m "$MODEL" -t "$CASE_TIMEOUT" -c "$CASE_COST" > "$TMP/c6.out" 2> "$TMP/c6.err"
+id6="$(ls -t "$ME_PI_RUNS_ROOT" | head -1)"
+wt6="$(sed -n 's/^wt: //p' "$ME_PI_RUNS_ROOT/$id6/meta")"
+if [ -f "$wt6/harvest-probe.txt" ] && grep -q "$HCODE" "$wt6/harvest-probe.txt" && [ ! -e "$REPO6/harvest-probe.txt" ]; then
+  pass "6a -w child wrote into the worktree, main checkout untouched"
+else
+  fail "6a child did not write harvest-probe.txt in worktree ($wt6): $(head -c 200 "$ME_PI_RUNS_ROOT/$id6/out.md")"
+fi
+if "$DELEGATE" harvest "$id6" > "$TMP/c6.harvest" 2>&1 && grep -q "$HCODE" "$REPO6/harvest-probe.txt" 2>/dev/null; then
+  pass "6b harvest applied the patch to the main checkout"
+else
+  fail "6b harvest did not land the file in $REPO6: $(head -c 300 "$TMP/c6.harvest")"
+fi
+[ "$(git -C "$REPO6" rev-list --count HEAD)" = 1 ] && [ -d "$wt6" ] && pass "6c harvest did not commit; worktree kept" || fail "6c harvest committed or removed the worktree"
+
 # ── total spend ────────────────────────────────────────────────────────
 total="$("$DELEGATE" ls | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^cost=/) { sub("cost=", "", $i); t += $i } } END { printf "%.4f", t }')"
 echo "total spend: \$$total"

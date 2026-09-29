@@ -11,6 +11,7 @@ Spawn one-shot pi children with the repo's `delegate` script; never spawn raw `p
 - Roles = `agents/<role>.md` (tools/thinking from frontmatter). Write the task file first: Goal, Acceptance, Constraints, Paths, Output contract.
 - Child models: role assignment in settings (via /me-setup) > role frontmatter thinking > pi default. When the user names a model for a run, pass it as `-m` — an explicit per-request choice beats the settings assignment.
 - Collect with `delegate wait <id>` / `delegate ls`; trust the `exit` sentinel in `~/.pi/agent/runs/<id>/`, never silence.
+- `-w` writers leave uncommitted changes in the worktree: `delegate harvest <id>` applies them to the checkout (conflict-safe, no commit); `delegate prune [--days N] [--dry-run]` GCs old runs+worktrees.
 - Read-only roles get no `bash` tool. One writer per checkout; use `-w` for any background or parallel writer.
 - Never delegate: final gate, commits, user dialog, tiny edits, git history, or anything under `~/.pi/agent`.
 

@@ -7,6 +7,8 @@
 #   delegate ls
 #   delegate kill <id>
 #   delegate ask <id> "question"
+#   delegate harvest <id>            apply a -w run's worktree diff to its origin checkout (no commit)
+#   delegate prune [--days N] [--dry-run]   remove finished runs (+ worktrees) older than N days (7)
 #
 # Roles come from agents/<role>.md frontmatter (tools:, thinking:) and body.
 # Runs live under ~/.pi/agent/runs/<id>/; $RUN/exit is the only completion signal.
@@ -35,7 +37,7 @@ resolve_repo() {
 REPO="$(resolve_repo)"
 
 usage() {
-  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -181,7 +183,7 @@ cmd_run() {
   [ $# -ge 2 ] || usage 1
   local role="$1" task_source="$2"
   shift 2
-  local dir="$PWD" worktree=0 background=0 model="" wt=""
+  local dir="$PWD" worktree=0 background=0 model="" wt="" origin=""
   local timeout="$DEFAULT_TIMEOUT_SECS" cost_cap="$DEFAULT_COST_CAP_USD" opt
   while getopts "C:wbm:t:c:" opt; do
     case "$opt" in
@@ -224,6 +226,7 @@ cmd_run() {
     mkdir -p "$WT_ROOT"
     wt="$WT_ROOT/$(basename "$dir")-$(date +%m%d-%H%M%S)-$RANDOM"
     git -C "$dir" worktree add --detach "$wt" HEAD >/dev/null || die "worktree creation failed"
+    origin="$(git -C "$dir" rev-parse --show-toplevel)"
     dir="$wt"
   fi
 
@@ -253,6 +256,7 @@ cmd_run() {
     echo "tools: $tools"
     echo "thinking: $thinking"
     echo "wt: ${wt:-none}"
+    echo "origin: ${origin:-none}"
     echo "started: $(date +%s)"
   } > "$run_dir/meta"
 
@@ -340,7 +344,7 @@ cmd_ls() {
       state="crashed"
     fi
     cost="$(run_cost "$d/session")"
-    printf '%-36s %-30s cost=%-8s %s\n' "$id" "$state" "$cost" "$(date -r "$d/out.md" '+%m-%d %H:%M' 2>/dev/null || echo '?')"
+    printf '%-36s %-30s cost=%-8s %s  %s\n' "$id" "$state" "$cost" "$(date -r "$d/out.md" '+%m-%d %H:%M' 2>/dev/null || echo '?')" "$(fm_field "$(cat "$d/meta" 2>/dev/null)" cwd)"
   done | sort -k4 -r
 }
 
@@ -370,6 +374,105 @@ cmd_ask() {
     ${args[@]+"${args[@]}"} "$question"
 }
 
+canon() { (cd -P "$1" 2>/dev/null && pwd -P); }
+
+# Apply a -w run's worktree changes to the origin checkout. Never commits.
+cmd_harvest() {
+  [ $# -eq 1 ] || usage 1
+  local id="$1" run_dir="$RUNS_ROOT/$1" meta wt origin patch real_wt
+  [ -d "$run_dir" ] || die "unknown run: $id"
+  [ -f "$run_dir/exit" ] || die "run $id has not finished (no exit sentinel)"
+  meta="$(cat "$run_dir/meta")"
+  wt="$(fm_field "$meta" wt)"
+  { [ -n "$wt" ] && [ "$wt" != none ]; } || die "run $id has no worktree (was it started with -w?)"
+  [ -d "$wt" ] || die "worktree is gone: $wt"
+  real_wt="$(canon "$wt")"
+  git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || die "not a git worktree: $wt"
+  origin="$(fm_field "$meta" origin)"
+  if [ -z "$origin" ] || [ "$origin" = none ]; then
+    origin="$(git -C "$wt" worktree list --porcelain | sed -n '1s/^worktree //p')"
+  fi
+  [ -d "$origin" ] || die "origin checkout not found: $origin"
+  git -C "$origin" worktree list --porcelain | grep -Fxq "worktree $real_wt" \
+    || die "$wt is not a registered worktree of $origin"
+  [ "$real_wt" != "$(canon "$origin")" ] || die "worktree is the origin checkout; refusing"
+
+  mkdir -p "$run_dir/artifacts"
+  patch="$run_dir/artifacts/harvest.patch"
+  # -N makes new (untracked) files part of the diff without staging content.
+  git -C "$wt" add -N . >/dev/null 2>&1 || true
+  git -C "$wt" diff --binary > "$patch"
+  if [ ! -s "$patch" ]; then echo "nothing to harvest: $id made no changes"; return 0; fi
+  git -C "$origin" apply --check "$patch" 2>&1 \
+    || die "patch does not apply cleanly to $origin; nothing applied (patch kept: $patch)"
+  git -C "$origin" apply "$patch"
+  echo "applied $patch to $origin (not committed):"
+  git -C "$origin" apply --stat "$patch"
+  echo "worktree kept: $wt (remove with: delegate prune)"
+}
+
+# Remove finished runs older than N days plus the worktrees they own.
+cmd_prune() {
+  local days=7 dry=0 d id pid wt real_wt root_real main age_min pruned=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) [ $# -ge 2 ] || usage 1; days="$2"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      *) usage 1 ;;
+    esac
+  done
+  case "$days" in ''|*[!0-9]*) die "--days needs a non-negative integer" ;; esac
+  [ -d "$RUNS_ROOT" ] || return 0
+  age_min=$((days * 1440))
+  root_real="$(canon "$WT_ROOT" || true)"
+  for d in "$RUNS_ROOT"/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"; id="$(basename "$d")"
+    [ -f "$d/exit" ] || continue
+    [ -n "$(find "$d/exit" -mmin "+$age_min" 2>/dev/null)" ] || continue
+    if [ -f "$d/pid" ]; then
+      pid="$(cat "$d/pid" 2>/dev/null || true)"
+      if [ -n "$pid" ] && alive "$pid"; then
+        echo "skip $id: pid $pid still alive"
+        continue
+      fi
+    fi
+    wt="$(fm_field "$(cat "$d/meta" 2>/dev/null)" wt)"
+    [ "$wt" = none ] && wt=""
+    real_wt=""
+    if [ -n "$wt" ] && [ -d "$wt" ]; then real_wt="$(canon "$wt")"; fi
+    # Only ever touch worktrees under $WT_ROOT.
+    if [ -n "$real_wt" ]; then
+      case "$real_wt" in "$root_real"/?*) ;; *) echo "skip worktree $wt: outside $WT_ROOT"; real_wt="" ;; esac
+    fi
+    if [ "$dry" = 1 ]; then
+      echo "would prune $id"
+      if [ -n "$real_wt" ]; then
+        if [ -n "$(git -C "$real_wt" status --porcelain 2>/dev/null)" ]; then
+          echo "would remove worktree $wt (has uncommitted changes)"
+        else
+          echo "would remove worktree $wt"
+        fi
+      fi
+      continue
+    fi
+    if [ -n "$real_wt" ]; then
+      main="$(git -C "$real_wt" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+      if [ -n "$main" ] && [ -d "$main" ]; then
+        git -C "$main" worktree remove --force "$real_wt" >/dev/null 2>&1 || rm -rf "$real_wt"
+        git -C "$main" worktree prune >/dev/null 2>&1 || true
+      else
+        rm -rf "$real_wt"
+      fi
+      echo "removed worktree $wt"
+    fi
+    rm -rf "$d"
+    echo "pruned $id"
+    pruned=$((pruned + 1))
+  done
+  [ "$dry" = 1 ] || echo "pruned $pruned run(s)"
+}
+
 cmd_watch() { # internal: detached background watchdog (see cmd_run -b)
   [ $# -eq 6 ] || usage 1
   trap '' HUP
@@ -386,6 +489,8 @@ main() {
     ls)   cmd_ls ;;
     kill) cmd_kill "$@" ;;
     ask)  cmd_ask "$@" ;;
+    harvest) cmd_harvest "$@" ;;
+    prune) cmd_prune "$@" ;;
     _watch) cmd_watch "$@" ;;
     -h|--help|help) usage 0 ;;
     *) usage 1 ;;
