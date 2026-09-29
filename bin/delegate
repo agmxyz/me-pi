@@ -46,6 +46,25 @@ fm_field() { # <frontmatter-text> <field>
   printf '%s\n' "$1" | awk -F': *' -v f="$2" '$1 == f { print $2; exit }' | sed 's/[[:space:]]*$//'
 }
 
+settings_override() { # <role> -> model|thinking, or empty when unavailable
+  node -e '
+    const fs = require("node:fs");
+    try {
+      const settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const subagents = settings?.subagents;
+      const overrides = subagents?.agentOverrides;
+      const override = overrides?.[process.argv[2]];
+      if (!override || typeof override !== "object" || Array.isArray(override)) process.exit(0);
+      if (typeof override.model !== "string" || !override.model) process.exit(0);
+      const provider = override.defaultProvider;
+      if (provider !== undefined && provider !== null && provider !== false && typeof provider !== "string") process.exit(0);
+      const model = provider && provider !== false ? `${provider}/${override.model}` : override.model;
+      const thinking = typeof override.thinking === "string" && override.thinking ? override.thinking : "";
+      process.stdout.write(`${model}|${thinking}`);
+    } catch {}
+  ' "$HOME/.pi/agent/settings.json" "$1" 2>/dev/null || true
+}
+
 run_cost() { # <session-dir> -> sum of all recorded per-message costs
   node -e '
     const fs = require("node:fs"), path = require("node:path");
@@ -179,12 +198,24 @@ cmd_run() {
   local role_file="$REPO/agents/$role.md"
   [ -f "$role_file" ] || die "unknown role: $role (no agents/$role.md in $REPO)"
 
-  local fm tools thinking
+  local fm tools thinking override override_model override_thinking
   fm="$(frontmatter "$role_file")"
   tools="$(fm_field "$fm" tools)"
   [ -n "$tools" ] || tools="$READONLY_TOOLS"
-  local thinking; thinking="$(fm_field "$fm" thinking)"
+  thinking="$(fm_field "$fm" thinking)"
   [ -n "$thinking" ] || thinking="high"
+
+  # Explicit -m wins. Otherwise a valid role override supplies both model
+  # and thinking; role frontmatter remains the deliberate thinking fallback.
+  if [ -z "$model" ]; then
+    override="$(settings_override "$role")"
+    if [ -n "$override" ]; then
+      override_model="${override%%|*}"
+      if [ "$override" != "$override_model" ]; then override_thinking="${override#*|}"; else override_thinking=""; fi
+      model="$override_model"
+      [ -n "$override_thinking" ] && thinking="$override_thinking"
+    fi
+  fi
 
   if [ "$worktree" = 1 ]; then
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || die "-w needs a git repository: $dir"

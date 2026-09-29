@@ -49,6 +49,14 @@ function modelsFor(provider: string): string[] {
 
 function listAgents(): string[] {
 	try {
+		return readdirSync(join(REPO, "agents")).filter((n) => n.endsWith(".md")).map((n) => n.replace(/\.md$/, ""));
+	} catch {
+		return [];
+	}
+}
+
+function listLiveAgents(): string[] {
+	try {
 		const dir = join(PI_AGENT, "agents");
 		return readdirSync(dir)
 			.filter((n) => n.endsWith(".md"))
@@ -275,8 +283,8 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 	}
 
 	// Step 2 — override only what needs it
+	const agents = listAgents();
 	for (;;) {
-		const agents = [...new Set([...listAgents(), "scout", "researcher", "reviewer", "oracle", "delegate"])];
 		const options = ["✓ done — save", ...agents.map((a) => `${a}  (${describe(sub.agentOverrides?.[a], sub.defaultProvider)})`)];
 		const choice = await ctx.ui.select("Override an agent? (others inherit the default)", options);
 		if (!choice || choice.startsWith("✓ done")) break;
@@ -295,6 +303,20 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 		}
 	}
 
+	// Remove overrides for roles no longer present in this repo. Role
+	// frontmatter deliberately wins over subagents.defaultThinking.
+	const validAgents = new Set(agents);
+	if (sub.agentOverrides && typeof sub.agentOverrides === "object" && !Array.isArray(sub.agentOverrides)) {
+		for (const agent of Object.keys(sub.agentOverrides)) {
+			if (!validAgents.has(agent)) {
+				delete sub.agentOverrides[agent];
+				changed = true;
+			}
+		}
+	} else if (sub.agentOverrides !== undefined) {
+		sub.agentOverrides = {};
+		changed = true;
+	}
 	if (changed) saveSettings(settings);
 
 	// Step 3 — result table
@@ -387,7 +409,7 @@ async function statusReport(ctx: any): Promise<void> {
 		out.push("✗ APPEND_SYSTEM.md — missing or unreadable");
 	}
 	try {
-		out.push(`✓ agents — ${listAgents().join(", ")}`);
+		out.push(`✓ agents — ${listLiveAgents().join(", ")}`);
 	} catch {
 		out.push("⚠ agents — unreadable");
 	}

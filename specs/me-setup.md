@@ -11,6 +11,8 @@ Bare `/me-setup` opens the interactive default-first model chooser. `/me-setup s
 
 Model choices come from `models-store.json` and require a provider key in `auth.json`. Credential values are not displayed, returned, or modified. Model selections remain machine-local.
 
+The chooser writes `subagents.defaultModel`, `subagents.defaultProvider`, `subagents.defaultThinking`, and per-role `subagents.agentOverrides` in live `~/.pi/agent/settings.json`. `bin/delegate` consumes per-role overrides for matching `agents/<role>.md` files. Resolution is strict: `delegate run -m MODEL` wins; otherwise a role override supplies `--model` as `defaultProvider/model` (or bare `model` when the provider is false or absent) and its thinking; otherwise the role frontmatter supplies thinking and pi chooses the model. A role's frontmatter thinking always wins over `subagents.defaultThinking` when an override has no thinking. Invalid or missing settings are ignored. The chooser offers only repository roles and prunes stale override keys when saving.
+
 ## Status checks
 
 | Check | Pass criteria |

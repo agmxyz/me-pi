@@ -38,6 +38,7 @@ done
 [ -n "${session_dir:-}" ] || { echo "no session dir" >&2; exit 90; }
 [ -n "${session_id:-}" ] || { echo "no session id" >&2; exit 90; }
 mkdir -p "$session_dir"
+printf '%s\n' "$@" > "$session_dir/args"
 cost="${ME_PI_TEST_COST:-0}"
 printf '{"message":{"usage":{"cost":{"total":%s}}}}\n' "$cost" > "$session_dir/usage.jsonl"
 if [ "${ME_PI_TEST_CHECK_SHIM:-0}" = "1" ]; then
@@ -56,7 +57,7 @@ exit "${ME_PI_TEST_EXIT:-0}"
 FAKE
 chmod +x "$FAKE_PI"
 
-d() { PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" "$@"; }
+d() { HOME="$TMP/home" PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" "$@"; }
 # fake pi must not resolve the shim as itself when invoked by name inside runs
 export PI_BIN="$FAKE_PI"
 
@@ -71,7 +72,29 @@ check "task copied" grep -q "do a thing" "$RUNS/$run_id/task.md"
 # ── 2. role resolution ─────────────────────────────────────────────────
 if d run nobody /dev/null -C "$TMP" >/dev/null 2>&1; then echo "✗ unknown role rejected"; fails=$((fails+1)); else echo "✓ unknown role rejected"; fi
 
-# ── 3. nested pi + delegate blocked via shim ───────────────────────────
+# ── 3. settings override resolves model and thinking ────────────────────
+mkdir -p "$TMP/home/.pi/agent"
+cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
+{
+  "subagents": {
+    "agentOverrides": {
+      "reviewer": { "model": "test-model", "defaultProvider": "test-provider", "thinking": "minimal" }
+    },
+    "defaultThinking": "max"
+  }
+}
+JSON
+override_out="$(HOME="$TMP/home" d run reviewer - -C "$TMP" <<< "override check")"
+override_id="$(ls -t "$RUNS" | head -1)"
+check "settings override model passed" grep -Fxq "test-provider/test-model" "$RUNS/$override_id/session/args"
+check "settings override thinking passed" grep -Fxq "minimal" "$RUNS/$override_id/session/args"
+# -m remains higher precedence than the live settings override.
+flag_out="$(HOME="$TMP/home" d run reviewer - -C "$TMP" -m cli/model <<< "flag check")"
+flag_id="$(ls -t "$RUNS" | head -1)"
+check "-m overrides settings model" grep -Fxq "cli/model" "$RUNS/$flag_id/session/args"
+check "-m keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$flag_id/session/args"
+
+# ── 4. nested pi + delegate blocked via shim ───────────────────────────
 ME_PI_TEST_CHECK_SHIM=1 d run reviewer - -C "$TMP" <<< "shim check" > "$TMP/shim.out" 2>&1 || true
 grep -q "TASK-DONE-MARKER" "$TMP/shim.out" && echo "✓ shim enforced (fake pi saw shim)" || { echo "✗ shim enforced"; fails=$((fails+1)); }
 # nested `delegate` itself must also be shadowed and refuse (exit 64)
