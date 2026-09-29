@@ -18,7 +18,7 @@ Keep credentials and live settings in `~/.pi/agent/`, not this repo. The tracked
 
 ## Commands
 
-- `/me-setup`: choose default and per-agent models; `/me-setup status`: inspect the rig.
+- `/me-setup`: interactive default and per-agent model chooser; `/me-setup status`: inspect the rig.
 
 ## Tests
 

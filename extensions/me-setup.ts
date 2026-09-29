@@ -3,10 +3,6 @@
  *
  * /me-setup            → interactive model chooser
  * /me-setup status     → full pre-flight report (read-only)
- * /me-setup default <provider/model> [thinking]   → set default directly
- * /me-setup models     → interactive model chooser (alias)
- * /me-setup models <agent> <provider/model|inherit> [thinking] → set or reset one agent
- * /me-setup reset <agent> → agent inherits default again
  *
  * Writes only ~/.pi/agent/settings.json subagents.* on explicit user action.
  * Model options come from models-store.json filtered by provider keys in auth.json.
@@ -80,12 +76,6 @@ function saveSettings(settings: any): void {
 		throw new Error("refusing to write: ~/.pi/agent resolves into the rig repo");
 	}
 	writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-}
-
-function resetAgentOverride(settings: any, agent: string): void {
-	settings.subagents.agentOverrides = settings.subagents.agentOverrides ?? {};
-	delete settings.subagents.agentOverrides[agent];
-	saveSettings(settings);
 }
 
 // ── native-feel picker (mirrors pi's ModelSelectorComponent) ──
@@ -260,21 +250,6 @@ export function applyAgentPick(existing: Record<string, any> | undefined, pick: 
 	return next;
 }
 
-export function parseModelAssignment(
-	input: string,
-	providers: string[],
-	getModels: (provider: string) => string[],
-): { model: string; defaultProvider: string } | { error: string } {
-	const slash = input.indexOf("/");
-	if (slash <= 0 || slash === input.length - 1) return { error: "expected provider/model" };
-	const provider = input.slice(0, slash);
-	const model = input.slice(slash + 1);
-	if (!providers.includes(provider)) return { error: `provider "${provider}" is not authenticated` };
-	const available = getModels(provider);
-	if (!available.includes(model)) return { error: `unknown model "${model}" for "${provider}". Options: ${available.slice(0, 10).join(", ") || "(none)"}` };
-	return { model, defaultProvider: provider };
-}
-
 async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 	const settings = loadSettings();
 	const sub = settings.subagents;
@@ -447,62 +422,12 @@ export default function (pi: ExtensionAPI) {
 		description: "Choose agent models & thinking levels (status: /me-setup status)",
 		handler: async (args: string, ctx: any) => {
 			const argv = args.trim().split(/\s+/).filter(Boolean);
-			if (argv[0] === "status") return await statusReport(ctx);
-
-			const settings = loadSettings();
-			const sub = settings.subagents;
-
-			if (argv[0] === "default") {
-				// default <provider/model> [thinking]
-				if (!argv[1]) return say(ctx, "usage: /me-setup default <provider/model> [thinking]");
-				const assignment = parseModelAssignment(argv[1], authedProviders(), modelsFor);
-				if ("error" in assignment) return say(ctx, `✗ ${assignment.error} — not saved`);
-				if (argv[2] && !THINKING_LEVELS.includes(argv[2])) return say(ctx, `✗ unknown thinking level "${argv[2]}" — not saved`);
-				sub.defaultModel = assignment.model;
-				sub.defaultProvider = assignment.defaultProvider;
-				if (argv[2] === "inherit") delete sub.defaultThinking;
-				else if (argv[2]) sub.defaultThinking = argv[2];
-				saveSettings(settings);
-				return say(ctx, `✓ default → ${sub.defaultModel} via ${sub.defaultProvider}${sub.defaultThinking ? `, thinking ${sub.defaultThinking}` : ""}`);
+			const usage = "usage: /me-setup\n       /me-setup status";
+			if (argv.length > 0) {
+				if (argv.length === 1 && argv[0] === "status") return await statusReport(ctx);
+				return say(ctx, usage);
 			}
-
-			if (argv[0] === "models") {
-				// models <agent> <provider/model|inherit> [thinking]
-				if (argv.length === 1) {
-					if (!ctx.hasUI && ctx.mode !== "tui") return say(ctx, "Interactive chooser needs a TUI session. Use /me-setup models <agent> <provider/model|inherit> [thinking].");
-					return await chooser(pi, ctx);
-				}
-				if (argv[1] === "reset") {
-					if (!argv[2]) return say(ctx, "usage: /me-setup models reset <agent>");
-					resetAgentOverride(settings, argv[2]);
-					return say(ctx, `✓ ${argv[2]} → inherit`);
-				}
-				if (argv.length < 3) return say(ctx, "usage: /me-setup models <agent> <provider/model|inherit> [thinking]");
-				const agent = argv[1];
-				if (argv[2] === "inherit") {
-					resetAgentOverride(settings, agent);
-					return say(ctx, `✓ ${agent} → inherit`);
-				}
-				const assignment = parseModelAssignment(argv[2], authedProviders(), modelsFor);
-				if ("error" in assignment) return say(ctx, `✗ ${assignment.error} — not saved`);
-				if (argv[3] && !THINKING_LEVELS.includes(argv[3])) return say(ctx, `✗ unknown thinking level "${argv[3]}" — not saved`);
-				const entry: any = { model: assignment.model, defaultProvider: assignment.defaultProvider };
-				if (argv[3] && argv[3] !== "inherit") entry.thinking = argv[3];
-				sub.agentOverrides = sub.agentOverrides ?? {};
-				sub.agentOverrides[agent] = entry;
-				saveSettings(settings);
-				return say(ctx, `✓ ${agent} → ${describe(entry)}`);
-			}
-
-			if (argv[0] === "reset") {
-				if (!argv[1]) return say(ctx, "usage: /me-setup reset <agent>");
-				resetAgentOverride(settings, argv[1]);
-				return say(ctx, `✓ ${argv[1]} → inherit`);
-			}
-
-			if (!ctx.hasUI && ctx.mode !== "tui") {
-				return say(ctx, "Interactive chooser needs a TUI session. Direct forms:\n  /me-setup default <provider/model> [thinking]\n  /me-setup models <agent> <provider/model|inherit> [thinking]\n  /me-setup models reset <agent>\n  /me-setup reset <agent> (alias)\n  /me-setup status");
-			}
+			if (!ctx.hasUI && ctx.mode !== "tui") return say(ctx, `Interactive chooser needs a TUI session.\n${usage}`);
 			return await chooser(pi, ctx);
 		},
 	});

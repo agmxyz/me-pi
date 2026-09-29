@@ -1,17 +1,13 @@
 # Spec: `/me-setup` — rig status and model control
 
-Bare `/me-setup` opens the interactive default-first model chooser. `/me-setup status` is a read-only rig inventory. Explicit model commands update machine-local `settings.json`; the chooser writes only when a selection changes.
+Bare `/me-setup` opens the interactive default-first model chooser. `/me-setup status` is a read-only rig inventory. The chooser writes only when a selection changes.
 
 ## Commands
 
 | Invocation | Behavior |
 |---|---|
-| `/me-setup` or `/me-setup models` | interactive default and per-agent model chooser |
+| `/me-setup` | interactive default and per-agent model chooser |
 | `/me-setup status` | read-only status report |
-| `/me-setup default <provider/model> [thinking]` | direct default assignment |
-| `/me-setup models <agent> <provider/model\|inherit> [thinking]` | assign or remove one agent override |
-| `/me-setup models reset <agent>` | remove one agent override |
-| `/me-setup reset <agent>` | reset alias |
 
 Model choices come from `models-store.json` and require a provider key in `auth.json`. Credential values are not displayed, returned, or modified. Model selections remain machine-local.
 
