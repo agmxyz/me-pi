@@ -14,7 +14,8 @@ set -euo pipefail
 
 RUNS_ROOT="${ME_PI_RUNS_ROOT:-$HOME/.pi/agent/runs}"
 WT_ROOT="${ME_PI_WT_ROOT:-$HOME/.pi/wt}"
-PI_BIN="${PI_BIN:-pi}"
+# Resolve pi now, before the per-run shim dir ever shadows PATH.
+PI_BIN="$(command -v "${PI_BIN:-pi}" 2>/dev/null)" || die "pi not found on PATH"
 DEFAULT_TIMEOUT_SECS="${ME_PI_DELEGATE_TIMEOUT:-900}"
 DEFAULT_COST_CAP_USD="${ME_PI_DELEGATE_COST_CAP:-2}"
 READONLY_TOOLS="read,grep,find,ls"
@@ -45,7 +46,7 @@ fm_field() { # <frontmatter-text> <field>
   printf '%s\n' "$1" | awk -F': *' -v f="$2" '$1 == f { print $2; exit }' | sed 's/[[:space:]]*$//'
 }
 
-run_cost() { # <session-dir> -> max recorded total cost
+run_cost() { # <session-dir> -> sum of all recorded per-message costs
   node -e '
     const fs = require("node:fs"), path = require("node:path");
     let total = 0, names = [];
@@ -58,7 +59,7 @@ run_cost() { # <session-dir> -> max recorded total cost
         if (!line) continue;
         try {
           const cost = JSON.parse(line)?.message?.usage?.cost?.total;
-          if (typeof cost === "number" && cost > total) total = cost;
+          if (typeof cost === "number") total += cost;
         } catch {}
       }
     }
@@ -68,15 +69,36 @@ run_cost() { # <session-dir> -> max recorded total cost
 
 alive() { kill -0 "$1" 2>/dev/null; }
 
-terminate_pid() { # TERM, then KILL after 10s; lets pi reap its own tool children
-  local pid="$1" i
+record_lstart() { # <run-dir> <pid> — process start time; kills verify it (PID reuse)
+  ps -p "$2" -o lstart= 2>/dev/null | sed 's/^ *//; s/ *$//' > "$1/lstart"
+}
+
+lstart_matches() { # <run-dir> <pid> — strict: a missing marker is a mismatch
+  local want have
+  [ -f "$1/lstart" ] || return 1
+  want="$(cat "$1/lstart")"
+  have="$(ps -p "$2" -o lstart= 2>/dev/null | sed 's/^ *//; s/ *$//')"
+  [ -n "$have" ] && [ "$have" = "$want" ]
+}
+
+terminate_pid() { # <run-dir> — TERM the run's process group, then KILL after 10s
+  local run_dir="$1" pid i
+  pid="$(cat "$run_dir/pid" 2>/dev/null)" || return 0
   alive "$pid" || return 0
-  kill -TERM "$pid" 2>/dev/null || true
+  if ! lstart_matches "$run_dir" "$pid"; then
+    echo "✗ pid $pid no longer matches the recorded process; not killing" >&2
+    return 1
+  fi
+  # pi is its own session leader (spawned via setsid); the negative pid
+  # targets the whole group so tool descendants die with it. TOCTOU window
+  # between the lstart check and the kill is accepted for this single-user
+  # tool; lstart has 1s precision.
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
   for i in 1 2 3 4 5 6 7 8 9 10; do
     alive "$pid" || return 0
     sleep 1
   done
-  kill -KILL "$pid" 2>/dev/null || true
+  kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
 }
 
 write_trailer() { # <run-dir> <id> <rc> <start-epoch>
@@ -96,7 +118,11 @@ spawn_and_watch() { # <run-dir> <id> <cwd> <timeout> <cost-cap> <model>
 
   (
     cd "$dir" || exit 97
-    PATH="$run_dir/shim:$PATH" ME_PI_RUN="$id" "$PI_BIN" -p --no-skills \
+    export PATH="$run_dir/shim:$PATH" ME_PI_RUN="$id"
+    # setsid: pi becomes a session/group leader so the watchdog can kill
+    # the whole group; exec keeps the subshell pid identical to pi's.
+    exec perl -MPOSIX -e 'setsid; exec @ARGV' -- \
+      "$PI_BIN" -p --no-skills \
       --session-dir "$run_dir/session" --session-id "$id" \
       --tools "$(fm_field "$(cat "$run_dir/meta")" tools)" \
       --thinking "$(fm_field "$(cat "$run_dir/meta")" thinking)" \
@@ -107,16 +133,17 @@ spawn_and_watch() { # <run-dir> <id> <cwd> <timeout> <cost-cap> <model>
   ) &
   local pid=$!
   echo "$pid" > "$run_dir/pid"
+  record_lstart "$run_dir" "$pid"
 
   while alive "$pid"; do
     if [ "$(( $(date +%s) - start ))" -ge "$timeout" ]; then
-      terminate_pid "$pid"
+      terminate_pid "$run_dir"
       echo timeout > "$run_dir/why"
       break
     fi
     cost="$(run_cost "$run_dir/session")"
     if awk -v a="$cost" -v b="$cost_cap" 'BEGIN { exit !(a >= b) }'; then
-      terminate_pid "$pid"
+      terminate_pid "$run_dir"
       echo cost-cap > "$run_dir/why"
       break
     fi
@@ -228,8 +255,14 @@ cmd_wait() {
         [ -f "$run_dir/pid" ] || die "run $id never recorded a pid"
       fi
       pid="$(cat "$run_dir/pid")"
-      if ! alive "$pid"; then
-        sleep 2 # allow the watchdog to record the exit
+      if ! alive "$pid" || ! lstart_matches "$run_dir" "$pid"; then
+        # Grace: the watchdog may be between its 5s polls; wait for the
+        # sentinel up to 10s before declaring it lost.
+        tries=0
+        while [ $tries -lt 10 ] && [ ! -f "$run_dir/exit" ]; do
+          sleep 1
+          tries=$((tries + 1))
+        done
         [ -f "$run_dir/exit" ] && break
         echo "1" > "$run_dir/exit"
         echo "watchdog lost; run ended without exit code" > "$run_dir/why"
@@ -253,7 +286,7 @@ cmd_ls() {
     if [ -f "$d/exit" ]; then
       state="exit=$(cat "$d/exit")"
       [ -f "$d/why" ] && state="$(cat "$d/why") (exit=$(cat "$d/exit"))"
-    elif [ -f "$d/pid" ] && alive "$(cat "$d/pid")"; then
+    elif [ -f "$d/pid" ] && alive "$(cat "$d/pid")" && lstart_matches "$d" "$(cat "$d/pid")"; then
       state="running"
     else
       state="crashed"
@@ -267,7 +300,7 @@ cmd_kill() {
   [ $# -eq 1 ] || usage 1
   local run_dir="$RUNS_ROOT/$1"
   [ -f "$run_dir/pid" ] || die "unknown run or no pid: $1"
-  terminate_pid "$(cat "$run_dir/pid")"
+  terminate_pid "$run_dir"
   echo "killed $1"
 }
 
