@@ -126,11 +126,13 @@ write_trailer() { # <run-dir> <id> <rc> <start-epoch>
 }
 
 # Spawn pi, enforce time/cost caps, write the exit sentinel and trailer.
-# Called in the delegate process (sync) or a detached subshell (background).
+# Called in the delegate process (sync) or a re-exec'd, session-detached
+# `delegate _watch` process (background) that outlives the caller.
 spawn_and_watch() { # <run-dir> <id> <cwd> <timeout> <cost-cap> <model>
   local run_dir="$1" id="$2" dir="$3" timeout="$4" cost_cap="$5" model="$6"
   local start rc=0 cost
   start="$(date +%s)"
+  echo "$$" > "$run_dir/watchdog.pid"
 
   local args=()
   [ -n "$model" ] && args+=(--model "$model")
@@ -261,8 +263,20 @@ $(role_body "$role_file")
 EOF
 
   if [ "$background" = 1 ]; then
-    ( spawn_and_watch "$run_dir" "$id" "$dir" "$timeout" "$cost_cap" "$model" ) >/dev/null 2>&1 &
+    # Re-exec the watchdog in its own session (perl setsid, as for pi) so it
+    # survives the coordinator dying; it alone writes the exit sentinel.
+    export PI_BIN
+    perl -MPOSIX -e 'setsid; exec @ARGV' -- \
+      "$REPO/bin/delegate" _watch "$run_dir" "$id" "$dir" "$timeout" "$cost_cap" "$model" \
+      </dev/null >/dev/null 2>&1 &
     disown || true
+    # Don't return until the watchdog has detached and recorded pi's pid, so
+    # the caller dying right after launch cannot take it down mid-setsid.
+    local i
+    for i in $(seq 1 50); do
+      [ -f "$run_dir/pid" ] && [ -f "$run_dir/lstart" ] && [ -s "$run_dir/lstart" ] && break
+      sleep 0.1
+    done
     echo "$id"
     return 0
   fi
@@ -346,10 +360,20 @@ cmd_ask() {
   local model; model="$(fm_field "$(cat "$run_dir/meta")" model 2>/dev/null || true)"
   local args=()
   [ -n "$model" ] && [ "$model" != "default" ] && args+=(--model "$model")
+  # pi keys sessions by cwd and prompts to fork when resumed from elsewhere;
+  # resume from the run's own cwd (falls back to the caller's if it is gone).
+  local run_cwd; run_cwd="$(fm_field "$(cat "$run_dir/meta")" cwd 2>/dev/null || true)"
+  [ -d "$run_cwd" ] && cd "$run_cwd"
   "$PI_BIN" -p --no-skills --tools "$READONLY_TOOLS" \
     --session-dir "$run_dir/session" --session "$id" \
     --append-system-prompt "You are still the delegated worker run ($id), not the coordinator. Do not delegate, commit, or push; follow your original role and output contract. Do not rerun the task." \
     ${args[@]+"${args[@]}"} "$question"
+}
+
+cmd_watch() { # internal: detached background watchdog (see cmd_run -b)
+  [ $# -eq 6 ] || usage 1
+  trap '' HUP
+  spawn_and_watch "$@" || true
 }
 
 main() {
@@ -362,6 +386,7 @@ main() {
     ls)   cmd_ls ;;
     kill) cmd_kill "$@" ;;
     ask)  cmd_ask "$@" ;;
+    _watch) cmd_watch "$@" ;;
     -h|--help|help) usage 0 ;;
     *) usage 1 ;;
   esac

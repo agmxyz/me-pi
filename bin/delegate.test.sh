@@ -126,6 +126,24 @@ d kill "$bg2" >/dev/null 2>&1 && echo "✓ kill accepted" || { echo "✗ kill ac
 sleep 2
 d ls | grep -q "$bg2" && echo "✓ ls lists killed run" || { echo "✗ ls lists killed run"; fails=$((fails+1)); }
 
+# ── 7b. watchdog survives caller death ─────────────────────────────────
+# Coordinator = a process group we kill right after launch. The watchdog must be
+# in its own session, still enforce -t, write the sentinel, and stay killable.
+coord_out="$TMP/coord.id"
+perl -MPOSIX -e 'setsid; exec @ARGV' -- bash -c 'ME_PI_TEST_SLEEP=60 PI_BIN="$1" ME_PI_RUNS_ROOT="$2" ME_PI_WT_ROOT="$3" "$4" run reviewer "$5" -b -t 4 -C "$6" > "$7"; kill -KILL 0' _ "$FAKE_PI" "$RUNS" "$WTS" "$DELEGATE" "$TMP/task-b.md" "$TMP" "$coord_out" 2>/dev/null || true
+wd_id="$(cat "$coord_out")"
+sleep 1
+wd_pid="$(cat "$RUNS/$wd_id/watchdog.pid" 2>/dev/null || echo 0)"
+kill -0 "$wd_pid" 2>/dev/null && echo "✓ watchdog alive after coordinator death" || { echo "✗ watchdog alive after coordinator death"; fails=$((fails+1)); }
+[ "$(ps -o pgid= -p "$wd_pid" 2>/dev/null | tr -d ' ')" = "$wd_pid" ] && echo "✓ watchdog leads its own process group" || { echo "✗ watchdog leads its own process group"; fails=$((fails+1)); }
+for _ in $(seq 1 20); do [ -f "$RUNS/$wd_id/exit" ] && break; sleep 1; done
+[ -f "$RUNS/$wd_id/exit" ] && grep -q '^timeout$' "$RUNS/$wd_id/why" && grep -q "$wd_id exit=" "$RUNS/$wd_id/out.md" && echo "✓ orphaned watchdog enforces timeout + writes sentinel" || { echo "✗ orphaned watchdog enforces timeout + writes sentinel"; fails=$((fails+1)); }
+bg3="$(ME_PI_TEST_SLEEP=60 PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" run reviewer "$TMP/task-b.md" -b -C "$TMP")"
+sleep 1
+d kill "$bg3" >/dev/null 2>&1
+d wait "$bg3" > "$TMP/wait3.out" 2>&1 || true
+grep -q "exit=" "$TMP/wait3.out" && [ -f "$RUNS/$bg3/exit" ] && echo "✓ kill of detached run writes sentinel via watchdog" || { echo "✗ kill of detached run writes sentinel via watchdog"; fails=$((fails+1)); }
+
 # ── 8. worktree creation ───────────────────────────────────────────────
 git init -q "$TMP/repo" 2>/dev/null
 git -C "$TMP/repo" commit -q --allow-empty -m init
