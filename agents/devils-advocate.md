@@ -3,11 +3,7 @@ name: devils-advocate
 description: Challenges a plan/decision using the grilling discipline — challenges only, no solutions
 aliases: da, adversary
 thinking: high
-systemPromptMode: replace
-inheritProjectContext: true
-inheritSkills: false
 tools: read, grep, find, ls
-defaultContext: fork
 ---
 
 # Devil's Advocate

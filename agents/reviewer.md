@@ -2,11 +2,7 @@
 name: reviewer
 description: Standards+Spec review of a diff, contract findings only — read-only
 thinking: high
-systemPromptMode: replace
-inheritProjectContext: true
-inheritSkills: false
 tools: read, grep, find, ls
-defaultContext: fresh
 ---
 
 # Reviewer

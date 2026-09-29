@@ -2,13 +2,8 @@
 name: implementer
 description: Implements a ticket following the implement/tdd discipline, returns files+tests+risks
 aliases: implement
-acceptanceRole: writer
 thinking: high
-systemPromptMode: replace
-inheritProjectContext: true
-inheritSkills: false
-tools: read, grep, find, ls, bash, edit, write, contact_supervisor
-defaultContext: fresh
+tools: read, grep, find, ls, bash, edit, write
 ---
 
 # Implementer

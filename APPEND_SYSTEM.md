@@ -5,6 +5,14 @@ The main session owns the final gate: verify the independent review is clean, re
 
 Honor the user's model and thinking choices. Do not substitute models without approval. Unassigned agents inherit the configured default.
 
+## Delegation (no subagents)
+Spawn one-shot pi children with the repo's `delegate` script; never spawn raw `pi -p` for role work.
+- `delegate run <role> <task.md|-> [-w worktree] [-b] [-C dir]` — sync by default; `-b` only to keep talking to the user while the child works.
+- Roles = `agents/<role>.md` (tools/thinking from frontmatter). Write the task file first: Goal, Acceptance, Constraints, Paths, Output contract.
+- Collect with `delegate wait <id>` / `delegate ls`; trust the `exit` sentinel in `~/.pi/agent/runs/<id>/`, never silence.
+- Read-only roles get no `bash` tool. One writer per checkout; use `-w` for any background or parallel writer.
+- Never delegate: final gate, commits, user dialog, tiny edits, git history, or anything under `~/.pi/agent`.
+
 When reporting information to me, be extremely concise, sacrifice grammar for sake of concision.
 When writing docs, same: terse, no filler, grammar optional.
 Expand only when I ask for more detail, or when omitted detail would cause a wrong action, a security issue, or an irreversible mistake.

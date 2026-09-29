@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# Delegate bounded tasks from the main session to one-shot pi children.
+#
+# Usage:
+#   delegate run <role> <task.md|-> [-C dir] [-w] [-b] [-m model] [-t secs] [-c usd]
+#   delegate wait <id>...
+#   delegate ls
+#   delegate kill <id>
+#   delegate ask <id> "question"
+#
+# Roles come from agents/<role>.md frontmatter (tools:, thinking:) and body.
+# Runs live under ~/.pi/agent/runs/<id>/; $RUN/exit is the only completion signal.
+set -euo pipefail
+
+RUNS_ROOT="${ME_PI_RUNS_ROOT:-$HOME/.pi/agent/runs}"
+WT_ROOT="${ME_PI_WT_ROOT:-$HOME/.pi/wt}"
+PI_BIN="${PI_BIN:-pi}"
+DEFAULT_TIMEOUT_SECS="${ME_PI_DELEGATE_TIMEOUT:-900}"
+DEFAULT_COST_CAP_USD="${ME_PI_DELEGATE_COST_CAP:-2}"
+READONLY_TOOLS="read,grep,find,ls"
+
+die() { echo "✗ $*" >&2; exit 1; }
+
+# Resolve this script through symlinks so the repo is found when linked into PATH.
+resolve_repo() {
+  local source="${BASH_SOURCE[0]}" dir
+  while [ -L "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    case "$source" in /*) ;; *) source="$dir/$source" ;; esac
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+REPO="$(resolve_repo)"
+
+usage() {
+  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+frontmatter() { awk '/^---$/{n++; next} n==1 {print}' "$1"; }
+role_body()   { awk '/^---$/{n++; next} n>=2 {print}' "$1"; }
+
+fm_field() { # <frontmatter-text> <field>
+  printf '%s\n' "$1" | awk -F': *' -v f="$2" '$1 == f { print $2; exit }' | sed 's/[[:space:]]*$//'
+}
+
+run_cost() { # <session-dir> -> max recorded total cost
+  node -e '
+    const fs = require("node:fs"), path = require("node:path");
+    let total = 0, names = [];
+    try { names = fs.readdirSync(process.argv[1]); } catch {}
+    for (const name of names) {
+      if (!name.endsWith(".jsonl")) continue;
+      let text = "";
+      try { text = fs.readFileSync(path.join(process.argv[1], name), "utf8"); } catch { continue; }
+      for (const line of text.split("\n")) {
+        if (!line) continue;
+        try {
+          const cost = JSON.parse(line)?.message?.usage?.cost?.total;
+          if (typeof cost === "number" && cost > total) total = cost;
+        } catch {}
+      }
+    }
+    console.log(total);
+  ' "$1"
+}
+
+alive() { kill -0 "$1" 2>/dev/null; }
+
+terminate_pid() { # TERM, then KILL after 10s; lets pi reap its own tool children
+  local pid="$1" i
+  alive "$pid" || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    alive "$pid" || return 0
+    sleep 1
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+write_trailer() { # <run-dir> <id> <rc> <start-epoch>
+  local run_dir="$1" id="$2" rc="$3" start="$4"
+  printf '\n[%s exit=%s cost=%s %ss]\n' "$id" "$rc" "$(run_cost "$run_dir/session")" "$(( $(date +%s) - start ))" >> "$run_dir/out.md"
+}
+
+# Spawn pi, enforce time/cost caps, write the exit sentinel and trailer.
+# Called in the delegate process (sync) or a detached subshell (background).
+spawn_and_watch() { # <run-dir> <id> <cwd> <timeout> <cost-cap> <model>
+  local run_dir="$1" id="$2" dir="$3" timeout="$4" cost_cap="$5" model="$6"
+  local start rc=0 cost
+  start="$(date +%s)"
+
+  local args=()
+  [ -n "$model" ] && args+=(--model "$model")
+
+  (
+    cd "$dir" || exit 97
+    PATH="$run_dir/shim:$PATH" ME_PI_RUN="$id" "$PI_BIN" -p --no-skills \
+      --session-dir "$run_dir/session" --session-id "$id" \
+      --tools "$(fm_field "$(cat "$run_dir/meta")" tools)" \
+      --thinking "$(fm_field "$(cat "$run_dir/meta")" thinking)" \
+      --append-system-prompt "$(cat "$run_dir/role.md")" \
+      ${args[@]+"${args[@]}"} \
+      "@$run_dir/task.md" "Do the attached task." \
+      </dev/null >"$run_dir/out.md" 2>"$run_dir/err.log"
+  ) &
+  local pid=$!
+  echo "$pid" > "$run_dir/pid"
+
+  while alive "$pid"; do
+    if [ "$(( $(date +%s) - start ))" -ge "$timeout" ]; then
+      terminate_pid "$pid"
+      echo timeout > "$run_dir/why"
+      break
+    fi
+    cost="$(run_cost "$run_dir/session")"
+    if awk -v a="$cost" -v b="$cost_cap" 'BEGIN { exit !(a >= b) }'; then
+      terminate_pid "$pid"
+      echo cost-cap > "$run_dir/why"
+      break
+    fi
+    sleep 5
+  done
+  wait "$pid" 2>/dev/null || rc=$?
+  echo "$rc" > "$run_dir/exit"
+  write_trailer "$run_dir" "$id" "$rc" "$start"
+  [ -z "$rc" ] && rc=1
+  return "$rc"
+}
+
+cmd_run() {
+  [ $# -ge 2 ] || usage 1
+  local role="$1" task_source="$2"
+  shift 2
+  local dir="$PWD" worktree=0 background=0 model="" wt=""
+  local timeout="$DEFAULT_TIMEOUT_SECS" cost_cap="$DEFAULT_COST_CAP_USD" opt
+  while getopts "C:wbm:t:c:" opt; do
+    case "$opt" in
+      C) dir="$OPTARG" ;;
+      w) worktree=1 ;;
+      b) background=1 ;;
+      m) model="$OPTARG" ;;
+      t) timeout="$OPTARG" ;;
+      c) cost_cap="$OPTARG" ;;
+      *) usage 1 ;;
+    esac
+  done
+  [ -d "$dir" ] || die "not a directory: $dir"
+  dir="$(cd -P "$dir" && pwd -P)"
+
+  local role_file="$REPO/agents/$role.md"
+  [ -f "$role_file" ] || die "unknown role: $role (no agents/$role.md in $REPO)"
+
+  local fm tools thinking
+  fm="$(frontmatter "$role_file")"
+  tools="$(fm_field "$fm" tools)"
+  [ -n "$tools" ] || tools="$READONLY_TOOLS"
+  local thinking; thinking="$(fm_field "$fm" thinking)"
+  [ -n "$thinking" ] || thinking="high"
+
+  if [ "$worktree" = 1 ]; then
+    git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || die "-w needs a git repository: $dir"
+    mkdir -p "$WT_ROOT"
+    wt="$WT_ROOT/$(basename "$dir")-$(date +%m%d-%H%M%S)-$RANDOM"
+    git -C "$dir" worktree add --detach "$wt" HEAD >/dev/null || die "worktree creation failed"
+    dir="$wt"
+  fi
+
+  local id run_dir
+  id="${role}-$(date +%m%d-%H%M%S)-$RANDOM"
+  run_dir="$RUNS_ROOT/$id"
+  mkdir -p "$run_dir/session" "$run_dir/artifacts" "$run_dir/shim"
+
+  # Block nested delegation: a fake pi earlier on PATH refuses to run.
+  printf '#!/bin/sh\necho "delegate: nested pi is blocked" >&2\nexit 64\n' > "$run_dir/shim/pi"
+  chmod +x "$run_dir/shim/pi"
+
+  if [ "$task_source" = "-" ]; then
+    cat > "$run_dir/task.md"
+  else
+    [ -f "$task_source" ] || die "task file not found: $task_source"
+    cp "$task_source" "$run_dir/task.md"
+  fi
+
+  {
+    echo "cwd: $dir"
+    echo "head: $(git -C "$dir" rev-parse HEAD 2>/dev/null || echo none)"
+    echo "model: ${model:-default}"
+    echo "tools: $tools"
+    echo "thinking: $thinking"
+    echo "wt: ${wt:-none}"
+    echo "started: $(date +%s)"
+  } > "$run_dir/meta"
+
+  cat > "$run_dir/role.md" <<EOF
+Delegated worker run ($id). You are NOT the coordinator: the Coordination section of your addendum does not apply to you. Do not delegate, do not spawn other pi processes (a shim blocks it), do not commit or push. Work only inside your working directory. Your final message must follow the task's output contract — nothing else.
+
+$(role_body "$role_file")
+EOF
+
+  if [ "$background" = 1 ]; then
+    ( spawn_and_watch "$run_dir" "$id" "$dir" "$timeout" "$cost_cap" "$model" ) >/dev/null 2>&1 &
+    disown || true
+    echo "$id"
+    return 0
+  fi
+
+  local rc=0
+  spawn_and_watch "$run_dir" "$id" "$dir" "$timeout" "$cost_cap" "$model" || rc=$?
+  if [ -f "$run_dir/why" ]; then echo "delegate: stopped early: $(cat "$run_dir/why")" >&2; fi
+  cat "$run_dir/out.md"
+  return "$rc"
+}
+
+cmd_wait() {
+  [ $# -ge 1 ] || usage 1
+  local id run_dir pid rc tries
+  for id in "$@"; do
+    run_dir="$RUNS_ROOT/$id"
+    [ -d "$run_dir" ] || die "unknown run: $id"
+    while [ ! -f "$run_dir/exit" ]; do
+      if [ ! -f "$run_dir/pid" ]; then
+        for tries in 1 2 3 4 5; do
+          [ -f "$run_dir/pid" ] && break
+          sleep 1
+        done
+        [ -f "$run_dir/pid" ] || die "run $id never recorded a pid"
+      fi
+      pid="$(cat "$run_dir/pid")"
+      if ! alive "$pid"; then
+        sleep 2 # allow the watchdog to record the exit
+        [ -f "$run_dir/exit" ] && break
+        echo "1" > "$run_dir/exit"
+        echo "watchdog lost; run ended without exit code" > "$run_dir/why"
+        break
+      fi
+      sleep 2
+    done
+    rc="$(cat "$run_dir/exit")"
+    echo "── $id (exit=$rc) ──"
+    cat "$run_dir/out.md"
+    if [ -f "$run_dir/why" ]; then echo "reason: $(cat "$run_dir/why")"; fi
+  done
+}
+
+cmd_ls() {
+  local d id state cost
+  [ -d "$RUNS_ROOT" ] || return 0
+  for d in "$RUNS_ROOT"/*/; do
+    [ -d "$d" ] || continue
+    id="$(basename "$d")"
+    if [ -f "$d/exit" ]; then
+      state="exit=$(cat "$d/exit")"
+      [ -f "$d/why" ] && state="$(cat "$d/why") (exit=$(cat "$d/exit"))"
+    elif [ -f "$d/pid" ] && alive "$(cat "$d/pid")"; then
+      state="running"
+    else
+      state="crashed"
+    fi
+    cost="$(run_cost "$d/session")"
+    printf '%-36s %-30s cost=%-8s %s\n' "$id" "$state" "$cost" "$(date -r "$d/out.md" '+%m-%d %H:%M' 2>/dev/null || echo '?')"
+  done | sort -k4 -r
+}
+
+cmd_kill() {
+  [ $# -eq 1 ] || usage 1
+  local run_dir="$RUNS_ROOT/$1"
+  [ -f "$run_dir/pid" ] || die "unknown run or no pid: $1"
+  terminate_pid "$(cat "$run_dir/pid")"
+  echo "killed $1"
+}
+
+cmd_ask() {
+  [ $# -eq 2 ] || usage 1
+  local id="$1" question="$2"
+  local run_dir="$RUNS_ROOT/$id"
+  [ -d "$run_dir" ] || die "unknown run: $id"
+  local model; model="$(fm_field "$(cat "$run_dir/meta")" model 2>/dev/null || true)"
+  local args=()
+  [ -n "$model" ] && [ "$model" != "default" ] && args+=(--model "$model")
+  "$PI_BIN" -p --no-skills --tools "$READONLY_TOOLS" \
+    --session-dir "$run_dir/session" --session "$id" \
+    ${args[@]+"${args[@]}"} "$question"
+}
+
+main() {
+  [ $# -ge 1 ] || usage 1
+  local cmd="$1"
+  shift
+  case "$cmd" in
+    run)  cmd_run "$@" ;;
+    wait) cmd_wait "$@" ;;
+    ls)   cmd_ls ;;
+    kill) cmd_kill "$@" ;;
+    ask)  cmd_ask "$@" ;;
+    -h|--help|help) usage 0 ;;
+    *) usage 1 ;;
+  esac
+}
+
+main "$@"

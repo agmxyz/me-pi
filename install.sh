@@ -369,6 +369,13 @@ link_repo_agents
 link_repo_skills
 link_entry "$REPO/APPEND_SYSTEM.md" "$PI_AGENT/APPEND_SYSTEM.md" "APPEND_SYSTEM.md"
 
+# Expose the delegation helper on PATH when a user bin directory exists.
+if [ -d "$HOME/.local/bin" ]; then
+  link_entry "$REPO/bin/delegate" "$HOME/.local/bin/delegate" "delegate command"
+else
+  echo "· ~/.local/bin missing; add $REPO/bin to PATH to use delegate"
+fi
+
 # Seed preferences once; package installs below update the live settings without
 # replacing machine-local model, auth, or session state.
 if [ ! -f "$PI_AGENT/settings.json" ]; then
@@ -383,36 +390,31 @@ if ! command -v pi >/dev/null 2>&1; then
   exit 1
 fi
 pi install "$REPO/extensions"
-pi install npm:pi-subagents@0.71.0
 pi install npm:pi-web-access@0.33.0
 node - "$PI_AGENT/settings.json" <<'NODE'
 const fs = require("node:fs");
 const settingsPath = process.argv[2];
 const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-let foundSubagents = false;
 let foundWebAccess = false;
 const packages = [];
 for (const entry of settings.packages ?? []) {
   const source = typeof entry === "string" ? entry : entry?.source;
-  const isSubagents = typeof source === "string" && /^npm:pi-subagents(?:@|$)/.test(source);
   const isWebAccess = typeof source === "string" && /^npm:pi-web-access(?:@|$)/.test(source);
-  if (!isSubagents && !isWebAccess) {
+  if (!isWebAccess) {
     packages.push(entry);
     continue;
   }
-  if ((isSubagents && foundSubagents) || (isWebAccess && foundWebAccess)) continue;
-  if (isSubagents) foundSubagents = true;
-  if (isWebAccess) foundWebAccess = true;
-  const pinnedSource = isSubagents ? "npm:pi-subagents@0.71.0" : "npm:pi-web-access@0.33.0";
+  if (foundWebAccess) continue;
+  foundWebAccess = true;
   packages.push(typeof entry === "string"
-    ? { source: pinnedSource, ...(isSubagents ? { prompts: [] } : {}) }
-    : { ...entry, source: pinnedSource, ...(isSubagents ? { prompts: [] } : {}) });
+    ? "npm:pi-web-access@0.33.0"
+    : { ...entry, source: "npm:pi-web-access@0.33.0" });
 }
-if (!foundSubagents || !foundWebAccess) throw new Error("pinned Pi package entries missing after pi install");
+if (!foundWebAccess) throw new Error("pinned Pi package entry missing after pi install");
 settings.packages = packages;
 fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
-echo "✓ disabled pi-subagents package prompts"
+echo "✓ pinned pi-web-access package entry"
 
 install_interactive_shell
 if command -v rtk >/dev/null 2>&1; then
