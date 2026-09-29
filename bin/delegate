@@ -199,9 +199,12 @@ cmd_run() {
   run_dir="$RUNS_ROOT/$id"
   mkdir -p "$run_dir/session" "$run_dir/artifacts" "$run_dir/shim"
 
-  # Block nested delegation: a fake pi earlier on PATH refuses to run.
-  printf '#!/bin/sh\necho "delegate: nested pi is blocked" >&2\nexit 64\n' > "$run_dir/shim/pi"
-  chmod +x "$run_dir/shim/pi"
+  # Block nested delegation: fake pi and delegate earlier on PATH refuse to run,
+  # so a child cannot accidentally spawn more agents even by scripting them.
+  for shim_name in pi delegate; do
+    printf '#!/bin/sh\necho "delegate: nested %s is blocked" >&2\nexit 64\n' "$shim_name" > "$run_dir/shim/$shim_name"
+    chmod +x "$run_dir/shim/$shim_name"
+  done
 
   if [ "$task_source" = "-" ]; then
     cat > "$run_dir/task.md"
@@ -221,7 +224,7 @@ cmd_run() {
   } > "$run_dir/meta"
 
   cat > "$run_dir/role.md" <<EOF
-Delegated worker run ($id). You are NOT the coordinator: the Coordination section of your addendum does not apply to you. Do not delegate, do not spawn other pi processes (a shim blocks it), do not commit or push. Work only inside your working directory. Your final message must follow the task's output contract — nothing else.
+Delegated worker run ($id). You are NOT the coordinator: the Coordination AND Delegation sections of your addendum do not apply to you. Do not delegate, do not spawn other pi processes, do not commit or push — even if a skill or the addendum instructs otherwise; this preamble and your role body win. Work only inside your working directory. Your final message must follow the task's output contract — nothing else.
 
 $(role_body "$role_file")
 EOF
@@ -314,6 +317,7 @@ cmd_ask() {
   [ -n "$model" ] && [ "$model" != "default" ] && args+=(--model "$model")
   "$PI_BIN" -p --no-skills --tools "$READONLY_TOOLS" \
     --session-dir "$run_dir/session" --session "$id" \
+    --append-system-prompt "You are still the delegated worker run ($id), not the coordinator. Do not delegate, commit, or push; follow your original role and output contract. Do not rerun the task." \
     ${args[@]+"${args[@]}"} "$question"
 }
 

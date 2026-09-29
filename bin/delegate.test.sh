@@ -42,10 +42,9 @@ cost="${ME_PI_TEST_COST:-0}"
 printf '{"message":{"usage":{"cost":{"total":%s}}}}\n' "$cost" > "$session_dir/usage.jsonl"
 if [ "${ME_PI_TEST_CHECK_SHIM:-0}" = "1" ]; then
   resolved_pi="$(command -v pi || true)"
-  case "$resolved_pi" in
-    */shim/pi) : ;;
-    *) echo "shim missing: got $resolved_pi" >&2; exit 63 ;;
-  esac
+  resolved_delegate="$(command -v delegate || true)"
+  case "$resolved_pi" in */shim/pi) : ;; *) echo "shim missing: got $resolved_pi" >&2; exit 63 ;; esac
+  case "$resolved_delegate" in */shim/delegate) : ;; *) echo "delegate shim missing: got $resolved_delegate" >&2; exit 63 ;; esac
 fi
 if [ -n "${ME_PI_TEST_FAIL_IF_CWD:-}" ] && [ "$PWD" = "$ME_PI_TEST_FAIL_IF_CWD" ]; then
   echo "child ran in forbidden cwd: $PWD" >&2
@@ -57,8 +56,9 @@ exit "${ME_PI_TEST_EXIT:-0}"
 FAKE
 chmod +x "$FAKE_PI"
 
-export PATH_FAKE="PI_BIN=$FAKE_PI"
 d() { PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" "$@"; }
+# fake pi must not resolve the shim as itself when invoked by name inside runs
+export PI_BIN="$FAKE_PI"
 
 # ── 1. sync run, success ────────────────────────────────────────────────
 out="$(printf 'do a thing\nto: %s\n' "$TMP" | d run reviewer - -C "$TMP")"
@@ -71,9 +71,12 @@ check "task copied" grep -q "do a thing" "$RUNS/$run_id/task.md"
 # ── 2. role resolution ─────────────────────────────────────────────────
 if d run nobody /dev/null -C "$TMP" >/dev/null 2>&1; then echo "✗ unknown role rejected"; fails=$((fails+1)); else echo "✓ unknown role rejected"; fi
 
-# ── 3. nested pi blocked via shim ──────────────────────────────────────
+# ── 3. nested pi + delegate blocked via shim ───────────────────────────
 ME_PI_TEST_CHECK_SHIM=1 d run reviewer - -C "$TMP" <<< "shim check" > "$TMP/shim.out" 2>&1 || true
 grep -q "TASK-DONE-MARKER" "$TMP/shim.out" && echo "✓ shim enforced (fake pi saw shim)" || { echo "✗ shim enforced"; fails=$((fails+1)); }
+# nested `delegate` itself must also be shadowed and refuse (exit 64)
+rc=0; PATH="$RUNS/$(ls "$RUNS" | tail -1)/shim:$PATH" delegate run reviewer - -C "$TMP" <<< x >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 64 ] && echo "✓ nested delegate refuses" || { echo "✗ nested delegate refuses (rc=$rc)"; fails=$((fails+1)); }
 
 # ── 4. background run + wait ───────────────────────────────────────────
 printf 'bg task\n' > "$TMP/task-b.md"
