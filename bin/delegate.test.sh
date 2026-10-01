@@ -110,6 +110,46 @@ flag_thinking_out="$(HOME="$TMP/home" d run reviewer - -C "$TMP" -m openai-codex
 flag_thinking_id="$(ls -t "$RUNS" | head -1)"
 check "-T overrides settings thinking" grep -Fxq "max" "$RUNS/$flag_thinking_id/session/args"
 
+# ── 3b. default model fallback (no role override) ───────────────────────
+cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
+{
+  "subagents": {
+    "defaultModel": "fallback-model",
+    "defaultProvider": "fallback-provider",
+    "defaultThinking": "max"
+  }
+}
+JSON
+fb_id="$(HOME="$TMP/home" d run reviewer - -C "$TMP" <<< "fallback check" >/dev/null; ls -t "$RUNS" | head -1)"
+check "default model fallback passed" grep -Fxq "fallback-provider/fallback-model" "$RUNS/$fb_id/session/args"
+check "fallback keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$fb_id/session/args"
+fbm_id="$(HOME="$TMP/home" d run reviewer - -C "$TMP" -m cli/model <<< "fallback flag check" >/dev/null; ls -t "$RUNS" | head -1)"
+check "-m overrides default fallback" grep -Fxq "cli/model" "$RUNS/$fbm_id/session/args"
+cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
+{
+  "subagents": {
+    "defaultModel": "bare-model",
+    "defaultProvider": false,
+    "defaultThinking": "max"
+  }
+}
+JSON
+fbp_id="$(HOME="$TMP/home" d run reviewer - -C "$TMP" <<< "bare fallback check" >/dev/null; ls -t "$RUNS" | head -1)"
+check "default fallback without provider uses bare model" grep -Fxq "bare-model" "$RUNS/$fbp_id/session/args"
+cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
+{
+  "subagents": {
+    "defaultModel": "fallback-model",
+    "defaultProvider": "fallback-provider",
+    "defaultThinking": "max",
+    "agentOverrides": { "reviewer": { "model": "override-model", "defaultProvider": "override-provider" } }
+  }
+}
+JSON
+ovd_id="$(HOME="$TMP/home" d run reviewer - -C "$TMP" <<< "override beats default" >/dev/null; ls -t "$RUNS" | head -1)"
+check "role override beats default fallback" grep -Fxq "override-provider/override-model" "$RUNS/$ovd_id/session/args"
+check "override without thinking keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$ovd_id/session/args"
+
 # ── 4. nested pi + delegate blocked via shim ───────────────────────────
 ME_PI_TEST_CHECK_SHIM=1 d run reviewer - -C "$TMP" <<< "shim check" > "$TMP/shim.out" 2>&1 || true
 grep -q "TASK-DONE-MARKER" "$TMP/shim.out" && echo "✓ shim enforced (fake pi saw shim)" || { echo "✗ shim enforced"; fails=$((fails+1)); }

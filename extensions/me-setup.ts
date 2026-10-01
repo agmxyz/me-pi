@@ -242,6 +242,29 @@ async function pickModelAndThinking(
 	return { model: rest.join("/"), defaultProvider: prov, ...(thinking !== "inherit" ? { thinking } : {}) };
 }
 
+let isChooserSwitching = false;
+
+async function switchLiveSessionModel(pi: ExtensionAPI, ctx: any, provider: string, modelId: string): Promise<boolean> {
+	isChooserSwitching = true;
+	try {
+		const model = ctx?.modelRegistry?.find?.(provider, modelId);
+		if (!model) return false;
+		if (typeof ctx?.setModel === "function") {
+			const res = await ctx.setModel(model);
+			return res !== false;
+		}
+		if (typeof pi?.setModel === "function") {
+			const res = await pi.setModel(model);
+			return res !== false;
+		}
+	} catch {
+		return false;
+	} finally {
+		isChooserSwitching = false;
+	}
+	return false;
+}
+
 function describe(eff: any, inheritedProvider?: string, inheritLabel = "default"): string {
 	if (!eff || (!eff.model && !eff.thinking)) return `inherit ${inheritLabel}`;
 	const provider = eff.defaultProvider === false ? undefined : eff.defaultProvider ?? inheritedProvider;
@@ -262,6 +285,8 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 	const settings = loadSettings();
 	const sub = settings.subagents;
 	let changed = false;
+	let attemptedSwitch = false;
+	let sessionSwitched = false;
 
 	// Step 1 — default (what every agent inherits)
 	const keep = `(keep current: ${describe({ model: sub.defaultModel, defaultProvider: sub.defaultProvider, thinking: sub.defaultThinking }, undefined, "parent session")})`;
@@ -278,7 +303,13 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 			if (pick.thinking) sub.defaultThinking = pick.thinking;
 			else delete sub.defaultThinking;
 			const after = JSON.stringify({ model: sub.defaultModel, provider: sub.defaultProvider, thinking: sub.defaultThinking });
-			changed ||= before !== after;
+			const defaultChanged = before !== after;
+			changed ||= defaultChanged;
+			// The default choice is also the live session's model when resolvable and changed.
+			if (defaultChanged) {
+				attemptedSwitch = true;
+				sessionSwitched = await switchLiveSessionModel(pi, ctx, pick.defaultProvider, pick.model);
+			}
 		}
 	}
 
@@ -326,7 +357,10 @@ async function chooser(pi: ExtensionAPI, ctx: any): Promise<void> {
 		"overrides:",
 		...(overrides.length ? overrides.map(([a, v]) => `${a}: ${describe(v, sub.defaultProvider)}`) : ["(none)"]),
 	];
-	say(ctx, `${changed ? "Saved to ~/.pi/agent/settings.json" : "No changes; settings unchanged"} · applies to new sessions; current session unchanged.\n\n${table.join("\n")}`);
+	const sessionSwitchNotice = attemptedSwitch
+		? (sessionSwitched ? " · switched current session model" : " · current session model could not be switched (not in active catalog or no auth)")
+		: "";
+	say(ctx, `${changed ? "Saved to ~/.pi/agent/settings.json" : "No changes; settings unchanged"}${sessionSwitchNotice} · applies to new sessions.\n\n${table.join("\n")}`);
 }
 
 function linkedEntryReport(sourceDir: string, liveDir: string, include: (name: string, isDirectory: boolean) => boolean): { linked: number; expected: number; unlinked: string[] } {
@@ -440,6 +474,23 @@ async function statusReport(ctx: any): Promise<void> {
 }
 
 export default function (pi: ExtensionAPI) {
+	// Mirror /model selections into subagents.defaultModel/defaultProvider so
+	// delegate runs (and new sessions) inherit what the user picked. Session
+	// restores and no-op selections leave settings untouched.
+	pi.on?.("model_select", (event, ctx) => {
+		if (isChooserSwitching || event.source === "restore" || !event.model?.id) return;
+		try {
+			const settings = loadSettings();
+			const sub = settings.subagents;
+			if (sub.defaultModel === event.model.id && sub.defaultProvider === event.model.provider) return;
+			sub.defaultModel = event.model.id;
+			sub.defaultProvider = event.model.provider;
+			saveSettings(settings);
+		} catch (err) {
+			say(ctx, `me-setup: could not sync default model to settings.json: ${err instanceof Error ? err.message : err}`);
+		}
+	});
+
 	pi.registerCommand("me-setup", {
 		description: "Choose agent models & thinking levels (status: /me-setup status)",
 		handler: async (args: string, ctx: any) => {
