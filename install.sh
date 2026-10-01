@@ -153,7 +153,7 @@ migrate_legacy_extensions() {
     [ -e "$source" ] || continue
     name="$(basename "$source")"
     case "$name" in
-      me-setup.ts|minimal.ts|*.test.*|package.json|package-lock.json|node_modules)
+      me-setup.ts|*.test.*|package.json|package-lock.json|node_modules)
         continue
         ;;
     esac
@@ -320,7 +320,7 @@ install_interactive_shell() {
 
 prepare_local_extension_slots() {
   local name source destination backup backup_base backup_suffix
-  for name in me-setup.ts minimal.ts; do
+  for name in me-setup.ts; do
     source="$REPO/extensions/$name"
     destination="$PI_AGENT/extensions/$name"
     if [ -L "$destination" ] && [ "$(readlink "$destination")" = "$source" ]; then

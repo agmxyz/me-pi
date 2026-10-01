@@ -29,7 +29,7 @@ npm test --prefix extensions
 
 ## Layout
 
-- `extensions/`: local Pi package with project-maintained extensions
+- `extensions/`: local Pi package with the project-maintained extension
 - `agents/`: implementer, reviewer, and devil's advocate definitions
 - `skills/`: curated skills shared with Codex through per-skill links
 - `settings.json`: initial settings template
@@ -39,4 +39,3 @@ npm test --prefix extensions
 ## Credits
 
 - `skills/`: most engineering and productivity skills are vendored from [`mattpocock/skills`](https://github.com/mattpocock/skills) (MIT), then customized. The rest are local.
-- `extensions/minimal.ts`: inspired by the minimal footer in [`disler/pi-vs-claude-code`](https://github.com/disler/pi-vs-claude-code).
