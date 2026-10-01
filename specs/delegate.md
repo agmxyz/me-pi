@@ -6,7 +6,7 @@
 
 | Command | Behavior |
 |---|---|
-| `run <role> <task.md\|-> [-C dir] [-w] [-b] [-m model] [-t secs] [-c usd]` | sync by default; `-b` detaches a watchdog and prints the id; `-t`/`-c` are time/cost caps (defaults 900s / $2) |
+| `run <role> <task.md\|-> [-C dir] [-w] [-b] [-m model] [-T thinking] [-t secs] [-c usd]` | sync by default; `-b` detaches a watchdog and prints the id; `-t`/`-c` are time/cost caps (defaults 900s / $2) |
 | `wait <id>...` | block on `exit`, print `out.md`; marks a vanished watchdog as lost |
 | `ls` | id, state, cost, mtime, **cwd** (shared-checkout risk is visible) |
 | `kill <id>` | TERM then KILL the child's process group; pid verified against `lstart` |
@@ -14,7 +14,7 @@
 | `harvest <id>` | bring a `-w` run's changes back (below) |
 | `prune [--days N] [--dry-run]` | GC old runs and worktrees (below) |
 
-Model: `-m` > `subagents.agentOverrides.<role>` in settings > role frontmatter thinking + pi default. Nested `pi`/`delegate` are blocked by a per-run PATH shim.
+Model: `-m` > `subagents.agentOverrides.<role>` in settings > pi default. An explicit `-m` bypasses the role settings override, including its thinking choice. Thinking: `-T` > settings override (when `-m` is absent) > role frontmatter > pi default. Nested `pi`/`delegate` are blocked by a per-run PATH shim. `ask` resumes with the full saved role prompt.
 
 ## Run files
 

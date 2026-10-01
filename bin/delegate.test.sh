@@ -39,6 +39,7 @@ done
 [ -n "${session_id:-}" ] || { echo "no session id" >&2; exit 90; }
 mkdir -p "$session_dir"
 printf '%s\n' "$@" > "$session_dir/args"
+printf '%s\n' "$PWD" > "$session_dir/cwd"
 cost="${ME_PI_TEST_COST:-0}"
 printf '{"message":{"usage":{"cost":{"total":%s}}}}\n' "$cost" > "$session_dir/usage.jsonl"
 if [ "${ME_PI_TEST_CHECK_SHIM:-0}" = "1" ]; then
@@ -68,6 +69,17 @@ check "sync run exit sentinel" grep -q "exit=0" <<<"$out"
 run_id="$(ls "$RUNS" | head -1)"
 check "run dir session has cost" grep -q '"total"' "$RUNS/$run_id/session/usage.jsonl"
 check "task copied" grep -q "do a thing" "$RUNS/$run_id/task.md"
+role_file="$RUNS/$run_id/role.md"
+check "worker prompt identifies delegated role" grep -Fq "You are a delegated worker, not the coordinator" "$role_file"
+check "worker prompt sets context priority" grep -Fq "Task and role constraints take precedence over conflicting project context" "$role_file"
+check "worker prompt warns this is not a sandbox" grep -Fq "This is not a sandbox" "$role_file"
+check "worker prompt includes concise reporting and docs rule" grep -Fq "When reporting or writing docs, be concise and terse" "$role_file"
+check "worker prompt expands for safety risks" grep -Fq "wrong action, security issue, or irreversible mistake" "$role_file"
+if grep -Eq "Coordination AND Delegation sections|Stay the coordinator" "$role_file"; then
+  echo "✗ worker prompt includes phantom sections or coordinator instructions"; fails=$((fails+1))
+else
+  echo "✓ worker prompt omits phantom sections and coordinator instructions"
+fi
 
 # ── 2. role resolution ─────────────────────────────────────────────────
 if d run nobody /dev/null -C "$TMP" >/dev/null 2>&1; then echo "✗ unknown role rejected"; fails=$((fails+1)); else echo "✓ unknown role rejected"; fi
@@ -93,6 +105,10 @@ flag_out="$(HOME="$TMP/home" d run reviewer - -C "$TMP" -m cli/model <<< "flag c
 flag_id="$(ls -t "$RUNS" | head -1)"
 check "-m overrides settings model" grep -Fxq "cli/model" "$RUNS/$flag_id/session/args"
 check "-m keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$flag_id/session/args"
+# Explicit -T thinking overrides settings/frontmatter.
+flag_thinking_out="$(HOME="$TMP/home" d run reviewer - -C "$TMP" -m openai-codex/gpt-6-luna -T max <<< "thinking flag check")"
+flag_thinking_id="$(ls -t "$RUNS" | head -1)"
+check "-T overrides settings thinking" grep -Fxq "max" "$RUNS/$flag_thinking_id/session/args"
 
 # ── 4. nested pi + delegate blocked via shim ───────────────────────────
 ME_PI_TEST_CHECK_SHIM=1 d run reviewer - -C "$TMP" <<< "shim check" > "$TMP/shim.out" 2>&1 || true
@@ -103,7 +119,7 @@ rc=0; PATH="$RUNS/$(ls "$RUNS" | tail -1)/shim:$PATH" delegate run reviewer - -C
 
 # ── 4. background run + wait ───────────────────────────────────────────
 printf 'bg task\n' > "$TMP/task-b.md"
-bg_id="$(ME_PI_TEST_SLEEP=2 PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" run reviewer "$TMP/task-b.md" -b -C "$TMP")"
+bg_id="$(ME_PI_TEST_SLEEP=2 d run reviewer "$TMP/task-b.md" -b -C "$TMP")"
 [ -n "$bg_id" ] || { echo "✗ bg id printed"; fails=$((fails+1)); }
 d wait "$bg_id" > "$TMP/wait.out" 2>&1
 check "wait prints result" grep -q "TASK-DONE-MARKER" "$TMP/wait.out"
@@ -155,7 +171,13 @@ ls "$WTS" | grep -q "^repo-" && echo "✓ worktree created" || { echo "✗ workt
 check "child cwd is the worktree" grep -q "exit=0" <<<"$(cat "$TMP/wt.out")"
 
 # ── 9. ask ─────────────────────────────────────────────────────────────
-d ask "$bg_id" "status?" 2>/dev/null | grep -q "TASK-DONE-MARKER" && echo "✓ ask resumes session" || { echo "✗ ask resumes session"; fails=$((fails+1)); }
+d ask "$bg_id" "status?" > "$TMP/ask.out" 2>/dev/null
+check "ask resumes session" grep -q "TASK-DONE-MARKER" "$TMP/ask.out"
+check "ask preserves run model" grep -Fxq "$(sed -n 's/^model: //p' "$RUNS/$bg_id/meta")" "$RUNS/$bg_id/session/args"
+check "ask keeps read-only tools" grep -Fxq "read,grep,find,ls" "$RUNS/$bg_id/session/args"
+check "ask uses original run cwd" grep -Fxq "$(sed -n 's/^cwd: //p' "$RUNS/$bg_id/meta")" "$RUNS/$bg_id/session/cwd"
+check "ask appends full role file" grep -Fxq "$RUNS/$bg_id/role.md" "$RUNS/$bg_id/session/args"
+check "ask adds follow-up instruction" grep -Fxq "This is a follow-up, not a restart. Do not redo the original task; honor its original task and output contract." "$RUNS/$bg_id/session/args"
 
 # ── 10. child failure propagates ───────────────────────────────────────
 ME_PI_TEST_EXIT=3 d run reviewer - -C "$TMP" > "$TMP/fail.out" 2>&1 && { echo "✗ nonzero child exit propagates"; fails=$((fails+1)); } || echo "✓ nonzero child exit propagates"

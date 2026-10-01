@@ -108,15 +108,28 @@ else
   fail "2 shim not observed in child output: $(head -c 300 "$ME_PI_RUNS_ROOT/$id2/out.md")"
 fi
 
-# ── 3. ask on a finished run from a different cwd resumes context ──────
-ask_out="$(cd /tmp && "$DELEGATE" ask "$id1" "What reference code word was in your task? Answer with the code word only." 2>"$TMP/c3.err")"
-if grep -q "$CODE" <<<"$ask_out"; then
-  pass "3 ask resumed prior session context from a different cwd"
+# ── 3. ask persists the complete role addendum in the session transcript ─
+ask_rc=0
+(cd /tmp && "$DELEGATE" ask "$id1" "Reply DONE." > "$TMP/c3.out" 2>"$TMP/c3.err") || ask_rc=$?
+if [ "$ask_rc" -eq 0 ] && node - "$r1/session" "$r1/role.md" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const [sessionDir, rolePath] = process.argv.slice(2);
+const files = fs.readdirSync(sessionDir).filter((name) => name.endsWith(".jsonl")).sort();
+if (files.length === 0) throw new Error("no persisted session JSONL");
+const entries = files.flatMap((name) => fs.readFileSync(path.join(sessionDir, name), "utf8")
+  .split("\n").filter(Boolean).map((line) => JSON.parse(line)));
+const latestSystem = entries.filter((entry) => entry.type === "message" && entry.message?.role === "system").at(-1);
+const addendum = latestSystem?.message?.sections?.addendum;
+if (typeof addendum !== "string") throw new Error("latest system message has no addendum");
+const role = fs.readFileSync(rolePath, "utf8").trimEnd();
+if (!addendum.includes(role)) throw new Error("latest addendum does not contain the full role.md");
+if (!addendum.includes("**Output contract**")) throw new Error("latest addendum lost the role output contract");
+NODE
+then
+  pass "3 ask transcript retains full role addendum and output contract"
 else
-  echo "⚠⚠⚠ WARNING: 3 ask did NOT recall '$CODE' — COLD START (session resume failed)"
-  echo "    answer: $(printf '%s' "$ask_out" | head -c 200)"
-  echo "    stderr: $(head -c 200 "$TMP/c3.err")"
-  skip "3 ask context resume unverified (diagnostic; cold start reported above)"
+  fail "3 ask transcript missing role addendum/output contract (rc=$ask_rc): $(head -c 300 "$TMP/c3.err")"
 fi
 
 # ── 4. kill: sleep-heavy background run is killed; sentinel + process dead ─

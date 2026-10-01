@@ -2,7 +2,7 @@
 # Delegate bounded tasks from the main session to one-shot pi children.
 #
 # Usage:
-#   delegate run <role> <task.md|-> [-C dir] [-w] [-b] [-m model] [-t secs] [-c usd]
+#   delegate run <role> <task.md|-> [-C dir] [-w] [-b] [-m model] [-T thinking] [-t secs] [-c usd]
 #   delegate wait <id>...
 #   delegate ls
 #   delegate kill <id>
@@ -183,14 +183,15 @@ cmd_run() {
   [ $# -ge 2 ] || usage 1
   local role="$1" task_source="$2"
   shift 2
-  local dir="$PWD" worktree=0 background=0 model="" wt="" origin=""
+  local dir="$PWD" worktree=0 background=0 model="" thinking_override="" wt="" origin=""
   local timeout="$DEFAULT_TIMEOUT_SECS" cost_cap="$DEFAULT_COST_CAP_USD" opt
-  while getopts "C:wbm:t:c:" opt; do
+  while getopts "C:wbm:T:t:c:" opt; do
     case "$opt" in
       C) dir="$OPTARG" ;;
       w) worktree=1 ;;
       b) background=1 ;;
       m) model="$OPTARG" ;;
+      T) thinking_override="$OPTARG" ;;
       t) timeout="$OPTARG" ;;
       c) cost_cap="$OPTARG" ;;
       *) usage 1 ;;
@@ -220,6 +221,7 @@ cmd_run() {
       [ -n "$override_thinking" ] && thinking="$override_thinking"
     fi
   fi
+  [ -n "$thinking_override" ] && thinking="$thinking_override"
 
   if [ "$worktree" = 1 ]; then
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || die "-w needs a git repository: $dir"
@@ -261,7 +263,7 @@ cmd_run() {
   } > "$run_dir/meta"
 
   cat > "$run_dir/role.md" <<EOF
-Delegated worker run ($id). You are NOT the coordinator: the Coordination AND Delegation sections of your addendum do not apply to you. Do not delegate, do not spawn other pi processes, do not commit or push — even if a skill or the addendum instructs otherwise; this preamble and your role body win. Work only inside your working directory. Your final message must follow the task's output contract — nothing else.
+Delegated worker run ($id). You are a delegated worker, not the coordinator. Do not delegate, spawn other pi processes, commit, or push. Task and role constraints take precedence over conflicting project context; follow relevant project context otherwise. This is not a sandbox; actions affect real files and systems, so use care. Work only inside your working directory. When reporting or writing docs, be concise and terse. Expand only when needed to avoid a wrong action, security issue, or irreversible mistake. Honor the task's output contract; nothing else.
 
 $(role_body "$role_file")
 EOF
@@ -370,7 +372,8 @@ cmd_ask() {
   [ -d "$run_cwd" ] && cd "$run_cwd"
   "$PI_BIN" -p --no-skills --tools "$READONLY_TOOLS" \
     --session-dir "$run_dir/session" --session "$id" \
-    --append-system-prompt "You are still the delegated worker run ($id), not the coordinator. Do not delegate, commit, or push; follow your original role and output contract. Do not rerun the task." \
+    --append-system-prompt "$run_dir/role.md" \
+    --append-system-prompt "This is a follow-up, not a restart. Do not redo the original task; honor its original task and output contract." \
     ${args[@]+"${args[@]}"} "$question"
 }
 
