@@ -31,11 +31,7 @@ npm test --prefix extensions
 
 - `extensions/`: local Pi package with the project-maintained extension
 - `agents/`: implementer, reviewer, and devil's advocate definitions
-- `skills/`: curated skills shared with Codex through per-skill links
+- `skills/`: repo-maintained personal skills shared with Codex through per-skill links
 - `settings.json`: initial settings template
 - `APPEND_SYSTEM.md`: main-session system addendum
 - `docs/`: architecture decisions and research
-
-## Credits
-
-- `skills/`: most engineering and productivity skills are vendored from [`mattpocock/skills`](https://github.com/mattpocock/skills) (MIT), then customized. The rest are local.

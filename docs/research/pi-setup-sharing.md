@@ -14,7 +14,7 @@ The earlier recommendation to keep the whole-directory symlinks was wrong for th
 
 4. **Agent runtime and model assignment.** Repo role files are linked individually into `~/.pi/agent/agents/`. `/me-setup` persists per-role choices in `settings.json` under `subagents.agentOverrides`; `bin/delegate` consumes those overrides, then falls back to role frontmatter and pi defaults. `pi-web-access` remains a separately managed package recorded in live settings. [Packages](https://pi.dev/docs/latest/packages)
 
-5. **Shared skills.** Pi and Codex both discover `~/.agents/skills`. ADR 0001 keeps the rig's curated skill sources in one repo. A whole-directory symlink makes `npx skills` writes land in the repo, so keep the live directory real and link repo-owned skill folders individually. External skills remain separate live entries; do not merge them into the repo. Preserve name collisions for manual resolution. [Skills](https://pi.dev/docs/latest/skills) · [`npx skills`](https://github.com/vercel-labs/skills)
+5. **Shared skills.** Pi and Codex both discover `~/.agents/skills`. Keep me-pi-owned skills in the repo and link them individually; Matt Pocock skills installed by the global skills installer stay external and are not vendored here. A whole-directory symlink makes installer writes land in the repo, so keep the live directory real. Preserve name collisions for manual resolution. [Skills](https://pi.dev/docs/latest/skills) · [`npx skills`](https://github.com/vercel-labs/skills)
 
 6. **Settings and secrets.** Keep `settings.json` as a seed copied only when absent; `pi install` manages package entries in the live file. Keep auth and endpoint credentials machine-local. `models.json` can contain literal API keys, so ignore it in Git and prefer environment/command-backed keys. [Models](https://pi.dev/docs/latest/models)
 
@@ -22,13 +22,13 @@ The earlier recommendation to keep the whole-directory symlinks was wrong for th
 
 - `extensions/` is a Pi local package exposing only project-maintained extensions.
 - `~/.pi/agent/extensions/` is not symlinked to the repo; RTK owns `rtk.ts`, and Pi's interactive-shell example is copied there if missing.
-- `~/.pi/agent/agents/` and `~/.agents/skills/` are machine-owned directories with per-entry links to repo resources.
+- `~/.pi/agent/agents/` and `~/.agents/skills/` are machine-owned directories; repo-owned agents/skills are linked per entry, while globally installed Matt Pocock skills remain external copies.
 - `pi install` registers the local package and the pinned `pi-web-access` package.
 - Never copy live directory entries into the repo. On migration, unlink only verified links into this repo; untracked files inside tracked skills are backed up to `~/.agents/.me-pi-migration/` (never copied into live skills, which would block per-skill links); preserve other live directories and report name collisions. Refuse a symlinked settings file and package-store links into the repo so `pi install` cannot write there.
 
 ## Limits
 
-The three inspected public personal configs demonstrate copy, symlink, and clone-in-place options; this small sample cannot establish prevalence. The repository intentionally curates its tracked skill sources, but any future externally managed skill with a colliding name needs manual ownership resolution. Review globally loaded extensions as executable trusted code.
+The three inspected public personal configs demonstrate copy, symlink, and clone-in-place options; this small sample cannot establish prevalence. The repository tracks only me-pi-owned skills; any externally managed skill with a colliding name needs manual ownership resolution. Review globally loaded extensions as executable trusted code.
 
 ## Sources
 
