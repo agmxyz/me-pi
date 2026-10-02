@@ -200,3 +200,42 @@ test("picking an uncatalogued default model does not call setModel with a stub",
 	assert.equal(saved.subagents.defaultProvider, "uncatalogued-provider");
 	assert.match(notifications[0], /could not be switched/);
 });
+
+// Worker guard: a delegate worker (ME_PI_RUN set) must never see the
+// coordinator addendum; if pi ever merges it in, the run fails closed.
+const ADDENDUM_PATH = join(TEST_HOME, ".pi", "agent", "APPEND_SYSTEM.md");
+const ADDENDUM = "## Coordination\nStay the coordinator.";
+
+function runWorkerGuard(t, { workerRun, systemPrompt }) {
+	mkdirSync(join(TEST_HOME, ".pi", "agent"), { recursive: true });
+	writeFileSync(ADDENDUM_PATH, ADDENDUM + "\n");
+	const previousRun = process.env.ME_PI_RUN;
+	if (workerRun) process.env.ME_PI_RUN = workerRun;
+	else delete process.env.ME_PI_RUN;
+	t.after(() => {
+		if (previousRun === undefined) delete process.env.ME_PI_RUN;
+		else process.env.ME_PI_RUN = previousRun;
+	});
+	const exit = t.mock.method(process, "exit", () => {});
+	const stderr = t.mock.method(console, "error", () => {});
+	const { pi, handlers } = fakePi();
+	registerMeSetup(pi);
+	handlers.before_agent_start({ type: "before_agent_start", prompt: "Do the attached task.", systemPrompt, systemPromptOptions: {} }, {});
+	return { exitCodes: exit.mock.calls.map((call) => call.arguments[0]), errors: stderr.mock.calls.map((call) => call.arguments.join(" ")) };
+}
+
+test("worker guard exits non-zero when a worker prompt contains the coordinator addendum", (t) => {
+	const { exitCodes, errors } = runWorkerGuard(t, { workerRun: "implementer-1", systemPrompt: `base\n<addendum>\n${ADDENDUM}\n</addendum>` });
+	assert.deepEqual(exitCodes, [1]);
+	assert.match(errors[0], /coordinator addendum/);
+});
+
+test("worker guard lets a worker prompt without the coordinator addendum run", (t) => {
+	const { exitCodes } = runWorkerGuard(t, { workerRun: "implementer-1", systemPrompt: "base\n<addendum>\nDelegated worker run.\n</addendum>" });
+	assert.deepEqual(exitCodes, []);
+});
+
+test("worker guard ignores the main session", (t) => {
+	const { exitCodes } = runWorkerGuard(t, { workerRun: undefined, systemPrompt: `base\n<addendum>\n${ADDENDUM}\n</addendum>` });
+	assert.deepEqual(exitCodes, []);
+});

@@ -14,7 +14,7 @@
 | `harvest <id>` | bring a `-w` run's changes back (below) |
 | `prune [--days N] [--dry-run]` | GC old runs and worktrees (below) |
 
-Model: `-m` > `subagents.agentOverrides.<role>` in settings > `subagents.defaultModel`/`defaultProvider` in settings > pi default. An explicit `-m` bypasses the role settings override and the rig default, including any thinking choice. Thinking: `-T` > settings override thinking (when `-m` is absent) > role frontmatter > pi default. Falling back to the rig default model never changes the role's frontmatter thinking. Nested `pi`/`delegate` are blocked by a per-run PATH shim. `ask` resumes with the full saved role prompt.
+Model: `-m` > `subagents.agentOverrides.<role>` in settings > `subagents.defaultModel`/`defaultProvider` in settings > pi default. An explicit `-m` bypasses the role settings override and the rig default, including any thinking choice. Thinking: `-T` > settings override thinking (when `-m` is absent) > role frontmatter > pi default. Falling back to the rig default model never changes the role's frontmatter thinking. Nested `pi`/`delegate` are blocked by a per-run PATH shim. Workers fail closed (exit 1, before any model call) if their system prompt contains the coordinator `APPEND_SYSTEM.md`; guard in `extensions/me-setup.ts`. `ask` resumes with the full saved role prompt.
 
 ## Run files
 

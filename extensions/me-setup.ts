@@ -3,6 +3,7 @@
  *
  * /me-setup            → interactive model chooser
  * /me-setup status     → full pre-flight report (read-only)
+ * delegate workers     → abort if the coordinator addendum leaked into the prompt
  *
  * Writes only ~/.pi/agent/settings.json subagents.* on explicit user action.
  * Model options come from models-store.json filtered by provider keys in auth.json.
@@ -474,6 +475,19 @@ async function statusReport(ctx: any): Promise<void> {
 }
 
 export default function (pi: ExtensionAPI) {
+	// Delegate workers rely on --append-system-prompt replacing the global
+	// APPEND_SYSTEM.md. Fail closed if pi ever merges the coordinator addendum
+	// into a worker prompt; exit before the first model call.
+	pi.on?.("before_agent_start", (event) => {
+		if (!process.env.ME_PI_RUN) return;
+		const addendumPath = join(PI_AGENT, "APPEND_SYSTEM.md");
+		if (!existsSync(addendumPath)) return;
+		const addendum = readFileSync(addendumPath, "utf8").trim();
+		if (!addendum || !event.systemPrompt.includes(addendum)) return;
+		console.error(`me-setup: delegate worker ${process.env.ME_PI_RUN} received the coordinator addendum (${addendumPath}); aborting.`);
+		process.exit(1);
+	});
+
 	// Mirror /model selections into subagents.defaultModel/defaultProvider so
 	// delegate runs (and new sessions) inherit what the user picked. Session
 	// restores and no-op selections leave settings untouched.
