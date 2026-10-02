@@ -1,34 +1,38 @@
-# me-pi — personal pi agent rig
+# me-pi
 
-Single source of truth for my pi coding-agent config. Live dirs symlink here; edit the repo, both drivers see it.
+A Pi coding-agent setup for me.
 
-## Layout
-
-```
-extensions/   pi extensions (TypeScript, self-contained — publishable)
-agents/       subagent definitions (.md, frontmatter + system prompt)
-prompts/      workflow prompt templates
-skills/       shared skill set (~/.agents/skills — discovered by pi AND codex)
-settings.json template (installed on first run; live file not symlinked)
-APPEND_SYSTEM.md  global system-prompt addendum
-install.sh    idempotent installer (symlinks everything into place)
-```
-
-## Install (new machine)
+## Install
 
 ```bash
 git clone git@github.com:0bmario/me-pi.git
-cd me-pi && ./install.sh
+cd me-pi
+./install.sh
 ```
 
-## Conventions
+The installer registers `extensions/` as a local Pi package; installs pinned `pi-web-access`; links tracked agent and skill entries individually into machine-owned directories; links the `delegate` helper into `~/.local/bin` when that directory exists; and seeds `settings.json` only if no live file exists. It copies Pi's interactive-shell example into the live extension directory if missing, and runs RTK's Pi setup when `rtk` is available. Existing user entries are preserved; name collisions are reported rather than overwritten. To refresh the interactive-shell copy, remove it from `~/.pi/agent/extensions/` and rerun the installer.
 
-- **Secrets never enter this repo.** `auth.json`, `models-store.json`, `sessions/` live in `~/.pi/agent/` and are gitignored. `.gitignore` was the first commit.
-- **Extensions stay self-contained** (single file or dir with `index.ts`, no cross-imports, no hardcoded personal paths) so any one of them can be extracted into a publishable pi package (`pi install npm:...`, keyword `pi-package`).
-- **Skills are harness-agnostic** — this `skills/` dir is the spec location `~/.agents/skills` (symlinked), consumed natively by pi and Codex. Keep descriptions neutral ("the agent", not "Codex").
-- Subagent model assignment lives in `~/.pi/agent/settings.json` under `subagents.*` (role → model), not hardcoded in agent files.
+External installers write to live user directories, not this repo. The installer detaches legacy whole-directory links into this repo without copying their contents back, and refuses a symlinked `settings.json` or package-store links into the repo. Review any collision it reports. Install the `rtk` binary separately if you want its integration. Restart Pi after installation.
 
-## Contents
+Keep credentials and live settings in `~/.pi/agent/`, not this repo. The tracked `settings.json` is a first-install template; `pi install` records package sources in the live settings.
 
-- extensions: `rtk.ts` (bash → rtk rewrites), `interactive-shell.ts` (`!nvim`, `!lazygit`…)
-- agents: (populated during subagent rollout — implementer, reviewer, devil's advocate, council)
+## Commands
+
+- `/me-setup`: interactive default and per-agent model chooser; `/me-setup status`: inspect the rig. Choices persist in live `subagents.*` settings and `delegate` applies matching role overrides.
+
+## Tests
+
+```bash
+npm ci --prefix extensions
+npm test --prefix extensions
+```
+
+## Layout
+
+- `extensions/`: local Pi package with the project-maintained extension
+- `agents/`: implementer, reviewer, devil's advocate, and scout definitions
+- `skills/`: repo-maintained personal skills shared with Codex through per-skill links
+- `settings.json`: initial settings template
+- `APPEND_SYSTEM.md`: main-session system addendum
+- `GLOBAL_AGENTS.md`: personal Output + Engineering rules for every agent; linked as `~/.pi/agent/AGENTS.md` (main + workers), imported by `~/.claude/CLAUDE.md`, copied into `~/.codex/AGENTS.md`
+- `docs/`: architecture decisions and research
