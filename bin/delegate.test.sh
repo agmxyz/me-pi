@@ -4,9 +4,34 @@
 set -euo pipefail
 
 TESTS_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DELEGATE="$TESTS_DIR/delegate"
 TMP="$(mktemp -d /tmp/delegate-test.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
+
+# Hermetic delegate repo: a copy of bin/delegate resolves $REPO/agents to
+# fixture roles, so tests never depend on the user's real agents/*.md.
+mkdir -p "$TMP/dlg/bin" "$TMP/dlg/agents"
+cp "$TESTS_DIR/delegate" "$TMP/dlg/bin/delegate"
+DELEGATE="$TMP/dlg/bin/delegate"
+cat > "$TMP/dlg/agents/worker.md" <<'ROLE'
+---
+name: worker
+description: Generic test worker: read-only
+aliases: w, wk
+thinking: high
+tools: read, grep, find, ls
+---
+Worker body.
+ROLE
+cat > "$TMP/dlg/agents/differ.md" <<'ROLE'
+---
+name: differ
+description: Reviews the attached diff
+thinking: high
+tools: read, grep, find, ls
+attach_diff: true
+---
+Differ body.
+ROLE
 
 RUNS="$TMP/runs"
 WTS="$TMP/wt"
@@ -63,7 +88,7 @@ d() { HOME="$TMP/home" PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="
 export PI_BIN="$FAKE_PI"
 
 # ── 1. sync run, success ────────────────────────────────────────────────
-out="$(printf 'do a thing\nto: %s\n' "$TMP" | d run reviewer - -C "$TMP")"
+out="$(printf 'do a thing\nto: %s\n' "$TMP" | d run worker - -C "$TMP")"
 check "sync run prints result" grep -q "TASK-DONE-MARKER" <<<"$out"
 check "sync run exit sentinel" grep -q "exit=0" <<<"$out"
 run_id="$(ls "$RUNS" | head -1)"
@@ -88,23 +113,23 @@ cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
 {
   "subagents": {
     "agentOverrides": {
-      "reviewer": { "model": "test-model", "defaultProvider": "test-provider", "thinking": "minimal" }
+      "worker": { "model": "test-model", "defaultProvider": "test-provider", "thinking": "minimal" }
     },
     "defaultThinking": "max"
   }
 }
 JSON
-override_out="$(HOME="$TMP/home" d run reviewer - -C "$TMP" <<< "override check")"
+override_out="$(HOME="$TMP/home" d run worker - -C "$TMP" <<< "override check")"
 override_id="$(ls -t "$RUNS" | head -1)"
 check "settings override model passed" grep -Fxq "test-provider/test-model" "$RUNS/$override_id/session/args"
 check "settings override thinking passed" grep -Fxq "minimal" "$RUNS/$override_id/session/args"
 # -m remains higher precedence than the live settings override.
-flag_out="$(HOME="$TMP/home" d run reviewer - -C "$TMP" -m cli/model <<< "flag check")"
+flag_out="$(HOME="$TMP/home" d run worker - -C "$TMP" -m cli/model <<< "flag check")"
 flag_id="$(ls -t "$RUNS" | head -1)"
 check "-m overrides settings model" grep -Fxq "cli/model" "$RUNS/$flag_id/session/args"
 check "-m keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$flag_id/session/args"
 # Explicit -T thinking overrides settings/frontmatter.
-flag_thinking_out="$(HOME="$TMP/home" d run reviewer - -C "$TMP" -m openai-codex/gpt-6-luna -T max <<< "thinking flag check")"
+flag_thinking_out="$(HOME="$TMP/home" d run worker - -C "$TMP" -m openai-codex/gpt-6-luna -T max <<< "thinking flag check")"
 flag_thinking_id="$(ls -t "$RUNS" | head -1)"
 check "-T overrides settings thinking" grep -Fxq "max" "$RUNS/$flag_thinking_id/session/args"
 
@@ -118,10 +143,10 @@ cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
   }
 }
 JSON
-fb_id="$(HOME="$TMP/home" d run reviewer - -C "$TMP" <<< "fallback check" >/dev/null; ls -t "$RUNS" | head -1)"
+fb_id="$(HOME="$TMP/home" d run worker - -C "$TMP" <<< "fallback check" >/dev/null; ls -t "$RUNS" | head -1)"
 check "default model fallback passed" grep -Fxq "fallback-provider/fallback-model" "$RUNS/$fb_id/session/args"
 check "fallback keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$fb_id/session/args"
-fbm_id="$(HOME="$TMP/home" d run reviewer - -C "$TMP" -m cli/model <<< "fallback flag check" >/dev/null; ls -t "$RUNS" | head -1)"
+fbm_id="$(HOME="$TMP/home" d run worker - -C "$TMP" -m cli/model <<< "fallback flag check" >/dev/null; ls -t "$RUNS" | head -1)"
 check "-m overrides default fallback" grep -Fxq "cli/model" "$RUNS/$fbm_id/session/args"
 cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
 {
@@ -132,7 +157,7 @@ cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
   }
 }
 JSON
-fbp_id="$(HOME="$TMP/home" d run reviewer - -C "$TMP" <<< "bare fallback check" >/dev/null; ls -t "$RUNS" | head -1)"
+fbp_id="$(HOME="$TMP/home" d run worker - -C "$TMP" <<< "bare fallback check" >/dev/null; ls -t "$RUNS" | head -1)"
 check "default fallback without provider uses bare model" grep -Fxq "bare-model" "$RUNS/$fbp_id/session/args"
 cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
 {
@@ -140,41 +165,41 @@ cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
     "defaultModel": "fallback-model",
     "defaultProvider": "fallback-provider",
     "defaultThinking": "max",
-    "agentOverrides": { "reviewer": { "model": "override-model", "defaultProvider": "override-provider" } }
+    "agentOverrides": { "worker": { "model": "override-model", "defaultProvider": "override-provider" } }
   }
 }
 JSON
-ovd_id="$(HOME="$TMP/home" d run reviewer - -C "$TMP" <<< "override beats default" >/dev/null; ls -t "$RUNS" | head -1)"
+ovd_id="$(HOME="$TMP/home" d run worker - -C "$TMP" <<< "override beats default" >/dev/null; ls -t "$RUNS" | head -1)"
 check "role override beats default fallback" grep -Fxq "override-provider/override-model" "$RUNS/$ovd_id/session/args"
 check "override without thinking keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$ovd_id/session/args"
 
 # ── 4. nested pi + delegate blocked via shim ───────────────────────────
-ME_PI_TEST_CHECK_SHIM=1 d run reviewer - -C "$TMP" <<< "shim check" > "$TMP/shim.out" 2>&1 || true
+ME_PI_TEST_CHECK_SHIM=1 d run worker - -C "$TMP" <<< "shim check" > "$TMP/shim.out" 2>&1 || true
 grep -q "TASK-DONE-MARKER" "$TMP/shim.out" && echo "✓ shim enforced (fake pi saw shim)" || { echo "✗ shim enforced"; fails=$((fails+1)); }
 # nested `delegate` itself must also be shadowed and refuse (exit 64)
-rc=0; PATH="$RUNS/$(ls "$RUNS" | tail -1)/shim:$PATH" delegate run reviewer - -C "$TMP" <<< x >/dev/null 2>&1 || rc=$?
+rc=0; PATH="$RUNS/$(ls "$RUNS" | tail -1)/shim:$PATH" delegate run worker - -C "$TMP" <<< x >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 64 ] && echo "✓ nested delegate refuses" || { echo "✗ nested delegate refuses (rc=$rc)"; fails=$((fails+1)); }
 
 # ── 4. background run + wait ───────────────────────────────────────────
 printf 'bg task\n' > "$TMP/task-b.md"
-bg_id="$(ME_PI_TEST_SLEEP=2 d run reviewer "$TMP/task-b.md" -b -C "$TMP")"
+bg_id="$(ME_PI_TEST_SLEEP=2 d run worker "$TMP/task-b.md" -b -C "$TMP")"
 [ -n "$bg_id" ] || { echo "✗ bg id printed"; fails=$((fails+1)); }
 d wait "$bg_id" > "$TMP/wait.out" 2>&1
 check "wait prints result" grep -q "TASK-DONE-MARKER" "$TMP/wait.out"
 check "wait exit sentinel" grep -q "exit=0" "$TMP/wait.out"
 
 # ── 5. timeout cap ─────────────────────────────────────────────────────
-ME_PI_TEST_SLEEP=30 d run reviewer - -C "$TMP" -t 2 > "$TMP/timeout.out" 2>&1 || true
+ME_PI_TEST_SLEEP=30 d run worker - -C "$TMP" -t 2 < /dev/null > "$TMP/timeout.out" 2>&1 || true
 grep -q "stopped early: timeout" "$TMP/timeout.out" && echo "✓ timeout enforced" || { echo "✗ timeout enforced"; fails=$((fails+1)); }
 timeout_id="$(ls -t "$RUNS" | head -1)"
 grep -q "^timeout$" "$RUNS/$timeout_id/why" || { echo "✗ timeout why file"; fails=$((fails+1)); }
 
 # ── 6. cost cap ────────────────────────────────────────────────────────
-ME_PI_TEST_SLEEP=30 ME_PI_TEST_COST=5 d run reviewer - -C "$TMP" -t 60 -c 0.5 > "$TMP/cost.out" 2>&1 || true
+ME_PI_TEST_SLEEP=30 ME_PI_TEST_COST=5 d run worker - -C "$TMP" -t 60 -c 0.5 < /dev/null > "$TMP/cost.out" 2>&1 || true
 grep -q "stopped early: cost-cap" "$TMP/cost.out" && echo "✓ cost cap enforced" || { echo "✗ cost cap enforced"; fails=$((fails+1)); }
 
 # ── 7. kill ────────────────────────────────────────────────────────────
-bg2="$(ME_PI_TEST_SLEEP=60 PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" run reviewer "$TMP/task-b.md" -b -C "$TMP")"
+bg2="$(ME_PI_TEST_SLEEP=60 PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" run worker "$TMP/task-b.md" -b -C "$TMP")"
 sleep 1
 d kill "$bg2" >/dev/null 2>&1 && echo "✓ kill accepted" || { echo "✗ kill accepted"; fails=$((fails+1)); }
 sleep 2
@@ -184,7 +209,7 @@ d ls | grep -q "$bg2" && echo "✓ ls lists killed run" || { echo "✗ ls lists 
 # Coordinator = a process group we kill right after launch. The watchdog must be
 # in its own session, still enforce -t, write the sentinel, and stay killable.
 coord_out="$TMP/coord.id"
-perl -MPOSIX -e 'setsid; exec @ARGV' -- bash -c 'ME_PI_TEST_SLEEP=60 PI_BIN="$1" ME_PI_RUNS_ROOT="$2" ME_PI_WT_ROOT="$3" "$4" run reviewer "$5" -b -t 4 -C "$6" > "$7"; kill -KILL 0' _ "$FAKE_PI" "$RUNS" "$WTS" "$DELEGATE" "$TMP/task-b.md" "$TMP" "$coord_out" 2>/dev/null || true
+perl -MPOSIX -e 'setsid; exec @ARGV' -- bash -c 'ME_PI_TEST_SLEEP=60 PI_BIN="$1" ME_PI_RUNS_ROOT="$2" ME_PI_WT_ROOT="$3" "$4" run worker "$5" -b -t 4 -C "$6" > "$7"; kill -KILL 0' _ "$FAKE_PI" "$RUNS" "$WTS" "$DELEGATE" "$TMP/task-b.md" "$TMP" "$coord_out" 2>/dev/null || true
 wd_id="$(cat "$coord_out")"
 sleep 1
 wd_pid="$(cat "$RUNS/$wd_id/watchdog.pid" 2>/dev/null || echo 0)"
@@ -192,7 +217,7 @@ kill -0 "$wd_pid" 2>/dev/null && echo "✓ watchdog alive after coordinator deat
 [ "$(ps -o pgid= -p "$wd_pid" 2>/dev/null | tr -d ' ')" = "$wd_pid" ] && echo "✓ watchdog leads its own process group" || { echo "✗ watchdog leads its own process group"; fails=$((fails+1)); }
 for _ in $(seq 1 20); do [ -f "$RUNS/$wd_id/exit" ] && break; sleep 1; done
 [ -f "$RUNS/$wd_id/exit" ] && grep -q '^timeout$' "$RUNS/$wd_id/why" && grep -q "$wd_id exit=" "$RUNS/$wd_id/out.md" && echo "✓ orphaned watchdog enforces timeout + writes sentinel" || { echo "✗ orphaned watchdog enforces timeout + writes sentinel"; fails=$((fails+1)); }
-bg3="$(ME_PI_TEST_SLEEP=60 PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" run reviewer "$TMP/task-b.md" -b -C "$TMP")"
+bg3="$(ME_PI_TEST_SLEEP=60 PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$RUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" run worker "$TMP/task-b.md" -b -C "$TMP")"
 sleep 1
 d kill "$bg3" >/dev/null 2>&1
 d wait "$bg3" > "$TMP/wait3.out" 2>&1 || true
@@ -203,7 +228,7 @@ git init -q "$TMP/repo" 2>/dev/null
 git -C "$TMP/repo" commit -q --allow-empty -m init
 printf 'wt task\n' > "$TMP/task-wt.md"
 # Fake pi fails if cwd is the -C dir; success proves the child ran in the worktree.
-ME_PI_TEST_FAIL_IF_CWD="$TMP/repo" d run reviewer "$TMP/task-wt.md" -w -C "$TMP/repo" > "$TMP/wt.out" 2>&1 || true
+ME_PI_TEST_FAIL_IF_CWD="$TMP/repo" d run worker "$TMP/task-wt.md" -w -C "$TMP/repo" > "$TMP/wt.out" 2>&1 || true
 ls "$WTS" | grep -q "^repo-" && echo "✓ worktree created" || { echo "✗ worktree created"; fails=$((fails+1)); }
 # child ran inside the worktree: the fake pi only succeeds when cwd != -C dir
 check "child cwd is the worktree" grep -q "exit=0" <<<"$(cat "$TMP/wt.out")"
@@ -218,7 +243,7 @@ check "ask appends full role file" grep -Fxq "$RUNS/$bg_id/role.md" "$RUNS/$bg_i
 check "ask adds follow-up instruction" grep -Fxq "This is a follow-up, not a restart. Do not redo the original task; honor its original task and output contract." "$RUNS/$bg_id/session/args"
 
 # ── 10. child failure propagates ───────────────────────────────────────
-ME_PI_TEST_EXIT=3 d run reviewer - -C "$TMP" > "$TMP/fail.out" 2>&1 && { echo "✗ nonzero child exit propagates"; fails=$((fails+1)); } || echo "✓ nonzero child exit propagates"
+ME_PI_TEST_EXIT=3 d run worker - -C "$TMP" < /dev/null > "$TMP/fail.out" 2>&1 && { echo "✗ nonzero child exit propagates"; fails=$((fails+1)); } || echo "✓ nonzero child exit propagates"
 
 # ── 11. ls shows cwd ───────────────────────────────────────────────────
 d ls | grep -q "$TMP" && echo "✓ ls shows cwd column" || { echo "✗ ls shows cwd column"; fails=$((fails+1)); }
@@ -296,6 +321,100 @@ kill "$alive_pid" 2>/dev/null || true
 hd prune --days 0 > "$TMP/p3.out" 2>&1 || true
 [ ! -d "$HRUNS/p-alive" ] && [ -d "$HRUNS/p-running" ] && echo "✓ prune after pid death removes run; --days honoured" || { echo "✗ prune after pid death"; cat "$TMP/p3.out"; fails=$((fails+1)); }
 hd prune --days x >/dev/null 2>&1 && { echo "✗ prune rejects bad --days"; fails=$((fails+1)); } || echo "✓ prune rejects bad --days"
+
+# ── 14. sync run keeps supervision when its caller dies ───────────────────
+# The caller (e.g. a bash tool with a short timeout) kills the foreground
+# `delegate run` and its whole process group. Watchdog, -t, sentinel survive.
+SK="$TMP/runs-sk"
+perl -MPOSIX -e 'setsid; exec @ARGV' -- env HOME="$TMP/home" ME_PI_TEST_SLEEP=60 PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$SK" ME_PI_WT_ROOT="$WTS" \
+  "$DELEGATE" run worker "$TMP/task-b.md" -t 4 -C "$TMP" > "$TMP/sk.out" 2>&1 &
+sk_fg=$!
+for _ in $(seq 1 50); do ls "$SK"/*/lstart >/dev/null 2>&1 && break; sleep 0.1; done
+sk_id="$(ls "$SK" 2>/dev/null | head -1)"
+sleep 0.5
+kill -KILL -- "-$sk_fg" 2>/dev/null || true
+wait "$sk_fg" 2>/dev/null || true
+sk_pi="$(cat "$SK/$sk_id/pid" 2>/dev/null || echo 0)"
+kill -0 "$sk_pi" 2>/dev/null && [ ! -f "$SK/$sk_id/exit" ] && echo "✓ sync worker survives foreground kill" || { echo "✗ sync worker survives foreground kill"; fails=$((fails+1)); }
+grep -q "delegate wait $sk_id" "$TMP/sk.out" && echo "✓ sync run announces its id before blocking" || { echo "✗ sync run announces its id before blocking"; fails=$((fails+1)); }
+for _ in $(seq 1 20); do [ -f "$SK/$sk_id/exit" ] && break; sleep 1; done
+[ -f "$SK/$sk_id/exit" ] && grep -q '^timeout$' "$SK/$sk_id/why" 2>/dev/null && grep -q "$sk_id exit=" "$SK/$sk_id/out.md" && echo "✓ sync run: timeout + sentinel after foreground kill" || { echo "✗ sync run: timeout + sentinel after foreground kill"; fails=$((fails+1)); }
+kill -0 "$sk_pi" 2>/dev/null && { echo "✗ timed-out sync worker is dead"; fails=$((fails+1)); } || echo "✓ timed-out sync worker is dead"
+kill -KILL -- "-$sk_pi" 2>/dev/null || true
+
+# ── 15. ask refuses unfinished runs ────────────────────────────────────────
+live_id="$(ME_PI_TEST_SLEEP=60 d run worker "$TMP/task-b.md" -b -C "$TMP")"
+rm -f "$RUNS/$live_id/session/args"
+rc=0; d ask "$live_id" "finish now" > "$TMP/ask-live.out" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] && grep -Fq "run $live_id has not finished (no exit sentinel)" "$TMP/ask-live.out" && echo "✓ ask refuses unfinished run" || { echo "✗ ask refuses unfinished run (rc=$rc)"; fails=$((fails+1)); }
+[ ! -f "$RUNS/$live_id/session/args" ] && echo "✓ refused ask spawns no pi" || { echo "✗ refused ask spawns no pi"; fails=$((fails+1)); }
+d kill "$live_id" >/dev/null 2>&1 || true
+
+# ── 16. role in meta ───────────────────────────────────────────────────────
+check "meta records role" grep -Fxq "role: worker" "$RUNS/$run_id/meta"
+check "meta diff_sha none for plain roles" grep -Fxq "diff_sha: none" "$RUNS/$run_id/meta"
+
+# ── 17. roles listing + unknown role error ─────────────────────────────────
+d roles > "$TMP/roles.out" 2>&1 || true
+check "roles lists name, description, aliases" grep -Fxq "worker — Generic test worker: read-only (aliases: w, wk)" "$TMP/roles.out"
+check "roles omits empty aliases" grep -Fxq "differ — Reviews the attached diff" "$TMP/roles.out"
+d run nobody /dev/null -C "$TMP" > "$TMP/unknown.out" 2>&1 || true
+check "unknown role lists available roles" grep -Fq "available: differ, worker" "$TMP/unknown.out"
+d --help > "$TMP/help.out" 2>&1 || true
+check "usage mentions roles" grep -q "delegate roles" "$TMP/help.out"
+check "usage mentions diff-hash" grep -q "delegate diff-hash \[-C dir\]" "$TMP/help.out"
+awk '/^---$/{n++; next} n==1' "$TESTS_DIR/../agents/reviewer.md" | grep -Fxq "attach_diff: true" && echo "✓ real reviewer role declares attach_diff" || { echo "✗ real reviewer role declares attach_diff"; fails=$((fails+1)); }
+
+# ── 18. canonical diff: diff-hash + attach_diff ────────────────────────────
+DR="$TMP/dr"; DRUNS="$TMP/runs-dr"
+dd() { HOME="$TMP/home" PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$DRUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" "$@"; }
+git init -q "$DR"; git -C "$DR" config user.email t@t; git -C "$DR" config user.name t
+mkdir -p "$DR/sub"
+printf 'one\n```\ntwo\n' > "$DR/a.txt"; printf 'ignored.txt\n' > "$DR/.gitignore"; printf 's\n' > "$DR/sub/s.txt"
+git -C "$DR" add .; git -C "$DR" commit -q -m init
+rc=0; clean_hash="$(dd diff-hash -C "$DR")" || rc=$?
+[ "$rc" -eq 0 ] && [ -z "$clean_hash" ] && echo "✓ diff-hash on clean tree prints nothing, exits 0" || { echo "✗ diff-hash on clean tree (rc=$rc out=$clean_hash)"; fails=$((fails+1)); }
+rc=0; dd run differ - -C "$DR" <<< "review" > "$TMP/dr-clean.out" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] && grep -Fq "nothing to review: working tree matches HEAD" "$TMP/dr-clean.out" && [ -z "$(ls "$DRUNS" 2>/dev/null)" ] && echo "✓ attach_diff role refuses clean tree, no run dir" || { echo "✗ attach_diff role refuses clean tree (rc=$rc)"; fails=$((fails+1)); }
+
+printf 'one\n```\nTWO\n' > "$DR/a.txt"; printf 'untracked-content\n' > "$DR/u.txt"; printf 'secret-ignored\n' > "$DR/ignored.txt"
+h1="$(dd diff-hash -C "$DR")"
+[[ "$h1" =~ ^[0-9a-f]{64}$ ]] && [ "$(dd diff-hash -C "$DR" | wc -c | tr -d ' ')" = 65 ] && echo "✓ diff-hash prints exactly sha256 hex + newline" || { echo "✗ diff-hash output format: $h1"; fails=$((fails+1)); }
+idx_before="$(shasum < "$DR/.git/index")"
+git -C "$DR" add a.txt
+idx_staged="$(shasum < "$DR/.git/index")"
+h2="$(dd diff-hash -C "$DR")"
+[ "$h1" = "$h2" ] && echo "✓ diff-hash independent of staging" || { echo "✗ diff-hash independent of staging"; fails=$((fails+1)); }
+[ "$idx_staged" = "$(shasum < "$DR/.git/index")" ] && [ "$idx_before" != "$idx_staged" ] && echo "✓ diff-hash leaves the real index untouched" || { echo "✗ diff-hash leaves the real index untouched"; fails=$((fails+1)); }
+[ "$h1" = "$(dd diff-hash -C "$DR/sub")" ] && [ "$h1" = "$(cd "$DR/sub" && dd diff-hash)" ] && echo "✓ diff-hash is repo-wide from subdir and default cwd" || { echo "✗ diff-hash from subdir/default cwd"; fails=$((fails+1)); }
+[ "$h1" = "$(HOME="$TMP/home" PI_BIN=/nonexistent/pi "$DELEGATE" diff-hash -C "$DR" 2>/dev/null)" ] && echo "✓ diff-hash works without pi" || { echo "✗ diff-hash works without pi"; fails=$((fails+1)); }
+
+rc=0; dd run differ - -C "$DR" <<< "review this" > "$TMP/dr-run.out" 2>&1 || rc=$?
+dr_id="$(ls "$DRUNS" | head -1)"; dr_task="$DRUNS/$dr_id/task.md"
+[ "$rc" -eq 0 ] && echo "✓ attach_diff run succeeds" || { echo "✗ attach_diff run succeeds (rc=$rc)"; cat "$TMP/dr-run.out"; fails=$((fails+1)); }
+check "task keeps original text" grep -Fxq "review this" "$dr_task"
+check "task has diff section heading" grep -Fxq "## Diff (working tree vs HEAD, auto-attached)" "$dr_task"
+check "diff includes untracked file" grep -Fq "+untracked-content" "$dr_task"
+if grep -q "secret-ignored" "$dr_task"; then echo "✗ diff excludes ignored file"; fails=$((fails+1)); else echo "✓ diff excludes ignored file"; fi
+check "meta records role" grep -Fxq "role: differ" "$DRUNS/$dr_id/meta"
+check "meta diff_sha equals diff-hash" grep -Fxq "diff_sha: $h1" "$DRUNS/$dr_id/meta"
+fence_line="$(grep -m1 -E '^`{3,}diff$' "$dr_task" || true)"; fence="${fence_line%diff}"
+[ "${#fence}" -ge 4 ] && echo "✓ fence outgrows backtick runs in the diff" || { echo "✗ fence outgrows backtick runs (fence=$fence)"; fails=$((fails+1)); }
+attached_sha="$(awk -v f="$fence" 'on && $0 == f { exit } on { print } $0 == f "diff" { on = 1 }' "$dr_task" | shasum -a 256 | cut -d' ' -f1)"
+[ "$attached_sha" = "$h1" ] && echo "✓ attached diff bytes hash to diff_sha" || { echo "✗ attached diff bytes hash to diff_sha"; fails=$((fails+1)); }
+
+# -w: the diff comes from the origin checkout, computed before the worktree exists.
+rm -rf "${DRUNS:?}"/*
+rc=0; ME_PI_TEST_FAIL_IF_CWD="$(cd -P "$DR" && pwd -P)" dd run differ - -w -C "$DR" <<< "wt review" > "$TMP/dr-wt.out" 2>&1 || rc=$?
+drw_id="$(ls "$DRUNS" | head -1)"
+[ "$rc" -eq 0 ] && grep -Fq "+untracked-content" "$DRUNS/$drw_id/task.md" && grep -Fxq "diff_sha: $h1" "$DRUNS/$drw_id/meta" && echo "✓ -w attaches the origin's diff" || { echo "✗ -w attaches the origin's diff (rc=$rc)"; fails=$((fails+1)); }
+
+printf 'changed again\n' >> "$DR/u.txt"
+[ "$h1" != "$(dd diff-hash -C "$DR")" ] && echo "✓ diff-hash changes with the working tree" || { echo "✗ diff-hash changes with the working tree"; fails=$((fails+1)); }
+git init -q "$TMP/unborn"; printf 'x\n' > "$TMP/unborn/f.txt"
+[[ "$(dd diff-hash -C "$TMP/unborn")" =~ ^[0-9a-f]{64}$ ]] && echo "✓ diff-hash works before the first commit" || { echo "✗ diff-hash works before the first commit"; fails=$((fails+1)); }
+mkdir -p "$TMP/notgit"
+dd diff-hash -C "$TMP/notgit" >/dev/null 2>&1 && { echo "✗ diff-hash fails outside git"; fails=$((fails+1)); } || echo "✓ diff-hash fails outside git"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "delegate smoke test: all passed"; else echo "delegate smoke test: $fails failure(s)"; exit 1; fi
