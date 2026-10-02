@@ -368,6 +368,7 @@ ensure_live_dir "$AGENTS_HOME/skills" "$REPO/skills" "skills"
 link_repo_agents
 link_repo_skills
 link_entry "$REPO/APPEND_SYSTEM.md" "$PI_AGENT/APPEND_SYSTEM.md" "APPEND_SYSTEM.md"
+link_entry "$REPO/GLOBAL_AGENTS.md" "$PI_AGENT/AGENTS.md" "global AGENTS.md"
 
 # Expose the delegation helper on PATH when a user bin directory exists.
 if [ -d "$HOME/.local/bin" ]; then

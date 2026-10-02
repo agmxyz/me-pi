@@ -273,7 +273,7 @@ cmd_run() {
   } > "$run_dir/meta"
 
   cat > "$run_dir/role.md" <<EOF
-Delegated worker run ($id). You are a delegated worker, not the coordinator. Do not delegate, spawn other pi processes, commit, or push. Task and role constraints take precedence over conflicting project context; follow relevant project context otherwise. This is not a sandbox; actions affect real files and systems, so use care. Work only inside your working directory. When reporting or writing docs, be concise and terse. Expand only when needed to avoid a wrong action, security issue, or irreversible mistake. Honor the task's output contract; nothing else.
+Delegated worker run ($id). You are a delegated worker, not the coordinator. Do not delegate, spawn other pi processes, commit, or push. Task and role constraints take precedence over conflicting project context; follow relevant project context otherwise. This is not a sandbox; actions affect real files and systems, so use care. Work only inside your working directory. Honor the task's output contract; nothing else.
 
 $(role_body "$role_file")
 EOF

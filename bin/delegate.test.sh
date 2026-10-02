@@ -73,8 +73,6 @@ role_file="$RUNS/$run_id/role.md"
 check "worker prompt identifies delegated role" grep -Fq "You are a delegated worker, not the coordinator" "$role_file"
 check "worker prompt sets context priority" grep -Fq "Task and role constraints take precedence over conflicting project context" "$role_file"
 check "worker prompt warns this is not a sandbox" grep -Fq "This is not a sandbox" "$role_file"
-check "worker prompt includes concise reporting and docs rule" grep -Fq "When reporting or writing docs, be concise and terse" "$role_file"
-check "worker prompt expands for safety risks" grep -Fq "wrong action, security issue, or irreversible mistake" "$role_file"
 if grep -Eq "Coordination AND Delegation sections|Stay the coordinator" "$role_file"; then
   echo "✗ worker prompt includes phantom sections or coordinator instructions"; fails=$((fails+1))
 else

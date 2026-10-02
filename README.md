@@ -34,4 +34,5 @@ npm test --prefix extensions
 - `skills/`: repo-maintained personal skills shared with Codex through per-skill links
 - `settings.json`: initial settings template
 - `APPEND_SYSTEM.md`: main-session system addendum
+- `GLOBAL_AGENTS.md`: personal Output + Engineering rules for every agent; linked as `~/.pi/agent/AGENTS.md` (main + workers), imported by `~/.claude/CLAUDE.md`, copied into `~/.codex/AGENTS.md`
 - `docs/`: architecture decisions and research
