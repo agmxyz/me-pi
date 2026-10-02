@@ -30,7 +30,7 @@ npm test --prefix extensions
 ## Layout
 
 - `extensions/`: local Pi package with the project-maintained extension
-- `agents/`: implementer, reviewer, and devil's advocate definitions
+- `agents/`: implementer, reviewer, devil's advocate, and scout definitions
 - `skills/`: repo-maintained personal skills shared with Codex through per-skill links
 - `settings.json`: initial settings template
 - `APPEND_SYSTEM.md`: main-session system addendum
