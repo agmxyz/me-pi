@@ -4,6 +4,7 @@
  * /me-setup            → interactive model chooser
  * /me-setup status     → full pre-flight report (read-only)
  * delegate workers     → abort if the coordinator addendum leaked into the prompt
+ * bash `git commit`    → blocked unless a clean reviewer run matches the current diff (workers: always)
  *
  * Writes only ~/.pi/agent/settings.json subagents.* on explicit user action.
  * Model options come from models-store.json filtered by provider keys in auth.json.
@@ -474,6 +475,103 @@ async function statusReport(ctx: any): Promise<void> {
 	say(ctx, out.join("\n"));
 }
 
+// ── commit gate ──
+
+// Textual match on the bash tool's command: `git [-C <path> | -c <k=v> | -flag]... commit`
+// anywhere in it, so `rtk git commit`, `a && git commit`, `sh -c "git commit"` are caught.
+// Limits: git aliases (`git ci`), option values given as separate words other than
+// -C/-c (`git --git-dir x commit`), and commands assembled at runtime (eval, scripts,
+// variables) are not detected. Mere mentions (`grep 'git commit'`, a heredoc task text)
+// do match and block — fail closed.
+const GIT_COMMIT_RE = /(?<![\w.-])git(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--?[\w-]+(?:=\S*)?))*\s+commit(?![\w-])/;
+const CLEAN_REVIEW = "No issues.";
+
+function readRunMeta(path: string): Record<string, string> {
+	const meta: Record<string, string> = {};
+	for (const line of readFileSync(path, "utf8").split("\n")) {
+		const i = line.indexOf(":");
+		if (i <= 0) continue;
+		const key = line.slice(0, i).trim();
+		if (!(key in meta)) meta[key] = line.slice(i + 1).trim(); // first wins, like delegate's fm_field
+	}
+	return meta;
+}
+
+// Realpath of the git toplevel containing `dir`, or null.
+function gitToplevel(dir: string | undefined): string | null {
+	if (!dir) return null;
+	try {
+		const top = execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+		return top ? realpathSync(top) : null;
+	} catch {
+		return null;
+	}
+}
+
+// out.md minus the one trailer delegate appends on finish
+// (`\n[<run id> exit=<rc> cost=<usd> <secs>s]\n`), trimmed.
+function reviewVerdict(out: string, runId: string): string {
+	const lines = out.trimEnd().split("\n");
+	const trailer = new RegExp(`^\\[${runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} exit=\\S+ cost=\\S* \\d+s\\]$`);
+	if (trailer.test(lines[lines.length - 1].trim())) lines.pop();
+	return lines.join("\n").trim();
+}
+
+// A finished (exit 0) reviewer run whose diff_sha is this exact diff, whose
+// verdict is exactly `No issues.`, and which ran in the same git repository
+// (diff-hash is repo-wide, so any subdir of the toplevel counts; a -w run's
+// worktree does not). `delegate ask` follow-ups create no run dir.
+function hasCleanReview(cwd: string, diffSha: string): boolean {
+	const runsRoot = process.env.ME_PI_RUNS_ROOT || join(PI_AGENT, "runs");
+	let ids: string[];
+	try {
+		ids = readdirSync(runsRoot);
+	} catch {
+		return false;
+	}
+	let want: string | null | undefined; // computed once, on the first candidate
+	return ids.some((id) => {
+		const dir = join(runsRoot, id);
+		try {
+			const meta = readRunMeta(join(dir, "meta"));
+			if (meta.role !== "reviewer" || meta.diff_sha !== diffSha) return false;
+			if (readFileSync(join(dir, "exit"), "utf8").trim() !== "0") return false;
+			if (reviewVerdict(readFileSync(join(dir, "out.md"), "utf8"), id) !== CLEAN_REVIEW) return false;
+			if (want === undefined) want = gitToplevel(cwd);
+			return want !== null && gitToplevel(meta.cwd) === want;
+		} catch {
+			return false; // unfinished, partial, or unreadable runs never count
+		}
+	});
+}
+
+// Returns a block reason, or undefined to allow. Known limit: the diff and the
+// review are checked against ctx.cwd's repository, even when the command
+// commits elsewhere (`cd x && git commit`, `git -C x commit`).
+function commitBlockReason(cwd: string): string | undefined {
+	if (process.env.ME_PI_RUN) {
+		return `me-setup commit gate: delegate workers never commit (run ${process.env.ME_PI_RUN}). Leave changes uncommitted and report them in your output.`;
+	}
+	let diffSha: string;
+	try {
+		diffSha = execFileSync("delegate", ["diff-hash", "-C", cwd], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+	} catch (err: any) {
+		const detail = String(err?.stderr ?? "").trim() || (err instanceof Error ? err.message : String(err));
+		return `me-setup commit gate: cannot verify review, \`delegate diff-hash -C ${cwd}\` failed: ${detail}. Commit blocked (fail closed).`;
+	}
+	if (!diffSha) return undefined; // tree matches HEAD; git reports nothing to commit
+	if (!/^[0-9a-f]{64}$/.test(diffSha)) {
+		return `me-setup commit gate: cannot verify review, \`delegate diff-hash -C ${cwd}\` printed unexpected output: ${diffSha.slice(0, 200)}. Commit blocked (fail closed).`;
+	}
+	if (hasCleanReview(cwd, diffSha)) return undefined;
+	return [
+		`me-setup commit gate: no finished reviewer run on ${cwd} returned exactly "${CLEAN_REVIEW}" for the current diff (sha256 ${diffSha.slice(0, 12)}).`,
+		`Run \`delegate run reviewer - -C ${cwd}\` on the current tree with the review task on stdin (never a task file inside the project), wait for it, fix every finding, and re-review until it returns "${CLEAN_REVIEW}".`,
+		"Any change after the review, including deleting files, needs a fresh review.",
+		"This gate matches `git commit` textually in the bash command. The user can still commit manually with `!git commit`.",
+	].join(" ");
+}
+
 export default function (pi: ExtensionAPI) {
 	// Delegate workers rely on --append-system-prompt replacing the global
 	// APPEND_SYSTEM.md. Fail closed if pi ever merges the coordinator addendum
@@ -503,6 +601,18 @@ export default function (pi: ExtensionAPI) {
 		} catch (err) {
 			say(ctx, `me-setup: could not sync default model to settings.json: ${err instanceof Error ? err.message : err}`);
 		}
+	});
+
+	// Commit gate: prompt rules alone did not stop the coordinator from
+	// self-reviewing and committing. User `!` commands go through user_bash,
+	// not tool_call, so the user can always commit by hand. A throw here
+	// blocks the tool (pi's fail-safe).
+	pi.on?.("tool_call", (event, ctx) => {
+		if (event.toolName !== "bash") return;
+		const command = (event.input as { command?: unknown }).command;
+		if (typeof command !== "string" || !GIT_COMMIT_RE.test(command)) return;
+		const reason = commitBlockReason(ctx?.cwd ?? process.cwd());
+		return reason ? { block: true, reason } : undefined;
 	});
 
 	pi.registerCommand("me-setup", {
