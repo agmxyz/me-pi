@@ -20,12 +20,30 @@ Keep credentials and live settings in `~/.pi/agent/`, not this repo. The tracked
 
 - `/me-setup`: interactive default and per-agent model chooser; `/me-setup status`: inspect the rig. Choices persist in live `subagents.*` settings and `delegate` applies matching role overrides.
 
+## Workflows
+
+Pi is the main interactive driver. Use relevant skills directly for planning, research, implementation/TDD, and review; use `delegate` when a separate worker or independent review helps. No global clean-review gate applies to main-session commits. Delegate workers still leave changes uncommitted and cannot publish.
+
+Opt into me-team for its deterministic tickets → build → verify → review → integrate → draft PR operation. Before starting, authorize the named repository/branch/remote and spend scope, including automatic branch publication and draft PR creation. Editing or committing alone does not authorize publication. Human gates and PR merges remain human-owned. `/me-setup` configures Pi/delegate models, not engine role models. Interactive skills do not automatically load in isolated engine workers.
+
+Matt Pocock skills in `~/.agents/skills` remain externally managed, not vendored or installed by this rig. Pi discovers that directory; use `/skill:name` to invoke an installed skill explicitly. Skills written for another harness may reference an unavailable Skill tool: read the named skill's `SKILL.md` instead. Their review/commit steps do not authorize publication or replace me-team acceptance.
+
+## Migration and reinstall
+
+Start a fresh Pi session after this policy change. Existing sessions may retain old instructions; `/reload` is not proof that previously supplied restrictions disappeared. Verify `/me-setup`, `/me-setup status`, skill availability, optional independent review and worker safeguards before resuming me-team in a fresh supervisor session with its own spend/publication authorization.
+
+Reinstalling Pi is optional and separate from this refactor. First inventory the installed version, launcher/PATH and supported uninstall/reinstall procedure. Securely back up machine-local credentials, settings, models and session data outside Git. The managed installation may share `~/.pi/agent` with that state: do not delete `~/.pi` or `~/.agents` wholesale. Reinstall the intended Pi version, then run `./install.sh` and the fresh-session checks. This installer requires Pi and does not restore auth, external skills, model preferences or unrelated integrations from nothing.
+
 ## Tests
 
 ```bash
 npm ci --prefix extensions
 npm test --prefix extensions
+bin/delegate.test.sh
+bin/install.test.sh
 ```
+
+Installer checks use a temporary HOME, fixture repo and fake Pi/RTK; no live installation or network calls. `bin/delegate.itest.sh` is an opt-in paid test; run only with explicit spend approval.
 
 ## Layout
 

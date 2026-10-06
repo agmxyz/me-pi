@@ -18,6 +18,12 @@
 
 Model: `-m` > `subagents.agentOverrides.<role>` in settings > `subagents.defaultModel`/`defaultProvider` in settings > pi default. An explicit `-m` bypasses the role settings override and the rig default, including any thinking choice. Thinking: `-T` > settings override thinking (when `-m` is absent) > role frontmatter > pi default. Falling back to the rig default model never changes the role's frontmatter thinking. Nested `pi`/`delegate` are blocked by a per-run PATH shim. Role frontmatter: `tools`, `thinking`, `attach_diff`, `description`, `aliases` (listed only; `run` takes the file name). Workers fail closed (exit 1, before any model call) if their system prompt contains the coordinator `APPEND_SYSTEM.md`; guard in `extensions/me-setup.ts`. `ask` resumes with the full saved role prompt.
 
+## Optional independent review
+
+Delegation is available alongside direct Pi skill use; it is not a mandatory coordinator workflow. `delegate run reviewer - -C <repo>` accepts the review task/spec on stdin and auto-attaches the current diff. Review findings can inform the interactive session, but main-session commits have no global clean-review prerequisite. Optional review does not replace me-team's engine acceptance.
+
+Workers leave changes uncommitted and never publish. `extensions/me-setup.ts` retains worker-only bash commit blocking and the prompt-isolation guard; these are safeguards, not an OS sandbox. Publication by the interactive session or an authorized me-team run requires explicit user authorization under `APPEND_SYSTEM.md`.
+
 ## Run files
 
 `meta` (`role`, `cwd`, `head`, `model`, `tools`, `thinking`, `wt`, `origin`, `diff_sha` (hex, or `none`), `started`), `task.md`, `role.md`, `out.md` (+ trailer `[id exit=N cost=$ Ns]`), `err.log`, `session/`, `pid`, `lstart`, `watchdog.pid`, `why` (timeout / cost-cap / lost), `exit`, `artifacts/diff.patch` (`attach_diff` roles).
