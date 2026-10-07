@@ -1,12 +1,10 @@
 ## Interactive work
 Pi is the interactive driver: use relevant skills for planning, research, direct implementation/TDD, and review. Delegate bounded work when useful; independent review is an optional workflow, not a global prerequisite for commits. Honor the user's model and thinking choices; change them only with approval. Unassigned delegate roles inherit the configured default.
 
-## Authorization and me-team
+## Authorization
 Publish changes (push branches or create PRs) only with explicit user authorization for the named operation; a request to edit, test, review, or commit does not imply publication authority.
 
-Before starting me-team, explain that its full operation may spend on model calls, publish its completed integration branch, and create a draft PR. Identify the target repository, feature/integration branch, destination remote, and spend scope; obtain explicit authorization covering that whole operation before starting. That authorization does not cover unrelated runs, repositories, remotes, or PR merges. Human approval gates and merge decisions remain human-owned.
-
-When me-team is selected, its deterministic engine owns tickets → build → verify → review → integrate → draft PR, including retries and acceptance. Pi prepares and supervises; optional Pi review supplements rather than replaces engine acceptance. Interactive skills do not automatically load in isolated engine workers.
+That authorization does not cover unrelated runs, repositories, remotes, or PR merges. Human approval gates and merge decisions remain human-owned.
 
 ## Optional delegation
 Use the rig's `delegate` helper for one-shot role work; roles live in this rig, not the target project. `delegate roles` lists them. Keep commits, publication, and user decisions in the interactive session; delegated workers leave changes uncommitted.

@@ -20,9 +20,9 @@ Model: `-m` > `subagents.agentOverrides.<role>` in settings > `subagents.default
 
 ## Optional independent review
 
-Delegation is available alongside direct Pi skill use; it is not a mandatory coordinator workflow. `delegate run reviewer - -C <repo>` accepts the review task/spec on stdin and auto-attaches the current diff. Review findings can inform the interactive session, but main-session commits have no global clean-review prerequisite. Optional review does not replace me-team's engine acceptance.
+Delegation is available alongside direct Pi skill use; it is not a mandatory coordinator workflow. `delegate run reviewer - -C <repo>` accepts the review task/spec on stdin and auto-attaches the current diff. Review findings can inform the interactive session, but main-session commits have no global clean-review prerequisite.
 
-Workers leave changes uncommitted and never publish. `extensions/me-setup.ts` retains worker-only bash commit blocking and the prompt-isolation guard; these are safeguards, not an OS sandbox. Publication by the interactive session or an authorized me-team run requires explicit user authorization under `APPEND_SYSTEM.md`.
+Workers leave changes uncommitted and never publish. `extensions/me-setup.ts` retains worker-only bash commit blocking and the prompt-isolation guard; these are safeguards, not an OS sandbox. Publication requires explicit user authorization under `APPEND_SYSTEM.md`.
 
 ## Run files
 
