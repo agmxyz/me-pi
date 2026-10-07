@@ -119,6 +119,52 @@ test("model_select skips the rewrite when settings already match", () => {
 	assert.equal(readSettingsRaw(), raw);
 });
 
+test("chooser constructs model and thinking pickers with their titles and choices", async (t) => {
+	const fp = fakePi();
+	registerMeSetup(fp.pi);
+	writeSettings({ subagents: {} });
+	const agentDir = join(TEST_HOME, ".pi", "agent");
+	writeFileSync(join(agentDir, "auth.json"), JSON.stringify({ "test-provider": {} }));
+	writeFileSync(join(agentDir, "models-store.json"), JSON.stringify({
+		"test-provider": { models: [{ id: "test-model" }] },
+	}));
+	t.after(() => {
+		rmSync(join(agentDir, "auth.json"));
+		rmSync(join(agentDir, "models-store.json"));
+	});
+	const renderedPickers = [];
+	const selectAnswers = ["choose another…", "✓ done — save"];
+	const ctx = {
+		hasUI: true,
+		mode: "tui",
+		modelRegistry: { find: (provider, id) => ({ provider, id }) },
+		ui: {
+			notify: () => {},
+			select: () => Promise.resolve(selectAnswers.shift()),
+			custom: (factory) => new Promise((done) => {
+				const picker = factory(
+					{},
+					{ fg: (_color, text) => text },
+					{ matches: (data, action) => data === "\r" && action === "tui.select.confirm" },
+					done,
+				);
+				renderedPickers.push(picker.render(80).join("\n"));
+				picker.handleInput("\r");
+			}),
+		},
+	};
+	await fp.command.handler("", ctx);
+	assert.equal(renderedPickers.length, 2);
+	assert.match(renderedPickers[0], /Default — model/);
+	assert.match(renderedPickers[0], /test-model \[test-provider\]/);
+	assert.match(renderedPickers[1], /Default — thinking level/);
+	assert.match(renderedPickers[1], /inherit/);
+	const saved = JSON.parse(readSettingsRaw());
+	assert.equal(saved.subagents.defaultModel, "test-model");
+	assert.equal(saved.subagents.defaultProvider, "test-provider");
+	assert.equal(saved.subagents.defaultThinking, undefined);
+});
+
 test("picking a default in the chooser switches the active session model", async () => {
 	const fp = fakePi();
 	registerMeSetup(fp.pi);

@@ -102,13 +102,11 @@ class ModelPicker extends Container {
 	private theme: any;
 	private keybindings: any;
 	private done: (v: string | undefined) => void;
-	private title: string;
 
-	constructor(tui: any, theme: any, keybindings: any, title: string, items: PickerItem[], current: string | undefined, done: (v: string | undefined) => void) {
+	constructor(theme: any, keybindings: any, title: string, items: PickerItem[], current: string | undefined, done: (v: string | undefined) => void) {
 		super();
 		this.theme = theme;
 		this.keybindings = keybindings;
-		this.title = title;
 		this.done = done;
 		this.items = items;
 		this.searchInput.focused = true;
@@ -185,8 +183,8 @@ class ModelPicker extends Container {
 }
 
 function pick(ctx: any, title: string, items: PickerItem[], current?: string): Promise<string | undefined> {
-	return ctx.ui.custom<string | undefined>((tui: any, theme: any, keybindings: any, done: (v: string | undefined) => void) => {
-		return new ModelPicker(tui, theme, keybindings, title, items, current, done);
+	return ctx.ui.custom<string | undefined>((_tui: any, theme: any, keybindings: any, done: (v: string | undefined) => void) => {
+		return new ModelPicker(theme, keybindings, title, items, current, done);
 	});
 }
 
@@ -444,22 +442,14 @@ async function statusReport(ctx: any): Promise<void> {
 	} catch {
 		out.push("✗ APPEND_SYSTEM.md — missing or unreadable");
 	}
-	try {
-		out.push(`✓ agents — ${listLiveAgents().join(", ")}`);
-	} catch {
-		out.push("⚠ agents — unreadable");
-	}
+	out.push(`✓ agents — ${listLiveAgents().join(", ")}`);
 	try {
 		out.push(`✓ rtk — ${execFileSync("rtk", ["--version"], { timeout: 2000, encoding: "utf8" }).trim()}`);
 	} catch {
 		out.push("⚠ rtk — not in PATH (brew install rtk)");
 	}
-	try {
-		const providers = authedProviders();
-		out.push(`${providers.length ? "✓" : "⚠"} auth — ${providers.join(", ") || "no provider keys in ~/.pi/agent/auth.json"}`);
-	} catch {
-		out.push("✗ auth — unreadable");
-	}
+	const providers = authedProviders();
+	out.push(`${providers.length ? "✓" : "⚠"} auth — ${providers.join(", ") || "no provider keys in ~/.pi/agent/auth.json"}`);
 	try {
 		out.push(`✓ skills — ${readdirSync(join(AGENTS_HOME, "skills")).length} (shared with Codex)`);
 	} catch {

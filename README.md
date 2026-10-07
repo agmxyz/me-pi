@@ -18,6 +18,7 @@ Keep credentials and live settings in `~/.pi/agent/`, outside this repository. T
 
 - `/me-setup` chooses default and per-agent models; `/me-setup status` inspects the rig.
 - Use Pi skills directly when they fit. For a separate worker or independent review, use `delegate`; before delegating, read `~/.agents/DELEGATION.md`.
+- Skills written for another harness may call an unavailable `Skill` tool; read the named skill's `SKILL.md` instead.
 - Read engineering guidance at `~/.agents/CODING_STANDARDS.md` before implementation, code edits, debugging, tests, or code review. `GLOBAL_AGENTS.md` holds always-loaded output and publication rules.
 
 ## Checks
@@ -28,6 +29,8 @@ npm test --prefix extensions
 bin/delegate.test.sh
 bin/install.test.sh
 ```
+
+`bin/delegate.itest.sh` is a paid live-model integration, excluded from routine checks; run only with explicit spend authorization for that invocation.
 
 ## Project map
 

@@ -111,17 +111,21 @@ check() { # <description> <command...>
 assert_link() { [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]; }
 assert_file_text() { printf '%s\n' "$2" | cmp -s - "$1"; }
 
-assert_standards_reachable() {
+assert_disclosed_documents_reachable() {
   python3 - "$1" "$FIXTURE" <<'PY'
 from pathlib import Path
 import sys
 
 home, fixture = map(Path, sys.argv[1:])
-policy = (home / ".pi/agent/AGENTS.md").read_text()
-assert "~/.agents/CODING_STANDARDS.md" in policy
-standards = home / ".agents/CODING_STANDARDS.md"
-assert standards.is_file()
-assert standards.read_bytes() == (fixture / "CODING_STANDARDS.md").read_bytes()
+for policy_name, installed_name, source_name in [
+    ("AGENTS.md", "CODING_STANDARDS.md", "CODING_STANDARDS.md"),
+    ("APPEND_SYSTEM.md", "DELEGATION.md", "specs/delegate.md"),
+]:
+    policy = (home / ".pi/agent" / policy_name).read_text()
+    assert f"~/.agents/{installed_name}" in policy
+    document = home / ".agents" / installed_name
+    assert document.is_file()
+    assert document.read_bytes() == (fixture / source_name).read_bytes()
 PY
 }
 
@@ -216,7 +220,7 @@ check "fresh APPEND_SYSTEM link" assert_link "$PI_AGENT/APPEND_SYSTEM.md" "$FIXT
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
 check "fresh coding standards link" assert_link "$AGENTS_HOME/CODING_STANDARDS.md" "$FIXTURE/CODING_STANDARDS.md"
 check "fresh delegation guide link" assert_link "$AGENTS_HOME/DELEGATION.md" "$FIXTURE/specs/delegate.md"
-check "fresh standards reachable from installed global policy" assert_standards_reachable "$HOME_FRESH"
+check "fresh disclosed documents reachable from installed policies" assert_disclosed_documents_reachable "$HOME_FRESH"
 check "fresh delegate helper link" assert_link "$HOME_FRESH/.local/bin/delegate" "$FIXTURE/bin/delegate"
 check "settings seeded and packages registered" assert_settings_seeded "$PI_AGENT/settings.json" "$FIXTURE/extensions"
 check "interactive-shell example copied" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
@@ -271,7 +275,7 @@ check "repeat retains APPEND_SYSTEM link" assert_link "$PI_AGENT/APPEND_SYSTEM.m
 check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
 check "repeat retains coding standards link" assert_link "$AGENTS_HOME/CODING_STANDARDS.md" "$FIXTURE/CODING_STANDARDS.md"
 check "repeat retains delegation guide link" assert_link "$AGENTS_HOME/DELEGATION.md" "$FIXTURE/specs/delegate.md"
-check "repeat standards remain reachable" assert_standards_reachable "$HOME_FRESH"
+check "repeat disclosed documents remain reachable" assert_disclosed_documents_reachable "$HOME_FRESH"
 check "repeat retains delegate helper link" assert_link "$HOME_FRESH/.local/bin/delegate" "$FIXTURE/bin/delegate"
 check "Pi and RTK stubs invoked deterministically" assert_invocation_logs
 check "npm fallback remains unused" test ! -e "$NPM_MARKER"

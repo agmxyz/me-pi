@@ -1,8 +1,12 @@
-# Delegate vs inline: measured
+# Delegate vs inline: one historical sample
 
-## Verdict
+**Recorded:** run ID `implementer-0929-225729-7018`; the retained artifact does not preserve a reliable calendar date or year.
 
-For a small, self-contained doc task with the source already in context: **inline wins** (~15s, ~$0.03, no handoff). Delegation pays only when the work is large or exploratory enough that its transcript would bloat the coordinator, or is parallelisable. Below ~1 turn of work, handoff overhead dominates.
+This is one unpaired comparison: one inline doc task and delegation measurements from unrelated runs. The task's sources were already loaded for the inline run. Treat costs, timings, and model names below as a historical snapshot—not current prices, a paired experiment, or a universal benchmark.
+
+## Result in this sample
+
+For the small, self-contained doc task with its source already in context, inline took ~15s and ~$0.03 with no handoff. Delegation was slower and more expensive in the estimated same-task comparison. Delegation can still be useful when the child absorbs substantial transcript, independent review is valuable, parallel work matters, or a fresh context helps.
 
 ## Task
 
@@ -31,30 +35,22 @@ Caveat: near-zero marginal cost because the context was already paid for. A cold
 | implementer (default) | 2 | $0.035–0.057 | 240–625s |
 | implementer (sonnet) | 2 | $0.25–0.32 | 530–~900s |
 
-Fixed overhead per delegation, independent of task:
-- Coordinator writes the task file (Goal/Acceptance/Constraints/Paths/Output contract): existing tasks are 1.4–3.4 KB ≈ 350–850 output tokens, ~15–30s generation, plus the choice of role/model.
-- Child cold-starts: role preamble (~1.5 KB) + skill reads (implement, tdd) + re-reading every file it needs. This session: 13 turns, ~350k cache-read tokens, ~37k cache-write, before finishing.
-- Coordinator reviews the return and, for writers, the diff (`harvest` + `git diff`) — it re-reads the changes it would have authored anyway.
-- Wait latency: minutes vs seconds (`-b` hides this only if there is other useful work).
+Fixed overhead observed or estimated for this workflow:
 
-For the same doc task delegated: est. 45s task writing + 2–4 min child + ~$0.10–0.25 (sonnet) + reading the result ≈ 10× wall, 4–10× cost, and the coordinator still has to verify content it didn't produce.
+- Coordinator writes the task file (Goal/Acceptance/Constraints/Paths/Output contract): the observed tasks were 1.4–3.4 KB ≈ 350–850 output tokens, ~15–30s generation, plus role/model choice.
+- Child cold-starts: role preamble (~1.5 KB) + skill reads (implement, tdd) + re-reading required files. This session used 13 turns and ~350k cache-read tokens plus ~37k cache-write before finishing.
+- Coordinator reviews the return and, for writers, the diff (`harvest` + `git diff`)—work it must still verify.
+- Wait latency was minutes vs seconds in the sample; `-b` hides it only when there is other useful work.
 
-## When delegation pays
+For the same doc task delegated: estimated 45s task writing + 2–4 min child + ~$0.10–0.25 (sonnet) + reading the result ≈ 10× wall, 4–10× cost. This is an estimate, not a paired run.
 
-- Work whose transcript would consume ≥ ~20–30k tokens of the coordinator's context (multi-file implement + test loops, large log/code trawls): the child absorbs the noise (this feature: ~350k cached-read tokens, kept out of the coordinator) and returns ~100 tokens.
-- Independent review/adversarial passes: value is a fresh context and a different model, not saved effort. Cheap (< $0.02 on the default model).
-- Parallel work (`-b` + `-w`) where wall time matters.
-- Work that should not see coordinator bias.
+## What this sample suggests
 
-## When not
-
-- Anything the coordinator can finish in ≤ 1–2 turns with context it already holds (docs from loaded code, small edits, single-file tweaks).
-- Tasks whose spec is as long as the result: task file ≈ output.
-- Work needing repeated user dialog or design decisions.
-- Cold-context work where the child must reread what the coordinator has already read.
-
-Rule of thumb: delegate if (expected child transcript) ≫ (task file + review of result); otherwise inline.
+- Delegation may help when the expected child transcript is much larger than the task handoff and review. This implementation's ~350k cache-read tokens show one case where the coordinator avoided carrying substantial exploratory context; they do not establish a break-even threshold.
+- Independent review/adversarial passes buy fresh context and another perspective; their value is not necessarily saved effort.
+- `-b` with `-w` can enable parallel work when elapsed time matters; this sample does not measure a paired parallel speedup.
+- For work estimated at one or two turns with context already loaded, inline avoids handoff and review overhead. Treat that as a heuristic from this case, not a general cutoff.
 
 ## Limits
 
-n = 1 inline task; delegate numbers are from unrelated tasks, not a paired run. Token figures are provider-reported usage; "approximate" wall time excludes my own thinking overhead not captured in the jsonl timestamps. Did not run the doc task both ways (cost of a paired sonnet run ≈ $0.15 would not change the conclusion).
+n = 1 inline task; delegate numbers come from unrelated tasks, not a paired run. Token figures are provider-reported usage; approximate wall time excludes thinking not captured by jsonl timestamps. The run history and model pricing may change; use fresh measurements before making current cost or latency decisions. A paired sonnet run was not performed (estimated cost ≈ $0.15, which was not expected to change the historical conclusion).

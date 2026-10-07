@@ -5,10 +5,6 @@ import test from "node:test";
 const readDocument = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
 // Shipped text is the interface here; these checks do not exercise LLM behavior.
-test("global policy does not prescribe a named execution engine", () => {
-	assert.doesNotMatch(readDocument("GLOBAL_AGENTS.md"), /\bme-team\b/i);
-});
-
 test("coding work routes required triggers to the canonical shared standards path", () => {
 	const policy = readDocument("GLOBAL_AGENTS.md");
 	const pointer = policy.split("\n").find((line) => line.includes("`~/.agents/CODING_STANDARDS.md`")) ?? "";
@@ -36,7 +32,7 @@ test("APPEND_SYSTEM.md routes optional independent work to the disclosed delegat
 	assert.match(policy, /before delegating, read `~\/.agents\/DELEGATION\.md`/i);
 	assert.match(policy, /independent (worker|review)/i);
 	assert.ok(policy.split("\n").length <= 3, "always-loaded router should stay short");
-	assert.doesNotMatch(policy, /\b(me-team|subagents|harvest|prune)\b/i);
+	assert.doesNotMatch(policy, /\b(subagents|harvest|prune)\b/i);
 });
 
 test("disclosed delegation guide preserves operational safeguards", () => {
@@ -50,8 +46,9 @@ test("disclosed delegation guide preserves operational safeguards", () => {
 		[/read-only[^\n]*no bash|no bash[^\n]*read-only/i, "read-only role tools"],
 		[/devils-advocate[^\n]*plan[^\n]*scout[^\n]*research/i, "role-specific handoff advice"],
 		[/interactive session retains project decisions/i, "coordinator decision boundary"],
-		[/explicit `?-m`[^\n]*settings|model[^\n]*settings[^\n]*pi default/i, "model precedence"],
-		[/thinking[^\n]*frontmatter/i, "thinking precedence"],
+		[/honor requested model and thinking choices[^\n]*`-m`[^\n]*`-T`[^\n]*without substitution/i, "requested model/thinking choices are preserved"],
+		[/model precedence[^\n]*explicit `?-m`[^\n]*settings|explicit `?-m`[^\n]*>[^\n]*agentOverrides/i, "model precedence"],
+		[/thinking precedence[^\n]*explicit `?-T`[^\n]*role/i, "thinking precedence"],
 		[/harvest[^\n]*(conflict|apply --check)|conflict[^\n]*nothing applied/i, "harvest safeguards"],
 		[/inspect harvested changes[^\n]*checks/i, "harvest review"],
 		[/prune[^\n]*unrelated work/i, "prune scope"],
@@ -61,11 +58,25 @@ test("disclosed delegation guide preserves operational safeguards", () => {
 	}
 });
 
-for (const path of ["README.md", "specs/delegate.md"]) {
-	test(`${path} describes Pi workflows without me-team-specific requirements`, () => {
-		assert.doesNotMatch(readDocument(path), /\bme-team\b/i);
-	});
-}
+test("migration guide retains installation recovery and external ownership boundaries", () => {
+	const migration = readDocument("specs/migration.md");
+	assert.match(migration, /remove[^\n]*interactive-shell\.ts[^\n]*rerun `\.\/install\.sh`/i);
+	assert.match(migration, /externally managed skills[^\n]*source installer/i);
+	assert.match(migration, /`install\.sh`[^\n]*`~\/\.claude\/CLAUDE\.md`[^\n]*`~\/\.codex\/AGENTS\.md`/i);
+	assert.match(migration, /refresh[^\n]*manually/i);
+});
+
+test("README preserves the other-harness Skill tool workaround", () => {
+	assert.match(readDocument("README.md"), /another harness[^\n]*unavailable `Skill` tool[^\n]*`SKILL\.md`/i);
+});
+
+test("paid delegate integration test requires explicit spend authorization", () => {
+	const readme = readDocument("README.md");
+	const integrationTest = readDocument("bin/delegate.itest.sh");
+	assert.match(readme, /`bin\/delegate\.itest\.sh`[^\n]*paid[^\n]*explicit spend authorization/i);
+	assert.match(integrationTest, /paid integration test[\s\S]*Do not run without explicit user authorization for this invocation/i);
+	assert.match(integrationTest, /SKIP: paid real-Pi\/model test requires explicit user authorization and ME_PI_ITEST=1/i);
+});
 
 test("README routes delegation, migration, and engineering topics", () => {
 	const readme = readDocument("README.md");
