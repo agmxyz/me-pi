@@ -24,7 +24,7 @@ Keep credentials and live settings in `~/.pi/agent/`, not this repo. The tracked
 
 Pi is the main interactive driver. Use relevant skills directly for planning, research, implementation/TDD, and review; use `delegate` when a separate worker or independent review helps. No global clean-review gate applies to main-session commits. Delegate workers still leave changes uncommitted and cannot publish.
 
-External tools own their invocation, configuration and execution rules; consult their instructions when selecting one. `/me-setup` configures only Pi/delegate models. Publication authorization is defined in `APPEND_SYSTEM.md`.
+External tools own their invocation, configuration and execution rules; consult their instructions when selecting one. `/me-setup` configures only Pi/delegate models. Publication authorization is defined in `GLOBAL_AGENTS.md`.
 
 Matt Pocock skills in `~/.agents/skills` remain externally managed, not vendored or installed by this rig. Pi discovers that directory; use `/skill:name` to invoke an installed skill explicitly. Skills written for another harness may reference an unavailable Skill tool: read the named skill's `SKILL.md` instead. Their review/commit steps do not authorize publication.
 
@@ -51,6 +51,6 @@ Installer checks use a temporary HOME, fixture repo and fake Pi/RTK; no live ins
 - `agents/`: implementer, reviewer, devil's advocate, and scout definitions
 - `skills/`: repo-maintained personal skills shared with Codex through per-skill links
 - `settings.json`: initial settings template
-- `APPEND_SYSTEM.md`: main-session system addendum
-- `GLOBAL_AGENTS.md`: personal Output + Engineering rules for every agent; linked as `~/.pi/agent/AGENTS.md` (main + workers), imported by `~/.claude/CLAUDE.md`, copied into `~/.codex/AGENTS.md`
+- `APPEND_SYSTEM.md`: optional delegation instructions for main sessions
+- `GLOBAL_AGENTS.md`: personal output, engineering and authorization rules for every agent; linked as `~/.pi/agent/AGENTS.md` (main + workers), imported by `~/.claude/CLAUDE.md`, copied into `~/.codex/AGENTS.md`
 - `docs/`: architecture decisions and research
