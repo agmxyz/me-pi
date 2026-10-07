@@ -1,7 +1,6 @@
 ## Output
 - Lead with the result; omit preamble, recap, and offers.
 - Preserve exact code, paths, commands, identifiers, and error strings. Report failures, skips, unverified claims, uncertainty, and material risks on separate lines.
-- Make documents and handoffs unambiguous.
 
 ## Engineering
 Before implementation, code edits, debugging, tests, or code review, read `~/.agents/CODING_STANDARDS.md`.

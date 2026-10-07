@@ -10,18 +10,23 @@ test("global policy does not prescribe a named execution engine", () => {
 });
 
 test("coding work routes required triggers to the canonical shared standards path", () => {
-	const routing = readDocument("GLOBAL_AGENTS.md").split(/^## Engineering\n/m)[1]?.split(/^## /m)[0] ?? "";
+	const policy = readDocument("GLOBAL_AGENTS.md");
+	const pointer = policy.split("\n").find((line) => line.includes("`~/.agents/CODING_STANDARDS.md`")) ?? "";
 	for (const trigger of ["implementation", "code edits", "debugging", "tests", "code review"]) {
-		assert.ok(routing.includes(trigger), `missing routing trigger: ${trigger}`);
+		assert.ok(pointer.includes(trigger), `missing routing trigger: ${trigger}`);
 	}
-	assert.match(routing, /\bbefore\b[\s\S]*\bread\b/i, "standards must be read before coding work");
-	assert.ok(routing.includes("`~/.agents/CODING_STANDARDS.md`"), "missing canonical installed path");
+	assert.match(pointer, /\bbefore\b[\s\S]*\bread\b/i, "standards must be read before coding work");
 });
 
-test("shared coding standards are grouped by engineering concern", () => {
+test("shared coding standards state engineering guidance", () => {
 	const standards = readDocument("CODING_STANDARDS.md");
-	for (const section of ["Scope", "Failure handling", "Verification", "Readability"]) {
-		assert.match(standards, new RegExp(`^## ${section}\\n- .+`, "m"), `missing actionable ${section} guidance`);
+	for (const [guidance, concern] of [
+		[/keep changes within the request|avoid speculative work/i, "scope"],
+		[/handle plausible .*failures clearly|propagate failures/i, "failure handling"],
+		[/define observable success|verify changed behavior/i, "verification"],
+		[/descriptive names|clarify complex conditions/i, "readability"],
+	]) {
+		assert.match(standards, guidance, `missing ${concern} guidance`);
 	}
 });
 
