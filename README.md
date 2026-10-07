@@ -30,7 +30,7 @@ Matt Pocock skills in `~/.agents/skills` remain externally managed, not vendored
 
 ## Migration and reinstall
 
-Start a fresh Pi session after this policy change. Existing sessions may retain old instructions; `/reload` is not proof that previously supplied restrictions disappeared. Verify `/me-setup`, `/me-setup status`, skill availability, optional independent review and worker safeguards in the fresh session.
+Run `./install.sh` to link the disclosed coding standards before starting a fresh Pi session after this policy change; resolve any reported document collision first. Existing sessions may retain old instructions; `/reload` is not proof that previously supplied restrictions disappeared. Verify `/me-setup`, `/me-setup status`, skill availability, optional independent review and worker safeguards in the fresh session.
 
 Reinstalling Pi is optional and separate from this refactor. First inventory the installed version, launcher/PATH and supported uninstall/reinstall procedure. Securely back up machine-local credentials, settings, models and session data outside Git. The managed installation may share `~/.pi/agent` with that state: do not delete `~/.pi` or `~/.agents` wholesale. Reinstall the intended Pi version, then run `./install.sh` and the fresh-session checks. This installer requires Pi and does not restore auth, external skills, model preferences or unrelated integrations from nothing.
 
@@ -54,4 +54,6 @@ Installer checks use a temporary HOME, fixture repo and fake Pi/RTK; no live ins
 - `APPEND_SYSTEM.md`: optional delegation instructions for main sessions
 - `GLOBAL_AGENTS.md`: always-loaded output/authorization rules and coding-standards pointer; linked as `~/.pi/agent/AGENTS.md` (main + workers), imported by `~/.claude/CLAUDE.md`, copied into `~/.codex/AGENTS.md`
 - `CODING_STANDARDS.md`: engineering reference, read before implementation, code edits, debugging, tests or review; linked at `~/.agents/CODING_STANDARDS.md` for cwd-independent access
+
+Claude imports and Codex copies of the global rules are configured outside this installer. Refresh any copied `AGENTS.md` manually after changing the source.
 - `docs/`: architecture decisions and research

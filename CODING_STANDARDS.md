@@ -1,21 +1,17 @@
 # Coding standards
 
 ## Scope
-- Keep changes within the request; avoid speculative features, abstractions, configuration, or compatibility shims. Remove code made unused by the change and leave unrelated code untouched.
-- State assumptions that materially affect the implementation; ask when ambiguity could change behavior.
-- Match established project patterns, names, libraries, and style. Add a dependency only when it is clearly cheaper than implementing the needed behavior directly.
+- Keep changes within the request; avoid speculative work, remove newly unused code, and leave unrelated code untouched.
+- State material assumptions; ask when ambiguity could change behavior.
+- Match local conventions for names, libraries, and style. Add dependencies only when clearly cheaper than direct implementation.
 
 ## Failure handling
-- Handle plausible input, I/O, network, and external-tool failures with clear errors.
-- Propagate failures; do not swallow errors or use fallbacks that hide them.
-- Guard reachable invalid states; omit guards for impossible states.
+- Handle plausible input, I/O, network, and external-tool failures clearly. Propagate failures; do not swallow errors or hide them with fallbacks.
 
 ## Verification
-- Define observable success from the request and verify changed behavior against it.
-- Keep tests faithful to behavior; do not weaken, skip, or special-case tests to pass.
+- Define observable success and verify changed behavior.
+- Keep tests faithful; do not weaken or skip them.
 
 ## Readability
-- Use descriptive names, name non-obvious constants, and give complex conditions clear names.
-- Prefer early returns to deep nesting. Keep interfaces small and add layers when they clarify responsibility.
-- Prefer composition over inheritance. Accept small duplication when abstraction would obscure behavior.
-- Write comments to explain why, intent, or tricky behavior rather than restating code.
+- Use descriptive names, including for non-obvious constants; clarify complex conditions.
+- Comment on why, intent, or tricky behavior—not to restate code.

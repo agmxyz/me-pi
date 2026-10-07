@@ -9,11 +9,13 @@ test("global policy does not prescribe a named execution engine", () => {
 	assert.doesNotMatch(readDocument("GLOBAL_AGENTS.md"), /\bme-team\b/i);
 });
 
-test("coding work has an explicit pointer to the shared standards", () => {
-	assert.match(
-		readDocument("GLOBAL_AGENTS.md"),
-		/^## Engineering\nBefore implementation, code edits, debugging, tests, or code review, read `~\/\.agents\/CODING_STANDARDS\.md`\.$/m,
-	);
+test("coding work routes required triggers to the canonical shared standards path", () => {
+	const routing = readDocument("GLOBAL_AGENTS.md").split(/^## Engineering\n/m)[1]?.split(/^## /m)[0] ?? "";
+	for (const trigger of ["implementation", "code edits", "debugging", "tests", "code review"]) {
+		assert.ok(routing.includes(trigger), `missing routing trigger: ${trigger}`);
+	}
+	assert.match(routing, /\bbefore\b[\s\S]*\bread\b/i, "standards must be read before coding work");
+	assert.ok(routing.includes("`~/.agents/CODING_STANDARDS.md`"), "missing canonical installed path");
 });
 
 test("shared coding standards are grouped by engineering concern", () => {
@@ -27,6 +29,7 @@ test("APPEND_SYSTEM.md contains only optional delegation guidance", () => {
 	const policy = readDocument("APPEND_SYSTEM.md").trim();
 	assert.match(policy, /^## Optional delegation\n/);
 	assert.deepEqual(policy.match(/^#{1,6} .+$/gm), ["## Optional delegation"]);
+	assert.doesNotMatch(policy, /\bme-team\b/i);
 });
 
 for (const path of ["README.md", "specs/delegate.md"]) {
