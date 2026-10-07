@@ -127,12 +127,12 @@ PY
 
 run_installer() { # <temporary HOME> <output file>
   local home="$1" output="$2"
-  if HOME="$home" \
+  if (cd "$TMP" && HOME="$home" \
     PATH="$TEST_PATH" \
     ME_PI_TEST_PI_LOG="$PI_LOG" \
     ME_PI_TEST_RTK_LOG="$RTK_LOG" \
     ME_PI_TEST_NPM_MARKER="$NPM_MARKER" \
-    bash "$FIXTURE/install.sh" > "$output" 2>&1; then
+    bash "$FIXTURE/install.sh") > "$output" 2>&1; then
     INSTALL_RC=0
   else
     INSTALL_RC=$?
@@ -215,6 +215,7 @@ done
 check "fresh APPEND_SYSTEM link" assert_link "$PI_AGENT/APPEND_SYSTEM.md" "$FIXTURE/APPEND_SYSTEM.md"
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
 check "fresh coding standards link" assert_link "$AGENTS_HOME/CODING_STANDARDS.md" "$FIXTURE/CODING_STANDARDS.md"
+check "fresh delegation guide link" assert_link "$AGENTS_HOME/DELEGATION.md" "$FIXTURE/specs/delegate.md"
 check "fresh standards reachable from installed global policy" assert_standards_reachable "$HOME_FRESH"
 check "fresh delegate helper link" assert_link "$HOME_FRESH/.local/bin/delegate" "$FIXTURE/bin/delegate"
 check "settings seeded and packages registered" assert_settings_seeded "$PI_AGENT/settings.json" "$FIXTURE/extensions"
@@ -269,6 +270,7 @@ done
 check "repeat retains APPEND_SYSTEM link" assert_link "$PI_AGENT/APPEND_SYSTEM.md" "$FIXTURE/APPEND_SYSTEM.md"
 check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
 check "repeat retains coding standards link" assert_link "$AGENTS_HOME/CODING_STANDARDS.md" "$FIXTURE/CODING_STANDARDS.md"
+check "repeat retains delegation guide link" assert_link "$AGENTS_HOME/DELEGATION.md" "$FIXTURE/specs/delegate.md"
 check "repeat standards remain reachable" assert_standards_reachable "$HOME_FRESH"
 check "repeat retains delegate helper link" assert_link "$HOME_FRESH/.local/bin/delegate" "$FIXTURE/bin/delegate"
 check "Pi and RTK stubs invoked deterministically" assert_invocation_logs
@@ -309,27 +311,36 @@ check "refusals invoke no package install" assert_invocation_logs
 check "no network-capable npm invocation" test ! -e "$NPM_MARKER"
 
 # Shared documentation uses the same per-file collision policy as other resources.
-for kind in file link; do
-  HOME_STANDARDS="$TMP/home-standards-$kind"
-  destination="$HOME_STANDARDS/.agents/CODING_STANDARDS.md"
-  mkdir -p "$HOME_STANDARDS/.agents"
-  if [ "$kind" = file ]; then
-    printf '%s\n' 'user coding standards sentinel' > "$destination"
+for document in standards delegation; do
+  if [ "$document" = standards ]; then
+    name=CODING_STANDARDS.md
+    sentinel='user coding standards sentinel'
   else
-    target="$TMP/user-standards-$kind.md"
-    printf '%s\n' 'user coding standards sentinel' > "$target"
-    ln -s "$target" "$destination"
+    name=DELEGATION.md
+    sentinel='user delegation guide sentinel'
   fi
-  expect_installer "standards $kind collision install succeeds" 0 "$HOME_STANDARDS" "$TMP/standards-$kind.out"
-  check "standards $kind collision preserves contents" assert_file_text "$destination" 'user coding standards sentinel'
-  check "standards $kind collision reported" grep -Eq 'CODING_STANDARDS.md.*left unchanged' "$TMP/standards-$kind.out"
-  if [ "$kind" = file ]; then
-    check "standards file collision remains a regular file" test ! -L "$destination"
-  else
-    check "standards link collision retains its target" assert_link "$destination" "$target"
-  fi
+  for kind in file link; do
+    HOME_SHARED="$TMP/home-$document-$kind"
+    destination="$HOME_SHARED/.agents/$name"
+    mkdir -p "$HOME_SHARED/.agents"
+    if [ "$kind" = file ]; then
+      printf '%s\n' "$sentinel" > "$destination"
+    else
+      target="$TMP/user-$document-$kind.md"
+      printf '%s\n' "$sentinel" > "$target"
+      ln -s "$target" "$destination"
+    fi
+    expect_installer "$document $kind collision install succeeds" 0 "$HOME_SHARED" "$TMP/$document-$kind.out"
+    check "$document $kind collision preserves contents" assert_file_text "$destination" "$sentinel"
+    check "$document $kind collision reported" grep -Eq "$name.*left unchanged" "$TMP/$document-$kind.out"
+    if [ "$kind" = file ]; then
+      check "$document file collision remains a regular file" test ! -L "$destination"
+    else
+      check "$document link collision retains its target" assert_link "$destination" "$target"
+    fi
+  done
 done
-check "standards collision checks invoke no network npm" test ! -e "$NPM_MARKER"
+check "shared-document collision checks invoke no network npm" test ! -e "$NPM_MARKER"
 
 echo
 if [ "$fails" -eq 0 ]; then

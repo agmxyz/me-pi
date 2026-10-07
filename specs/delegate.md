@@ -1,50 +1,31 @@
-# Spec: `delegate` — one-shot pi children
+# Delegation guide
 
-`bin/delegate` runs a role (`agents/<role>.md` in this repo, never the project) as a one-shot `pi -p` child. Runs live in `$ME_PI_RUNS_ROOT` (default `~/.pi/agent/runs/<id>/`). `$RUN/exit` is the only completion signal.
+`bin/delegate` runs a one-shot Pi child using roles from this rig's `agents/`, never roles from the target project. Delegation is optional: use Pi skills directly when they fit; use a separate worker or independent reviewer when a fresh context or isolated task is useful.
 
-## Commands
+## Run and recover
 
-| Command | Behavior |
-|---|---|
-| `run <role> <task.md\|-> [-C dir] [-w] [-b] [-m model] [-T thinking] [-t secs] [-c usd]` | always starts a session-detached watchdog (perl `setsid`); `-b` prints the id and returns, sync prints `delegate: <id> started …` on stderr, waits for `exit`, prints `out.md`, returns its code. Killing a sync caller never stops the worker, caps, or sentinel; resume with `wait <id>`. `-t`/`-c` are time/cost caps (defaults 900s / $2) |
-| `wait <id>...` | block on `exit`, print `out.md`; marks a vanished watchdog as lost |
-| `ls` | id, state, cost, mtime, **cwd** (shared-checkout risk is visible) |
-| `kill <id>` | TERM then KILL the child's process group; pid verified against `lstart` |
-| `ask <id> "q"` | resume the run's session read-only from its own cwd; refuses without `exit` (`run <id> has not finished (no exit sentinel)`) |
-| `harvest <id>` | bring a `-w` run's changes back (below) |
-| `prune [--days N] [--dry-run]` | GC old runs and worktrees (below) |
-| `roles` | `name — description (aliases: …)` per `agents/*.md`; unknown-role errors list the names |
-| `diff-hash [-C dir]` | sha256 hex + newline of the canonical diff (below); prints nothing, exit 0, when clean; exit 1 outside git. Needs no `pi` |
+`delegate run <role> <task.md|-> [options]` starts a task. Use `delegate roles` to discover roles. Send task text through stdin with `-`, not a task file in the project; include **Goal, Acceptance, Constraints, Paths, and Output contract**. The default sync run starts a detached watchdog and waits for the child's `$RUN/exit` sentinel. Set the caller's bash timeout to at least 900 seconds; the helper's default run cap is 900 seconds and $2 (`-t`/`-c` override the caps). Use `-b` only when you intend to continue other interactive work while the child runs.
 
-Model: `-m` > `subagents.agentOverrides.<role>` in settings > `subagents.defaultModel`/`defaultProvider` in settings > pi default. An explicit `-m` bypasses the role settings override and the rig default, including any thinking choice. Thinking: `-T` > settings override thinking (when `-m` is absent) > role frontmatter > pi default. Falling back to the rig default model never changes the role's frontmatter thinking. Nested `pi`/`delegate` are blocked by a per-run PATH shim. Role frontmatter: `tools`, `thinking`, `attach_diff`, `description`, `aliases` (listed only; `run` takes the file name). Workers fail closed (exit 1, before any model call) if their system prompt contains the coordinator `APPEND_SYSTEM.md`; guard in `extensions/me-setup.ts`. `ask` resumes with the full saved role prompt.
+If a sync call is interrupted, the detached worker and its caps continue. Resume with `delegate wait <id>`; do not rerun the task. `wait` prints the saved output and exit status. The sentinel is the only completion signal. `delegate ask <id> "question"` is a read-only follow-up that resumes the saved session and role prompt from the run's cwd; it refuses unfinished runs with `run <id> has not finished (no exit sentinel)` and does not restart the task.
 
-## Optional independent review
+Runs are stored under `$ME_PI_RUNS_ROOT` (default `~/.pi/agent/runs/<id>/`). The directory contains `task.md`, `role.md`, `out.md`, `err.log`, `session/`, `meta`, `exit`, optional `why`, and artifacts. `delegate ls` shows state and cwd; `delegate kill <id>` terminates the worker's process group after checking the recorded process start time.
 
-Delegation is available alongside direct Pi skill use; it is not a mandatory coordinator workflow. `delegate run reviewer - -C <repo>` accepts the review task/spec on stdin and auto-attaches the current diff. Review findings can inform the interactive session, but main-session commits have no global clean-review prerequisite.
+## Roles and settings
 
-Workers leave changes uncommitted and never publish. `extensions/me-setup.ts` retains worker-only bash commit blocking and the prompt-isolation guard; these are safeguards, not an OS sandbox. Publication requires explicit user authorization under `GLOBAL_AGENTS.md`.
+Roles are `agents/<role>.md`; `delegate roles` prints their descriptions and aliases. The default tool set is `read,grep,find,ls` (no bash). Read-only roles have no bash; check a role's `tools` before assigning work that needs writes or commands. Give `devils-advocate` a plan and gathered evidence; use `scout` for research.
 
-## Run files
+Model precedence: explicit `-m` > `subagents.agentOverrides.<role>` > `subagents.defaultModel`/`defaultProvider` > Pi default. An explicit `-m` bypasses settings model and thinking choices. Thinking precedence: explicit `-T` > role override thinking (only when `-m` is absent) > role frontmatter > Pi default. The rig default model does not replace role-frontmatter thinking. Nested `pi` and `delegate` commands are blocked by a per-run PATH shim. Worker prompts require no nested delegation or commits/pushes; the extension blocks textual `git commit` calls through Pi's bash tool, but this is not an OS sandbox. Children return results; the interactive session retains project decisions and integration.
 
-`meta` (`role`, `cwd`, `head`, `model`, `tools`, `thinking`, `wt`, `origin`, `diff_sha` (hex, or `none`), `started`), `task.md`, `role.md`, `out.md` (+ trailer `[id exit=N cost=$ Ns]`), `err.log`, `session/`, `pid`, `lstart`, `watchdog.pid`, `why` (timeout / cost-cap / lost), `exit`, `artifacts/diff.patch` (`attach_diff` roles).
+## Independent review
 
-## Canonical diff (`attach_diff`, `diff-hash`)
+For an optional independent review, `delegate run reviewer - -C <repo>` accepts the review task/spec on stdin and attaches the current working-tree diff. It refuses an empty diff before creating a run. Review can inform the main session; it is not a mandatory clean-review gate for main-session commits.
 
-One implementation: working tree vs HEAD of the `-C` checkout's toplevel (repo-wide from a subdir), untracked non-ignored files included, staging irrelevant. Built in a temp `GIT_INDEX_FILE` (seeded from the real index for stat reuse, `read-tree --reset HEAD`, `add -A`, `diff --cached --binary HEAD`); the real index is never written (blobs do land in the object store). Unborn HEAD diffs against the empty tree.
+## Worktrees and diffs
 
-A role with `attach_diff: true` (`reviewer`): `run` takes the diff before any `-w` worktree exists, dies `nothing to review: working tree matches HEAD` when empty (no run dir), appends `## Diff (working tree vs HEAD, auto-attached)` + a fenced `diff` block (fence longer than any backtick run in it) to `task.md`, keeps the bytes in `artifacts/diff.patch`, and records `diff_sha:` = sha256 of exactly those bytes = `diff-hash` output for the same tree.
+`delegate run -w` creates a detached worktree at the target checkout's HEAD under `$ME_PI_WT_ROOT` (default `~/.pi/wt`); `meta` records the worktree and origin. The worker leaves uncommitted changes there. `delegate harvest <id>` requires a finished run and a registered worktree belonging to that origin. It saves a patch, checks it with `git apply --check`, and only then applies it; a conflict refuses the whole patch and keeps it for inspection. Harvest never commits, and the worktree remains until pruned. Inspect harvested changes and run relevant checks before accepting them.
 
-## Worktree lifecycle (`-w`)
+Review attachments and `delegate diff-hash` use one canonical diff: the target checkout versus HEAD, including untracked non-ignored files and regardless of staging. A temporary Git index leaves the real index untouched (Git objects may be written). An unborn HEAD compares against the empty tree. Attached bytes are saved at `artifacts/diff.patch`; `diff-hash` prints their SHA-256, or nothing for a clean tree.
 
-1. `run -w` creates a detached worktree of `-C dir` at HEAD under `$ME_PI_WT_ROOT` (default `~/.pi/wt`); `meta` records `wt:` and `origin:` (the source toplevel).
-2. The writer finishes with **uncommitted** changes in the worktree (roles never commit).
-3. `harvest <id>`: requires `exit`; `wt` must exist and be a worktree registered in `origin`. Runs `git add -N .` in the worktree, `git diff --binary` → `$RUN/artifacts/harvest.patch`, `git apply --check` against `origin`, then applies. Any conflict → refuse, nothing applied, patch kept. Prints the applied `--stat`. Never commits; the coordinator reviews and commits.
-4. The worktree survives harvest. Only `prune` removes it.
+## Prune safely
 
-## GC (`prune`)
-
-Candidates: run dirs whose `exit` file is older than N days (default 7, by mtime). Never touches a run without `exit`, or one whose `pid` is still alive (reported as `skip`). For each pruned run its `wt` is removed (`git worktree remove --force`, then `worktree prune`) only if it resolves under `$WT_ROOT`. `--dry-run` lists (`would prune …`, flags worktrees with uncommitted changes) and deletes nothing. Unharvested changes in a pruned worktree are lost — harvest first.
-
-## Tests
-
-`bin/delegate.test.sh` (fake pi, free; runs a copy of the script against fixture roles `worker`/`differ`, so real `agents/*.md` edits never break it; harvest/prune/diff use git fixtures) and `ME_PI_ITEST=1 bin/delegate.itest.sh` (real cheap model, < $0.05; case 6 is a harvest round-trip).
+`delegate prune [--days N] [--dry-run]` considers every run under its runs root whose `exit` file is older than N days (default 7), and skips a run with a live pid. A worktree is removed only if it resolves under `$ME_PI_WT_ROOT`. Dry-run deletes nothing and flags worktrees with uncommitted changes. Preview candidates, prune only the intended runs, and never prune unrelated work. Pruning an unharvested worktree loses its changes: harvest first. Other command syntax and options are available through `delegate --help`.
