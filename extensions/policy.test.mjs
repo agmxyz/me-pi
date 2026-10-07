@@ -9,6 +9,20 @@ test("global policy does not prescribe a named execution engine", () => {
 	assert.doesNotMatch(readDocument("GLOBAL_AGENTS.md"), /\bme-team\b/i);
 });
 
+test("coding work has an explicit pointer to the shared standards", () => {
+	assert.match(
+		readDocument("GLOBAL_AGENTS.md"),
+		/^## Engineering\nBefore implementation, code edits, debugging, tests, or code review, read `~\/\.agents\/CODING_STANDARDS\.md`\.$/m,
+	);
+});
+
+test("shared coding standards are grouped by engineering concern", () => {
+	const standards = readDocument("CODING_STANDARDS.md");
+	for (const section of ["Scope", "Failure handling", "Verification", "Readability"]) {
+		assert.match(standards, new RegExp(`^## ${section}\\n- .+`, "m"), `missing actionable ${section} guidance`);
+	}
+});
+
 test("APPEND_SYSTEM.md contains only optional delegation guidance", () => {
 	const policy = readDocument("APPEND_SYSTEM.md").trim();
 	assert.match(policy, /^## Optional delegation\n/);

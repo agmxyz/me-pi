@@ -111,6 +111,20 @@ check() { # <description> <command...>
 assert_link() { [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]; }
 assert_file_text() { printf '%s\n' "$2" | cmp -s - "$1"; }
 
+assert_standards_reachable() {
+  python3 - "$1" "$FIXTURE" <<'PY'
+from pathlib import Path
+import sys
+
+home, fixture = map(Path, sys.argv[1:])
+policy = (home / ".pi/agent/AGENTS.md").read_text()
+assert "~/.agents/CODING_STANDARDS.md" in policy
+standards = home / ".agents/CODING_STANDARDS.md"
+assert standards.is_file()
+assert standards.read_bytes() == (fixture / "CODING_STANDARDS.md").read_bytes()
+PY
+}
+
 run_installer() { # <temporary HOME> <output file>
   local home="$1" output="$2"
   if HOME="$home" \
@@ -200,6 +214,8 @@ for source in "$FIXTURE"/skills/*; do
 done
 check "fresh APPEND_SYSTEM link" assert_link "$PI_AGENT/APPEND_SYSTEM.md" "$FIXTURE/APPEND_SYSTEM.md"
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
+check "fresh coding standards link" assert_link "$AGENTS_HOME/CODING_STANDARDS.md" "$FIXTURE/CODING_STANDARDS.md"
+check "fresh standards reachable from installed global policy" assert_standards_reachable "$HOME_FRESH"
 check "fresh delegate helper link" assert_link "$HOME_FRESH/.local/bin/delegate" "$FIXTURE/bin/delegate"
 check "settings seeded and packages registered" assert_settings_seeded "$PI_AGENT/settings.json" "$FIXTURE/extensions"
 check "interactive-shell example copied" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
@@ -252,6 +268,8 @@ for source in "$FIXTURE"/skills/*; do
 done
 check "repeat retains APPEND_SYSTEM link" assert_link "$PI_AGENT/APPEND_SYSTEM.md" "$FIXTURE/APPEND_SYSTEM.md"
 check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
+check "repeat retains coding standards link" assert_link "$AGENTS_HOME/CODING_STANDARDS.md" "$FIXTURE/CODING_STANDARDS.md"
+check "repeat standards remain reachable" assert_standards_reachable "$HOME_FRESH"
 check "repeat retains delegate helper link" assert_link "$HOME_FRESH/.local/bin/delegate" "$FIXTURE/bin/delegate"
 check "Pi and RTK stubs invoked deterministically" assert_invocation_logs
 check "npm fallback remains unused" test ! -e "$NPM_MARKER"
@@ -289,6 +307,29 @@ check "ancestor refusal preserves target" assert_file_text "$ANCESTOR_TARGET/sen
 check "ancestor refusal creates no live agent directory" test ! -e "$ANCESTOR_TARGET/agent"
 check "refusals invoke no package install" assert_invocation_logs
 check "no network-capable npm invocation" test ! -e "$NPM_MARKER"
+
+# Shared documentation uses the same per-file collision policy as other resources.
+for kind in file link; do
+  HOME_STANDARDS="$TMP/home-standards-$kind"
+  destination="$HOME_STANDARDS/.agents/CODING_STANDARDS.md"
+  mkdir -p "$HOME_STANDARDS/.agents"
+  if [ "$kind" = file ]; then
+    printf '%s\n' 'user coding standards sentinel' > "$destination"
+  else
+    target="$TMP/user-standards-$kind.md"
+    printf '%s\n' 'user coding standards sentinel' > "$target"
+    ln -s "$target" "$destination"
+  fi
+  expect_installer "standards $kind collision install succeeds" 0 "$HOME_STANDARDS" "$TMP/standards-$kind.out"
+  check "standards $kind collision preserves contents" assert_file_text "$destination" 'user coding standards sentinel'
+  check "standards $kind collision reported" grep -Eq 'CODING_STANDARDS.md.*left unchanged' "$TMP/standards-$kind.out"
+  if [ "$kind" = file ]; then
+    check "standards file collision remains a regular file" test ! -L "$destination"
+  else
+    check "standards link collision retains its target" assert_link "$destination" "$target"
+  fi
+done
+check "standards collision checks invoke no network npm" test ! -e "$NPM_MARKER"
 
 echo
 if [ "$fails" -eq 0 ]; then

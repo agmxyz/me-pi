@@ -8,14 +8,7 @@ Applies to replies, reports, and docs. Never reduces work, verification, or reas
 - Write docs and handoffs unambiguously for readers without session context.
 
 ## Engineering
-Pragmatic and robust: make the simplest change that fully works.
-- State material assumptions; ask when ambiguity changes the outcome.
-- Scope: meet the request without speculative features, abstractions, config, or compat shims. Remove code made unused; leave unrelated code alone.
-- Fit existing patterns, naming, libraries, and style. Add a dependency only when clearly cheaper than writing the code.
-- Robust: handle real input, I/O, network, and external-tool failures with clear errors. Never swallow errors or fall back silently; skip guards for impossible states.
-- Verify: define observable success, check changed behavior before calling it done, and report skipped checks or failures. Never weaken, skip, or special-case tests to pass.
-- Readability: use descriptive names, named constants for non-obvious values, and named complex conditions; prefer early returns over nesting. Keep interfaces small and add layers only when they improve clarity. Some duplication beats premature abstraction; compose rather than inherit.
-- Comments explain why, intent, or tricky behavior; never restate code.
+Before implementation, code edits, debugging, tests, or code review, read `~/.agents/CODING_STANDARDS.md`.
 
 ## Authorization
 Publish changes (push branches or create PRs) only with explicit user authorization for the named operation; a request to edit, test, review, or commit does not imply publication authority.

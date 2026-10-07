@@ -10,7 +10,7 @@ cd me-pi
 ./install.sh
 ```
 
-The installer registers `extensions/` as a local Pi package; installs pinned `pi-web-access`; links tracked agent and skill entries individually into machine-owned directories; links the `delegate` helper into `~/.local/bin` when that directory exists; and seeds `settings.json` only if no live file exists. It copies Pi's interactive-shell example into the live extension directory if missing, and runs RTK's Pi setup when `rtk` is available. Existing user entries are preserved; name collisions are reported rather than overwritten. To refresh the interactive-shell copy, remove it from `~/.pi/agent/extensions/` and rerun the installer.
+The installer registers `extensions/` as a local Pi package; installs pinned `pi-web-access`; links tracked agent and skill entries individually into machine-owned directories; links shared coding standards at `~/.agents/CODING_STANDARDS.md`; links the `delegate` helper into `~/.local/bin` when that directory exists; and seeds `settings.json` only if no live file exists. It copies Pi's interactive-shell example into the live extension directory if missing, and runs RTK's Pi setup when `rtk` is available. Existing user entries are preserved; name collisions are reported rather than overwritten. To refresh the interactive-shell copy, remove it from `~/.pi/agent/extensions/` and rerun the installer.
 
 External installers write to live user directories, not this repo. The installer detaches legacy whole-directory links into this repo without copying their contents back, and refuses a symlinked `settings.json` or package-store links into the repo. Review any collision it reports. Install the `rtk` binary separately if you want its integration. Restart Pi after installation.
 
@@ -52,5 +52,6 @@ Installer checks use a temporary HOME, fixture repo and fake Pi/RTK; no live ins
 - `skills/`: repo-maintained personal skills shared with Codex through per-skill links
 - `settings.json`: initial settings template
 - `APPEND_SYSTEM.md`: optional delegation instructions for main sessions
-- `GLOBAL_AGENTS.md`: personal output, engineering and authorization rules for every agent; linked as `~/.pi/agent/AGENTS.md` (main + workers), imported by `~/.claude/CLAUDE.md`, copied into `~/.codex/AGENTS.md`
+- `GLOBAL_AGENTS.md`: always-loaded output/authorization rules and coding-standards pointer; linked as `~/.pi/agent/AGENTS.md` (main + workers), imported by `~/.claude/CLAUDE.md`, copied into `~/.codex/AGENTS.md`
+- `CODING_STANDARDS.md`: engineering reference, read before implementation, code edits, debugging, tests or review; linked at `~/.agents/CODING_STANDARDS.md` for cwd-independent access
 - `docs/`: architecture decisions and research
