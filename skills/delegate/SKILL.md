@@ -1,3 +1,8 @@
+---
+name: delegate
+description: Delegate work with the `delegate` CLI (`delegate run`) to a separate Pi worker, an independent reviewer, or another model. Read before delegating.
+---
+
 # Delegation guide
 
 `bin/delegate` runs a one-shot Pi child using roles from this rig's `agents/`, never roles from the target project. Delegation is optional: use Pi skills directly when they fit; use a separate worker or independent reviewer when a fresh context or isolated task is useful.
@@ -12,13 +17,13 @@ Runs are stored under `$ME_PI_RUNS_ROOT` (default `~/.pi/agent/runs/<id>/`). The
 
 ## Roles and settings
 
-Roles are `agents/<role>.md`; `delegate roles` prints their descriptions and aliases. Use the role filename, not a listed alias, in `run`. The default tool set is `read,grep,find,ls` (no bash). Read-only roles have no bash; check a role's `tools` before assigning work that needs writes or commands. Give `devils-advocate` a plan and gathered evidence; use `scout` for research.
+Roles are `agents/<role>.md`; `delegate roles` prints their descriptions. The default tool set is `read,grep,find,ls` (no bash). Read-only roles have no bash; check a role's `tools` before assigning work that needs writes or commands. Give `devils-advocate` a plan and gathered evidence; use `scout` for research.
 
 Honor requested model and thinking choices: pass them via `-m` and `-T` without substitution.
 
-- Model precedence: explicit `-m` > `subagents.agentOverrides.<role>` > `subagents.defaultModel`/`defaultProvider` > Pi default. Explicit `-m` bypasses settings-based model and thinking choices.
-- Thinking precedence: explicit `-T` > role override thinking (only when `-m` is absent) > role frontmatter > helper default (`high`). `subagents.defaultThinking` is not consumed by `delegate`.
-- Missing or invalid settings are ignored. An override's provider and model are combined as `provider/model`; an absent or false provider leaves the model bare.
+- Model: explicit `-m` > role frontmatter `model:` > no `--model` flag (the child uses Pi's own default from `settings.json`, i.e. the last `/model` selection).
+- Thinking: explicit `-T` > role frontmatter `thinking:` > helper default (`high`). `-m` does not change thinking.
+- Per-role model and thinking are set only in `agents/<role>.md` frontmatter (`provider/model` form); `delegate roles` shows them. Settings `subagents.*` is not read.
 
 ## Worker boundaries
 
@@ -32,7 +37,7 @@ For an optional independent review, `delegate run reviewer - -C <repo>` accepts 
 
 Before assigning a writer, read the concurrent-change rules in `~/.agents/CODING_STANDARDS.md`; `-w` provides checkout isolation for delegate writers. `delegate run <role> - -C <repo> -w` creates a detached worktree at the target checkout's HEAD under `$ME_PI_WT_ROOT` (default `~/.pi/wt`); `meta` records the worktree and origin. The worker leaves uncommitted changes there. `delegate harvest <id>` requires a finished run and a registered worktree belonging to that origin. It saves a patch, checks it with `git apply --check`, and only then applies it; a conflict refuses the whole patch and keeps it for inspection. Harvest never commits, and the worktree remains until pruned. Inspect harvested changes and run relevant checks before accepting them.
 
-Review attachments and `delegate diff-hash` use one canonical diff: the target checkout versus HEAD, including untracked non-ignored files and regardless of staging. A temporary Git index leaves the real index untouched (Git objects may be written). An unborn HEAD compares against the empty tree. Attached bytes are saved at `artifacts/diff.patch`; `diff-hash` prints their SHA-256, or nothing for a clean tree.
+Review attachments use one canonical diff: the target checkout versus HEAD, including untracked non-ignored files and regardless of staging. A temporary Git index leaves the real index untouched (Git objects may be written). An unborn HEAD compares against the empty tree. Attached bytes are saved at `artifacts/diff.patch`.
 
 ## Prune safely
 

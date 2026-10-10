@@ -10,14 +10,14 @@ cd me-pi
 ./install.sh
 ```
 
-The installer registers this rig's Pi package, links its agents, skills, delegation guide, and shared coding standards, and seeds settings only when no live file exists. Existing machine-owned entries are preserved; resolve any reported collision. Pi is required; RTK integration is optional. Restart Pi after installation.
+The installer links repo skills into `~/.agents/skills`, shared coding standards to `~/.agents/CODING_STANDARDS.md`, global output policy to `~/.pi/agent/AGENTS.md`, and `bin/delegate` to `~/.local/bin/delegate`. It registers this rig's Pi package and pinned Pi packages with `pi install`, and seeds `settings.json` only when no live file exists. Existing machine-owned entries are preserved; resolve any reported collision. Pi is required; RTK integration is optional. Restart Pi after installation.
 
-Keep credentials and live settings in `~/.pi/agent/`, outside this repository. Tracked `settings.json` is a first-install template, not a credentials backup. For a policy refresh, migration, or Pi reinstall, follow [specs/migration.md](specs/migration.md) before changing live files.
+Keep credentials and live settings in `~/.pi/agent/`, outside this repository. Tracked `settings.json` is a first-install template, not a credentials backup. For a policy refresh or migration, follow [specs/migration.md](specs/migration.md) before changing live files.
 
 ## Use
 
-- `/me-setup` chooses default and per-agent models; `/me-setup status` inspects the rig.
-- Use Pi skills directly when they fit. For a separate worker or independent review, use `delegate`; before delegating, read `~/.agents/DELEGATION.md`.
+- `/me-setup` and `/me-setup status` show rig status. Roles pin model/thinking in `agents/*.md` frontmatter; with no role model, delegated children use Pi's own default model.
+- Use Pi skills directly when they fit. For a separate worker or independent review, use `delegate`; before delegating, read [skills/delegate/SKILL.md](skills/delegate/SKILL.md).
 - Skills written for another harness may call an unavailable `Skill` tool; read the named skill's `SKILL.md` instead.
 - Read engineering guidance at `~/.agents/CODING_STANDARDS.md` before implementation, code edits, debugging, tests, or code review. `GLOBAL_AGENTS.md` holds always-loaded output and publication rules.
 
@@ -35,9 +35,8 @@ bin/install.test.sh
 ## Project map
 
 - `extensions/`: Pi package and project-maintained extension
-- `agents/`, `skills/`: rig roles and repository-maintained skills
-- `APPEND_SYSTEM.md`: optional-delegation router
-- `specs/delegate.md`: authoritative delegation guide, installed at `~/.agents/DELEGATION.md`
+- `agents/`: role prompts; not linked by the installer
+- `skills/`: repository-maintained skills, linked individually into `~/.agents/skills`; `skills/delegate/SKILL.md` is the delegation guide
 - `CODING_STANDARDS.md`: engineering reference, installed at `~/.agents/CODING_STANDARDS.md`
 - `GLOBAL_AGENTS.md`: global output and publication policy
 - `docs/`: architecture decisions and research

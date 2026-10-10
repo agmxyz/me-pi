@@ -16,11 +16,20 @@ cat > "$TMP/dlg/agents/worker.md" <<'ROLE'
 ---
 name: worker
 description: Generic test worker: read-only
-aliases: w, wk
 thinking: high
 tools: read, grep, find, ls
 ---
 Worker body.
+ROLE
+cat > "$TMP/dlg/agents/modeled.md" <<'ROLE'
+---
+name: modeled
+description: Role pinning model and thinking
+model: fm-provider/fm-model
+thinking: low
+tools: read, grep, find, ls
+---
+Modeled body.
 ROLE
 cat > "$TMP/dlg/agents/differ.md" <<'ROLE'
 ---
@@ -107,71 +116,24 @@ fi
 # ── 2. role resolution ─────────────────────────────────────────────────
 if d run nobody /dev/null -C "$TMP" >/dev/null 2>&1; then echo "✗ unknown role rejected"; fails=$((fails+1)); else echo "✓ unknown role rejected"; fi
 
-# ── 3. settings override resolves model and thinking ────────────────────
+# ── 3. model/thinking precedence (frontmatter only; no settings) ────────
+latest_args() { echo "$RUNS/$(ls -t "$RUNS" | head -1)/session/args"; }
+d run modeled - -C "$TMP" <<< "fm check" >/dev/null
+check "frontmatter model passed" grep -Fxq "fm-provider/fm-model" "$(latest_args)"
+check "frontmatter thinking passed" grep -Fxq "low" "$(latest_args)"
+d run modeled - -C "$TMP" -m cli/model <<< "m flag" >/dev/null
+check "-m overrides frontmatter model" grep -Fxq "cli/model" "$(latest_args)"
+check "-m keeps frontmatter thinking" grep -Fxq "low" "$(latest_args)"
+d run modeled - -C "$TMP" -T max <<< "T flag" >/dev/null
+check "-T overrides frontmatter thinking" grep -Fxq "max" "$(latest_args)"
+check "-T keeps frontmatter model" grep -Fxq "fm-provider/fm-model" "$(latest_args)"
+# Pi settings must never influence the model choice.
 mkdir -p "$TMP/home/.pi/agent"
-cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
-{
-  "subagents": {
-    "agentOverrides": {
-      "worker": { "model": "test-model", "defaultProvider": "test-provider", "thinking": "minimal" }
-    },
-    "defaultThinking": "max"
-  }
-}
-JSON
-override_out="$(HOME="$TMP/home" d run worker - -C "$TMP" <<< "override check")"
-override_id="$(ls -t "$RUNS" | head -1)"
-check "settings override model passed" grep -Fxq "test-provider/test-model" "$RUNS/$override_id/session/args"
-check "settings override thinking passed" grep -Fxq "minimal" "$RUNS/$override_id/session/args"
-# -m remains higher precedence than the live settings override.
-flag_out="$(HOME="$TMP/home" d run worker - -C "$TMP" -m cli/model <<< "flag check")"
-flag_id="$(ls -t "$RUNS" | head -1)"
-check "-m overrides settings model" grep -Fxq "cli/model" "$RUNS/$flag_id/session/args"
-check "-m keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$flag_id/session/args"
-# Explicit -T thinking overrides settings/frontmatter.
-flag_thinking_out="$(HOME="$TMP/home" d run worker - -C "$TMP" -m openai-codex/gpt-6-luna -T max <<< "thinking flag check")"
-flag_thinking_id="$(ls -t "$RUNS" | head -1)"
-check "-T overrides settings thinking" grep -Fxq "max" "$RUNS/$flag_thinking_id/session/args"
-
-# ── 3b. default model fallback (no role override) ───────────────────────
-cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
-{
-  "subagents": {
-    "defaultModel": "fallback-model",
-    "defaultProvider": "fallback-provider",
-    "defaultThinking": "max"
-  }
-}
-JSON
-fb_id="$(HOME="$TMP/home" d run worker - -C "$TMP" <<< "fallback check" >/dev/null; ls -t "$RUNS" | head -1)"
-check "default model fallback passed" grep -Fxq "fallback-provider/fallback-model" "$RUNS/$fb_id/session/args"
-check "fallback keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$fb_id/session/args"
-fbm_id="$(HOME="$TMP/home" d run worker - -C "$TMP" -m cli/model <<< "fallback flag check" >/dev/null; ls -t "$RUNS" | head -1)"
-check "-m overrides default fallback" grep -Fxq "cli/model" "$RUNS/$fbm_id/session/args"
-cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
-{
-  "subagents": {
-    "defaultModel": "bare-model",
-    "defaultProvider": false,
-    "defaultThinking": "max"
-  }
-}
-JSON
-fbp_id="$(HOME="$TMP/home" d run worker - -C "$TMP" <<< "bare fallback check" >/dev/null; ls -t "$RUNS" | head -1)"
-check "default fallback without provider uses bare model" grep -Fxq "bare-model" "$RUNS/$fbp_id/session/args"
-cat > "$TMP/home/.pi/agent/settings.json" <<'JSON'
-{
-  "subagents": {
-    "defaultModel": "fallback-model",
-    "defaultProvider": "fallback-provider",
-    "defaultThinking": "max",
-    "agentOverrides": { "worker": { "model": "override-model", "defaultProvider": "override-provider" } }
-  }
-}
-JSON
-ovd_id="$(HOME="$TMP/home" d run worker - -C "$TMP" <<< "override beats default" >/dev/null; ls -t "$RUNS" | head -1)"
-check "role override beats default fallback" grep -Fxq "override-provider/override-model" "$RUNS/$ovd_id/session/args"
-check "override without thinking keeps frontmatter thinking" grep -Fxq "high" "$RUNS/$ovd_id/session/args"
+echo '{"defaultModel":"settings-model","subagents":{"defaultModel":"x"}}' > "$TMP/home/.pi/agent/settings.json"
+HOME="$TMP/home" d run worker - -C "$TMP" <<< "no model" >/dev/null
+if grep -Fxq -- "--model" "$(latest_args)"; then echo "✗ no model -> no --model passed"; fails=$((fails+1)); else echo "✓ no model -> no --model passed"; fi
+check "no model: helper default thinking high" grep -Fxq "high" "$(latest_args)"
+check "meta records model default" grep -Fxq "model: default" "$(dirname "$(dirname "$(latest_args)")")/meta"
 
 # ── 4. nested pi + delegate blocked via shim ───────────────────────────
 ME_PI_TEST_CHECK_SHIM=1 d run worker - -C "$TMP" <<< "shim check" > "$TMP/shim.out" 2>&1 || true
@@ -236,7 +198,10 @@ check "child cwd is the worktree" grep -q "exit=0" <<<"$(cat "$TMP/wt.out")"
 # ── 9. ask ─────────────────────────────────────────────────────────────
 d ask "$bg_id" "status?" > "$TMP/ask.out" 2>/dev/null
 check "ask resumes session" grep -q "TASK-DONE-MARKER" "$TMP/ask.out"
-check "ask preserves run model" grep -Fxq "$(sed -n 's/^model: //p' "$RUNS/$bg_id/meta")" "$RUNS/$bg_id/session/args"
+ask_id="$(d run modeled - -b -C "$TMP" <<< "ask model" )"
+d wait "$ask_id" >/dev/null 2>&1
+d ask "$ask_id" "status?" >/dev/null 2>&1
+check "ask preserves run model" grep -Fxq "fm-provider/fm-model" "$RUNS/$ask_id/session/args"
 check "ask keeps read-only tools" grep -Fxq "read,grep,find,ls" "$RUNS/$bg_id/session/args"
 check "ask uses original run cwd" grep -Fxq "$(sed -n 's/^cwd: //p' "$RUNS/$bg_id/meta")" "$RUNS/$bg_id/session/cwd"
 check "ask appends full role file" grep -Fxq "$RUNS/$bg_id/role.md" "$RUNS/$bg_id/session/args"
@@ -356,38 +321,27 @@ check "meta diff_sha none for plain roles" grep -Fxq "diff_sha: none" "$RUNS/$ru
 
 # ── 17. roles listing + unknown role error ─────────────────────────────────
 d roles > "$TMP/roles.out" 2>&1 || true
-check "roles lists name, description, aliases" grep -Fxq "worker — Generic test worker: read-only (aliases: w, wk)" "$TMP/roles.out"
-check "roles omits empty aliases" grep -Fxq "differ — Reviews the attached diff" "$TMP/roles.out"
+check "roles lists name and description" grep -Fxq "worker — Generic test worker: read-only [model: default, thinking: high]" "$TMP/roles.out"
+check "roles lists second role" grep -Fxq "differ — Reviews the attached diff [model: default, thinking: high]" "$TMP/roles.out"
 d run nobody /dev/null -C "$TMP" > "$TMP/unknown.out" 2>&1 || true
-check "unknown role lists available roles" grep -Fq "available: differ, worker" "$TMP/unknown.out"
+check "unknown role lists available roles" grep -Fq "available: differ, modeled, worker" "$TMP/unknown.out"
 d --help > "$TMP/help.out" 2>&1 || true
 check "usage mentions roles" grep -q "delegate roles" "$TMP/help.out"
-check "usage mentions diff-hash" grep -q "delegate diff-hash \[-C dir\]" "$TMP/help.out"
 awk '/^---$/{n++; next} n==1' "$TESTS_DIR/../agents/reviewer.md" | grep -Fxq "attach_diff: true" && echo "✓ real reviewer role declares attach_diff" || { echo "✗ real reviewer role declares attach_diff"; fails=$((fails+1)); }
 
-# ── 18. canonical diff: diff-hash + attach_diff ────────────────────────────
 DR="$TMP/dr"; DRUNS="$TMP/runs-dr"
 dd() { HOME="$TMP/home" PI_BIN="$FAKE_PI" ME_PI_RUNS_ROOT="$DRUNS" ME_PI_WT_ROOT="$WTS" "$DELEGATE" "$@"; }
 git init -q "$DR"; git -C "$DR" config user.email t@t; git -C "$DR" config user.name t
 mkdir -p "$DR/sub"
 printf 'one\n```\ntwo\n' > "$DR/a.txt"; printf 'ignored.txt\n' > "$DR/.gitignore"; printf 's\n' > "$DR/sub/s.txt"
 git -C "$DR" add .; git -C "$DR" commit -q -m init
-rc=0; clean_hash="$(dd diff-hash -C "$DR")" || rc=$?
-[ "$rc" -eq 0 ] && [ -z "$clean_hash" ] && echo "✓ diff-hash on clean tree prints nothing, exits 0" || { echo "✗ diff-hash on clean tree (rc=$rc out=$clean_hash)"; fails=$((fails+1)); }
 rc=0; dd run differ - -C "$DR" <<< "review" > "$TMP/dr-clean.out" 2>&1 || rc=$?
 [ "$rc" -ne 0 ] && grep -Fq "nothing to review: working tree matches HEAD" "$TMP/dr-clean.out" && [ -z "$(ls "$DRUNS" 2>/dev/null)" ] && echo "✓ attach_diff role refuses clean tree, no run dir" || { echo "✗ attach_diff role refuses clean tree (rc=$rc)"; fails=$((fails+1)); }
 
 printf 'one\n```\nTWO\n' > "$DR/a.txt"; printf 'untracked-content\n' > "$DR/u.txt"; printf 'secret-ignored\n' > "$DR/ignored.txt"
-h1="$(dd diff-hash -C "$DR")"
-[[ "$h1" =~ ^[0-9a-f]{64}$ ]] && [ "$(dd diff-hash -C "$DR" | wc -c | tr -d ' ')" = 65 ] && echo "✓ diff-hash prints exactly sha256 hex + newline" || { echo "✗ diff-hash output format: $h1"; fails=$((fails+1)); }
 idx_before="$(shasum < "$DR/.git/index")"
 git -C "$DR" add a.txt
 idx_staged="$(shasum < "$DR/.git/index")"
-h2="$(dd diff-hash -C "$DR")"
-[ "$h1" = "$h2" ] && echo "✓ diff-hash independent of staging" || { echo "✗ diff-hash independent of staging"; fails=$((fails+1)); }
-[ "$idx_staged" = "$(shasum < "$DR/.git/index")" ] && [ "$idx_before" != "$idx_staged" ] && echo "✓ diff-hash leaves the real index untouched" || { echo "✗ diff-hash leaves the real index untouched"; fails=$((fails+1)); }
-[ "$h1" = "$(dd diff-hash -C "$DR/sub")" ] && [ "$h1" = "$(cd "$DR/sub" && dd diff-hash)" ] && echo "✓ diff-hash is repo-wide from subdir and default cwd" || { echo "✗ diff-hash from subdir/default cwd"; fails=$((fails+1)); }
-[ "$h1" = "$(HOME="$TMP/home" PI_BIN=/nonexistent/pi "$DELEGATE" diff-hash -C "$DR" 2>/dev/null)" ] && echo "✓ diff-hash works without pi" || { echo "✗ diff-hash works without pi"; fails=$((fails+1)); }
 
 rc=0; dd run differ - -C "$DR" <<< "review this" > "$TMP/dr-run.out" 2>&1 || rc=$?
 dr_id="$(ls "$DRUNS" | head -1)"; dr_task="$DRUNS/$dr_id/task.md"
@@ -397,7 +351,8 @@ check "task has diff section heading" grep -Fxq "## Diff (working tree vs HEAD, 
 check "diff includes untracked file" grep -Fq "+untracked-content" "$dr_task"
 if grep -q "secret-ignored" "$dr_task"; then echo "✗ diff excludes ignored file"; fails=$((fails+1)); else echo "✓ diff excludes ignored file"; fi
 check "meta records role" grep -Fxq "role: differ" "$DRUNS/$dr_id/meta"
-check "meta diff_sha equals diff-hash" grep -Fxq "diff_sha: $h1" "$DRUNS/$dr_id/meta"
+h1="$(sed -n 's/^diff_sha: //p' "$DRUNS/$dr_id/meta")"
+check "meta diff_sha is sha256 hex" grep -Eq '^diff_sha: [0-9a-f]{64}$' "$DRUNS/$dr_id/meta"
 fence_line="$(grep -m1 -E '^`{3,}diff$' "$dr_task" || true)"; fence="${fence_line%diff}"
 [ "${#fence}" -ge 4 ] && echo "✓ fence outgrows backtick runs in the diff" || { echo "✗ fence outgrows backtick runs (fence=$fence)"; fails=$((fails+1)); }
 attached_sha="$(awk -v f="$fence" 'on && $0 == f { exit } on { print } $0 == f "diff" { on = 1 }' "$dr_task" | shasum -a 256 | cut -d' ' -f1)"
@@ -410,11 +365,8 @@ drw_id="$(ls "$DRUNS" | head -1)"
 [ "$rc" -eq 0 ] && grep -Fq "+untracked-content" "$DRUNS/$drw_id/task.md" && grep -Fxq "diff_sha: $h1" "$DRUNS/$drw_id/meta" && echo "✓ -w attaches the origin's diff" || { echo "✗ -w attaches the origin's diff (rc=$rc)"; fails=$((fails+1)); }
 
 printf 'changed again\n' >> "$DR/u.txt"
-[ "$h1" != "$(dd diff-hash -C "$DR")" ] && echo "✓ diff-hash changes with the working tree" || { echo "✗ diff-hash changes with the working tree"; fails=$((fails+1)); }
 git init -q "$TMP/unborn"; printf 'x\n' > "$TMP/unborn/f.txt"
-[[ "$(dd diff-hash -C "$TMP/unborn")" =~ ^[0-9a-f]{64}$ ]] && echo "✓ diff-hash works before the first commit" || { echo "✗ diff-hash works before the first commit"; fails=$((fails+1)); }
 mkdir -p "$TMP/notgit"
-dd diff-hash -C "$TMP/notgit" >/dev/null 2>&1 && { echo "✗ diff-hash fails outside git"; fails=$((fails+1)); } || echo "✓ diff-hash fails outside git"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "delegate smoke test: all passed"; else echo "delegate smoke test: $fails failure(s)"; exit 1; fi

@@ -27,16 +27,8 @@ test("shared coding standards state engineering and concurrent-edit safety", () 
 	}
 });
 
-test("APPEND_SYSTEM.md routes optional independent work to the disclosed delegation guide", () => {
-	const policy = readDocument("APPEND_SYSTEM.md").trim();
-	assert.match(policy, /before delegating, read `~\/.agents\/DELEGATION\.md`/i);
-	assert.match(policy, /independent (worker|review)/i);
-	assert.ok(policy.split("\n").length <= 3, "always-loaded router should stay short");
-	assert.doesNotMatch(policy, /\b(subagents|harvest|prune)\b/i);
-});
-
 test("disclosed delegation guide preserves operational safeguards", () => {
-	const guide = readDocument("specs/delegate.md");
+	const guide = readDocument("skills/delegate/SKILL.md");
 	for (const [guidance, concern] of [
 		[/stdin|standard input/i, "stdin task contract"],
 		[/roles from this rig[^\n]*target project/i, "role source"],
@@ -47,8 +39,8 @@ test("disclosed delegation guide preserves operational safeguards", () => {
 		[/devils-advocate[^\n]*plan[^\n]*scout[^\n]*research/i, "role-specific handoff advice"],
 		[/interactive session retains project decisions/i, "coordinator decision boundary"],
 		[/honor requested model and thinking choices[^\n]*`-m`[^\n]*`-T`[^\n]*without substitution/i, "requested model/thinking choices are preserved"],
-		[/model precedence[^\n]*explicit `?-m`[^\n]*settings|explicit `?-m`[^\n]*>[^\n]*agentOverrides/i, "model precedence"],
-		[/thinking precedence[^\n]*explicit `?-T`[^\n]*role/i, "thinking precedence"],
+		[/model:[^\n]*explicit `?-m`[^\n]*>[^\n]*frontmatter `?model:/i, "model precedence"],
+		[/thinking:[^\n]*explicit `?-T`[^\n]*role/i, "thinking precedence"],
 		[/harvest[^\n]*(conflict|apply --check)|conflict[^\n]*nothing applied/i, "harvest safeguards"],
 		[/inspect harvested changes[^\n]*checks/i, "harvest review"],
 		[/prune[^\n]*unrelated work/i, "prune scope"],
@@ -80,7 +72,7 @@ test("paid delegate integration test requires explicit spend authorization", () 
 
 test("README routes delegation, migration, and engineering topics", () => {
 	const readme = readDocument("README.md");
-	assert.match(readme, /~\/.agents\/DELEGATION\.md|specs\/delegate\.md/);
+	assert.match(readme, /skills\/delegate/);
 	assert.match(readme, /migration[^\n]*specs\/migration\.md|specs\/migration\.md[^\n]*migration/i);
 	assert.match(readme, /CODING_STANDARDS\.md/);
 	assert.match(readme, /credentials|auth\.json/i);

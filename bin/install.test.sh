@@ -117,15 +117,11 @@ from pathlib import Path
 import sys
 
 home, fixture = map(Path, sys.argv[1:])
-for policy_name, installed_name, source_name in [
-    ("AGENTS.md", "CODING_STANDARDS.md", "CODING_STANDARDS.md"),
-    ("APPEND_SYSTEM.md", "DELEGATION.md", "specs/delegate.md"),
-]:
-    policy = (home / ".pi/agent" / policy_name).read_text()
-    assert f"~/.agents/{installed_name}" in policy
-    document = home / ".agents" / installed_name
-    assert document.is_file()
-    assert document.read_bytes() == (fixture / source_name).read_bytes()
+policy = (home / ".pi/agent/AGENTS.md").read_text()
+assert "~/.agents/CODING_STANDARDS.md" in policy
+document = home / ".agents/CODING_STANDARDS.md"
+assert document.is_file()
+assert document.read_bytes() == (fixture / "CODING_STANDARDS.md").read_bytes()
 PY
 }
 
@@ -159,7 +155,7 @@ const sources = (settings.packages ?? []).map(entry =>
 );
 if (settings.theme !== "dark") process.exit(1);
 if (sources.filter(source => source === repoExtensions).length !== 1) process.exit(1);
-if (sources.filter(source => source === "npm:pi-web-access@0.33.0").length !== 1) process.exit(1);
+if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
 NODE
 }
 
@@ -174,7 +170,7 @@ const externalObject = packages.find(entry => entry?.source === "npm:external-ob
 if (settings.theme !== "light" || settings.machinePreference !== "keep-this") process.exit(1);
 if (settings.lastChangelogVersion !== "test-version") process.exit(1);
 if (sources.filter(source => source === repoExtensions).length !== 1) process.exit(1);
-if (sources.filter(source => source === "npm:pi-web-access@0.33.0").length !== 1) process.exit(1);
+if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
 if (sources.filter(source => source === "npm:external-string@1.2.3").length !== 1) process.exit(1);
 if (!externalObject || externalObject.config?.keep !== true) process.exit(1);
 NODE
@@ -184,9 +180,9 @@ assert_invocation_logs() {
   local expected="$TMP/expected-pi.log" expected_rtk="$TMP/expected-rtk.log"
   printf '%s\n' \
     "$FIXTURE/extensions" \
-    "npm:pi-web-access@0.33.0" \
+    "npm:pi-web-access@0.38.0" \
     "$FIXTURE/extensions" \
-    "npm:pi-web-access@0.33.0" > "$expected"
+    "npm:pi-web-access@0.38.0" > "$expected"
   printf '%s\n' \
     "init --global --agent pi" \
     "init --global --agent pi" > "$expected_rtk"
@@ -206,20 +202,13 @@ if [ "$INSTALL_RC" -ne 0 ]; then
   exit 1
 fi
 
-for source in "$FIXTURE"/agents/*.md; do
-  [ -f "$source" ] || continue
-  name="$(basename "$source")"
-  check "fresh role link $name" assert_link "$PI_AGENT/agents/$name" "$source"
-done
 for source in "$FIXTURE"/skills/*; do
   [ -d "$source" ] || continue
   name="$(basename "$source")"
   check "fresh owned skill link $name" assert_link "$AGENTS_HOME/skills/$name" "$source"
 done
-check "fresh APPEND_SYSTEM link" assert_link "$PI_AGENT/APPEND_SYSTEM.md" "$FIXTURE/APPEND_SYSTEM.md"
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
 check "fresh coding standards link" assert_link "$AGENTS_HOME/CODING_STANDARDS.md" "$FIXTURE/CODING_STANDARDS.md"
-check "fresh delegation guide link" assert_link "$AGENTS_HOME/DELEGATION.md" "$FIXTURE/specs/delegate.md"
 check "fresh disclosed documents reachable from installed policies" assert_disclosed_documents_reachable "$HOME_FRESH"
 check "fresh delegate helper link" assert_link "$HOME_FRESH/.local/bin/delegate" "$FIXTURE/bin/delegate"
 check "settings seeded and packages registered" assert_settings_seeded "$PI_AGENT/settings.json" "$FIXTURE/extensions"
@@ -242,87 +231,57 @@ settings.packages.push(
 fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
 printf '%s\n' 'credential sentinel: never overwrite' > "$PI_AGENT/auth.json"
-printf '%s\n' 'external agent sentinel' > "$PI_AGENT/agents/external-agent.md"
 printf '%s\n' 'external extension sentinel' > "$PI_AGENT/extensions/external-extension.ts"
 mkdir -p "$AGENTS_HOME/skills/external-skill"
 printf '%s\n' 'external skill sentinel' > "$AGENTS_HOME/skills/external-skill/SKILL.md"
 # Keep one non-owned entry at an owned skill name to exercise collision safety.
-rm "$AGENTS_HOME/skills/qa"
-mkdir -p "$AGENTS_HOME/skills/qa"
-printf '%s\n' 'user-owned collision sentinel' > "$AGENTS_HOME/skills/qa/SKILL.md"
+COLLISION_SKILL="$(basename "$(ls -d "$FIXTURE"/skills/*/ | head -n1)")"
+rm "$AGENTS_HOME/skills/$COLLISION_SKILL"
+mkdir -p "$AGENTS_HOME/skills/$COLLISION_SKILL"
+printf '%s\n' 'user-owned collision sentinel' > "$AGENTS_HOME/skills/$COLLISION_SKILL/SKILL.md"
 
 expect_installer "repeat install succeeds" 0 "$HOME_FRESH" "$TMP/repeat.out"
 check "repeat preserves seeded and unrelated settings/packages" assert_settings_preserved "$PI_AGENT/settings.json" "$FIXTURE/extensions"
 check "repeat preserves credential contents" assert_file_text "$PI_AGENT/auth.json" 'credential sentinel: never overwrite'
-check "repeat preserves external agent" assert_file_text "$PI_AGENT/agents/external-agent.md" 'external agent sentinel'
 check "repeat preserves external extension" assert_file_text "$PI_AGENT/extensions/external-extension.ts" 'external extension sentinel'
 check "repeat preserves external skill" assert_file_text "$AGENTS_HOME/skills/external-skill/SKILL.md" 'external skill sentinel'
-check "repeat preserves skill collision" assert_file_text "$AGENTS_HOME/skills/qa/SKILL.md" 'user-owned collision sentinel'
-check "collision remains a real directory" test ! -L "$AGENTS_HOME/skills/qa"
+check "repeat preserves skill collision" assert_file_text "$AGENTS_HOME/skills/$COLLISION_SKILL/SKILL.md" 'user-owned collision sentinel'
+check "collision remains a real directory" test ! -L "$AGENTS_HOME/skills/$COLLISION_SKILL"
 check "repeat retains interactive-shell contents" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
-for source in "$FIXTURE"/agents/*.md; do
-  [ -f "$source" ] || continue
-  name="$(basename "$source")"
-  check "repeat retains role link $name" assert_link "$PI_AGENT/agents/$name" "$source"
-done
 for source in "$FIXTURE"/skills/*; do
   [ -d "$source" ] || continue
   name="$(basename "$source")"
-  [ "$name" = qa ] && continue
+  [ "$name" = "$COLLISION_SKILL" ] && continue
   check "repeat retains owned skill link $name" assert_link "$AGENTS_HOME/skills/$name" "$source"
 done
-check "repeat retains APPEND_SYSTEM link" assert_link "$PI_AGENT/APPEND_SYSTEM.md" "$FIXTURE/APPEND_SYSTEM.md"
 check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
 check "repeat retains coding standards link" assert_link "$AGENTS_HOME/CODING_STANDARDS.md" "$FIXTURE/CODING_STANDARDS.md"
-check "repeat retains delegation guide link" assert_link "$AGENTS_HOME/DELEGATION.md" "$FIXTURE/specs/delegate.md"
 check "repeat disclosed documents remain reachable" assert_disclosed_documents_reachable "$HOME_FRESH"
 check "repeat retains delegate helper link" assert_link "$HOME_FRESH/.local/bin/delegate" "$FIXTURE/bin/delegate"
 check "Pi and RTK stubs invoked deterministically" assert_invocation_logs
 check "npm fallback remains unused" test ! -e "$NPM_MARKER"
 
-# A symlinked live settings file must be refused without touching its target.
-HOME_SETTINGS="$TMP/home-settings-link"
-mkdir -p "$HOME_SETTINGS/.pi/agent"
-SETTINGS_SENTINEL="$TMP/settings-sentinel.json"
-printf '%s\n' '{"sentinel":"settings target unchanged"}' > "$SETTINGS_SENTINEL"
-ln -s "$SETTINGS_SENTINEL" "$HOME_SETTINGS/.pi/agent/settings.json"
-expect_installer "symlinked settings refused" 1 "$HOME_SETTINGS" "$TMP/settings-refusal.out"
-check "settings refusal explains symlink" grep -Fq 'settings.json is symlinked' "$TMP/settings-refusal.out"
-check "settings refusal preserves target" assert_file_text "$SETTINGS_SENTINEL" '{"sentinel":"settings target unchanged"}'
-check "settings refusal preserves symlink" assert_link "$HOME_SETTINGS/.pi/agent/settings.json" "$SETTINGS_SENTINEL"
-
-# Pi's package store must not point into the repo fixture.
-HOME_STORE="$TMP/home-package-store-link"
-PACKAGE_STORE_TARGET="$FIXTURE/.guard-package-store"
-mkdir -p "$HOME_STORE/.pi/agent" "$PACKAGE_STORE_TARGET"
-printf '%s\n' 'package store target sentinel' > "$PACKAGE_STORE_TARGET/sentinel"
-ln -s "$PACKAGE_STORE_TARGET" "$HOME_STORE/.pi/agent/npm"
-expect_installer "repo-directed package store refused" 1 "$HOME_STORE" "$TMP/package-store-refusal.out"
-check "package-store refusal identifies npm link" grep -Fq 'npm points into this repo' "$TMP/package-store-refusal.out"
-check "package-store refusal preserves target" assert_file_text "$PACKAGE_STORE_TARGET/sentinel" 'package store target sentinel'
-
-# An existing ancestor of ~/.pi/agent resolving into the rig must be refused.
-HOME_ANCESTOR="$TMP/home-repo-ancestor"
-ANCESTOR_TARGET="$FIXTURE/.guard-repo-ancestor"
-mkdir -p "$HOME_ANCESTOR" "$ANCESTOR_TARGET"
-printf '%s\n' 'ancestor target sentinel' > "$ANCESTOR_TARGET/sentinel"
-ln -s "$ANCESTOR_TARGET" "$HOME_ANCESTOR/.pi"
-expect_installer "repo-directed install ancestor refused" 1 "$HOME_ANCESTOR" "$TMP/ancestor-refusal.out"
-check "ancestor refusal identifies repo path" grep -Fq 'resolves into this repo' "$TMP/ancestor-refusal.out"
-check "ancestor refusal preserves target" assert_file_text "$ANCESTOR_TARGET/sentinel" 'ancestor target sentinel'
-check "ancestor refusal creates no live agent directory" test ! -e "$ANCESTOR_TARGET/agent"
-check "refusals invoke no package install" assert_invocation_logs
+# Missing pi must fail before any link is created.
+HOME_NOPI="$TMP/home-no-pi"
+mkdir -p "$HOME_NOPI"
+NO_PI_BIN="$TMP/no-pi-bin"
+mkdir -p "$NO_PI_BIN"
+for tool in bash git dirname basename mkdir ln cp readlink realpath head cat; do
+  ln -sf "$(command -v $tool)" "$NO_PI_BIN/$tool"
+done
+saved_path="$TEST_PATH"
+TEST_PATH="$NO_PI_BIN"
+expect_installer "missing pi refused" 1 "$HOME_NOPI" "$TMP/no-pi.out"
+TEST_PATH="$saved_path"
+check "missing pi explains requirement" grep -Fq 'pi is required' "$TMP/no-pi.out"
+check "missing pi creates no live directories" test ! -e "$HOME_NOPI/.pi" -a ! -e "$HOME_NOPI/.agents"
+check "refusal invokes no package install" assert_invocation_logs
 check "no network-capable npm invocation" test ! -e "$NPM_MARKER"
 
 # Shared documentation uses the same per-file collision policy as other resources.
-for document in standards delegation; do
-  if [ "$document" = standards ]; then
-    name=CODING_STANDARDS.md
-    sentinel='user coding standards sentinel'
-  else
-    name=DELEGATION.md
-    sentinel='user delegation guide sentinel'
-  fi
+for document in standards; do
+  name=CODING_STANDARDS.md
+  sentinel='user coding standards sentinel'
   for kind in file link; do
     HOME_SHARED="$TMP/home-$document-$kind"
     destination="$HOME_SHARED/.agents/$name"

@@ -1,8 +1,8 @@
 ---
 name: devils-advocate
 description: Breaks a stated plan — challenges only, bounded evidence
-aliases: da, adversary
-thinking: high
+model: anthropic/claude-opus-5-5
+thinking: medium
 tools: read, grep, find, ls
 ---
 
