@@ -1,6 +1,7 @@
 ---
 name: reviewer
 description: Standards+Spec review of a diff, contract findings only — read-only
+model: openai-codex/gpt-6.1-sol
 thinking: high
 tools: read, grep, find, ls
 attach_diff: true

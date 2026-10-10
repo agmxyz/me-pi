@@ -1,6 +1,6 @@
 # me-pi
 
-A Pi coding-agent setup for me.
+A Pi coding-agent setup.
 
 ## Install
 
@@ -10,31 +10,18 @@ cd me-pi
 ./install.sh
 ```
 
-The installer registers `extensions/` as a local Pi package; installs pinned `pi-web-access`; links tracked agent and skill entries individually into machine-owned directories; links shared coding standards at `~/.agents/CODING_STANDARDS.md`; links the `delegate` helper into `~/.local/bin` when that directory exists; and seeds `settings.json` only if no live file exists. It copies Pi's interactive-shell example into the live extension directory if missing, and runs RTK's Pi setup when `rtk` is available. Existing user entries are preserved; name collisions are reported rather than overwritten. To refresh the interactive-shell copy, remove it from `~/.pi/agent/extensions/` and rerun the installer.
+The installer links repo skills into `~/.agents/skills`, shared coding standards to `~/.agents/CODING_STANDARDS.md`, global output policy to `~/.pi/agent/AGENTS.md`, and `bin/delegate` to `~/.local/bin/delegate`. It registers this rig's Pi package and pinned Pi packages with `pi install`, and seeds `settings.json` only when no live file exists. Existing machine-owned entries are preserved; resolve any reported collision. Pi is required; RTK integration is optional. Restart Pi after installation.
 
-External installers write to live user directories, not this repo. The installer detaches legacy whole-directory links into this repo without copying their contents back, and refuses a symlinked `settings.json` or package-store links into the repo. Review any collision it reports. Install the `rtk` binary separately if you want its integration. Restart Pi after installation.
+Keep credentials and live settings in `~/.pi/agent/`, outside this repository. Tracked `settings.json` is a first-install template, not a credentials backup. For a policy refresh or migration, follow [specs/migration.md](specs/migration.md) before changing live files.
 
-Keep credentials and live settings in `~/.pi/agent/`, not this repo. The tracked `settings.json` is a first-install template; `pi install` records package sources in the live settings.
+## Use
 
-## Commands
+- `/me-setup` and `/me-setup status` show rig status. Roles pin model/thinking in `agents/*.md` frontmatter; with no role model, delegated children use Pi's own default model.
+- Use Pi skills directly when they fit. For a separate worker or independent review, use `delegate`; before delegating, read [skills/delegate/SKILL.md](skills/delegate/SKILL.md).
+- Skills written for another harness may call an unavailable `Skill` tool; read the named skill's `SKILL.md` instead.
+- Read engineering guidance at `~/.agents/CODING_STANDARDS.md` before implementation, code edits, debugging, tests, or code review. `GLOBAL_AGENTS.md` holds always-loaded output and publication rules.
 
-- `/me-setup`: interactive default and per-agent model chooser; `/me-setup status`: inspect the rig. Choices persist in live `subagents.*` settings and `delegate` applies matching role overrides.
-
-## Workflows
-
-Pi is the main interactive driver. Use relevant skills directly for planning, research, implementation/TDD, and review; use `delegate` when a separate worker or independent review helps. No global clean-review gate applies to main-session commits. Delegate workers still leave changes uncommitted and cannot publish.
-
-External tools own their invocation, configuration and execution rules; consult their instructions when selecting one. `/me-setup` configures only Pi/delegate models. Publication authorization is defined in `GLOBAL_AGENTS.md`.
-
-Matt Pocock skills in `~/.agents/skills` remain externally managed, not vendored or installed by this rig. Pi discovers that directory; use `/skill:name` to invoke an installed skill explicitly. Skills written for another harness may reference an unavailable Skill tool: read the named skill's `SKILL.md` instead. Their review/commit steps do not authorize publication.
-
-## Migration and reinstall
-
-Run `./install.sh` to link the disclosed coding standards before starting a fresh Pi session after this policy change; resolve any reported document collision first. Existing sessions may retain old instructions; `/reload` is not proof that previously supplied restrictions disappeared. Verify `/me-setup`, `/me-setup status`, skill availability, optional independent review and worker safeguards in the fresh session.
-
-Reinstalling Pi is optional and separate from this refactor. First inventory the installed version, launcher/PATH and supported uninstall/reinstall procedure. Securely back up machine-local credentials, settings, models and session data outside Git. The managed installation may share `~/.pi/agent` with that state: do not delete `~/.pi` or `~/.agents` wholesale. Reinstall the intended Pi version, then run `./install.sh` and the fresh-session checks. This installer requires Pi and does not restore auth, external skills, model preferences or unrelated integrations from nothing.
-
-## Tests
+## Checks
 
 ```bash
 npm ci --prefix extensions
@@ -43,17 +30,13 @@ bin/delegate.test.sh
 bin/install.test.sh
 ```
 
-Installer checks use a temporary HOME, fixture repo and fake Pi/RTK; no live installation or network calls. `bin/delegate.itest.sh` is an opt-in paid test; run only with explicit spend approval.
+`bin/delegate.itest.sh` is a paid live-model integration, excluded from routine checks; run only with explicit spend authorization for that invocation.
 
-## Layout
+## Project map
 
-- `extensions/`: local Pi package with the project-maintained extension
-- `agents/`: implementer, reviewer, devil's advocate, and scout definitions
-- `skills/`: repo-maintained personal skills shared with Codex through per-skill links
-- `settings.json`: initial settings template
-- `APPEND_SYSTEM.md`: optional delegation instructions for main sessions
-- `GLOBAL_AGENTS.md`: always-loaded output/authorization rules and coding-standards pointer; linked as `~/.pi/agent/AGENTS.md` (main + workers), imported by `~/.claude/CLAUDE.md`, copied into `~/.codex/AGENTS.md`
-- `CODING_STANDARDS.md`: engineering reference, read before implementation, code edits, debugging, tests or review; linked at `~/.agents/CODING_STANDARDS.md` for cwd-independent access
-
-Claude imports and Codex copies of the global rules are configured outside this installer. Refresh any copied `AGENTS.md` manually after changing the source.
+- `extensions/`: Pi package and project-maintained extension
+- `agents/`: role prompts; not linked by the installer
+- `skills/`: repository-maintained skills, linked individually into `~/.agents/skills`; `skills/delegate/SKILL.md` is the delegation guide
+- `CODING_STANDARDS.md`: engineering reference, installed at `~/.agents/CODING_STANDARDS.md`
+- `GLOBAL_AGENTS.md`: global output and publication policy
 - `docs/`: architecture decisions and research

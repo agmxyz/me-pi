@@ -1,8 +1,8 @@
 ---
 name: scout
 description: Read-only codebase research — answers one question with path:line evidence
-aliases: research, explore
-thinking: medium
+model: openai-codex/gpt-6-luna
+thinking: minimal
 tools: read, grep, find, ls
 ---
 

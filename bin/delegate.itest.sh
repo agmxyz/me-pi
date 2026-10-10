@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Opt-in integration test for bin/delegate using the REAL pi and a cheap model.
-# Costs real money (budget: <$0.05/case, <$0.50 total). Skipped unless enabled.
+# Paid integration test for bin/delegate using the REAL pi and a live model.
+# Do not run without explicit user authorization for this invocation; it spends money.
+# Budget target: <$0.05/case, <$0.50 total; watchdog polling can overshoot.
+# Skipped unless enabled.
 #
-# Usage: ME_PI_ITEST=1 bin/delegate.itest.sh
-#   ME_PI_ITEST_MODEL=provider/model   override the cheap model (default: the
-#                                      subagents.defaultModel in ~/.pi/agent/settings.json)
+# Usage after authorization: ME_PI_ITEST=1 bin/delegate.itest.sh
+#   ME_PI_ITEST_MODEL=provider/model   override the configured model (default:
+#                                      top-level defaultModel/defaultProvider in ~/.pi/agent/settings.json)
 set -uo pipefail
 
 if [ "${ME_PI_ITEST:-0}" != "1" ]; then
-  echo "SKIP: delegate integration test uses the real pi and costs money; run with ME_PI_ITEST=1"
+  echo "SKIP: paid real-Pi/model test requires explicit user authorization and ME_PI_ITEST=1"
   exit 0
 fi
 
@@ -33,14 +35,13 @@ resolve_model() {
   node -e '
     try {
       const s = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-      const sub = s.subagents || {};
-      const m = sub.defaultModel, p = sub.defaultProvider;
+      const m = s.defaultModel, p = s.defaultProvider;
       if (typeof m === "string" && m) process.stdout.write(p && typeof p === "string" ? `${p}/${m}` : m);
     } catch {}
   ' "$SETTINGS" 2>/dev/null
 }
 MODEL="$(resolve_model)"
-[ -n "$MODEL" ] || { echo "✗ no cheap model: set ME_PI_ITEST_MODEL or subagents.defaultModel in $SETTINGS"; exit 1; }
+[ -n "$MODEL" ] || { echo "✗ no integration-test model: set ME_PI_ITEST_MODEL or defaultModel in $SETTINGS"; exit 1; }
 
 TMP="$(mktemp -d /tmp/delegate-itest.XXXXXX)"
 export ME_PI_RUNS_ROOT="$TMP/runs"
@@ -156,14 +157,6 @@ else
   fi
 fi
 bg_id=""
-
-# ── 5. (optional, NOT run) cost overshoot probe ────────────────────────
-# Measures how far real spend overshoots -c between the watchdog's 5s polls.
-# Needs a deliberately EXPENSIVE, fast-spending model, so it is manual:
-#   task: "Read every file under /usr/share/dict or the repo and summarize each at length."
-#   ME_PI_RUNS_ROOT=$(mktemp -d) bin/delegate run implementer task.md -m <expensive-model> -t 120 -c 0.10
-#   then compare `cost=` in the trailer of out.md with the 0.10 cap; overshoot = cost - 0.10.
-# Budget several dollars; do not enable in the default suite.
 
 # ── 6. harvest round-trip: -w implementer writes a file; harvest applies it ─
 REPO6="$TMP/repo6"

@@ -9,11 +9,12 @@
 #   delegate ask <id> "question"     read-only follow-up on a finished run
 #   delegate harvest <id>            apply a -w run's worktree diff to its origin checkout (no commit)
 #   delegate prune [--days N] [--dry-run]   remove finished runs (+ worktrees) older than N days (7)
-#   delegate roles                   list roles: name — description (aliases: …)
-#   delegate diff-hash [-C dir]      sha256 of the canonical diff (working tree vs HEAD); nothing if clean
+#   delegate roles                   list roles: name — description
 #
 # Roles are <this tool's repo>/agents/<role>.md, not files in the project:
-# frontmatter tools:, thinking:, attach_diff: true (append the -C dir's diff to the task) and body.
+# frontmatter model:, thinking:, tools:, attach_diff: true (append the -C dir's diff to the task) and body.
+# Model: -m > frontmatter model: > no --model flag (child uses Pi's own default model).
+# Thinking: -T > frontmatter thinking: > high. -m does not change thinking.
 # Sync run = detached watchdog + wait: killing the caller never unsupervises the worker.
 # Runs live under ~/.pi/agent/runs/<id>/; $RUN/exit is the only completion signal.
 set -euo pipefail
@@ -23,7 +24,7 @@ die() { echo "✗ $*" >&2; exit 1; }
 RUNS_ROOT="${ME_PI_RUNS_ROOT:-$HOME/.pi/agent/runs}"
 WT_ROOT="${ME_PI_WT_ROOT:-$HOME/.pi/wt}"
 # Resolve pi now, before the per-run shim dir ever shadows PATH. Only run/ask
-# need it (need_pi), so roles/diff-hash work where pi is not on PATH.
+# need it (need_pi), so roles works where pi is not on PATH.
 PI_BIN="$(command -v "${PI_BIN:-pi}" 2>/dev/null || true)"
 need_pi() { [ -n "$PI_BIN" ] || die "pi not found on PATH"; }
 DEFAULT_TIMEOUT_SECS="${ME_PI_DELEGATE_TIMEOUT:-900}"
@@ -63,33 +64,6 @@ role_names() { # comma-separated role names from $REPO/agents/*.md
     names="${names:+$names, }$(basename "$f" .md)"
   done
   echo "${names:-none}"
-}
-
-settings_model_resolution() { # <role> -> model|thinking (or model| when using default model), or empty
-  node -e '
-    const fs = require("node:fs");
-    function formatModel(model, provider) {
-      if (typeof model !== "string" || !model) return "";
-      if (provider !== undefined && provider !== null && provider !== false && typeof provider !== "string") return "";
-      return provider && provider !== false ? `${provider}/${model}` : model;
-    }
-    try {
-      const settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-      const sub = settings?.subagents;
-      if (!sub || typeof sub !== "object" || Array.isArray(sub)) process.exit(0);
-      const ov = sub.agentOverrides?.[process.argv[2]];
-      if (ov && typeof ov === "object" && !Array.isArray(ov)) {
-        const m = formatModel(ov.model, ov.defaultProvider);
-        if (m) {
-          const th = typeof ov.thinking === "string" && ov.thinking ? ov.thinking : "";
-          process.stdout.write(`${m}|${th}`);
-          process.exit(0);
-        }
-      }
-      const dm = formatModel(sub.defaultModel, sub.defaultProvider);
-      if (dm) process.stdout.write(`${dm}|`);
-    } catch {}
-  ' "$HOME/.pi/agent/settings.json" "$1" 2>/dev/null || true
 }
 
 run_cost() { # <session-dir> -> sum of all recorded per-message costs
@@ -161,7 +135,7 @@ sha256_hex() { # <file> -> lowercase sha256 hex
 # non-ignored files, independent of what is staged. Built in a throwaway
 # index (seeded from the real one only for its stat cache), so the real
 # index is never written. Repo-wide even when <dir> is a subdirectory.
-# Shared by `run` (attach_diff roles) and `diff-hash`.
+# Used by `run` for attach_diff roles.
 canonical_diff() { # <dir> <out-file>
   local dir="$1" out="$2" top base tmp rc=0
   top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || die "not a git work tree: $dir"
@@ -311,26 +285,16 @@ cmd_run() {
   local role_file="$REPO/agents/$role.md"
   [ -f "$role_file" ] || die "unknown role: $role (no agents/$role.md in $REPO); available: $(role_names) (details: delegate roles)"
 
-  local fm tools thinking resolved resolved_model resolved_thinking
+  local fm tools thinking
   fm="$(frontmatter "$role_file")"
   tools="$(fm_field "$fm" tools)"
   [ -n "$tools" ] || tools="$READONLY_TOOLS"
   thinking="$(fm_field "$fm" thinking)"
   [ -n "$thinking" ] || thinking="high"
 
-  # Explicit -m wins. Otherwise a valid role override supplies both model
-  # and thinking; role frontmatter remains the deliberate thinking fallback.
-  # With no role override, the rig default (subagents.defaultModel) supplies
-  # only the model — the role's frontmatter thinking stays intact.
-  if [ -z "$model" ]; then
-    resolved="$(settings_model_resolution "$role")"
-    if [ -n "$resolved" ]; then
-      resolved_model="${resolved%%|*}"
-      resolved_thinking="${resolved#*|}"
-      [ -n "$resolved_model" ] && model="$resolved_model"
-      [ -n "$resolved_thinking" ] && thinking="$resolved_thinking"
-    fi
-  fi
+  # model: -m > frontmatter model: > none (child uses Pi's own default model).
+  # thinking: -T > frontmatter thinking: > high. -m never touches thinking.
+  [ -n "$model" ] || model="$(fm_field "$fm" model)"
   [ -n "$thinking_override" ] && thinking="$thinking_override"
 
   # attach_diff roles review the -C checkout's diff, taken before any -w
@@ -575,31 +539,16 @@ cmd_prune() {
   [ "$dry" = 1 ] || echo "pruned $pruned run(s)"
 }
 
-cmd_roles() { # name — description (aliases: …), one line per $REPO/agents/*.md
-  local f fm desc aliases
+cmd_roles() { # name — description, one line per $REPO/agents/*.md
+  local f fm desc model thinking
   for f in "$REPO"/agents/*.md; do
     [ -f "$f" ] || continue
     fm="$(frontmatter "$f")"
     desc="$(fm_field "$fm" description)"
-    aliases="$(fm_field "$fm" aliases)"
-    printf '%s — %s%s\n' "$(basename "$f" .md)" "${desc:-(no description)}" "${aliases:+ (aliases: $aliases)}"
+    model="$(fm_field "$fm" model)"
+    thinking="$(fm_field "$fm" thinking)"
+    printf '%s — %s [model: %s, thinking: %s]\n' "$(basename "$f" .md)" "${desc:-(no description)}" "${model:-default}" "${thinking:-high}"
   done
-}
-
-cmd_diff_hash() { # [-C dir] -> sha256 hex of canonical_diff + newline; nothing when clean
-  local dir="$PWD" opt
-  while getopts "C:" opt; do
-    case "$opt" in
-      C) dir="$OPTARG" ;;
-      *) usage 1 ;;
-    esac
-  done
-  shift $((OPTIND - 1))
-  [ $# -eq 0 ] || usage 1
-  [ -d "$dir" ] || die "not a directory: $dir"
-  TMP_DIFF="$(mktemp "${TMPDIR:-/tmp}/delegate-diff.XXXXXX")"
-  canonical_diff "$dir" "$TMP_DIFF"
-  if [ -s "$TMP_DIFF" ]; then sha256_hex "$TMP_DIFF"; fi
 }
 
 cmd_watch() { # internal: detached watchdog (see launch_watchdog)
@@ -622,7 +571,6 @@ main() {
     harvest) cmd_harvest "$@" ;;
     prune) cmd_prune "$@" ;;
     roles) cmd_roles ;;
-    diff-hash) cmd_diff_hash "$@" ;;
     _watch) cmd_watch "$@" ;;
     -h|--help|help) usage 0 ;;
     *) usage 1 ;;
