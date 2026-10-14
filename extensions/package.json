@@ -7,7 +7,8 @@
   },
   "pi": {
     "extensions": [
-      "./me-setup.ts"
+      "./delegate.ts",
+      "./guard.ts"
     ]
   },
   "peerDependencies": {
@@ -21,8 +22,5 @@
     "@earendil-works/pi-tui": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "@earendil-works/pi-tui": "^0.87.1"
   }
 }

@@ -1,14 +1,1 @@
-## Agent skills
-
-### Issue tracker
-GitHub Issues; before ticket work, read `docs/agents/issue-tracker.md`.
-
-### Triage labels
-Before triage, read `docs/agents/triage-labels.md`.
-
-### Domain docs
-Single-context; before codebase exploration, read `docs/agents/domain.md`.
-
-## Live policy paths
-
-`install.sh` symlinks root policy docs and `agents/*.md` into live agent directories. Edits apply to running setups immediately. When adding a pointer to a new installed path, add its link in `install.sh` and run `./install.sh` before relying on it.
+`install.sh` symlinks `GLOBAL_AGENTS.md` to `~/.pi/agent/AGENTS.md`, so edits apply to every new session. When adding a pointer to a new installed path, add its link in `install.sh` and run `./install.sh` before relying on it. See `README.md` for how the setup works; run its Check commands after changes.

@@ -1,42 +1,44 @@
 # me-pi
 
-A Pi coding-agent setup.
+A lean [Pi](https://pi.dev) coding-agent setup: one global policy, three read-only subagents, one safety guard.
 
 ## Install
 
 ```bash
-git clone git@github.com:0bmario/me-pi.git
-cd me-pi
-./install.sh
+git clone git@github.com:0bmario/me-pi.git && cd me-pi && ./install.sh
 ```
 
-The installer links repo skills into `~/.agents/skills`, shared coding standards to `~/.agents/CODING_STANDARDS.md`, global output policy to `~/.pi/agent/AGENTS.md`, and `bin/delegate` to `~/.local/bin/delegate`. It registers this rig's Pi package and pinned Pi packages with `pi install`, and seeds `settings.json` only when no live file exists. Existing machine-owned entries are preserved; resolve any reported collision. Pi is required; RTK integration is optional. Restart Pi after installation.
+Restart Pi afterwards. The installer is idempotent and never overwrites machine files:
 
-Keep credentials and live settings in `~/.pi/agent/`, outside this repository. Tracked `settings.json` is a first-install template, not a credentials backup. For a policy refresh or migration, follow [specs/migration.md](specs/migration.md) before changing live files.
+- links `GLOBAL_AGENTS.md` → `~/.pi/agent/AGENTS.md`
+- registers `extensions/` and pinned packages with `pi install`
+- copies Pi's bundled `interactive-shell.ts` and `handoff.ts` if missing
+- seeds `~/.pi/agent/settings.json` from `settings.json` only on first install (models and auth stay machine-local)
+- prunes links left by older versions of this repo
 
-## Use
+## How it works
 
-- `/me-setup` and `/me-setup status` show rig status. Roles pin model/thinking in `agents/*.md` frontmatter; with no role model, delegated children use Pi's own default model.
-- Use Pi skills directly when they fit. For a separate worker or independent review, use `delegate`; before delegating, read [skills/delegate/SKILL.md](skills/delegate/SKILL.md).
-- Skills written for another harness may call an unavailable `Skill` tool; read the named skill's `SKILL.md` instead.
-- Read engineering guidance at `~/.agents/CODING_STANDARDS.md` before implementation, code edits, debugging, tests, or code review. `GLOBAL_AGENTS.md` holds always-loaded output and publication rules.
+- **The main session does the work.** It plans, edits, tests, and commits. Prune context between tasks with `/handoff <next goal>`, `/tree`, or `/compact`.
+- **`GLOBAL_AGENTS.md` is the policy** every session and subagent loads: output style, an engineering fallback for repos without their own standards, and what needs your approval. It is a symlink, so edits apply to the next session.
+- **`delegate` tool** (`extensions/delegate.ts`) hands bounded read-only work to an isolated `pi` child and returns only its final answer, keeping search and review noise out of the main context. Roles live in `agents/`:
+  - `scout`: answers one codebase question with `path:line` evidence
+  - `reviewer`: reviews the uncommitted diff (attached automatically) on standards and spec
+  - `devils-advocate`: attacks a plan before you commit to it
 
-## Checks
+  Children get only `read, grep, find, ls`, cannot delegate further, and run with a timeout and cost cap. Several tasks can run in parallel. The model is the session's unless the role pins one or you name one ("review using X at high").
+- **Guard** (`extensions/guard.ts`) asks before a bash `git push` to `main`/`master` or an `rm -f`; without a UI it blocks. Feature-branch pushes and PRs pass. `/guard off|on` toggles it for the session. It is a safety net; the policy text is the rule.
+- **Skills are not in this repo.** Install them globally in `~/.agents/skills` or per project in `.agents/skills`.
+
+## Extend
+
+- **Add a subagent:** create `agents/<name>.md`. Frontmatter: `name`, `description`, `thinking`, `tools` (keep it read-only), optional `attach_diff: true` and `model: provider/id`. The body is the prompt; end it with an output contract. Roles are re-read on every call; restart Pi to refresh the tool's role list.
+- **Guard a new command:** add a check in `classify()` in `extensions/guard.ts` and cases in `extensions/guard.test.mjs`.
+- **Change policy:** edit `GLOBAL_AGENTS.md`, then start a fresh session.
+- **Add an extension:** put the `.ts` file in `extensions/` and list it under `pi.extensions` in `extensions/package.json`.
+
+## Check
 
 ```bash
-npm ci --prefix extensions
 npm test --prefix extensions
-bin/delegate.test.sh
 bin/install.test.sh
 ```
-
-`bin/delegate.itest.sh` is a paid live-model integration, excluded from routine checks; run only with explicit spend authorization for that invocation.
-
-## Project map
-
-- `extensions/`: Pi package and project-maintained extension
-- `agents/`: role prompts; not linked by the installer
-- `skills/`: repository-maintained skills, linked individually into `~/.agents/skills`; `skills/delegate/SKILL.md` is the delegation guide
-- `CODING_STANDARDS.md`: engineering reference, installed at `~/.agents/CODING_STANDARDS.md`
-- `GLOBAL_AGENTS.md`: global output and publication policy
-- `docs/`: architecture decisions and research
