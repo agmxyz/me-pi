@@ -36,15 +36,22 @@ const KILL_GRACE_MS = 3000;
 // Only the dedicated `approval` field widens this, never text inside `task`.
 export const UNAPPROVED_TOOLS = "read,grep,find,ls";
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-const READ_ONLY_TOOLS = new Set([...UNAPPROVED_TOOLS.split(","), "web_search", "fetch_content", "get_search_content"]);
+const READ_ONLY_TOOLS = new Set([
+	...UNAPPROVED_TOOLS.split(","),
+	"web_search",
+	"fetch_content",
+	"get_search_content",
+	"Skill",
+]);
 const LOCAL_EDIT_TOOLS = new Set(["bash", "edit", "write"]);
 // One argv entry carries the whole prompt; Linux caps a single argument at 128 KiB.
 const MAX_PROMPT_BYTES = 120 * 1024;
 const PER_TASK_FIELDS = ["cwd", "model", "thinking", "skills", "tools", "approval", "role", "session", "panel"];
 
-// Web tools are pi-web-access's read-only ones; names that are not installed are ignored by pi.
-const READ_TOOLS = "read,grep,find,ls,web_search,fetch_content,get_search_content";
-const EDIT_TOOLS = "read,grep,find,ls,edit,write,bash";
+// Web tools are pi-web-access's read-only ones; `Skill` is extensions/skill.ts, so skills that
+// say "call the Skill tool" work in workers. Names that are not installed are ignored by pi.
+const READ_TOOLS = "read,grep,find,ls,web_search,fetch_content,get_search_content,Skill";
+const EDIT_TOOLS = "read,grep,find,ls,edit,write,bash,Skill";
 
 interface Role {
 	tools: string;

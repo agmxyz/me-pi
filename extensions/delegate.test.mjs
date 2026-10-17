@@ -409,7 +409,7 @@ test("explicit tools require approval for external writes and read-only roles st
 	);
 	assert.match(
 		approvedRole.content[0].text,
-		/tools=read,grep,find,ls,web_search,fetch_content,get_search_content,bash/,
+		/tools=read,grep,find,ls,web_search,fetch_content,get_search_content,Skill,bash/,
 	);
 	const approvedRoleDefault = await tools.delegate.execute(
 		"tools-approval-5",
@@ -420,7 +420,7 @@ test("explicit tools require approval for external writes and read-only roles st
 	);
 	assert.match(
 		approvedRoleDefault.content[0].text,
-		/tools=read,grep,find,ls,web_search,fetch_content,get_search_content/,
+		/tools=read,grep,find,ls,web_search,fetch_content,get_search_content,Skill/,
 	);
 	assert.doesNotMatch(approvedRoleDefault.content[0].text, /tools=default/);
 });
@@ -1387,11 +1387,11 @@ test("roles pick tools, thinking and model from the list; task values win; empty
 	const text = res.content[0].text;
 	assert.match(
 		text,
-		/### \[#1\][\s\S]*?model=cheap\/a thinking=off tools=read,grep,find,ls,web_search,fetch_content,get_search_content[\s\S]*?role=scout/,
+		/### \[#1\][\s\S]*?model=cheap\/a thinking=off tools=read,grep,find,ls,web_search,fetch_content,get_search_content,Skill[\s\S]*?role=scout/,
 	);
 	assert.match(
 		text,
-		/### \[#2\][\s\S]*?model=strong\/x thinking=medium tools=read,grep,find,ls,edit,write,bash[\s\S]*?role=implement/,
+		/### \[#2\][\s\S]*?model=strong\/x thinking=medium tools=read,grep,find,ls,edit,write,bash,Skill[\s\S]*?role=implement/,
 	);
 	assert.match(text, /### \[#3\][\s\S]*?model=strong\/x thinking=max/);
 	assert.match(
@@ -1929,7 +1929,7 @@ test("panel: parallel candidates per model, rebuttal resumes each session with t
 	assert.match(text, /## Round 1[\s\S]*model=strong\/x[\s\S]*model=strong\/y/);
 	assert.match(
 		text,
-		/tools=read,grep,find,ls,web_search,fetch_content,get_search_content/,
+		/tools=read,grep,find,ls,web_search,fetch_content,get_search_content,Skill/,
 		"panel candidates remain read-only despite requested tools",
 	);
 	assert.doesNotMatch(text, /User approval \(verbatim\):/, "panel approval is not relayed to read-only candidates");

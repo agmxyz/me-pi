@@ -11,7 +11,8 @@
   "pi": {
     "extensions": [
       "./delegate.ts",
-      "./guard.ts"
+      "./guard.ts",
+      "./skill.ts"
     ]
   },
   "peerDependencies": {
