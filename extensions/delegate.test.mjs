@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Scratch space for fake pi binaries, skills, and pid files.
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-test-"));
@@ -16,7 +17,23 @@ process.on("exit", () => {
 	} catch {}
 });
 
-const { default: registerExtension, inlineSkills, WORKER_CONTRACT, loadConfig, isBashSearch, COORDINATOR_PROMPT, pickModel, ROLES, defaultPanelModels, isGitCommitOrPush } =
+// Pi provides @earendil-works/pi-coding-agent to extensions; outside Pi, stub its getShellConfig
+// with Pi's resolution (configured shellPath, else /bin/bash).
+const PI_AGENT_STUB = join(TEST_HOME, "pi-coding-agent-stub.mjs");
+writeFileSync(PI_AGENT_STUB, `import { existsSync } from "node:fs";
+export function getShellConfig(custom) {
+  if (!custom) return { shell: "/bin/bash", args: ["-c"] };
+  if (!existsSync(custom)) throw new Error("Custom shell path not found: " + custom);
+  return { shell: custom, args: ["-c"] };
+}
+`);
+const PI_AGENT_HOOK = `registerHooks({ resolve: (specifier, context, next) => specifier === "@earendil-works/pi-coding-agent" ? { url: ${JSON.stringify(pathToFileURL(PI_AGENT_STUB).href)}, shortCircuit: true } : next(specifier, context) });`;
+registerHooks({
+	resolve: (specifier, context, next) =>
+		specifier === "@earendil-works/pi-coding-agent" ? { url: pathToFileURL(PI_AGENT_STUB).href, shortCircuit: true } : next(specifier, context),
+});
+
+const { default: registerExtension, inlineSkills, WORKER_CONTRACT, loadConfig, isBashSearch, COORDINATOR_PROMPT, pickModel, ROLES, defaultPanelModels } =
 	await import("./delegate.ts");
 
 // Keep the developer's real ~/.pi/agent/delegate.json out of every test.
@@ -27,8 +44,9 @@ const FAKE_BIN = join(TEST_HOME, "fake-pi.mjs");
 writeFileSync(
 	FAKE_BIN,
 	`#!/usr/bin/env node
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { join } from "node:path";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const prompt = args.at(-1) || "";
@@ -47,12 +65,55 @@ const emit = (text, cost = Number(process.env.FAKE_PI_COST || "0.002"), stopReas
     ],
   },
 }));
+if (mode === "git-guard") {
+  const commands = JSON.parse(process.env.FAKE_PI_GIT_COMMANDS);
+  const results = commands.map(({ name, command }) => {
+    const result = spawnSync("/bin/bash", ["-c", command], { cwd: process.cwd(), env: process.env, encoding: "utf8" });
+    return { name, status: result.status, stdout: result.stdout, stderr: result.stderr };
+  });
+  emit(JSON.stringify(results));
+  process.exit(0);
+}
+if (mode === "parent-exit") {
+  writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
+  process.on("SIGTERM", () => {});
+  emit("holding worker for parent exit");
+  setInterval(() => {}, 1000);
+}
+if (mode === "term-exit") {
+  writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
+  process.on("SIGTERM", () => process.exit(0));
+  emit("worker exits on SIGTERM");
+  setInterval(() => {}, 1000);
+}
+if (mode === "stale-shell") {
+  const trackingPath = readFileSync(process.env.BASH_ENV, "utf8").match(/>> '([^']+)'/)[1];
+  const stale = process.env.FAKE_PI_STALE_PGID + " stale start identity\\n";
+  writeFileSync(trackingPath, stale);
+  writeFileSync(process.env.FAKE_PI_TRACKING_COPY, stale);
+  emit("wrote stale shell group identity");
+  process.exit(0);
+}
+if (mode === "panel-transcript" && flag("--session-dir") && flag("--session-id")) {
+  mkdirSync(flag("--session-dir"), { recursive: true });
+  // Pi's own naming: <timestamp>_<session id>.jsonl
+  writeFileSync(join(flag("--session-dir"), Date.now() + "_" + flag("--session-id") + ".jsonl"), "fake transcript\\n");
+}
 if (mode === "length-stop") {
   emit("partial output before token limit", 0.002, "length");
   process.exit(0);
 }
 if (mode === "background-shell") {
   const shell = spawn("/bin/bash", ["-c", 'sleep 60 & echo "$!" > "$FAKE_PI_PIDFILE"; exit 0'], { detached: true, env: process.env, stdio: "ignore" });
+  shell.unref();
+}
+if (mode === "background-shell-trap") {
+  // The leader exits at once; its member ignores SIGTERM, so only SIGKILL to the leaderless group stops it.
+  const shell = spawn("/bin/bash", ["-c", 'trap "" TERM; sleep 60 & echo "$!" > "$FAKE_PI_PIDFILE"; exit 0'], { detached: true, env: process.env, stdio: "ignore" });
+  shell.unref();
+}
+if (mode === "live-shell") {
+  const shell = spawn("/bin/bash", ["-c", 'sleep 60 & echo "$!" > "$FAKE_PI_PIDFILE"; wait'], { detached: true, env: process.env, stdio: "ignore" });
   shell.unref();
 }
 if (mode === "missing-shell-tracking") {
@@ -115,6 +176,7 @@ if (mode.startsWith("orphan")) {
   writeFileSync(process.env.FAKE_PI_PIDFILE, String(child.pid));
 }
 if (mode === "escaped-pipes") {
+  if (process.env.FAKE_PI_LEADER_PIDFILE) writeFileSync(process.env.FAKE_PI_LEADER_PIDFILE, String(process.pid));
   const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] });
   writeFileSync(process.env.FAKE_PI_PIDFILE, String(child.pid));
 }
@@ -188,7 +250,7 @@ function withEnv(t, vars) {
 	}
 }
 
-function register(t, { workerRun, activeTools = ["read", "bash", "edit", "write", "grep", "find", "ls", "delegate"] } = {}) {
+function register(t, { workerRun, activeTools = ["read", "bash", "edit", "write", "grep", "find", "ls", "delegate"], shellPath } = {}) {
 	withEnv(t, { ME_PI_RUN: workerRun });
 	const tools = {};
 	const handlers = {};
@@ -196,6 +258,7 @@ function register(t, { workerRun, activeTools = ["read", "bash", "edit", "write"
 	const state = { active: [...activeTools] };
 	registerExtension({
 		getActiveTools: () => [...state.active],
+		getSettings: () => ({ shellPath }),
 		setActiveTools: (names) => {
 			state.active = [...names];
 		},
@@ -268,6 +331,27 @@ test("worker inherits session model/thinking, gets read-only tools without appro
 	assert.match(WORKER_CONTRACT, /Never report success over a BLOCKED step/);
 });
 
+test("explicit tools require approval for external writes and read-only roles stay read-only", async (t) => {
+	const marker = join(TEST_HOME, "tool-approval-marker");
+	const { tools } = delegateTool(t, { FAKE_PI_MARKER: marker });
+	const external = await tools.delegate.execute("tools-approval-1", { task: "create issue", tools: "linear_create_issue" }, undefined, undefined, CTX);
+	assert.equal(external.isError, true);
+	assert.match(external.content[0].text, /linear_create_issue.*require approval/);
+	assert.equal(existsSync(marker), false, "rejected tools do not spawn a worker");
+
+	const local = await tools.delegate.execute("tools-approval-2", { task: "edit locally", tools: "read,grep,find,ls,bash,edit,write" }, undefined, undefined, CTX);
+	assert.match(local.content[0].text, /tools=read,grep,find,ls,bash,edit,write/);
+	const readOnly = await tools.delegate.execute("tools-approval-3", { task: "review", role: "review", tools: "read,bash,edit" }, undefined, undefined, CTX);
+	assert.equal(readOnly.isError, true);
+	assert.match(readOnly.content[0].text, /bash, edit.*require approval/);
+
+	const approvedRole = await tools.delegate.execute("tools-approval-4", { task: "review", role: "review", tools: "bash", approval: "approved" }, undefined, undefined, CTX);
+	assert.match(approvedRole.content[0].text, /tools=read,grep,find,ls,web_search,fetch_content,get_search_content,bash/);
+	const approvedRoleDefault = await tools.delegate.execute("tools-approval-5", { task: "review", role: "review", approval: "approved" }, undefined, undefined, CTX);
+	assert.match(approvedRoleDefault.content[0].text, /tools=read,grep,find,ls,web_search,fetch_content,get_search_content/);
+	assert.doesNotMatch(approvedRoleDefault.content[0].text, /tools=default/);
+});
+
 test("task overrides win; the approval field restores normal tools; parallel tasks run", async (t) => {
 	const { tools } = delegateTool(t);
 	const res = await tools.delegate.execute(
@@ -286,6 +370,17 @@ test("task overrides win; the approval field restores normal tools; parallel tas
 	const text = res.content[0].text;
 	assert.match(text, /### \[#1\][\s\S]*model=override\/m1 thinking=max tools=default/);
 	assert.match(text, /### \[#2\][\s\S]*model=session-prov\/session-mod thinking=high tools=read,edit,bash/);
+});
+
+test("non-Bash Pi shell fails before starting a worker", async (t) => {
+	const marker = join(TEST_HOME, "non-bash-marker");
+	withEnv(t, { PI_BIN: FAKE_BIN, FAKE_PI_MARKER: marker });
+	const { tools } = register(t, { shellPath: "/bin/sh" });
+	const res = await tools.delegate.execute("non-bash", { task: "run cleanup-dependent worker" }, undefined, undefined, CTX);
+	assert.equal(res.isError, true);
+	assert.match(res.content[0].text, /delegate workers require bash as Pi's shell for cleanup; shellPath=\/bin\/sh/);
+	assert.equal(existsSync(marker), false, "fake Pi never spawned");
+	assert.doesNotMatch(res.content[0].text, /Remote effects: unknown/);
 });
 
 test("rejects missing or mixed task shapes and too many tasks", async (t) => {
@@ -370,6 +465,66 @@ test("timeout escalates to SIGKILL for a leader and descendant that ignore SIGTE
 	assert.ok(await waitDead(Number(readFileSync(pidFile, "utf8"))), "descendant killed");
 });
 
+test("worker finish clears the delayed SIGKILL escalation", async (t) => {
+	const pidFile = join(TEST_HOME, "term-exit.pid");
+	const { tools, handlers } = delegateTool(t, { FAKE_PI_MODE: "term-exit", FAKE_PI_PIDFILE: pidFile });
+	const realKill = process.kill;
+	const attempts = [];
+	let workerPid;
+	process.kill = (pid, signal) => {
+		// Report the group as still present, so only finish (not the group-gone path) can clear the escalation.
+		if (workerPid && pid === -workerPid && signal === 0) return true;
+		if (workerPid && pid === -workerPid && signal === "SIGKILL") attempts.push(pid);
+		return Reflect.apply(realKill, process, [pid, signal]);
+	};
+	try {
+		const controller = new AbortController();
+		const pending = tools.delegate.execute("kill-timer", { task: "exit after SIGTERM", timeoutSecs: 30 }, controller.signal, undefined, CTX);
+		while (!(workerPid > 0)) {
+			await new Promise((r) => setTimeout(r, 20));
+			if (existsSync(pidFile)) workerPid = Number(readFileSync(pidFile, "utf8"));
+		}
+		assert.ok(Number.isSafeInteger(workerPid) && workerPid > 0, `worker pid ${workerPid}`);
+		controller.abort();
+		const res = await pending;
+		assert.equal(res.isError, true);
+		await new Promise((r) => setTimeout(r, 3200));
+		assert.deepEqual(attempts, [], "no stale escalation fires after the worker settles");
+		assert.match(res.content[0].text, /remained after cleanup/, "group-gone path stubbed out");
+	} finally {
+		process.kill = realKill;
+		// Drop the ownership the stub made the run retain.
+		await handlers.session_shutdown({ reason: "quit" }, {});
+		if (workerPid) {
+			try { realKill.call(process, -workerPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+		}
+	}
+});
+
+test("stale tracked shell group identities are not signalled", async (t) => {
+	const foreign = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+	foreign.unref();
+	const trackingCopy = join(TEST_HOME, "stale-shell-tracking.txt");
+	const { tools } = delegateTool(t, { FAKE_PI_MODE: "stale-shell", FAKE_PI_STALE_PGID: String(foreign.pid), FAKE_PI_TRACKING_COPY: trackingCopy });
+	const realKill = process.kill;
+	const attempts = [];
+	process.kill = (pid, signal) => {
+		if (pid === -foreign.pid && (signal === "SIGTERM" || signal === "SIGKILL")) attempts.push(signal);
+		return Reflect.apply(realKill, process, [pid, signal]);
+	};
+	try {
+		const res = await tools.delegate.execute("stale-pgid", { task: "record a stale group" }, undefined, undefined, CTX);
+		assert.equal(res.isError, false, res.content[0].text);
+		assert.match(readFileSync(trackingCopy, "utf8"), new RegExp(`^${foreign.pid} stale start identity`));
+		assert.deepEqual(attempts, []);
+		assert.ok(isAlive(foreign.pid), "foreign group was left untouched");
+	} finally {
+		process.kill = realKill;
+		try { realKill.call(process, -foreign.pid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+		await waitDead(foreign.pid);
+	}
+});
+
 test("leader exiting normally still cleans up a descendant holding its pipes", async (t) => {
 	const pidFile = join(TEST_HOME, "exit.pid");
 	const { tools } = delegateTool(t, { FAKE_PI_MODE: "orphan-exit", FAKE_PI_PIDFILE: pidFile });
@@ -392,6 +547,138 @@ test("session_shutdown kills running worker groups", async (t) => {
 	assert.ok(Date.now() - started < 8000);
 	assert.equal(res.isError, true);
 	assert.ok(await waitDead(Number(readFileSync(pidFile, "utf8"))), "descendant killed");
+});
+
+// Runs `body` in a separate coordinator process that then calls process.exit(0).
+async function runCoordinatorChild(name, env, body) {
+	const script = join(TEST_HOME, `${name}.mjs`);
+	writeFileSync(script, `
+import register from ${JSON.stringify(new URL("./delegate.ts", import.meta.url).href)};
+import { existsSync, readFileSync } from "node:fs";
+import { registerHooks } from "node:module";
+${PI_AGENT_HOOK}
+let delegate;
+register({
+  getSettings: () => ({}),
+  getActiveTools: () => [],
+  setActiveTools: () => {},
+  registerTool: (definition) => { if (definition.name === "delegate") delegate = definition; },
+  registerCommand: () => {},
+  on: () => {},
+});
+const ctx = { cwd: ${JSON.stringify(REPO_ROOT)}, model: { provider: "test", id: "model" }, thinkingLevel: "medium" };
+const waitFor = async (check, code) => {
+  const deadline = Date.now() + 10000;
+  while (!check() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  if (!check()) process.exit(code);
+};
+${body}
+process.exit(0);
+`);
+	const fullEnv = { ...process.env, PI_BIN: FAKE_BIN, ME_PI_DELEGATE_CONFIG: join(TEST_HOME, "no-delegate.json"), ...env };
+	delete fullEnv.ME_PI_RUN;
+	const child = spawn(process.execPath, [script], { env: fullEnv, stdio: ["ignore", "ignore", "pipe"] });
+	let stderr = "";
+	child.stderr.on("data", (chunk) => { stderr += chunk; });
+	const code = await new Promise((resolve, reject) => {
+		child.once("error", reject);
+		child.once("close", resolve);
+	});
+	return { code, stderr };
+}
+
+test("normal coordinator process exit SIGKILLs live worker groups", async () => {
+	const pidFile = join(TEST_HOME, "parent-exit-worker.pid");
+	const { code, stderr } = await runCoordinatorChild("coordinator-exit", { FAKE_PI_MODE: "parent-exit", FAKE_PI_PIDFILE: pidFile }, `
+void delegate.execute("parent-exit", { task: "hold worker", timeoutSecs: 60 }, undefined, undefined, ctx);
+await waitFor(() => existsSync(${JSON.stringify(pidFile)}), 2);
+`);
+	assert.equal(code, 0, `coordinator child exits normally after starting a worker: ${stderr}`);
+	const workerPid = Number(readFileSync(pidFile, "utf8"));
+	assert.ok(await waitDead(workerPid), "exit handler killed the detached worker group");
+});
+
+function sessionLockPath(session) {
+	const key = createHash("sha256").update(JSON.stringify([resolve(REPO_ROOT), session])).digest("hex");
+	return join(tmpdir(), "me-pi-delegate-sessions", "locks", `${key}.lock`);
+}
+
+// escaped-pipes: the leader exits at once while a detached child (outside the group) holds its pipes,
+// so the run stays unsettled with its worker group gone until the 3s pipe deadline retains the lock.
+function escapedPipesExitBody(session, leaderFile, pidFile, lockPath, settle) {
+	return `
+const run = delegate.execute("exit-lock", { task: "leave pipes open", session: ${JSON.stringify(session)}, timeoutSecs: 60 }, undefined, undefined, ctx);
+await waitFor(() => existsSync(${JSON.stringify(pidFile)}), 2);
+const leader = Number(readFileSync(${JSON.stringify(leaderFile)}, "utf8"));
+await waitFor(() => { try { process.kill(leader, 0); return false; } catch { return true; } }, 3);
+await new Promise((resolve) => setTimeout(resolve, 100));
+${settle ? "const result = await run; if (!/session lock retained for manual verification/.test(result.content[0].text)) process.exit(5);" : ""}
+if (!existsSync(${JSON.stringify(lockPath)})) process.exit(4);
+`;
+}
+
+test("coordinator exit releases a session lock once its worker group is confirmed gone", async (t) => {
+	const session = "exit-lock-gone";
+	const lockPath = sessionLockPath(session);
+	const pidFile = join(TEST_HOME, "exit-lock-gone.pid");
+	const leaderFile = join(TEST_HOME, "exit-lock-gone.leader");
+	for (const path of [lockPath, pidFile, leaderFile]) rmSync(path, { force: true });
+	t.after(() => {
+		rmSync(lockPath, { force: true });
+		if (existsSync(pidFile)) try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {}
+	});
+	const { code, stderr } = await runCoordinatorChild("exit-lock-gone", { FAKE_PI_MODE: "escaped-pipes", FAKE_PI_PIDFILE: pidFile, FAKE_PI_LEADER_PIDFILE: leaderFile },
+		escapedPipesExitBody(session, leaderFile, pidFile, lockPath, false));
+	assert.equal(code, 0, `lock was held while the run was unsettled: ${stderr}`);
+	assert.equal(existsSync(lockPath), false, "exit handler released the lock of a gone worker group");
+});
+
+test("coordinator exit keeps a manually retained session lock", async (t) => {
+	const session = "exit-lock-manual";
+	const lockPath = sessionLockPath(session);
+	const pidFile = join(TEST_HOME, "exit-lock-manual.pid");
+	const leaderFile = join(TEST_HOME, "exit-lock-manual.leader");
+	for (const path of [lockPath, pidFile, leaderFile]) rmSync(path, { force: true });
+	t.after(() => {
+		rmSync(lockPath, { force: true });
+		if (existsSync(pidFile)) try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {}
+	});
+	const { code, stderr } = await runCoordinatorChild("exit-lock-manual", { FAKE_PI_MODE: "escaped-pipes", FAKE_PI_PIDFILE: pidFile, FAKE_PI_LEADER_PIDFILE: leaderFile },
+		escapedPipesExitBody(session, leaderFile, pidFile, lockPath, true));
+	assert.equal(code, 0, `run settled with the lock retained for manual verification: ${stderr}`);
+	assert.ok(existsSync(lockPath), "exit handler kept the manually retained lock");
+});
+
+test("coordinator exit releases the session lock of a live worker it SIGKILLs", async (t) => {
+	const session = "exit-lock-live";
+	const lockPath = sessionLockPath(session);
+	const pidFile = join(TEST_HOME, "exit-lock-live.pid");
+	for (const path of [lockPath, pidFile]) rmSync(path, { force: true });
+	t.after(() => {
+		rmSync(lockPath, { force: true });
+		if (existsSync(pidFile)) try { process.kill(-Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {}
+	});
+	const { code, stderr } = await runCoordinatorChild("exit-lock-live", { FAKE_PI_MODE: "parent-exit", FAKE_PI_PIDFILE: pidFile }, `
+void delegate.execute("exit-lock-live", { task: "hold worker", session: ${JSON.stringify(session)}, timeoutSecs: 60 }, undefined, undefined, ctx);
+await waitFor(() => existsSync(${JSON.stringify(pidFile)}) && Number(readFileSync(${JSON.stringify(pidFile)}, "utf8")) > 0, 2);
+if (!existsSync(${JSON.stringify(lockPath)})) process.exit(4);
+`);
+	assert.equal(code, 0, `coordinator child held the lock for a live worker: ${stderr}`);
+	assert.doesNotMatch(stderr, /delegate:/, "no exit-cleanup warning");
+	assert.equal(existsSync(lockPath), false, "exit handler released the lock once the killed group was only a zombie");
+	const workerPid = Number(readFileSync(pidFile, "utf8"));
+	assert.ok(await waitDead(workerPid), "worker leader gone");
+	assert.equal(execFileSync("ps", ["-A", "-o", "pgid="], { encoding: "utf8" }).split("\n").some((line) => Number(line) === workerPid), false, "no process remains in the worker group");
+});
+
+test("reloaded module instances share one process exit listener", async (t) => {
+	withEnv(t, { ME_PI_RUN: undefined });
+	const before = process.listenerCount("exit");
+	for (const instance of ["reload-1", "reload-2"]) {
+		const { default: fresh } = await import(`./delegate.ts?${instance}`);
+		fresh({ getSettings: () => ({}), getActiveTools: () => [], setActiveTools: () => {}, registerTool: () => {}, registerCommand: () => {}, on: () => {} });
+	}
+	assert.ok(process.listenerCount("exit") <= before + 1, `exit listeners grew from ${before} to ${process.listenerCount("exit")}`);
 });
 
 function markerLines(path) {
@@ -639,6 +926,24 @@ test("rejects top-level per-task fields with tasks, bad tools lists, and non-pos
 	assert.equal(markerLines(marker), 1, "only the approved pattern run spawned");
 });
 
+test("spawn ENOENT reports that the worker never started and releases its session lock", async (t) => {
+	const missingPi = join(TEST_HOME, "missing-pi");
+	const session = "spawn-enoent";
+	const lockKey = createHash("sha256").update(JSON.stringify([resolve(CTX.cwd), session])).digest("hex");
+	const lockPath = join(tmpdir(), "me-pi-delegate-sessions", "locks", `${lockKey}.lock`);
+	const { tools } = delegateTool(t, { PI_BIN: missingPi });
+	const binDirs = () => readdirSync(tmpdir()).filter((name) => name.startsWith("me-pi-delegate-bin-"));
+	const before = new Set(binDirs());
+	const res = await tools.delegate.execute("spawn-enoent", { task: "fail to spawn", session }, undefined, undefined, CTX);
+	assert.deepEqual(binDirs().filter((name) => !before.has(name)), [], "failed spawn removes the worker git shim directory");
+	assert.equal(res.isError, true);
+	assert.match(res.content[0].text, new RegExp(`spawn ${missingPi} ENOENT`));
+	assert.match(res.content[0].text, /worker never started/);
+	assert.doesNotMatch(res.content[0].text, /Remote effects: unknown/);
+	assert.equal(res.details.results[0].spawned, false);
+	assert.equal(existsSync(lockPath), false, "failed spawn releases the worker session lock");
+});
+
 test("oversized prompts fail before spawn with a clear error", async (t) => {
 	const big = writeSkill("big", "", "x".repeat(130 * 1024));
 	const { tools } = delegateTool(t);
@@ -861,6 +1166,40 @@ test("worker cleanup kills background jobs after Pi's Bash shell exits", async (
 	assert.ok(await waitDead(pid), `background process group leader ${pid} should be gone`);
 });
 
+function killGroupOf(pidFile) {
+	if (!existsSync(pidFile)) return;
+	const pid = Number(readFileSync(pidFile, "utf8"));
+	if (!isAlive(pid)) return;
+	const groupPid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim());
+	try { process.kill(-groupPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+}
+
+test("a leaderless shell group whose member ignores SIGTERM still gets SIGKILL", async (t) => {
+	const pidFile = join(TEST_HOME, "background-trap.pid");
+	rmSync(pidFile, { force: true });
+	const { tools } = delegateTool(t, { FAKE_PI_MODE: "background-shell-trap", FAKE_PI_PIDFILE: pidFile, FAKE_PI_SLEEP_MS: "250" });
+	t.after(() => killGroupOf(pidFile));
+	const result = await tools.delegate.execute("dead-leader", { task: "leave a TERM-proof job" }, undefined, undefined, CTX);
+	assert.equal(result.isError, false, result.content[0].text);
+	const pid = Number(readFileSync(pidFile, "utf8"));
+	assert.ok(pid > 0);
+	assert.ok(await waitDead(pid, 1000), `TERM-ignoring member ${pid} of the leaderless group should be SIGKILLed`);
+});
+
+test("a user BASH_ENV that sets TZ and LC_ALL does not hide the shell group from cleanup", async (t) => {
+	const pidFile = join(TEST_HOME, "live-shell.pid");
+	const userBashEnv = join(TEST_HOME, "user-bash-env.sh");
+	rmSync(pidFile, { force: true });
+	writeFileSync(userBashEnv, "export TZ=Etc/GMT-14 LC_ALL=fr_FR.UTF-8\n");
+	const { tools } = delegateTool(t, { FAKE_PI_MODE: "live-shell", FAKE_PI_PIDFILE: pidFile, FAKE_PI_SLEEP_MS: "250", BASH_ENV: userBashEnv });
+	t.after(() => killGroupOf(pidFile));
+	const result = await tools.delegate.execute("user-tz", { task: "start a background process" }, undefined, undefined, CTX);
+	assert.equal(result.isError, false, result.content[0].text);
+	const pid = Number(readFileSync(pidFile, "utf8"));
+	assert.ok(pid > 0);
+	assert.ok(await waitDead(pid), `background process ${pid} should be gone despite the user's TZ/LC_ALL`);
+});
+
 test("session lock remains while a detached shell group survives SIGKILL", async (t) => {
 	const pidFile = join(TEST_HOME, "locked-shell.pid");
 	const session = "shell-group-owner";
@@ -898,6 +1237,9 @@ test("session lock remains while a detached shell group survives SIGKILL", async
 	assert.equal(existsSync(lockPath), false, "shutdown releases the lock after confirming the shell group is gone");
 });
 
+// A tracked `<pgid> <lstart>` whose leader and members are gone.
+const DEAD_GROUP_START = "Thu Jan  1 00:00:00 1970";
+
 test("unreadable shell tracking retains the session lock and tracking path for shutdown retry", async (t) => {
 	const pidFile = join(TEST_HOME, "missing-shell-tracking.pid");
 	const pathFile = join(TEST_HOME, "missing-shell-tracking.path");
@@ -921,7 +1263,7 @@ test("unreadable shell tracking retains the session lock and tracking path for s
 				assert.ok(await waitDead(-groupPid), "cleanup confirmed the detached group is gone");
 			}
 			if (!trackingPath && existsSync(pathFile)) trackingPath = readFileSync(pathFile, "utf8");
-			if (trackingPath && groupPid) writeFileSync(trackingPath, `${groupPid}\n`);
+			if (trackingPath && groupPid) writeFileSync(trackingPath, `${groupPid} ${DEAD_GROUP_START}\n`);
 			await handlers.session_shutdown({ reason: "cleanup test" }, {});
 		}
 	});
@@ -941,7 +1283,7 @@ test("unreadable shell tracking retains the session lock and tracking path for s
 
 	realKill.call(process, -groupPid, "SIGKILL");
 	assert.ok(await waitDead(-groupPid), "the detached group is gone before shutdown retries tracking");
-	writeFileSync(trackingPath, `${groupPid}\n`);
+	writeFileSync(trackingPath, `${groupPid} ${DEAD_GROUP_START}\n`);
 	let confirmedGoneWithTracking = false;
 	process.kill = (pid, signal) => {
 		try { return realKill.call(process, pid, signal); }
@@ -1049,7 +1391,13 @@ test("worker sessions resume within a cwd but are isolated across working direct
 
 test("panel: parallel candidates per model, rebuttal resumes each session with the others' answers, judge from another family", async (t) => {
 	writeModels(t, [...LIST, { id: "strong/z", tier: "strong", family: "fam3", thinking: "low" }]);
-	const { tools } = delegateTool(t);
+	const { tools } = delegateTool(t, { FAKE_PI_MODE: "panel-transcript" });
+	// Decoys another session or panel owns; cleanup must match only this panel's tag.
+	const panelSessionDir = join(tmpdir(), "me-pi-delegate-sessions", createHash("sha256").update(resolve(CTX.cwd)).digest("hex"));
+	mkdirSync(panelSessionDir, { recursive: true });
+	const decoys = [`${Date.now()}_other.jsonl`, "panel-zzzzzz-a.jsonl"].map((name) => join(panelSessionDir, name));
+	for (const decoy of decoys) writeFileSync(decoy, "decoy\n");
+	t.after(() => { for (const decoy of decoys) rmSync(decoy, { force: true }); });
 	const res = await tools.delegate.execute(
 		"c40",
 		{ task: "Q?", role: "research", tools: "read,edit,bash", approval: "approved", panel: { models: ["strong/x", "strong/y"], rebuttal: true, judge: true, rubric: ["cites sources"] } },
@@ -1057,7 +1405,7 @@ test("panel: parallel candidates per model, rebuttal resumes each session with t
 		undefined,
 		CTX,
 	);
-	assert.equal(res.isError, false);
+	assert.equal(res.isError, false, res.content[0].text);
 	const text = res.content[0].text;
 	assert.match(text, /## Round 1[\s\S]*model=strong\/x[\s\S]*model=strong\/y/);
 	assert.match(text, /tools=read,grep,find,ls,web_search,fetch_content,get_search_content/, "panel candidates remain read-only despite requested tools");
@@ -1066,6 +1414,13 @@ test("panel: parallel candidates per model, rebuttal resumes each session with t
 	const sessions = [...text.matchAll(/^DONE (?:\S+ ){6}session=(\S+)/gm)].map((m) => m[1]).filter((id) => id.startsWith("panel-"));
 	assert.equal(sessions.length, 4, "2 candidates x 2 rounds");
 	assert.equal(sessions[0], sessions[2], "rebuttal resumes candidate A's session");
+	const sessionDir = text.match(/sessionDir=(\/\S+)/)?.[1];
+	assert.ok(sessionDir);
+	assert.equal(sessionDir, panelSessionDir);
+	const panelTag = sessions[0].match(/^panel-([0-9a-f]+)-a$/)?.[1];
+	assert.ok(panelTag);
+	assert.deepEqual(readdirSync(sessionDir).filter((name) => name.includes(`panel-${panelTag}-`)), [], "panel candidate transcripts were removed");
+	for (const decoy of decoys) assert.ok(existsSync(decoy), `unrelated transcript ${decoy} kept`);
 	assert.match(text, /## Round 2[\s\S]*Other candidates answered[\s\S]*Candidate B/);
 	assert.match(text, /## Judge[\s\S]*model=strong\/z thinking=low[\s\S]*cites sources/, "judge uses its configured thinking and gets the rubric");
 	assert.match(text, /Panel total: 5 workers/);
@@ -1247,30 +1602,148 @@ test("setup-delegate uses selects instead of TUI custom UI in RPC mode", async (
 	});
 });
 
-test("workers cannot commit or push through bash; other git commands pass", async (t) => {
-	const worker = register(t, { workerRun: "worker-1" });
-	const call = (command) => worker.handlers.tool_call({ toolName: "bash", input: { command } });
-	for (const command of ["git commit -m x", 'git commit -m "Route searches; find the cause"', "git 'push' origin main", 'echo "$(git push origin main)"', 'echo "$(echo "$(echo ok)")"; git push origin main', 'echo "${unset_variable:-$(git push origin main)}"', '"/usr/bin/git" push origin main', "env /usr/bin/git push origin main", "env -S 'git push origin main'", "env -S git push origin main", "env -S sh -c 'git push origin main'", "nice -n 10 /usr/bin/git push origin main", "timeout 5s git push origin main", "sudo git push origin main", ">/tmp/push.log git push origin main", "2>/tmp/push.log git push origin main", "git > /tmp/push.log push origin main", "git push>/tmp/push.log origin main", "git push 2>/tmp/push.log origin main", "rtk proxy git push origin main", "rtk git push origin main", "bash -c -- 'git push origin main'", "bash -ecx 'git push origin main'", "eval -- 'git push origin main'", "builtin eval 'git push origin main'", '$"git" push origin main', 'env -S "git\\_push origin main"', "$'git' push origin main", "git> >(cat) push origin main", 'eval "" "$cmd"', "if true; then git push origin main; fi", "if X=1 git push origin main; then :; fi", 'bash -c "git ${action:-push} origin main"', "echo ready\ngit push origin main", "git -c user.name=t -c user.email=t@t commit -m fix", "cd r && git push origin main", "git -C /tmp/r commit -qm x", "git merge --no-ff -m merge topic", "git revert --no-edit HEAD", "git cherry-pick HEAD", "git am patch.mbox", "git rebase topic", "git pull", "git stash", "git bisect run 'git commit -m x'", "git submodule foreach 'git push'", "git submodule --quiet foreach 'git push'", "git replace --graft HEAD", "git replay --onto target base..topic", "git hash-object -t commit -w /tmp/commit-body", "git hook run pre-commit", "git cvsimport project", "git quiltimport patches", "git difftool", "time -o /tmp/timing git push origin main", "/usr/bin/time -o /tmp/timing git push origin main", "time --output=/tmp/timing git push origin main"]) {
-		assert.equal((await call(command))?.block, true, command);
+test("worker PATH git guardrail blocks Git writes through wrappers and allows harmless commands", async (t) => {
+	const cwd = join(TEST_HOME, "git-guard-checkout");
+	mkdirSync(cwd, { recursive: true });
+	// Hermetic fixture: one commit plus a staged change, so an unblocked commit would succeed.
+	const fixtureGit = (...args) =>
+		execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], {
+			cwd,
+			encoding: "utf8",
+			env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+		}).trim();
+	fixtureGit("init", "-q", "-b", "main");
+	writeFileSync(join(cwd, "a.txt"), "a\n");
+	fixtureGit("add", "a.txt");
+	fixtureGit("commit", "-qm", "initial");
+	writeFileSync(join(cwd, "b.txt"), "b\n");
+	fixtureGit("add", "b.txt");
+	writeFileSync(join(cwd, "c.txt"), "c\n");
+	fixtureGit("add", "c.txt");
+	writeFileSync(join(cwd, "a.txt"), "a2\n");
+	writeFileSync(join(cwd, "x.sh"), "git commit -m x\n");
+	const head = fixtureGit("rev-parse", "HEAD");
+	// Second repository with a local change, so stash subcommands run for real outside the main fixture.
+	const stashRepo = join(TEST_HOME, "git-guard-stash");
+	mkdirSync(stashRepo, { recursive: true });
+	const stashGit = (...args) => fixtureGit("-C", stashRepo, ...args);
+	stashGit("init", "-q", "-b", "main");
+	writeFileSync(join(stashRepo, "s.txt"), "s\n");
+	stashGit("add", "s.txt");
+	stashGit("commit", "-qm", "initial");
+	writeFileSync(join(stashRepo, "s.txt"), "s2\n");
+	const stash = (args) => `git -c user.name=t -c user.email=t@t -C ../git-guard-stash stash ${args}`;
+	const commands = [
+		{ name: "PATH", command: "command -v git" },
+		{ name: "xargs push", command: "printf x | xargs git push" },
+		{ name: "find commit", command: "find . -maxdepth 0 -exec git commit -m x \\;" },
+		{ name: "sh script commit", command: "sh ./x.sh" },
+		{ name: "python subprocess commit", command: `python3 -c 'import subprocess; subprocess.run(["git", "commit", "-m", "x"], check=True)'` },
+		{ name: "send-email", command: "git send-email missing.patch" },
+		{ name: "update-ref", command: "git update-ref refs/heads/main HEAD" },
+		{ name: "reset hard", command: "git reset --hard" },
+		{ name: "branch force", command: "git branch -f side HEAD" },
+		{ name: "checkout force-create", command: "git checkout -B side" },
+		{ name: "tag create", command: "git tag v1" },
+		{ name: "checkout bundled -qB", command: "git checkout -qB main HEAD~3" },
+		{ name: "switch bundled -qC", command: "git switch -qC side" },
+		{ name: "reset abbreviated --har", command: "git reset --har" },
+		{ name: "reset soft commit", command: "git reset --soft HEAD~1" },
+		{ name: "reset commit without paths", command: "git reset HEAD --" },
+		{ name: "branch abbreviated --forc", command: "git branch --forc side HEAD" },
+		{ name: "branch bundled -fq", command: "git branch -fq side HEAD" },
+		{ name: "branch bundled -qf", command: "git branch -qf side HEAD" },
+		{ name: "branch force copy", command: "git branch -C main side" },
+		{ name: "tag create with -l message", command: "git tag -a -m -l v1" },
+		{ name: "tag create with sort", command: "git tag --sort=refname v1" },
+		{ name: "svn", command: "git svn dcommit" },
+		{ name: "cvsexportcommit", command: "git cvsexportcommit HEAD" },
+		{ name: "citool", command: "git citool" },
+		{ name: "gui", command: "git gui" },
+		{ name: "unknown alias", command: "git -c alias.publish=push publish" },
+		{ name: "heredoc text", command: `cat <<'EOF'
+git commit -m example
+EOF` },
+		{ name: "git status", command: "git --no-pager status" },
+		{ name: "global option diff", command: "git -C . diff --cached --name-only" },
+		{ name: "stash list", command: "git stash list" },
+		{ name: "tag list", command: "git tag -l" },
+		{ name: "tag list pattern", command: "git tag -l 'v*'" },
+		{ name: "tag contains", command: "git tag --contains HEAD" },
+		{ name: "reset paths", command: "git reset -- c.txt" },
+		{ name: "reset index", command: "git reset" },
+		{ name: "attr-source status", command: "git --attr-source HEAD status --short" },
+		{ name: "attr-source commit", command: "git --attr-source HEAD commit -m x" },
+		{ name: "inherited sub", command: "sub=push git --version" },
+		{ name: "worktree add -B", command: "git worktree add -B side ../git-guard-wt" },
+		{ name: "worktree add bundled -fB", command: "git worktree add -fB side ../git-guard-wt" },
+		{ name: "worktree list", command: "git worktree list" },
+		{ name: "stash bare", command: stash("") },
+		{ name: "stash show", command: stash("show") },
+		{ name: "stash apply", command: stash("apply") },
+		{ name: "stash push", command: stash("push -m pushed") },
+		{ name: "stash pop", command: stash("pop") },
+		{ name: "stash save", command: stash("save saved") },
+		{ name: "stash list in repo", command: stash("list") },
+		{ name: "stash drop", command: stash("drop") },
+		{ name: "stash clear", command: stash("clear") },
+		{ name: "stash create", command: stash("create") },
+		{ name: "stash store", command: stash("store HEAD") },
+		{ name: "stash branch", command: stash("branch side") },
+		{ name: "pull", command: "git pull . main" },
+		{ name: "fetch refspec", command: "git fetch . main:side" },
+		{ name: "fetch forced refspec after --", command: "git fetch -- . +HEAD:refs/heads/side" },
+		{ name: "fetch without refspec", command: "git fetch -q . main" },
+	];
+	const { tools } = delegateTool(t, { FAKE_PI_MODE: "git-guard", FAKE_PI_GIT_COMMANDS: JSON.stringify(commands) });
+	const res = await tools.delegate.execute("git-guard", { task: "exercise the git PATH wrapper", cwd }, undefined, undefined, CTX);
+	assert.equal(res.isError, false, res.content[0].text);
+	const results = JSON.parse(res.content[0].text.split("\n\n[worker exit=")[0]);
+	const byName = Object.fromEntries(results.map((result) => [result.name, result]));
+	const shimPrefix = join(tmpdir(), "me-pi-delegate-bin-").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	assert.match(byName.PATH.stdout, new RegExp(`^${shimPrefix}worker-\\d+-\\d+/git\\n$`));
+	const blocked = ["xargs push", "find commit", "sh script commit", "python subprocess commit", "send-email", "update-ref", "reset hard", "branch force", "checkout force-create", "tag create", "unknown alias"];
+	blocked.push("checkout bundled -qB", "switch bundled -qC", "reset abbreviated --har", "reset soft commit", "reset commit without paths", "branch abbreviated --forc", "branch bundled -fq", "branch bundled -qf", "branch force copy", "tag create with -l message", "tag create with sort", "svn", "cvsexportcommit", "citool", "gui");
+	blocked.push("attr-source commit", "worktree add -B", "worktree add bundled -fB", "stash drop", "stash clear", "stash create", "stash store", "stash branch", "pull", "fetch refspec", "fetch forced refspec after --");
+	for (const name of blocked) {
+		assert.match(byName[name].stderr, /BLOCKED: git \S+ is reserved for the coordinator/, `${name}: ${JSON.stringify(byName[name])}`);
+		// find -exec does not propagate the command's exit status.
+		if (name !== "find commit") assert.notEqual(byName[name].status, 0, `${name}: ${JSON.stringify(byName[name])}`);
 	}
-	for (const command of ["git status", "git diff > /tmp/r.diff", "git log --oneline", "time -p git status", "node --test", "echo commit", 'echo "git commit; git push"', 'echo "git push"']) {
-		assert.equal(await call(command), undefined, command);
+	assert.equal(fixtureGit("rev-parse", "HEAD"), head, "no commit created");
+	assert.equal(fixtureGit("rev-list", "--all", "--count"), "1", "no other commit created");
+	assert.equal(fixtureGit("for-each-ref", "--format=%(refname)"), "refs/heads/main", "no branch or tag created");
+	assert.equal(readFileSync(join(cwd, "a.txt"), "utf8"), "a2\n", "unstaged edit survived reset --hard");
+	assert.ok(existsSync(join(cwd, "b.txt")), "staged new file survived reset --hard");
+	assert.equal(fixtureGit("diff", "--cached", "--name-only"), "", "allowed index resets unstaged b.txt and c.txt");
+	assert.equal(existsSync(join(TEST_HOME, "git-guard-wt")), false, "no worktree created");
+	assert.equal(stashGit("stash", "list").split("\n").length, 2, "blocked stash subcommands left both stashes");
+	assert.equal(stashGit("for-each-ref", "--format=%(refname)"), "refs/heads/main\nrefs/stash", "stash branch created no branch");
+	const allowed = ["attr-source status", "inherited sub", "worktree list", "stash bare", "stash show", "stash apply", "stash push", "stash pop", "stash save", "stash list in repo", "fetch without refspec"];
+	for (const name of ["heredoc text", "git status", "global option diff", "stash list", "tag list", "tag list pattern", "tag contains", "reset paths", "reset index", ...allowed]) {
+		assert.equal(byName[name].status, 0, `${name}: ${JSON.stringify(byName[name])}`);
 	}
-	assert.equal(isGitCommitOrPush("git add -A"), false);
-	const aliasPublish = String.fromCharCode(103, 105, 116, 32, 45, 99, 32, 97, 108, 105, 97, 115, 46, 112, 117, 98, 108, 105, 115, 104, 61, 112, 117, 115, 104, 32, 112, 117, 98, 108, 105, 115, 104);
-	assert.equal((await call(aliasPublish))?.block, true, "configured Git aliases cannot hide publication commands");
-	assert.equal(isGitCommitOrPush(aliasPublish), true);
-	assert.equal(isGitCommitOrPush('echo "$(git push)"'), true);
-	assert.equal(isGitCommitOrPush('echo "$(echo "$(echo ok)")"; git push'), true);
-	assert.equal(isGitCommitOrPush('echo "${unset_variable:-$(git push)}"'), true);
-	assert.equal(isGitCommitOrPush("env -S 'git push origin main'"), true);
-	assert.equal(isGitCommitOrPush("env -S git push origin main"), true);
-	assert.equal(isGitCommitOrPush("env -S sh -c 'git push origin main'"), true);
-	assert.equal(isGitCommitOrPush("rtk proxy git push origin main"), true);
-	assert.equal(isGitCommitOrPush('bash -c "git ${action:-push} origin main"'), true);
-	assert.equal(isGitCommitOrPush('eval "" "$cmd"'), true);
-	assert.equal(isGitCommitOrPush('"/usr/bin/git" push'), true);
-	assert.equal(isGitCommitOrPush("git 'push' origin main"), true);
-	assert.equal(isGitCommitOrPush('echo "git push"'), false);
-	assert.equal(register(t).handlers.tool_call === undefined, false, "coordinator keeps its own tool_call hook");
+	assert.match(byName["heredoc text"].stdout, /git commit -m example/);
+	assert.equal(byName["global option diff"].stdout, "b.txt\nc.txt\n");
+	const shim = byName.PATH.stdout.trim();
+	assert.equal(existsSync(shim), false, "worker shim removed when the worker exits");
+	assert.equal(existsSync(dirname(shim)), false, "worker temp bin directory removed");
+});
+
+test("worker git shim exits 127 when no real git is on the original PATH", async (t) => {
+	// PATH holds only what the fake worker and BASH_ENV need: node, ps, tr.
+	const noGitBin = join(TEST_HOME, "no-git-bin");
+	mkdirSync(noGitBin, { recursive: true });
+	for (const tool of ["ps", "tr"]) {
+		const target = execFileSync("/bin/sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim();
+		if (!existsSync(join(noGitBin, tool))) symlinkSync(target, join(noGitBin, tool));
+	}
+	if (!existsSync(join(noGitBin, "node"))) symlinkSync(process.execPath, join(noGitBin, "node"));
+	const commands = [{ name: "status", command: "git status" }];
+	const { tools } = delegateTool(t, { PATH: noGitBin, FAKE_PI_MODE: "git-guard", FAKE_PI_GIT_COMMANDS: JSON.stringify(commands) });
+	const res = await tools.delegate.execute("no-git", { task: "run git without git" }, undefined, undefined, CTX);
+	assert.equal(res.isError, false, res.content[0].text);
+	const [status] = JSON.parse(res.content[0].text.split("\n\n[worker exit=")[0]);
+	assert.equal(status.status, 127, JSON.stringify(status));
+	assert.match(status.stderr, /git: not found on the worker's original PATH/);
 });
