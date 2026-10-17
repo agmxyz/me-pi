@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -20,21 +30,35 @@ process.on("exit", () => {
 // Pi provides @earendil-works/pi-coding-agent to extensions; outside Pi, stub its getShellConfig
 // with Pi's resolution (configured shellPath, else /bin/bash).
 const PI_AGENT_STUB = join(TEST_HOME, "pi-coding-agent-stub.mjs");
-writeFileSync(PI_AGENT_STUB, `import { existsSync } from "node:fs";
+writeFileSync(
+	PI_AGENT_STUB,
+	`import { existsSync } from "node:fs";
 export function getShellConfig(custom) {
   if (!custom) return { shell: "/bin/bash", args: ["-c"] };
   if (!existsSync(custom)) throw new Error("Custom shell path not found: " + custom);
   return { shell: custom, args: ["-c"] };
 }
-`);
+`,
+);
 const PI_AGENT_HOOK = `registerHooks({ resolve: (specifier, context, next) => specifier === "@earendil-works/pi-coding-agent" ? { url: ${JSON.stringify(pathToFileURL(PI_AGENT_STUB).href)}, shortCircuit: true } : next(specifier, context) });`;
 registerHooks({
 	resolve: (specifier, context, next) =>
-		specifier === "@earendil-works/pi-coding-agent" ? { url: pathToFileURL(PI_AGENT_STUB).href, shortCircuit: true } : next(specifier, context),
+		specifier === "@earendil-works/pi-coding-agent"
+			? { url: pathToFileURL(PI_AGENT_STUB).href, shortCircuit: true }
+			: next(specifier, context),
 });
 
-const { default: registerExtension, inlineSkills, WORKER_CONTRACT, loadConfig, isBashSearch, COORDINATOR_PROMPT, pickModel, ROLES, defaultPanelModels } =
-	await import("./delegate.ts");
+const {
+	default: registerExtension,
+	inlineSkills,
+	WORKER_CONTRACT,
+	loadConfig,
+	isBashSearch,
+	COORDINATOR_PROMPT,
+	pickModel,
+	ROLES,
+	defaultPanelModels,
+} = await import("./delegate.ts");
 
 // Keep the developer's real ~/.pi/agent/delegate.json out of every test.
 process.env.ME_PI_DELEGATE_CONFIG = join(TEST_HOME, "no-delegate.json");
@@ -210,7 +234,7 @@ if (mode === "escaped-pipes") {
     "tools=" + (flag("--tools") ?? "default"),
     "noSkills=" + args.includes("--no-skills"),
     "contract=" + (flag("--append-system-prompt") || "").includes("BLOCKED:"),
-    "role=" + ((flag("--append-system-prompt") || "").match(/Role: ([a-z]+)\./)?.[1] ?? "none"),
+    "role=" + ((flag("--append-system-prompt") || "").match(/Role: ([a-z]+)\\./)?.[1] ?? "none"),
     "session=" + (flag("--session-id") ?? (args.includes("--no-session") ? "none" : "?")),
     "sessionDir=" + (flag("--session-dir") ?? "none"),
     "prompt=" + JSON.stringify(prompt),
@@ -250,7 +274,10 @@ function withEnv(t, vars) {
 	}
 }
 
-function register(t, { workerRun, activeTools = ["read", "bash", "edit", "write", "grep", "find", "ls", "delegate"], shellPath } = {}) {
+function register(
+	t,
+	{ workerRun, activeTools = ["read", "bash", "edit", "write", "grep", "find", "ls", "delegate"], shellPath } = {},
+) {
 	withEnv(t, { ME_PI_RUN: workerRun });
 	const tools = {};
 	const handlers = {};
@@ -310,7 +337,14 @@ test("main session registers delegate; workers do not, so delegation cannot nest
 	assert.ok(main.handlers.session_shutdown, "session_shutdown cleanup registered");
 	assert.ok(main.tools.delegate.promptSnippet, "listed in Available tools");
 	assert.equal(main.tools.delegate.promptGuidelines.length, 3, "coordinator guidelines registered");
-	assert.deepEqual(main.tools.delegate.parameters.properties.role.enum, ["debug", "implement", "review", "challenge", "research", "scout"]);
+	assert.deepEqual(main.tools.delegate.parameters.properties.role.enum, [
+		"debug",
+		"implement",
+		"review",
+		"challenge",
+		"research",
+		"scout",
+	]);
 	assert.equal(main.tools.delegate.parameters.properties.profile, undefined, "profiles replaced by roles");
 	const worker = register(t, { workerRun: "worker-1" });
 	assert.equal(worker.tools.delegate, undefined, "delegate tool omitted inside worker session");
@@ -324,7 +358,10 @@ test("worker inherits session model/thinking, gets read-only tools without appro
 	const res = await tools.delegate.execute("c1", { task: "find foo" }, undefined, (u) => updates.push(u), CTX);
 	assert.equal(res.isError, false);
 	const text = res.content[0].text;
-	assert.match(text, /model=session-prov\/session-mod thinking=medium tools=read,grep,find,ls noSkills=false contract=true/);
+	assert.match(
+		text,
+		/model=session-prov\/session-mod thinking=medium tools=read,grep,find,ls noSkills=false contract=true/,
+	);
 	assert.match(text, /\[worker exit=0 /);
 	assert.ok(updates.length >= 1, "emits streaming progress updates");
 	assert.match(WORKER_CONTRACT, /Do not delegate, commit, or push/);
@@ -334,21 +371,57 @@ test("worker inherits session model/thinking, gets read-only tools without appro
 test("explicit tools require approval for external writes and read-only roles stay read-only", async (t) => {
 	const marker = join(TEST_HOME, "tool-approval-marker");
 	const { tools } = delegateTool(t, { FAKE_PI_MARKER: marker });
-	const external = await tools.delegate.execute("tools-approval-1", { task: "create issue", tools: "linear_create_issue" }, undefined, undefined, CTX);
+	const external = await tools.delegate.execute(
+		"tools-approval-1",
+		{ task: "create issue", tools: "linear_create_issue" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(external.isError, true);
 	assert.match(external.content[0].text, /linear_create_issue.*require approval/);
 	assert.equal(existsSync(marker), false, "rejected tools do not spawn a worker");
 
-	const local = await tools.delegate.execute("tools-approval-2", { task: "edit locally", tools: "read,grep,find,ls,bash,edit,write" }, undefined, undefined, CTX);
+	const local = await tools.delegate.execute(
+		"tools-approval-2",
+		{ task: "edit locally", tools: "read,grep,find,ls,bash,edit,write" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(local.content[0].text, /tools=read,grep,find,ls,bash,edit,write/);
-	const readOnly = await tools.delegate.execute("tools-approval-3", { task: "review", role: "review", tools: "read,bash,edit" }, undefined, undefined, CTX);
+	const readOnly = await tools.delegate.execute(
+		"tools-approval-3",
+		{ task: "review", role: "review", tools: "read,bash,edit" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(readOnly.isError, true);
 	assert.match(readOnly.content[0].text, /bash, edit.*require approval/);
 
-	const approvedRole = await tools.delegate.execute("tools-approval-4", { task: "review", role: "review", tools: "bash", approval: "approved" }, undefined, undefined, CTX);
-	assert.match(approvedRole.content[0].text, /tools=read,grep,find,ls,web_search,fetch_content,get_search_content,bash/);
-	const approvedRoleDefault = await tools.delegate.execute("tools-approval-5", { task: "review", role: "review", approval: "approved" }, undefined, undefined, CTX);
-	assert.match(approvedRoleDefault.content[0].text, /tools=read,grep,find,ls,web_search,fetch_content,get_search_content/);
+	const approvedRole = await tools.delegate.execute(
+		"tools-approval-4",
+		{ task: "review", role: "review", tools: "bash", approval: "approved" },
+		undefined,
+		undefined,
+		CTX,
+	);
+	assert.match(
+		approvedRole.content[0].text,
+		/tools=read,grep,find,ls,web_search,fetch_content,get_search_content,bash/,
+	);
+	const approvedRoleDefault = await tools.delegate.execute(
+		"tools-approval-5",
+		{ task: "review", role: "review", approval: "approved" },
+		undefined,
+		undefined,
+		CTX,
+	);
+	assert.match(
+		approvedRoleDefault.content[0].text,
+		/tools=read,grep,find,ls,web_search,fetch_content,get_search_content/,
+	);
 	assert.doesNotMatch(approvedRoleDefault.content[0].text, /tools=default/);
 });
 
@@ -376,7 +449,13 @@ test("non-Bash Pi shell fails before starting a worker", async (t) => {
 	const marker = join(TEST_HOME, "non-bash-marker");
 	withEnv(t, { PI_BIN: FAKE_BIN, FAKE_PI_MARKER: marker });
 	const { tools } = register(t, { shellPath: "/bin/sh" });
-	const res = await tools.delegate.execute("non-bash", { task: "run cleanup-dependent worker" }, undefined, undefined, CTX);
+	const res = await tools.delegate.execute(
+		"non-bash",
+		{ task: "run cleanup-dependent worker" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(res.isError, true);
 	assert.match(res.content[0].text, /delegate workers require bash as Pi's shell for cleanup; shellPath=\/bin\/sh/);
 	assert.equal(existsSync(marker), false, "fake Pi never spawned");
@@ -389,7 +468,13 @@ test("rejects missing or mixed task shapes and too many tasks", async (t) => {
 	assert.equal(none.isError, true);
 	const both = await tools.delegate.execute("c4", { task: "a", tasks: [{ task: "b" }] }, undefined, undefined, CTX);
 	assert.equal(both.isError, true);
-	const many = await tools.delegate.execute("c5", { tasks: Array.from({ length: 9 }, () => ({ task: "x" })) }, undefined, undefined, CTX);
+	const many = await tools.delegate.execute(
+		"c5",
+		{ tasks: Array.from({ length: 9 }, () => ({ task: "x" })) },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(many.content[0].text, /Too many parallel tasks \(9; max 8\)/);
 });
 
@@ -426,7 +511,13 @@ test("invalid skill paths fail the task before any worker starts", async (t) => 
 
 test("cost cap stops the worker and reports failure evidence", async (t) => {
 	const { tools } = delegateTool(t, { FAKE_PI_COST: "5.0" });
-	const costRes = await tools.delegate.execute("c8", { task: "expensive", costCapUsd: 0.5 }, undefined, undefined, CTX);
+	const costRes = await tools.delegate.execute(
+		"c8",
+		{ task: "expensive", costCapUsd: 0.5 },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(costRes.isError, true);
 	const text = costRes.content[0].text;
 	assert.match(text, /stopped early: cost-cap/);
@@ -479,7 +570,13 @@ test("worker finish clears the delayed SIGKILL escalation", async (t) => {
 	};
 	try {
 		const controller = new AbortController();
-		const pending = tools.delegate.execute("kill-timer", { task: "exit after SIGTERM", timeoutSecs: 30 }, controller.signal, undefined, CTX);
+		const pending = tools.delegate.execute(
+			"kill-timer",
+			{ task: "exit after SIGTERM", timeoutSecs: 30 },
+			controller.signal,
+			undefined,
+			CTX,
+		);
 		while (!(workerPid > 0)) {
 			await new Promise((r) => setTimeout(r, 20));
 			if (existsSync(pidFile)) workerPid = Number(readFileSync(pidFile, "utf8"));
@@ -496,7 +593,12 @@ test("worker finish clears the delayed SIGKILL escalation", async (t) => {
 		// Drop the ownership the stub made the run retain.
 		await handlers.session_shutdown({ reason: "quit" }, {});
 		if (workerPid) {
-			try { realKill.call(process, -workerPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+			try {
+				realKill.call(process, -workerPid, "SIGKILL");
+			} catch (err) {
+				// biome-ignore lint/correctness/noUnsafeFinally: an unexpected cleanup kill failure should fail the test.
+				if (err?.code !== "ESRCH") throw err;
+			}
 		}
 	}
 });
@@ -505,7 +607,11 @@ test("stale tracked shell group identities are not signalled", async (t) => {
 	const foreign = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
 	foreign.unref();
 	const trackingCopy = join(TEST_HOME, "stale-shell-tracking.txt");
-	const { tools } = delegateTool(t, { FAKE_PI_MODE: "stale-shell", FAKE_PI_STALE_PGID: String(foreign.pid), FAKE_PI_TRACKING_COPY: trackingCopy });
+	const { tools } = delegateTool(t, {
+		FAKE_PI_MODE: "stale-shell",
+		FAKE_PI_STALE_PGID: String(foreign.pid),
+		FAKE_PI_TRACKING_COPY: trackingCopy,
+	});
 	const realKill = process.kill;
 	const attempts = [];
 	process.kill = (pid, signal) => {
@@ -513,14 +619,25 @@ test("stale tracked shell group identities are not signalled", async (t) => {
 		return Reflect.apply(realKill, process, [pid, signal]);
 	};
 	try {
-		const res = await tools.delegate.execute("stale-pgid", { task: "record a stale group" }, undefined, undefined, CTX);
+		const res = await tools.delegate.execute(
+			"stale-pgid",
+			{ task: "record a stale group" },
+			undefined,
+			undefined,
+			CTX,
+		);
 		assert.equal(res.isError, false, res.content[0].text);
 		assert.match(readFileSync(trackingCopy, "utf8"), new RegExp(`^${foreign.pid} stale start identity`));
 		assert.deepEqual(attempts, []);
 		assert.ok(isAlive(foreign.pid), "foreign group was left untouched");
 	} finally {
 		process.kill = realKill;
-		try { realKill.call(process, -foreign.pid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+		try {
+			realKill.call(process, -foreign.pid, "SIGKILL");
+		} catch (err) {
+			// biome-ignore lint/correctness/noUnsafeFinally: an unexpected cleanup kill failure should fail the test.
+			if (err?.code !== "ESRCH") throw err;
+		}
 		await waitDead(foreign.pid);
 	}
 });
@@ -552,7 +669,9 @@ test("session_shutdown kills running worker groups", async (t) => {
 // Runs `body` in a separate coordinator process that then calls process.exit(0).
 async function runCoordinatorChild(name, env, body) {
 	const script = join(TEST_HOME, `${name}.mjs`);
-	writeFileSync(script, `
+	writeFileSync(
+		script,
+		`
 import register from ${JSON.stringify(new URL("./delegate.ts", import.meta.url).href)};
 import { existsSync, readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
@@ -574,12 +693,20 @@ const waitFor = async (check, code) => {
 };
 ${body}
 process.exit(0);
-`);
-	const fullEnv = { ...process.env, PI_BIN: FAKE_BIN, ME_PI_DELEGATE_CONFIG: join(TEST_HOME, "no-delegate.json"), ...env };
+`,
+	);
+	const fullEnv = {
+		...process.env,
+		PI_BIN: FAKE_BIN,
+		ME_PI_DELEGATE_CONFIG: join(TEST_HOME, "no-delegate.json"),
+		...env,
+	};
 	delete fullEnv.ME_PI_RUN;
 	const child = spawn(process.execPath, [script], { env: fullEnv, stdio: ["ignore", "ignore", "pipe"] });
 	let stderr = "";
-	child.stderr.on("data", (chunk) => { stderr += chunk; });
+	child.stderr.on("data", (chunk) => {
+		stderr += chunk;
+	});
 	const code = await new Promise((resolve, reject) => {
 		child.once("error", reject);
 		child.once("close", resolve);
@@ -589,17 +716,23 @@ process.exit(0);
 
 test("normal coordinator process exit SIGKILLs live worker groups", async () => {
 	const pidFile = join(TEST_HOME, "parent-exit-worker.pid");
-	const { code, stderr } = await runCoordinatorChild("coordinator-exit", { FAKE_PI_MODE: "parent-exit", FAKE_PI_PIDFILE: pidFile }, `
+	const { code, stderr } = await runCoordinatorChild(
+		"coordinator-exit",
+		{ FAKE_PI_MODE: "parent-exit", FAKE_PI_PIDFILE: pidFile },
+		`
 void delegate.execute("parent-exit", { task: "hold worker", timeoutSecs: 60 }, undefined, undefined, ctx);
 await waitFor(() => existsSync(${JSON.stringify(pidFile)}), 2);
-`);
+`,
+	);
 	assert.equal(code, 0, `coordinator child exits normally after starting a worker: ${stderr}`);
 	const workerPid = Number(readFileSync(pidFile, "utf8"));
 	assert.ok(await waitDead(workerPid), "exit handler killed the detached worker group");
 });
 
 function sessionLockPath(session) {
-	const key = createHash("sha256").update(JSON.stringify([resolve(REPO_ROOT), session])).digest("hex");
+	const key = createHash("sha256")
+		.update(JSON.stringify([resolve(REPO_ROOT), session]))
+		.digest("hex");
 	return join(tmpdir(), "me-pi-delegate-sessions", "locks", `${key}.lock`);
 }
 
@@ -625,10 +758,16 @@ test("coordinator exit releases a session lock once its worker group is confirme
 	for (const path of [lockPath, pidFile, leaderFile]) rmSync(path, { force: true });
 	t.after(() => {
 		rmSync(lockPath, { force: true });
-		if (existsSync(pidFile)) try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {}
+		if (existsSync(pidFile))
+			try {
+				process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+			} catch {}
 	});
-	const { code, stderr } = await runCoordinatorChild("exit-lock-gone", { FAKE_PI_MODE: "escaped-pipes", FAKE_PI_PIDFILE: pidFile, FAKE_PI_LEADER_PIDFILE: leaderFile },
-		escapedPipesExitBody(session, leaderFile, pidFile, lockPath, false));
+	const { code, stderr } = await runCoordinatorChild(
+		"exit-lock-gone",
+		{ FAKE_PI_MODE: "escaped-pipes", FAKE_PI_PIDFILE: pidFile, FAKE_PI_LEADER_PIDFILE: leaderFile },
+		escapedPipesExitBody(session, leaderFile, pidFile, lockPath, false),
+	);
 	assert.equal(code, 0, `lock was held while the run was unsettled: ${stderr}`);
 	assert.equal(existsSync(lockPath), false, "exit handler released the lock of a gone worker group");
 });
@@ -641,10 +780,16 @@ test("coordinator exit keeps a manually retained session lock", async (t) => {
 	for (const path of [lockPath, pidFile, leaderFile]) rmSync(path, { force: true });
 	t.after(() => {
 		rmSync(lockPath, { force: true });
-		if (existsSync(pidFile)) try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {}
+		if (existsSync(pidFile))
+			try {
+				process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+			} catch {}
 	});
-	const { code, stderr } = await runCoordinatorChild("exit-lock-manual", { FAKE_PI_MODE: "escaped-pipes", FAKE_PI_PIDFILE: pidFile, FAKE_PI_LEADER_PIDFILE: leaderFile },
-		escapedPipesExitBody(session, leaderFile, pidFile, lockPath, true));
+	const { code, stderr } = await runCoordinatorChild(
+		"exit-lock-manual",
+		{ FAKE_PI_MODE: "escaped-pipes", FAKE_PI_PIDFILE: pidFile, FAKE_PI_LEADER_PIDFILE: leaderFile },
+		escapedPipesExitBody(session, leaderFile, pidFile, lockPath, true),
+	);
 	assert.equal(code, 0, `run settled with the lock retained for manual verification: ${stderr}`);
 	assert.ok(existsSync(lockPath), "exit handler kept the manually retained lock");
 });
@@ -656,19 +801,32 @@ test("coordinator exit releases the session lock of a live worker it SIGKILLs", 
 	for (const path of [lockPath, pidFile]) rmSync(path, { force: true });
 	t.after(() => {
 		rmSync(lockPath, { force: true });
-		if (existsSync(pidFile)) try { process.kill(-Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch {}
+		if (existsSync(pidFile))
+			try {
+				process.kill(-Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+			} catch {}
 	});
-	const { code, stderr } = await runCoordinatorChild("exit-lock-live", { FAKE_PI_MODE: "parent-exit", FAKE_PI_PIDFILE: pidFile }, `
+	const { code, stderr } = await runCoordinatorChild(
+		"exit-lock-live",
+		{ FAKE_PI_MODE: "parent-exit", FAKE_PI_PIDFILE: pidFile },
+		`
 void delegate.execute("exit-lock-live", { task: "hold worker", session: ${JSON.stringify(session)}, timeoutSecs: 60 }, undefined, undefined, ctx);
 await waitFor(() => existsSync(${JSON.stringify(pidFile)}) && Number(readFileSync(${JSON.stringify(pidFile)}, "utf8")) > 0, 2);
 if (!existsSync(${JSON.stringify(lockPath)})) process.exit(4);
-`);
+`,
+	);
 	assert.equal(code, 0, `coordinator child held the lock for a live worker: ${stderr}`);
 	assert.doesNotMatch(stderr, /delegate:/, "no exit-cleanup warning");
 	assert.equal(existsSync(lockPath), false, "exit handler released the lock once the killed group was only a zombie");
 	const workerPid = Number(readFileSync(pidFile, "utf8"));
 	assert.ok(await waitDead(workerPid), "worker leader gone");
-	assert.equal(execFileSync("ps", ["-A", "-o", "pgid="], { encoding: "utf8" }).split("\n").some((line) => Number(line) === workerPid), false, "no process remains in the worker group");
+	assert.equal(
+		execFileSync("ps", ["-A", "-o", "pgid="], { encoding: "utf8" })
+			.split("\n")
+			.some((line) => Number(line) === workerPid),
+		false,
+		"no process remains in the worker group",
+	);
 });
 
 test("reloaded module instances share one process exit listener", async (t) => {
@@ -676,9 +834,19 @@ test("reloaded module instances share one process exit listener", async (t) => {
 	const before = process.listenerCount("exit");
 	for (const instance of ["reload-1", "reload-2"]) {
 		const { default: fresh } = await import(`./delegate.ts?${instance}`);
-		fresh({ getSettings: () => ({}), getActiveTools: () => [], setActiveTools: () => {}, registerTool: () => {}, registerCommand: () => {}, on: () => {} });
+		fresh({
+			getSettings: () => ({}),
+			getActiveTools: () => [],
+			setActiveTools: () => {},
+			registerTool: () => {},
+			registerCommand: () => {},
+			on: () => {},
+		});
 	}
-	assert.ok(process.listenerCount("exit") <= before + 1, `exit listeners grew from ${before} to ${process.listenerCount("exit")}`);
+	assert.ok(
+		process.listenerCount("exit") <= before + 1,
+		`exit listeners grew from ${before} to ${process.listenerCount("exit")}`,
+	);
 });
 
 function markerLines(path) {
@@ -690,7 +858,13 @@ test("already-aborted signal cancels every task without spawning", async (t) => 
 	const { tools } = delegateTool(t, { FAKE_PI_MARKER: marker });
 	const controller = new AbortController();
 	controller.abort();
-	const res = await tools.delegate.execute("c14", { tasks: Array.from({ length: 6 }, () => ({ task: "x" })) }, controller.signal, undefined, CTX);
+	const res = await tools.delegate.execute(
+		"c14",
+		{ tasks: Array.from({ length: 6 }, () => ({ task: "x" })) },
+		controller.signal,
+		undefined,
+		CTX,
+	);
 	assert.equal(res.isError, true);
 	assert.equal(markerLines(marker), 0, "no worker spawned");
 	assert.equal(res.content[0].text.match(/cancelled before start/g)?.length, 6);
@@ -700,7 +874,13 @@ test("already-aborted signal cancels every task without spawning", async (t) => 
 test("session_shutdown cancels queued tasks instead of spawning them", async (t) => {
 	const marker = join(TEST_HOME, "queue-marker");
 	const { tools, handlers } = delegateTool(t, { FAKE_PI_MARKER: marker, FAKE_PI_SLEEP_MS: "20000" });
-	const run = tools.delegate.execute("c15", { tasks: Array.from({ length: 5 }, () => ({ task: "x" })) }, undefined, undefined, CTX);
+	const run = tools.delegate.execute(
+		"c15",
+		{ tasks: Array.from({ length: 5 }, () => ({ task: "x" })) },
+		undefined,
+		undefined,
+		CTX,
+	);
 	while (markerLines(marker) < 4) await new Promise((r) => setTimeout(r, 50));
 	await handlers.session_shutdown({ reason: "quit" }, {});
 	const res = await run;
@@ -754,7 +934,10 @@ test("cleanup signal failures are reported, not swallowed", async (t) => {
 	assert.equal(res.isError, true);
 	assert.match(res.content[0].text, /SIGTERM to worker group \d+ failed: invalid signal/);
 	await new Promise((r) => setImmediate(r));
-	assert.ok(warnings.some((m) => /SIGTERM to worker group/.test(m)), "process warning emitted");
+	assert.ok(
+		warnings.some((m) => /SIGTERM to worker group/.test(m)),
+		"process warning emitted",
+	);
 });
 
 test("worker completion is bounded when an escaped child holds output pipes", async (t) => {
@@ -763,17 +946,30 @@ test("worker completion is bounded when an escaped child holds output pipes", as
 	const realKill = process.kill;
 	t.after(() => {
 		if (existsSync(pidFile)) {
-			try { realKill.call(process, -Number(readFileSync(pidFile, "utf8")), "SIGKILL"); }
-			catch (err) { if (err?.code !== "ESRCH") throw err; }
+			try {
+				realKill.call(process, -Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+			} catch (err) {
+				if (err?.code !== "ESRCH") throw err;
+			}
 		}
 	});
 	const started = Date.now();
-	const res = await tools.delegate.execute("c19a", { task: "exit with escaped child", timeoutSecs: 20 }, undefined, undefined, CTX);
+	const res = await tools.delegate.execute(
+		"c19a",
+		{ task: "exit with escaped child", timeoutSecs: 20 },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.ok(Date.now() - started < 5000, "escaped pipe cannot block worker completion");
 	assert.equal(res.isError, true);
 	assert.match(res.content[0].text, /output pipes remained open/);
 	const childPid = Number(readFileSync(pidFile, "utf8"));
-	try { realKill.call(process, -childPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+	try {
+		realKill.call(process, -childPid, "SIGKILL");
+	} catch (err) {
+		if (err?.code !== "ESRCH") throw err;
+	}
 	assert.ok(await waitDead(childPid), "test cleanup killed the escaped child group");
 });
 
@@ -789,25 +985,40 @@ test("worker does not report success while a same-group descendant survives", as
 		process.kill = realKill;
 		if (existsSync(pidFile)) {
 			const [groupPid] = readFileSync(pidFile, "utf8").trim().split("\n").map(Number);
-			try { realKill.call(process, -groupPid, "SIGKILL"); }
-			catch (err) { if (err?.code !== "ESRCH") throw err; }
+			try {
+				realKill.call(process, -groupPid, "SIGKILL");
+			} catch (err) {
+				if (err?.code !== "ESRCH") throw err;
+			}
 		}
 	});
 	const started = Date.now();
-	const res = await tools.delegate.execute("c19a2", { task: "exit while descendant stays", timeoutSecs: 20 }, undefined, undefined, CTX);
+	const res = await tools.delegate.execute(
+		"c19a2",
+		{ task: "exit while descendant stays", timeoutSecs: 20 },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.ok(Date.now() - started < 5000, "group cleanup has a bounded deadline");
 	assert.equal(res.isError, true);
 	assert.match(res.content[0].text, /cleanup-failed: worker process group .* remained after cleanup/);
 	const [groupPid, childPid] = readFileSync(pidFile, "utf8").trim().split("\n").map(Number);
 	process.kill = realKill;
-	try { realKill.call(process, -groupPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+	try {
+		realKill.call(process, -groupPid, "SIGKILL");
+	} catch (err) {
+		if (err?.code !== "ESRCH") throw err;
+	}
 	assert.ok(await waitDead(childPid), "test cleanup killed the retained descendant");
 });
 
 test("worker returns after SIGKILL fails to terminate its group and retains ownership", async (t) => {
 	const pidFile = join(TEST_HOME, "unreapable.pid");
 	const session = "held-after-escalation";
-	const lockKey = createHash("sha256").update(JSON.stringify([resolve(CTX.cwd), session])).digest("hex");
+	const lockKey = createHash("sha256")
+		.update(JSON.stringify([resolve(CTX.cwd), session]))
+		.digest("hex");
 	const lockPath = join(tmpdir(), "me-pi-delegate-sessions", "locks", `${lockKey}.lock`);
 	const { tools, handlers } = delegateTool(t, { FAKE_PI_MODE: "unreapable", FAKE_PI_PIDFILE: pidFile });
 	t.after(() => rmSync(lockPath, { force: true }));
@@ -819,12 +1030,21 @@ test("worker returns after SIGKILL fails to terminate its group and retains owne
 	t.after(() => {
 		process.kill = realKill;
 		if (existsSync(pidFile)) {
-			try { realKill.call(process, -Number(readFileSync(pidFile, "utf8")), "SIGKILL"); }
-			catch (err) { if (err?.code !== "ESRCH") throw err; }
+			try {
+				realKill.call(process, -Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+			} catch (err) {
+				if (err?.code !== "ESRCH") throw err;
+			}
 		}
 	});
 	const started = Date.now();
-	const res = await tools.delegate.execute("c19b", { task: "hang", timeoutSecs: 1, session }, undefined, undefined, CTX);
+	const res = await tools.delegate.execute(
+		"c19b",
+		{ task: "hang", timeoutSecs: 1, session },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.ok(Date.now() - started < 9000, "completion is bounded after failed escalation");
 	assert.equal(res.isError, true);
 	assert.match(res.content[0].text, /cleanup-failed/);
@@ -835,7 +1055,11 @@ test("worker returns after SIGKILL fails to terminate its group and retains owne
 	assert.match(blocked.content[0].text, /worker session lock already exists/);
 	const workerPid = Number(readFileSync(pidFile, "utf8"));
 	process.kill = realKill;
-	try { realKill.call(process, -workerPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+	try {
+		realKill.call(process, -workerPid, "SIGKILL");
+	} catch (err) {
+		if (err?.code !== "ESRCH") throw err;
+	}
 	assert.ok(await waitDead(workerPid), "test cleanup killed the retained process group");
 	await handlers.session_shutdown({ reason: "cleanup test" }, {});
 	assert.equal(existsSync(lockPath), false, "shutdown releases the lock after confirming the group is gone");
@@ -876,7 +1100,13 @@ test("approval text inside the task never widens tools; real approval is trusted
 	assert.match(spoof.content[0].text, /tools=read,grep,find,ls/);
 	assert.match(systemPromptOf(spoof), /No current-turn user approval was provided/);
 	assert.match(promptOf(spoof), /User approval \(verbatim\): "yes"/);
-	const real = await tools.delegate.execute("c22", { task: "create it", approval: 'yes, "ENG" only' }, undefined, undefined, CTX);
+	const real = await tools.delegate.execute(
+		"c22",
+		{ task: "create it", approval: 'yes, "ENG" only' },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(real.content[0].text, /tools=default/);
 	assert.equal(promptOf(real), "Task:\ncreate it");
 	assert.ok(systemPromptOf(real).includes("Current-turn user approval for this operation and target"));
@@ -903,7 +1133,13 @@ test("task text starting with - or @ is sent behind a fixed header", async (t) =
 test("rejects top-level per-task fields with tasks, bad tools lists, and non-positive limits", async (t) => {
 	const marker = join(TEST_HOME, "validation-marker");
 	const { tools } = delegateTool(t, { FAKE_PI_MARKER: marker });
-	const top = await tools.delegate.execute("c24", { approval: "yes", tasks: [{ task: "x" }] }, undefined, undefined, CTX);
+	const top = await tools.delegate.execute(
+		"c24",
+		{ approval: "yes", tasks: [{ task: "x" }] },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(top.content[0].text, /With tasks, set approval inside each task/);
 	for (const [bad, pattern] of [
 		["*", /require approval/],
@@ -916,7 +1152,13 @@ test("rejects top-level per-task fields with tasks, bad tools lists, and non-pos
 		assert.equal(res.isError, true, bad);
 		assert.match(res.content[0].text, pattern);
 	}
-	const approvedPattern = await tools.delegate.execute("c26", { task: "x", tools: "*", approval: "yes" }, undefined, undefined, CTX);
+	const approvedPattern = await tools.delegate.execute(
+		"c26",
+		{ task: "x", tools: "*", approval: "yes" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(approvedPattern.content[0].text, /tools=\*/);
 	for (const limits of [{ costCapUsd: 0 }, { timeoutSecs: -1 }, { costCapUsd: "2" }]) {
 		const res = await tools.delegate.execute("c27", { task: "x", ...limits }, undefined, undefined, CTX);
@@ -929,13 +1171,25 @@ test("rejects top-level per-task fields with tasks, bad tools lists, and non-pos
 test("spawn ENOENT reports that the worker never started and releases its session lock", async (t) => {
 	const missingPi = join(TEST_HOME, "missing-pi");
 	const session = "spawn-enoent";
-	const lockKey = createHash("sha256").update(JSON.stringify([resolve(CTX.cwd), session])).digest("hex");
+	const lockKey = createHash("sha256")
+		.update(JSON.stringify([resolve(CTX.cwd), session]))
+		.digest("hex");
 	const lockPath = join(tmpdir(), "me-pi-delegate-sessions", "locks", `${lockKey}.lock`);
 	const { tools } = delegateTool(t, { PI_BIN: missingPi });
 	const binDirs = () => readdirSync(tmpdir()).filter((name) => name.startsWith("me-pi-delegate-bin-"));
 	const before = new Set(binDirs());
-	const res = await tools.delegate.execute("spawn-enoent", { task: "fail to spawn", session }, undefined, undefined, CTX);
-	assert.deepEqual(binDirs().filter((name) => !before.has(name)), [], "failed spawn removes the worker git shim directory");
+	const res = await tools.delegate.execute(
+		"spawn-enoent",
+		{ task: "fail to spawn", session },
+		undefined,
+		undefined,
+		CTX,
+	);
+	assert.deepEqual(
+		binDirs().filter((name) => !before.has(name)),
+		[],
+		"failed spawn removes the worker git shim directory",
+	);
 	assert.equal(res.isError, true);
 	assert.match(res.content[0].text, new RegExp(`spawn ${missingPi} ENOENT`));
 	assert.match(res.content[0].text, /worker never started/);
@@ -957,7 +1211,10 @@ test("a crash after side effects reports every non-read call, all WROTE lines, a
 	const res = await tools.delegate.execute("c29", { task: "x", approval: "yes" }, undefined, undefined, CTX);
 	assert.equal(res.isError, true);
 	const text = res.content[0].text;
-	assert.match(text, /Non-read tool calls \(2\):\n→ edit \{"path":"src\/a\.ts"\}\n→ linear_create_issue \{"team":"ENG","title":"x"\}/);
+	assert.match(
+		text,
+		/Non-read tool calls \(2\):\n→ edit \{"path":"src\/a\.ts"\}\n→ linear_create_issue \{"team":"ENG","title":"x"\}/,
+	);
 	assert.match(text, /WROTE lines:\nWROTE: Linear ENG-1/);
 	assert.match(text, /Remote effects: unknown/);
 	assert.match(text, /exit=3/);
@@ -965,7 +1222,13 @@ test("a crash after side effects reports every non-read call, all WROTE lines, a
 
 test("failure audit includes nested tool calls and deduplicates their parent", async (t) => {
 	const { tools } = delegateTool(t, { FAKE_PI_MODE: "nested-write-then-crash" });
-	const res = await tools.delegate.execute("c16b", { task: "create an issue", role: "research" }, undefined, undefined, CTX);
+	const res = await tools.delegate.execute(
+		"c16b",
+		{ task: "create an issue", role: "research" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(res.isError, true);
 	assert.match(res.content[0].text, /Non-read tool calls \(2\)/);
 	const logPath = res.content[0].text.match(/Full tool-call log: ([^\n]+)/)?.[1];
@@ -1005,15 +1268,56 @@ test("/coordinate on removes search/edit tools, adds routing prompt, blocks bash
 	const ctx = { ui: { notify: (m) => notes.push(m), setStatus: () => {} } };
 	const before = [...state.active];
 	assert.equal(await handlers.before_agent_start({ systemPrompt: "BASE" }), undefined, "no prompt change when off");
-	assert.equal(await handlers.tool_call({ toolName: "bash", input: { command: "rg foo" } }), undefined, "no block when off");
+	assert.equal(
+		await handlers.tool_call({ toolName: "bash", input: { command: "rg foo" } }),
+		undefined,
+		"no block when off",
+	);
 
 	await commands.coordinate.handler("on", ctx);
 	assert.deepEqual(state.active, ["read", "bash", "ls", "delegate"]);
-	assert.equal((await handlers.before_agent_start({ systemPrompt: "BASE" })).systemPrompt, `BASE\n\n${COORDINATOR_PROMPT}`);
-	for (const command of ["rg foo src", "cd x && grep -r y .", "find . -name '*.ts'", "git log | grep fix", "ls -R", "ls -l -R", "ls -Ral", "ls --recursive", `opts=' -${String.fromCharCode(82)}'; ${String.fromCharCode(108,115)} .$opts`, "echo ready\ngrep needle file", '"/usr/bin/grep" needle', "nice grep needle file", "timeout 5s find .", ">/tmp/search.log /usr/bin/grep needle", "2>/tmp/search.log grep needle file", "grep needle>/tmp/search.log", "rtk proxy grep needle file", "rtk proxy find .", "rtk grep needle file", "bash -c -- 'grep needle file'", "bash -ecx 'grep needle file'", "eval -- 'grep needle file'", "builtin eval 'grep needle file'", '$"grep" needle file', "if true; then grep needle file; fi", 'env -S "grep\\_needle file"']) {
+	assert.equal(
+		(await handlers.before_agent_start({ systemPrompt: "BASE" })).systemPrompt,
+		`BASE\n\n${COORDINATOR_PROMPT}`,
+	);
+	for (const command of [
+		"rg foo src",
+		"cd x && grep -r y .",
+		"find . -name '*.ts'",
+		"git log | grep fix",
+		"ls -R",
+		"ls -l -R",
+		"ls -Ral",
+		"ls --recursive",
+		`opts=' -${String.fromCharCode(82)}'; ${String.fromCharCode(108, 115)} .$opts`,
+		"echo ready\ngrep needle file",
+		'"/usr/bin/grep" needle',
+		"nice grep needle file",
+		"timeout 5s find .",
+		">/tmp/search.log /usr/bin/grep needle",
+		"2>/tmp/search.log grep needle file",
+		"grep needle>/tmp/search.log",
+		"rtk proxy grep needle file",
+		"rtk proxy find .",
+		"rtk grep needle file",
+		"bash -c -- 'grep needle file'",
+		"bash -ecx 'grep needle file'",
+		"eval -- 'grep needle file'",
+		"builtin eval 'grep needle file'",
+		'$"grep" needle file',
+		"if true; then grep needle file; fi",
+		'env -S "grep\\_needle file"',
+	]) {
 		assert.equal((await handlers.tool_call({ toolName: "bash", input: { command } }))?.block, true, command);
 	}
-	for (const command of ["node --test", "git commit -m x", 'git commit -m "Route searches; find the cause"', 'echo "find .; rg foo"', "git diff > /tmp/r.diff", "npm test"]) {
+	for (const command of [
+		"node --test",
+		"git commit -m x",
+		'git commit -m "Route searches; find the cause"',
+		'echo "find .; rg foo"',
+		"git diff > /tmp/r.diff",
+		"npm test",
+	]) {
 		assert.equal(await handlers.tool_call({ toolName: "bash", input: { command } }), undefined, command);
 	}
 
@@ -1026,7 +1330,12 @@ test("/coordinate on removes search/edit tools, adds routing prompt, blocks bash
 	assert.equal(isBashSearch('echo "$(find .)"'), true, "command substitutions remain executable");
 	assert.equal(isBashSearch('bash -c "grep needle file"'), true, "shell -c scripts are inspected");
 	assert.equal(isBashSearch('env bash -c "grep needle file"'), true, "wrapped shell -c scripts are inspected");
-	assert.equal(isBashSearch('echo "${unset_variable:-$(find .)}"'), true, "parameter expansion substitutions are inspected");
+	assert.equal(
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell parameter expansion under test.
+		isBashSearch('echo "${unset_variable:-$(find .)}"'),
+		true,
+		"parameter expansion substitutions are inspected",
+	);
 });
 
 function writeModels(t, models, extra = {}) {
@@ -1076,12 +1385,25 @@ test("roles pick tools, thinking and model from the list; task values win; empty
 	);
 	assert.equal(res.isError, false);
 	const text = res.content[0].text;
-	assert.match(text, /### \[#1\][\s\S]*?model=cheap\/a thinking=off tools=read,grep,find,ls,web_search,fetch_content,get_search_content[\s\S]*?role=scout/);
-	assert.match(text, /### \[#2\][\s\S]*?model=strong\/x thinking=medium tools=read,grep,find,ls,edit,write,bash[\s\S]*?role=implement/);
+	assert.match(
+		text,
+		/### \[#1\][\s\S]*?model=cheap\/a thinking=off tools=read,grep,find,ls,web_search,fetch_content,get_search_content[\s\S]*?role=scout/,
+	);
+	assert.match(
+		text,
+		/### \[#2\][\s\S]*?model=strong\/x thinking=medium tools=read,grep,find,ls,edit,write,bash[\s\S]*?role=implement/,
+	);
 	assert.match(text, /### \[#3\][\s\S]*?model=strong\/x thinking=max/);
-	assert.match(text, /### \[#4\][\s\S]*?model=strong\/y thinking=xhigh/, "the model's thinking from the list beats the role default");
+	assert.match(
+		text,
+		/### \[#4\][\s\S]*?model=strong\/y thinking=xhigh/,
+		"the model's thinking from the list beats the role default",
+	);
 	assert.match(text, /### \[#5\][\s\S]*?tools=read /);
-	assert.match(text, /### \[#6\][\s\S]*?model=session-prov\/session-mod thinking=medium tools=read,grep,find,ls [\s\S]*?role=none/);
+	assert.match(
+		text,
+		/### \[#6\][\s\S]*?model=session-prov\/session-mod thinking=medium tools=read,grep,find,ls [\s\S]*?role=none/,
+	);
 
 	writeModels(t, []);
 	const empty = await tools.delegate.execute("c31", { task: "s", role: "scout" }, undefined, undefined, CTX);
@@ -1091,7 +1413,13 @@ test("roles pick tools, thinking and model from the list; task values win; empty
 test("review prefers another family after successful and failed writers", async (t) => {
 	writeModels(t, [{ id: "baseline/model", tier: "strong", family: "openai" }]);
 	const { tools } = delegateTool(t, { FAKE_PI_MODE: "" });
-	await tools.delegate.execute("c32", { task: "baseline", role: "implement", model: "baseline/model" }, undefined, undefined, CTX);
+	await tools.delegate.execute(
+		"c32",
+		{ task: "baseline", role: "implement", model: "baseline/model" },
+		undefined,
+		undefined,
+		CTX,
+	);
 
 	writeModels(t, [
 		{ id: "failed/model", tier: "strong", family: "anthropic" },
@@ -1099,7 +1427,13 @@ test("review prefers another family after successful and failed writers", async 
 		{ id: "baseline/model", tier: "strong", family: "openai" },
 	]);
 	process.env.FAKE_PI_MODE = "edit-then-crash";
-	const failed = await tools.delegate.execute("c32a", { task: "partial", role: "implement", model: "failed/model" }, undefined, undefined, CTX);
+	const failed = await tools.delegate.execute(
+		"c32a",
+		{ task: "partial", role: "implement", model: "failed/model" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(failed.isError, true);
 	const auditPath = failed.content[0].text.match(/Full tool-call log: (\/[^\n]+)/)?.[1];
 	if (auditPath) t.after(() => rmSync(auditPath, { force: true }));
@@ -1111,7 +1445,11 @@ test("review prefers another family after successful and failed writers", async 
 		{ id: "o/luna", tier: "strong", family: "openai" },
 		{ id: "o/sol", tier: "strong", family: "openai" },
 	];
-	assert.equal(pickModel(ROLES.review, oneFamily, { family: "openai", model: "o/luna" }).id, "o/sol", "same family only: another model");
+	assert.equal(
+		pickModel(ROLES.review, oneFamily, { family: "openai", model: "o/luna" }).id,
+		"o/sol",
+		"same family only: another model",
+	);
 	assert.equal(pickModel(ROLES.scout, [LIST[1]]), undefined, "no cheap model: caller falls back to session");
 });
 
@@ -1121,7 +1459,13 @@ test("an explicit model uses the matching role tier's thinking when listed in bo
 		{ id: "shared/model", tier: "cheap", thinking: "off" },
 	]);
 	const { tools } = delegateTool(t);
-	const res = await tools.delegate.execute("c33a", { task: "x", role: "scout", model: "shared/model" }, undefined, undefined, CTX);
+	const res = await tools.delegate.execute(
+		"c33a",
+		{ task: "x", role: "scout", model: "shared/model" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(res.content[0].text, /model=shared\/model thinking=off/);
 });
 
@@ -1130,9 +1474,21 @@ test("unknown role, bad session name and invalid model list fail before spawn; l
 	const { tools } = delegateTool(t, { FAKE_PI_MARKER: marker });
 	const unknown = await tools.delegate.execute("c34", { task: "x", role: "deploy" }, undefined, undefined, CTX);
 	assert.match(unknown.content[0].text, /unknown role "deploy"/);
-	const badSession = await tools.delegate.execute("c35", { task: "x", session: "Bad Name" }, undefined, undefined, CTX);
+	const badSession = await tools.delegate.execute(
+		"c35",
+		{ task: "x", session: "Bad Name" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(badSession.content[0].text, /session must match/);
-	const trailingHyphen = await tools.delegate.execute("c35a", { task: "x", session: "valid-" }, undefined, undefined, CTX);
+	const trailingHyphen = await tools.delegate.execute(
+		"c35a",
+		{ task: "x", session: "valid-" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(trailingHyphen.content[0].text, /session must match/);
 	writeModels(t, [{ id: "m", tier: "huge", family: "f" }]);
 	const bad = await tools.delegate.execute("c36", { task: "x" }, undefined, undefined, CTX);
@@ -1148,8 +1504,20 @@ test("unknown role, bad session name and invalid model list fail before spawn; l
 test("overlapping worker runs cannot resume the same cwd/session concurrently", async (t) => {
 	writeModels(t, LIST);
 	const { tools } = delegateTool(t, { FAKE_PI_SLEEP_MS: "250" });
-	const first = tools.delegate.execute("c38x", { task: "first", session: "shared-session" }, undefined, undefined, CTX);
-	const second = tools.delegate.execute("c38y", { task: "second", session: "shared-session" }, undefined, undefined, CTX);
+	const first = tools.delegate.execute(
+		"c38x",
+		{ task: "first", session: "shared-session" },
+		undefined,
+		undefined,
+		CTX,
+	);
+	const second = tools.delegate.execute(
+		"c38y",
+		{ task: "second", session: "shared-session" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	const [firstResult, secondResult] = await Promise.all([first, second]);
 	assert.equal(firstResult.isError, false);
 	assert.equal(secondResult.isError, true);
@@ -1158,8 +1526,18 @@ test("overlapping worker runs cannot resume the same cwd/session concurrently", 
 
 test("worker cleanup kills background jobs after Pi's Bash shell exits", async (t) => {
 	const pidFile = join(TEST_HOME, "background-worker.pid");
-	const { tools } = delegateTool(t, { FAKE_PI_MODE: "background-shell", FAKE_PI_PIDFILE: pidFile, FAKE_PI_SLEEP_MS: "250" });
-	const result = await tools.delegate.execute("c38z", { task: "start a background process" }, undefined, undefined, CTX);
+	const { tools } = delegateTool(t, {
+		FAKE_PI_MODE: "background-shell",
+		FAKE_PI_PIDFILE: pidFile,
+		FAKE_PI_SLEEP_MS: "250",
+	});
+	const result = await tools.delegate.execute(
+		"c38z",
+		{ task: "start a background process" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(result.isError, false);
 	const pid = Number(readFileSync(pidFile, "utf8"));
 	assert.ok(pid > 0);
@@ -1171,15 +1549,29 @@ function killGroupOf(pidFile) {
 	const pid = Number(readFileSync(pidFile, "utf8"));
 	if (!isAlive(pid)) return;
 	const groupPid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim());
-	try { process.kill(-groupPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+	try {
+		process.kill(-groupPid, "SIGKILL");
+	} catch (err) {
+		if (err?.code !== "ESRCH") throw err;
+	}
 }
 
 test("a leaderless shell group whose member ignores SIGTERM still gets SIGKILL", async (t) => {
 	const pidFile = join(TEST_HOME, "background-trap.pid");
 	rmSync(pidFile, { force: true });
-	const { tools } = delegateTool(t, { FAKE_PI_MODE: "background-shell-trap", FAKE_PI_PIDFILE: pidFile, FAKE_PI_SLEEP_MS: "250" });
+	const { tools } = delegateTool(t, {
+		FAKE_PI_MODE: "background-shell-trap",
+		FAKE_PI_PIDFILE: pidFile,
+		FAKE_PI_SLEEP_MS: "250",
+	});
 	t.after(() => killGroupOf(pidFile));
-	const result = await tools.delegate.execute("dead-leader", { task: "leave a TERM-proof job" }, undefined, undefined, CTX);
+	const result = await tools.delegate.execute(
+		"dead-leader",
+		{ task: "leave a TERM-proof job" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(result.isError, false, result.content[0].text);
 	const pid = Number(readFileSync(pidFile, "utf8"));
 	assert.ok(pid > 0);
@@ -1191,9 +1583,20 @@ test("a user BASH_ENV that sets TZ and LC_ALL does not hide the shell group from
 	const userBashEnv = join(TEST_HOME, "user-bash-env.sh");
 	rmSync(pidFile, { force: true });
 	writeFileSync(userBashEnv, "export TZ=Etc/GMT-14 LC_ALL=fr_FR.UTF-8\n");
-	const { tools } = delegateTool(t, { FAKE_PI_MODE: "live-shell", FAKE_PI_PIDFILE: pidFile, FAKE_PI_SLEEP_MS: "250", BASH_ENV: userBashEnv });
+	const { tools } = delegateTool(t, {
+		FAKE_PI_MODE: "live-shell",
+		FAKE_PI_PIDFILE: pidFile,
+		FAKE_PI_SLEEP_MS: "250",
+		BASH_ENV: userBashEnv,
+	});
 	t.after(() => killGroupOf(pidFile));
-	const result = await tools.delegate.execute("user-tz", { task: "start a background process" }, undefined, undefined, CTX);
+	const result = await tools.delegate.execute(
+		"user-tz",
+		{ task: "start a background process" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(result.isError, false, result.content[0].text);
 	const pid = Number(readFileSync(pidFile, "utf8"));
 	assert.ok(pid > 0);
@@ -1203,9 +1606,15 @@ test("a user BASH_ENV that sets TZ and LC_ALL does not hide the shell group from
 test("session lock remains while a detached shell group survives SIGKILL", async (t) => {
 	const pidFile = join(TEST_HOME, "locked-shell.pid");
 	const session = "shell-group-owner";
-	const key = createHash("sha256").update(JSON.stringify([resolve(CTX.cwd), session])).digest("hex");
+	const key = createHash("sha256")
+		.update(JSON.stringify([resolve(CTX.cwd), session]))
+		.digest("hex");
 	const lockPath = join(tmpdir(), "me-pi-delegate-sessions", "locks", `${key}.lock`);
-	const { tools, handlers } = delegateTool(t, { FAKE_PI_MODE: "background-shell", FAKE_PI_PIDFILE: pidFile, FAKE_PI_SLEEP_MS: "250" });
+	const { tools, handlers } = delegateTool(t, {
+		FAKE_PI_MODE: "background-shell",
+		FAKE_PI_PIDFILE: pidFile,
+		FAKE_PI_SLEEP_MS: "250",
+	});
 	t.after(() => rmSync(lockPath, { force: true }));
 	const realKill = process.kill;
 	process.kill = (pid, sig) => {
@@ -1217,12 +1626,24 @@ test("session lock remains while a detached shell group survives SIGKILL", async
 		if (existsSync(pidFile)) {
 			const shellPid = Number(readFileSync(pidFile, "utf8"));
 			if (!(await waitDead(shellPid))) {
-				const groupPid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(shellPid)], { encoding: "utf8" }).trim());
-				try { realKill.call(process, -groupPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+				const groupPid = Number(
+					execFileSync("ps", ["-o", "pgid=", "-p", String(shellPid)], { encoding: "utf8" }).trim(),
+				);
+				try {
+					realKill.call(process, -groupPid, "SIGKILL");
+				} catch (err) {
+					if (err?.code !== "ESRCH") throw err;
+				}
 			}
 		}
 	});
-	const res = await tools.delegate.execute("c38z2", { task: "leave a detached shell", session }, undefined, undefined, CTX);
+	const res = await tools.delegate.execute(
+		"c38z2",
+		{ task: "leave a detached shell", session },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(res.isError, true);
 	assert.match(res.content[0].text, /worker shell group .* remained after SIGKILL/);
 	assert.ok(existsSync(lockPath), "the named session stays locked while its shell group survives");
@@ -1231,7 +1652,11 @@ test("session lock remains while a detached shell group survives SIGKILL", async
 	const shellPid = Number(readFileSync(pidFile, "utf8"));
 	const groupPid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(shellPid)], { encoding: "utf8" }).trim());
 	process.kill = realKill;
-	try { realKill.call(process, -groupPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+	try {
+		realKill.call(process, -groupPid, "SIGKILL");
+	} catch (err) {
+		if (err?.code !== "ESRCH") throw err;
+	}
 	assert.ok(await waitDead(shellPid), "test cleanup killed the detached shell");
 	await handlers.session_shutdown({ reason: "cleanup test" }, {});
 	assert.equal(existsSync(lockPath), false, "shutdown releases the lock after confirming the shell group is gone");
@@ -1244,9 +1669,15 @@ test("unreadable shell tracking retains the session lock and tracking path for s
 	const pidFile = join(TEST_HOME, "missing-shell-tracking.pid");
 	const pathFile = join(TEST_HOME, "missing-shell-tracking.path");
 	const session = "unreadable-shell-tracking";
-	const key = createHash("sha256").update(JSON.stringify([resolve(CTX.cwd), session])).digest("hex");
+	const key = createHash("sha256")
+		.update(JSON.stringify([resolve(CTX.cwd), session]))
+		.digest("hex");
 	const lockPath = join(tmpdir(), "me-pi-delegate-sessions", "locks", `${key}.lock`);
-	const { tools, handlers } = delegateTool(t, { FAKE_PI_MODE: "missing-shell-tracking", FAKE_PI_PIDFILE: pidFile, FAKE_PI_TRACKINGFILE: pathFile });
+	const { tools, handlers } = delegateTool(t, {
+		FAKE_PI_MODE: "missing-shell-tracking",
+		FAKE_PI_PIDFILE: pidFile,
+		FAKE_PI_TRACKINGFILE: pathFile,
+	});
 	const realKill = process.kill;
 	let trackingPath;
 	let groupPid;
@@ -1256,10 +1687,17 @@ test("unreadable shell tracking retains the session lock and tracking path for s
 		if (!shutdownComplete) {
 			if (!groupPid && existsSync(pidFile)) {
 				const childPid = Number(readFileSync(pidFile, "utf8"));
-				if (isAlive(childPid)) groupPid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(childPid)], { encoding: "utf8" }).trim());
+				if (isAlive(childPid))
+					groupPid = Number(
+						execFileSync("ps", ["-o", "pgid=", "-p", String(childPid)], { encoding: "utf8" }).trim(),
+					);
 			}
 			if (groupPid) {
-				try { realKill.call(process, -groupPid, "SIGKILL"); } catch (err) { if (err?.code !== "ESRCH") throw err; }
+				try {
+					realKill.call(process, -groupPid, "SIGKILL");
+				} catch (err) {
+					if (err?.code !== "ESRCH") throw err;
+				}
 				assert.ok(await waitDead(-groupPid), "cleanup confirmed the detached group is gone");
 			}
 			if (!trackingPath && existsSync(pathFile)) trackingPath = readFileSync(pathFile, "utf8");
@@ -1268,7 +1706,13 @@ test("unreadable shell tracking retains the session lock and tracking path for s
 		}
 	});
 	t.after(() => rmSync(lockPath, { force: true }));
-	const result = await tools.delegate.execute("c38z4", { task: "lose the shell tracking file", session }, undefined, undefined, CTX);
+	const result = await tools.delegate.execute(
+		"c38z4",
+		{ task: "lose the shell tracking file", session },
+		undefined,
+		undefined,
+		CTX,
+	);
 	trackingPath = readFileSync(pathFile, "utf8");
 	const childPid = Number(readFileSync(pidFile, "utf8"));
 	groupPid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(childPid)], { encoding: "utf8" }).trim());
@@ -1286,9 +1730,11 @@ test("unreadable shell tracking retains the session lock and tracking path for s
 	writeFileSync(trackingPath, `${groupPid} ${DEAD_GROUP_START}\n`);
 	let confirmedGoneWithTracking = false;
 	process.kill = (pid, signal) => {
-		try { return realKill.call(process, pid, signal); }
-		catch (err) {
-			if (pid === -groupPid && signal === 0 && err?.code === "ESRCH") confirmedGoneWithTracking = existsSync(trackingPath);
+		try {
+			return realKill.call(process, pid, signal);
+		} catch (err) {
+			if (pid === -groupPid && signal === 0 && err?.code === "ESRCH")
+				confirmedGoneWithTracking = existsSync(trackingPath);
 			throw err;
 		}
 	};
@@ -1296,12 +1742,17 @@ test("unreadable shell tracking retains the session lock and tracking path for s
 	shutdownComplete = true;
 	assert.ok(confirmedGoneWithTracking, "shutdown confirms the tracked group is gone before removing its file");
 	assert.equal(existsSync(trackingPath), false, "shutdown retained and retried the original tracking path/map entry");
-	assert.ok(existsSync(lockPath), "unreadable tracking leaves the lock retained for manual removal even after shutdown");
+	assert.ok(
+		existsSync(lockPath),
+		"unreadable tracking leaves the lock retained for manual removal even after shutdown",
+	);
 });
 
 test("worker session locks prevent another coordinator process from resuming the same transcript", async (t) => {
 	const session = "external-owner";
-	const key = createHash("sha256").update(JSON.stringify([resolve(CTX.cwd), session])).digest("hex");
+	const key = createHash("sha256")
+		.update(JSON.stringify([resolve(CTX.cwd), session]))
+		.digest("hex");
 	const lockDir = join(tmpdir(), "me-pi-delegate-sessions", "locks");
 	mkdirSync(lockDir, { recursive: true, mode: 0o700 });
 	const lockPath = join(lockDir, `${key}.lock`);
@@ -1316,9 +1767,13 @@ test("worker session locks prevent another coordinator process from resuming the
 
 test("stale worker session locks are not reclaimed without checking for surviving workers", async (t) => {
 	const session = "orphaned-owner";
-	const key = createHash("sha256").update(JSON.stringify([resolve(CTX.cwd), session])).digest("hex");
+	const key = createHash("sha256")
+		.update(JSON.stringify([resolve(CTX.cwd), session]))
+		.digest("hex");
 	const lockPath = join(tmpdir(), "me-pi-delegate-sessions", "locks", `${key}.lock`);
-	writeFileSync(lockPath, JSON.stringify({ pid: Number.MAX_SAFE_INTEGER, runId: "crashed-coordinator" }), { mode: 0o600 });
+	writeFileSync(lockPath, JSON.stringify({ pid: Number.MAX_SAFE_INTEGER, runId: "crashed-coordinator" }), {
+		mode: 0o600,
+	});
 	t.after(() => rmSync(lockPath, { force: true }));
 	const { tools } = delegateTool(t);
 	const res = await tools.delegate.execute("c38w2", { task: "resume", session }, undefined, undefined, CTX);
@@ -1341,9 +1796,27 @@ test("writer-family avoidance is scoped to the checkout", async (t) => {
 	execFileSync("git", ["init", "-q", cwdA], { stdio: "ignore" });
 	execFileSync("git", ["init", "-q", cwdB], { stdio: "ignore" });
 	const { tools } = delegateTool(t);
-	await tools.delegate.execute("c38u", { task: "write", cwd: writerSubdir, tools: "read,edit,write", model: "strong/a" }, undefined, undefined, CTX);
-	await tools.delegate.execute("c38v", { task: "write", cwd: cwdB, role: "implement", model: "strong/b" }, undefined, undefined, CTX);
-	const review = await tools.delegate.execute("c38v2", { task: "review", cwd: cwdA, role: "review" }, undefined, undefined, CTX);
+	await tools.delegate.execute(
+		"c38u",
+		{ task: "write", cwd: writerSubdir, tools: "read,edit,write", model: "strong/a" },
+		undefined,
+		undefined,
+		CTX,
+	);
+	await tools.delegate.execute(
+		"c38v",
+		{ task: "write", cwd: cwdB, role: "implement", model: "strong/b" },
+		undefined,
+		undefined,
+		CTX,
+	);
+	const review = await tools.delegate.execute(
+		"c38v2",
+		{ task: "review", cwd: cwdA, role: "review" },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(review.content[0].text, /model=strong\/b/);
 });
 
@@ -1355,15 +1828,31 @@ test("tool modifiers count as write-capable for checkout model tracking", async 
 	const cwd = join(TEST_HOME, "modifier-writer-checkout");
 	mkdirSync(cwd, { recursive: true });
 	const { tools } = delegateTool(t);
-	await tools.delegate.execute("c38u3", {
-		task: "make an approved local edit",
-		cwd,
-		model: "strong/a",
-		tools: "-read",
-		approval: "I approve local edits in this test checkout",
-	}, undefined, undefined, CTX);
-	const review = await tools.delegate.execute("c38u4", { task: "review", cwd, role: "review" }, undefined, undefined, CTX);
-	assert.match(review.content[0].text, /model=strong\/b/, "modifier syntax retains default write tools and therefore records the writer family");
+	await tools.delegate.execute(
+		"c38u3",
+		{
+			task: "make an approved local edit",
+			cwd,
+			model: "strong/a",
+			tools: "-read",
+			approval: "I approve local edits in this test checkout",
+		},
+		undefined,
+		undefined,
+		CTX,
+	);
+	const review = await tools.delegate.execute(
+		"c38u4",
+		{ task: "review", cwd, role: "review" },
+		undefined,
+		undefined,
+		CTX,
+	);
+	assert.match(
+		review.content[0].text,
+		/model=strong\/b/,
+		"modifier syntax retains default write tools and therefore records the writer family",
+	);
 });
 
 test("worker sessions resume within a cwd but are isolated across working directories", async (t) => {
@@ -1372,12 +1861,30 @@ test("worker sessions resume within a cwd but are isolated across working direct
 	const cwdB = join(TEST_HOME, "session-cwd-b");
 	mkdirSync(cwdA, { recursive: true });
 	mkdirSync(cwdB, { recursive: true });
-	const first = await tools.delegate.execute("c38", { task: "x", session: "fix-auth-1", cwd: cwdA }, undefined, undefined, CTX);
+	const first = await tools.delegate.execute(
+		"c38",
+		{ task: "x", session: "fix-auth-1", cwd: cwdA },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(first.content[0].text, /session=fix-auth-1/);
 	const dirA = first.content[0].text.match(/sessionDir=(\/\S+)/)?.[1];
-	const resumed = await tools.delegate.execute("c38a", { task: "continue", session: "fix-auth-1", cwd: cwdA }, undefined, undefined, CTX);
+	const resumed = await tools.delegate.execute(
+		"c38a",
+		{ task: "continue", session: "fix-auth-1", cwd: cwdA },
+		undefined,
+		undefined,
+		CTX,
+	);
 	const resumedDir = resumed.content[0].text.match(/sessionDir=(\/\S+)/)?.[1];
-	const otherCwd = await tools.delegate.execute("c38b", { task: "x", session: "fix-auth-1", cwd: cwdB }, undefined, undefined, CTX);
+	const otherCwd = await tools.delegate.execute(
+		"c38b",
+		{ task: "x", session: "fix-auth-1", cwd: cwdB },
+		undefined,
+		undefined,
+		CTX,
+	);
 	const dirB = otherCwd.content[0].text.match(/sessionDir=(\/\S+)/)?.[1];
 	assert.ok(dirA && dirB);
 	assert.equal(resumedDir, dirA, "same cwd resumes the same Pi session directory");
@@ -1393,14 +1900,26 @@ test("panel: parallel candidates per model, rebuttal resumes each session with t
 	writeModels(t, [...LIST, { id: "strong/z", tier: "strong", family: "fam3", thinking: "low" }]);
 	const { tools } = delegateTool(t, { FAKE_PI_MODE: "panel-transcript" });
 	// Decoys another session or panel owns; cleanup must match only this panel's tag.
-	const panelSessionDir = join(tmpdir(), "me-pi-delegate-sessions", createHash("sha256").update(resolve(CTX.cwd)).digest("hex"));
+	const panelSessionDir = join(
+		tmpdir(),
+		"me-pi-delegate-sessions",
+		createHash("sha256").update(resolve(CTX.cwd)).digest("hex"),
+	);
 	mkdirSync(panelSessionDir, { recursive: true });
 	const decoys = [`${Date.now()}_other.jsonl`, "panel-zzzzzz-a.jsonl"].map((name) => join(panelSessionDir, name));
 	for (const decoy of decoys) writeFileSync(decoy, "decoy\n");
-	t.after(() => { for (const decoy of decoys) rmSync(decoy, { force: true }); });
+	t.after(() => {
+		for (const decoy of decoys) rmSync(decoy, { force: true });
+	});
 	const res = await tools.delegate.execute(
 		"c40",
-		{ task: "Q?", role: "research", tools: "read,edit,bash", approval: "approved", panel: { models: ["strong/x", "strong/y"], rebuttal: true, judge: true, rubric: ["cites sources"] } },
+		{
+			task: "Q?",
+			role: "research",
+			tools: "read,edit,bash",
+			approval: "approved",
+			panel: { models: ["strong/x", "strong/y"], rebuttal: true, judge: true, rubric: ["cites sources"] },
+		},
 		undefined,
 		undefined,
 		CTX,
@@ -1408,10 +1927,16 @@ test("panel: parallel candidates per model, rebuttal resumes each session with t
 	assert.equal(res.isError, false, res.content[0].text);
 	const text = res.content[0].text;
 	assert.match(text, /## Round 1[\s\S]*model=strong\/x[\s\S]*model=strong\/y/);
-	assert.match(text, /tools=read,grep,find,ls,web_search,fetch_content,get_search_content/, "panel candidates remain read-only despite requested tools");
+	assert.match(
+		text,
+		/tools=read,grep,find,ls,web_search,fetch_content,get_search_content/,
+		"panel candidates remain read-only despite requested tools",
+	);
 	assert.doesNotMatch(text, /User approval \(verbatim\):/, "panel approval is not relayed to read-only candidates");
 	// Each answer's own first line; echoed prompts of other workers sit later on the same line.
-	const sessions = [...text.matchAll(/^DONE (?:\S+ ){6}session=(\S+)/gm)].map((m) => m[1]).filter((id) => id.startsWith("panel-"));
+	const sessions = [...text.matchAll(/^DONE (?:\S+ ){6}session=(\S+)/gm)]
+		.map((m) => m[1])
+		.filter((id) => id.startsWith("panel-"));
 	assert.equal(sessions.length, 4, "2 candidates x 2 rounds");
 	assert.equal(sessions[0], sessions[2], "rebuttal resumes candidate A's session");
 	const sessionDir = text.match(/sessionDir=(\/\S+)/)?.[1];
@@ -1419,10 +1944,18 @@ test("panel: parallel candidates per model, rebuttal resumes each session with t
 	assert.equal(sessionDir, panelSessionDir);
 	const panelTag = sessions[0].match(/^panel-([0-9a-f]+)-a$/)?.[1];
 	assert.ok(panelTag);
-	assert.deepEqual(readdirSync(sessionDir).filter((name) => name.includes(`panel-${panelTag}-`)), [], "panel candidate transcripts were removed");
+	assert.deepEqual(
+		readdirSync(sessionDir).filter((name) => name.includes(`panel-${panelTag}-`)),
+		[],
+		"panel candidate transcripts were removed",
+	);
 	for (const decoy of decoys) assert.ok(existsSync(decoy), `unrelated transcript ${decoy} kept`);
 	assert.match(text, /## Round 2[\s\S]*Other candidates answered[\s\S]*Candidate B/);
-	assert.match(text, /## Judge[\s\S]*model=strong\/z thinking=low[\s\S]*cites sources/, "judge uses its configured thinking and gets the rubric");
+	assert.match(
+		text,
+		/## Judge[\s\S]*model=strong\/z thinking=low[\s\S]*cites sources/,
+		"judge uses its configured thinking and gets the rubric",
+	);
 	assert.match(text, /Panel total: 5 workers/);
 	const override = await tools.delegate.execute(
 		"c40a",
@@ -1431,20 +1964,48 @@ test("panel: parallel candidates per model, rebuttal resumes each session with t
 		undefined,
 		CTX,
 	);
-	assert.match(override.content[0].text, /## Judge[\s\S]*model=strong\/z thinking=max/, "task thinking overrides the judge model's configured thinking");
+	assert.match(
+		override.content[0].text,
+		/## Judge[\s\S]*model=strong\/z thinking=max/,
+		"task thinking overrides the judge model's configured thinking",
+	);
 	assert.deepEqual(defaultPanelModels(LIST), ["strong/x", "strong/y"]);
 });
 
 test("panel rejects write roles, too few models, and use inside tasks", async (t) => {
 	writeModels(t, [LIST[1]]);
 	const { tools } = delegateTool(t);
-	const write = await tools.delegate.execute("c41", { task: "x", role: "implement", panel: { models: ["a", "b"] } }, undefined, undefined, CTX);
+	const write = await tools.delegate.execute(
+		"c41",
+		{ task: "x", role: "implement", panel: { models: ["a", "b"] } },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(write.content[0].text, /panel needs role research, review, challenge, scout/);
-	const few = await tools.delegate.execute("c42", { task: "x", role: "research", panel: {} }, undefined, undefined, CTX);
+	const few = await tools.delegate.execute(
+		"c42",
+		{ task: "x", role: "research", panel: {} },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(few.content[0].text, /panel needs 2\+ models/);
-	const inTasks = await tools.delegate.execute("c43", { panel: { models: ["a", "b"] }, tasks: [{ task: "x" }] }, undefined, undefined, CTX);
+	const inTasks = await tools.delegate.execute(
+		"c43",
+		{ panel: { models: ["a", "b"] }, tasks: [{ task: "x" }] },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(inTasks.content[0].text, /panel runs one task/);
-	const session = await tools.delegate.execute("c43a", { task: "x", role: "research", session: "shared", panel: { models: ["a", "b"] } }, undefined, undefined, CTX);
+	const session = await tools.delegate.execute(
+		"c43a",
+		{ task: "x", role: "research", session: "shared", panel: { models: ["a", "b"] } },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.match(session.content[0].text, /panel cannot use session/);
 });
 
@@ -1549,7 +2110,10 @@ test("/setup-delegate adds and removes list models, and prints without UI", asyn
 		},
 	});
 	await commands["setup-delegate"].handler("", ui(["add model", "anthropic/claude-opus-5-5", "strong", "high"]));
-	await commands["setup-delegate"].handler("", ui(["add model", "openai-codex/gpt-6-luna", "cheap", "(role default)"]));
+	await commands["setup-delegate"].handler(
+		"",
+		ui(["add model", "openai-codex/gpt-6-luna", "cheap", "(role default)"]),
+	);
 	// Esc at any step saves nothing.
 	await commands["setup-delegate"].handler("", ui(["add model", "google/gemini-9", "cheap", undefined]));
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
@@ -1561,13 +2125,23 @@ test("/setup-delegate adds and removes list models, and prints without UI", asyn
 	assert.match(notes.at(-1), /2\. openai-codex\/gpt-6-luna — cheap · thinking role default · openai/);
 	// The same model may also sit in the other tier with its own thinking; a third copy is not offered.
 	await commands["setup-delegate"].handler("", ui(["add model", "openai-codex/gpt-6-luna", "strong", "max"]));
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).models.at(-1), { id: "openai-codex/gpt-6-luna", tier: "strong", thinking: "max" });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).models.at(-1), {
+		id: "openai-codex/gpt-6-luna",
+		tier: "strong",
+		thinking: "max",
+	});
 	await commands["setup-delegate"].handler("", ui(["remove model", "openai-codex/gpt-6-luna (strong)"]));
 	await commands["setup-delegate"].handler("", ui(["move up", "openai-codex/gpt-6-luna (cheap)"]));
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).models.map((m) => m.id), ["openai-codex/gpt-6-luna", "anthropic/claude-opus-5-5"]);
+	assert.deepEqual(
+		JSON.parse(readFileSync(path, "utf8")).models.map((m) => m.id),
+		["openai-codex/gpt-6-luna", "anthropic/claude-opus-5-5"],
+	);
 	await commands["setup-delegate"].handler("", ui(["remove model", "anthropic/claude-opus-5-5 (strong)"]));
 	assert.equal(loadConfig(path).models[0].family, "openai", "family guessed from the id");
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).models.map((m) => m.id), ["openai-codex/gpt-6-luna"]);
+	assert.deepEqual(
+		JSON.parse(readFileSync(path, "utf8")).models.map((m) => m.id),
+		["openai-codex/gpt-6-luna"],
+	);
 	await commands["setup-delegate"].handler("", { hasUI: false, ui: { notify: (m) => notes.push(m) } });
 	assert.match(notes.at(-1), /1\. openai-codex\/gpt-6-luna/);
 });
@@ -1638,7 +2212,10 @@ test("worker PATH git guardrail blocks Git writes through wrappers and allows ha
 		{ name: "xargs push", command: "printf x | xargs git push" },
 		{ name: "find commit", command: "find . -maxdepth 0 -exec git commit -m x \\;" },
 		{ name: "sh script commit", command: "sh ./x.sh" },
-		{ name: "python subprocess commit", command: `python3 -c 'import subprocess; subprocess.run(["git", "commit", "-m", "x"], check=True)'` },
+		{
+			name: "python subprocess commit",
+			command: `python3 -c 'import subprocess; subprocess.run(["git", "commit", "-m", "x"], check=True)'`,
+		},
 		{ name: "send-email", command: "git send-email missing.patch" },
 		{ name: "update-ref", command: "git update-ref refs/heads/main HEAD" },
 		{ name: "reset hard", command: "git reset --hard" },
@@ -1661,9 +2238,12 @@ test("worker PATH git guardrail blocks Git writes through wrappers and allows ha
 		{ name: "citool", command: "git citool" },
 		{ name: "gui", command: "git gui" },
 		{ name: "unknown alias", command: "git -c alias.publish=push publish" },
-		{ name: "heredoc text", command: `cat <<'EOF'
+		{
+			name: "heredoc text",
+			command: `cat <<'EOF'
 git commit -m example
-EOF` },
+EOF`,
+		},
 		{ name: "git status", command: "git --no-pager status" },
 		{ name: "global option diff", command: "git -C . diff --cached --name-only" },
 		{ name: "stash list", command: "git stash list" },
@@ -1696,17 +2276,67 @@ EOF` },
 		{ name: "fetch without refspec", command: "git fetch -q . main" },
 	];
 	const { tools } = delegateTool(t, { FAKE_PI_MODE: "git-guard", FAKE_PI_GIT_COMMANDS: JSON.stringify(commands) });
-	const res = await tools.delegate.execute("git-guard", { task: "exercise the git PATH wrapper", cwd }, undefined, undefined, CTX);
+	const res = await tools.delegate.execute(
+		"git-guard",
+		{ task: "exercise the git PATH wrapper", cwd },
+		undefined,
+		undefined,
+		CTX,
+	);
 	assert.equal(res.isError, false, res.content[0].text);
 	const results = JSON.parse(res.content[0].text.split("\n\n[worker exit=")[0]);
 	const byName = Object.fromEntries(results.map((result) => [result.name, result]));
 	const shimPrefix = join(tmpdir(), "me-pi-delegate-bin-").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	assert.match(byName.PATH.stdout, new RegExp(`^${shimPrefix}worker-\\d+-\\d+/git\\n$`));
-	const blocked = ["xargs push", "find commit", "sh script commit", "python subprocess commit", "send-email", "update-ref", "reset hard", "branch force", "checkout force-create", "tag create", "unknown alias"];
-	blocked.push("checkout bundled -qB", "switch bundled -qC", "reset abbreviated --har", "reset soft commit", "reset commit without paths", "branch abbreviated --forc", "branch bundled -fq", "branch bundled -qf", "branch force copy", "tag create with -l message", "tag create with sort", "svn", "cvsexportcommit", "citool", "gui");
-	blocked.push("attr-source commit", "worktree add -B", "worktree add bundled -fB", "stash drop", "stash clear", "stash create", "stash store", "stash branch", "pull", "fetch refspec", "fetch forced refspec after --");
+	const blocked = [
+		"xargs push",
+		"find commit",
+		"sh script commit",
+		"python subprocess commit",
+		"send-email",
+		"update-ref",
+		"reset hard",
+		"branch force",
+		"checkout force-create",
+		"tag create",
+		"unknown alias",
+	];
+	blocked.push(
+		"checkout bundled -qB",
+		"switch bundled -qC",
+		"reset abbreviated --har",
+		"reset soft commit",
+		"reset commit without paths",
+		"branch abbreviated --forc",
+		"branch bundled -fq",
+		"branch bundled -qf",
+		"branch force copy",
+		"tag create with -l message",
+		"tag create with sort",
+		"svn",
+		"cvsexportcommit",
+		"citool",
+		"gui",
+	);
+	blocked.push(
+		"attr-source commit",
+		"worktree add -B",
+		"worktree add bundled -fB",
+		"stash drop",
+		"stash clear",
+		"stash create",
+		"stash store",
+		"stash branch",
+		"pull",
+		"fetch refspec",
+		"fetch forced refspec after --",
+	);
 	for (const name of blocked) {
-		assert.match(byName[name].stderr, /BLOCKED: git \S+ is reserved for the coordinator/, `${name}: ${JSON.stringify(byName[name])}`);
+		assert.match(
+			byName[name].stderr,
+			/BLOCKED: git \S+ is reserved for the coordinator/,
+			`${name}: ${JSON.stringify(byName[name])}`,
+		);
 		// find -exec does not propagate the command's exit status.
 		if (name !== "find commit") assert.notEqual(byName[name].status, 0, `${name}: ${JSON.stringify(byName[name])}`);
 	}
@@ -1718,9 +2348,36 @@ EOF` },
 	assert.equal(fixtureGit("diff", "--cached", "--name-only"), "", "allowed index resets unstaged b.txt and c.txt");
 	assert.equal(existsSync(join(TEST_HOME, "git-guard-wt")), false, "no worktree created");
 	assert.equal(stashGit("stash", "list").split("\n").length, 2, "blocked stash subcommands left both stashes");
-	assert.equal(stashGit("for-each-ref", "--format=%(refname)"), "refs/heads/main\nrefs/stash", "stash branch created no branch");
-	const allowed = ["attr-source status", "inherited sub", "worktree list", "stash bare", "stash show", "stash apply", "stash push", "stash pop", "stash save", "stash list in repo", "fetch without refspec"];
-	for (const name of ["heredoc text", "git status", "global option diff", "stash list", "tag list", "tag list pattern", "tag contains", "reset paths", "reset index", ...allowed]) {
+	assert.equal(
+		stashGit("for-each-ref", "--format=%(refname)"),
+		"refs/heads/main\nrefs/stash",
+		"stash branch created no branch",
+	);
+	const allowed = [
+		"attr-source status",
+		"inherited sub",
+		"worktree list",
+		"stash bare",
+		"stash show",
+		"stash apply",
+		"stash push",
+		"stash pop",
+		"stash save",
+		"stash list in repo",
+		"fetch without refspec",
+	];
+	for (const name of [
+		"heredoc text",
+		"git status",
+		"global option diff",
+		"stash list",
+		"tag list",
+		"tag list pattern",
+		"tag contains",
+		"reset paths",
+		"reset index",
+		...allowed,
+	]) {
 		assert.equal(byName[name].status, 0, `${name}: ${JSON.stringify(byName[name])}`);
 	}
 	assert.match(byName["heredoc text"].stdout, /git commit -m example/);
@@ -1740,7 +2397,11 @@ test("worker git shim exits 127 when no real git is on the original PATH", async
 	}
 	if (!existsSync(join(noGitBin, "node"))) symlinkSync(process.execPath, join(noGitBin, "node"));
 	const commands = [{ name: "status", command: "git status" }];
-	const { tools } = delegateTool(t, { PATH: noGitBin, FAKE_PI_MODE: "git-guard", FAKE_PI_GIT_COMMANDS: JSON.stringify(commands) });
+	const { tools } = delegateTool(t, {
+		PATH: noGitBin,
+		FAKE_PI_MODE: "git-guard",
+		FAKE_PI_GIT_COMMANDS: JSON.stringify(commands),
+	});
 	const res = await tools.delegate.execute("no-git", { task: "run git without git" }, undefined, undefined, CTX);
 	assert.equal(res.isError, false, res.content[0].text);
 	const [status] = JSON.parse(res.content[0].text.split("\n\n[worker exit=")[0]);

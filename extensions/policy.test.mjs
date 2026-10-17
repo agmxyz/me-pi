@@ -11,7 +11,16 @@ test("authorization requires current-turn approval for remote, destructive, and 
 	const policy = readDocument("GLOBAL_AGENTS.md");
 	const section = policy.slice(policy.indexOf("## Authorization"));
 	assert.match(section, /Explicit approval in the current user turn/);
-	for (const operation of ["`main`/`master`", "`gh pr merge|close`", "`gh pr create`", "`git reset --hard`", "`git clean`", "`git branch -D`", "`.env*`", "`~/.pi/agent/auth.json`"]) {
+	for (const operation of [
+		"`main`/`master`",
+		"`gh pr merge|close`",
+		"`gh pr create`",
+		"`git reset --hard`",
+		"`git clean`",
+		"`git branch -D`",
+		"`.env*`",
+		"`~/.pi/agent/auth.json`",
+	]) {
 		assert.ok(section.includes(operation), `missing ${operation}`);
 	}
 	assert.match(section, /never implies pushing to `main`\/`master`, merge, or destructive reset/);

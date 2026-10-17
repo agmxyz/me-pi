@@ -54,8 +54,12 @@ function setup() {
 	let handler;
 	let command;
 	registerGuard({
-		on: (_event, h) => (handler = h),
-		registerCommand: (_name, definition) => (command = definition),
+		on: (_event, h) => {
+			handler = h;
+		},
+		registerCommand: (_name, definition) => {
+			command = definition;
+		},
 	});
 	return { handler, command };
 }

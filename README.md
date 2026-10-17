@@ -52,7 +52,11 @@ Restart Pi afterwards. The installer is idempotent and never overwrites machine 
 
 ## Check
 
+Requires Node ≥22.19.0. When upgrading Pi, update the pinned `@earendil-works/pi-coding-agent` dev dependency and lockfile to the same version.
+
 ```bash
-npm test --prefix extensions
-bin/install.test.sh
+npm ci --prefix extensions      # once, and after package-lock.json changes
+npm run check --prefix extensions
 ```
+
+`check` runs Biome (lint + format, `--write`), `tsc --noEmit`, `node --test`, `bin/install.test.sh`, and `git diff --check` against HEAD (staged and unstaged changes), stopping at the first failure. The dev toolchain lives in `extensions/package.json` because `pi install <local dir>` never runs npm.

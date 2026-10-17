@@ -34,7 +34,10 @@ function pushesProtected(args: string, currentBranch: () => string | undefined):
 	});
 }
 
-export function classify(command: string, currentBranch: () => string | undefined = () => undefined): string | undefined {
+export function classify(
+	command: string,
+	currentBranch: () => string | undefined = () => undefined,
+): string | undefined {
 	for (const match of command.matchAll(GIT_PUSH)) {
 		if (pushesProtected(match[1], currentBranch)) return "push to main/master";
 	}
@@ -65,7 +68,8 @@ export default function (pi: ExtensionAPI) {
 		const command = String((event.input as { command?: unknown }).command ?? "");
 		const risk = classify(command, () => branchIn(ctx.cwd));
 		if (!risk) return undefined;
-		if (!ctx.hasUI) return { block: true, reason: `Blocked (${risk}): needs explicit user approval; no UI to confirm.` };
+		if (!ctx.hasUI)
+			return { block: true, reason: `Blocked (${risk}): needs explicit user approval; no UI to confirm.` };
 		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command);
 		return ok ? undefined : { block: true, reason: `Blocked by user (${risk}).` };
 	});
