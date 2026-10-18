@@ -22,8 +22,11 @@ const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git
 // Rest of the same command (stops at a command separator).
 const ARGS = String.raw`[^;&|\n]*`;
 
-const GIT_COMMAND = new RegExp(`${AT_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS})`, "g");
-const RM_COMMAND = new RegExp(`${AT_COMMAND}rm(?![\\w-])(${ARGS})`, "g");
+// Lookaheads, so a command nested in another one's arguments (`git log "$(git push ...)"`) is found too.
+const GIT_COMMAND = new RegExp(`(?=${AT_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
+const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${ARGS}))`, "g");
+// A quoted commit message (`-m "..."`, `-am '...'`, `--message=...`) is text, unless it runs a command.
+const MESSAGE_ARG = /(\s(?:-[A-Za-z]*m\s*|--message(?:=|\s+)))("(?:[^"\\]|\\.)*"|'[^']*')/g;
 // `cd` at a command position: a bare push may then target another repository's branch.
 const CD = new RegExp(`${AT_COMMAND}(?:cd|pushd)(?![\\w-])`);
 // Build directories and named entries inside temp directories that recursive `rm` may remove without
@@ -120,6 +123,9 @@ export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
 ): string | undefined {
+	command = command.replace(MESSAGE_ARG, (arg, flag: string, message: string) =>
+		message.startsWith('"') && /\$\(|\x60/.test(message) ? arg : `${flag}""`,
+	);
 	const gitCommands = [...command.matchAll(GIT_COMMAND)];
 	// The session's branch is read before the command runs, so it says nothing about the target after
 	// `cd`, `git checkout`/`switch`, or `git -C`/`--git-dir`/`--work-tree`.

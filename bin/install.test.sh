@@ -73,7 +73,7 @@ printf '%s\n' "$source" >> "$ME_PI_TEST_PI_LOG"
 node - "$HOME/.pi/agent/settings.json" "$source" <<'NODE'
 const fs = require("node:fs");
 const [settingsPath, requestedSource] = process.argv.slice(2);
-const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+const settings = fs.existsSync(settingsPath) ? JSON.parse(fs.readFileSync(settingsPath, "utf8")) : {};
 const sourceOf = entry => typeof entry === "string" ? entry : entry?.source;
 settings.packages ??= [];
 if (!settings.packages.some(entry => sourceOf(entry) === requestedSource)) {
@@ -135,7 +135,7 @@ expect_installer() { # <description> <expected rc> <temporary HOME> <output file
   check "$description (exit $expected)" test "$INSTALL_RC" -eq "$expected"
 }
 
-assert_settings_seeded() {
+assert_packages_registered() {
   node - "$1" "$2" <<'NODE'
 const fs = require("node:fs");
 const [settingsPath, repoExtensions] = process.argv.slice(2);
@@ -143,7 +143,6 @@ const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 const sources = (settings.packages ?? []).map(entry =>
   typeof entry === "string" ? entry : entry?.source,
 );
-if (settings.theme !== "dark") process.exit(1);
 if (sources.filter(source => source === repoExtensions).length !== 1) process.exit(1);
 if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
 NODE
@@ -182,12 +181,7 @@ assert_invocation_logs() {
 HOME_FRESH="$TMP/home-fresh"
 PI_AGENT="$HOME_FRESH/.pi/agent"
 AGENTS_HOME="$HOME_FRESH/.agents"
-mkdir -p "$HOME_FRESH/.local/bin" "$AGENTS_HOME/skills/external-mirror" "$PI_AGENT/skills"
-# Seed retired repo links and redundant ~/.pi/agent/skills mirror to verify cleanup.
-ln -s "$FIXTURE/skills/retired-skill" "$AGENTS_HOME/skills/retired-skill"
-ln -s "$FIXTURE/bin/delegate" "$HOME_FRESH/.local/bin/delegate"
-ln -s "$FIXTURE/CODING_STANDARDS.md" "$AGENTS_HOME/CODING_STANDARDS.md"
-ln -s "../../../.agents/skills/external-mirror" "$PI_AGENT/skills/external-mirror"
+mkdir -p "$HOME_FRESH"
 
 expect_installer "fresh install succeeds" 0 "$HOME_FRESH" "$TMP/fresh.out"
 
@@ -198,12 +192,8 @@ if [ "$INSTALL_RC" -ne 0 ]; then
   exit 1
 fi
 
-check "pruned retired repo skill link" test ! -L "$AGENTS_HOME/skills/retired-skill"
-check "pruned retired delegate CLI link" test ! -L "$HOME_FRESH/.local/bin/delegate"
-check "pruned retired coding standards link" test ! -L "$AGENTS_HOME/CODING_STANDARDS.md"
-check "pruned redundant ~/.pi/agent/skills mirror" test ! -L "$PI_AGENT/skills/external-mirror"
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
-check "settings seeded and packages registered" assert_settings_seeded "$PI_AGENT/settings.json" "$FIXTURE/extensions"
+check "packages registered" assert_packages_registered "$PI_AGENT/settings.json" "$FIXTURE/extensions"
 check "interactive-shell example copied" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
 check "handoff example copied" cmp -s "$PI_AGENT/extensions/handoff.ts" "$FAKE_ROOT/examples/extensions/handoff.ts"
 check "RTK setup invoked with Pi agent" grep -Fxq "init --global --agent pi" "$RTK_LOG"
@@ -229,7 +219,7 @@ mkdir -p "$AGENTS_HOME/skills/external-skill"
 printf '%s\n' 'external skill sentinel' > "$AGENTS_HOME/skills/external-skill/SKILL.md"
 
 expect_installer "repeat install succeeds" 0 "$HOME_FRESH" "$TMP/repeat.out"
-check "repeat preserves seeded and unrelated settings/packages" assert_settings_preserved "$PI_AGENT/settings.json" "$FIXTURE/extensions"
+check "repeat preserves machine settings and unrelated packages" assert_settings_preserved "$PI_AGENT/settings.json" "$FIXTURE/extensions"
 check "repeat preserves credential contents" assert_file_text "$PI_AGENT/auth.json" 'credential sentinel: never overwrite'
 check "repeat preserves external extension" assert_file_text "$PI_AGENT/extensions/external-extension.ts" 'external extension sentinel'
 check "repeat preserves external skill" assert_file_text "$AGENTS_HOME/skills/external-skill/SKILL.md" 'external skill sentinel'
@@ -252,11 +242,11 @@ TEST_PATH="$NO_PI_BIN"
 expect_installer "missing pi refused" 1 "$HOME_NOPI" "$TMP/no-pi.out"
 TEST_PATH="$saved_path"
 check "missing pi explains requirement" grep -Fq 'pi is required' "$TMP/no-pi.out"
-check "missing pi creates no live directories" test ! -e "$HOME_NOPI/.pi" -a ! -e "$HOME_NOPI/.agents"
+check "missing pi creates no live directories" test ! -e "$HOME_NOPI/.pi"
 check "refusal invokes no package install" assert_invocation_logs
 check "no network-capable npm invocation" test ! -e "$NPM_MARKER"
 
-# The global policy document uses the same per-file collision policy as other resources.
+# An existing AGENTS.md is preserved; packages still install, but the run fails loudly.
 sentinel='user global AGENTS sentinel'
 for kind in file link; do
   HOME_SHARED="$TMP/home-agents-$kind"
@@ -269,9 +259,10 @@ for kind in file link; do
     printf '%s\n' "$sentinel" > "$target"
     ln -s "$target" "$destination"
   fi
-  expect_installer "global AGENTS $kind collision install succeeds" 0 "$HOME_SHARED" "$TMP/agents-$kind.out"
+  expect_installer "global AGENTS $kind collision fails" 1 "$HOME_SHARED" "$TMP/agents-$kind.out"
   check "global AGENTS $kind collision preserves contents" assert_file_text "$destination" "$sentinel"
-  check "global AGENTS $kind collision reported" grep -Eq "AGENTS.md.*left unchanged" "$TMP/agents-$kind.out"
+  check "global AGENTS $kind collision reported at the end" grep -Eq "^✗ Incomplete: .*AGENTS.md.*policy is NOT active" "$TMP/agents-$kind.out"
+  check "global AGENTS $kind collision still registers packages" assert_packages_registered "$HOME_SHARED/.pi/agent/settings.json" "$FIXTURE/extensions"
   if [ "$kind" = file ]; then
     check "global AGENTS file collision remains a regular file" test ! -L "$destination"
   else
@@ -279,6 +270,15 @@ for kind in file link; do
   fi
 done
 check "shared-document collision checks invoke no network npm" test ! -e "$NPM_MARKER"
+
+# A Pi upgrade changes the bundled example: the copy is kept and the drift reported with the fix.
+printf '%s\n' '// upgraded Pi handoff' > "$FAKE_ROOT/examples/extensions/handoff.ts"
+printf '%s\n' '// locally edited handoff' > "$PI_AGENT/extensions/handoff.ts"
+expect_installer "install after a Pi example changed succeeds" 0 "$HOME_FRESH" "$TMP/drift.out"
+check "changed example left unchanged" assert_file_text "$PI_AGENT/extensions/handoff.ts" '// locally edited handoff'
+# The source path is resolved (/tmp may become /private/tmp), so match its resolved form.
+check "changed example reported with the update command" grep -Fq "handoff.ts differs from the installed Pi example (Pi upgrade or local edits); left unchanged. To update: cp $(printf '%q %q' "$(realpath "$FAKE_ROOT")/examples/extensions/handoff.ts" "$PI_AGENT/extensions/handoff.ts")" "$TMP/drift.out"
+check "unchanged example reported as matching" grep -Fq "interactive-shell.ts matches the installed Pi example" "$TMP/drift.out"
 
 echo
 if [ "$fails" -eq 0 ]; then

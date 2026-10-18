@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -21,7 +21,9 @@ const {
 	pickModel,
 	ROLES,
 	WORKER_CONTRACT,
-	WORKER_TOOLS,
+	LOCAL_TOOLS,
+	WEB_TOOLS,
+	secretPathIn,
 	PROMPT_GUIDELINES,
 } = await import("./delegate.ts");
 
@@ -228,7 +230,63 @@ test("main session registers delegate and no commands; workers do not register i
 	assert.deepEqual(tool.parameters.properties.role.enum, ["scout", "research", "review", "challenge"]);
 	for (const removed of ["tools", "approval", "session", "skills", "panel"])
 		assert.equal(tool.parameters.properties[removed], undefined, `${removed} removed`);
-	assert.equal(register(t, { workerRun: "1" }).tools.delegate, undefined, "no delegate inside a worker");
+	const worker = register(t, { workerRun: "1" });
+	assert.equal(worker.tools.delegate, undefined, "no delegate inside a worker");
+	assert.deepEqual(Object.keys(worker.handlers), ["tool_call"], "workers only get the secret-path block");
+});
+
+test("workers cannot name secret paths in read, grep, find, or ls", async (t) => {
+	const home = homedir();
+	const dir = mkdtempSync(join(TEST_HOME, "secrets-"));
+	writeFileSync(join(dir, "notes.txt"), "x");
+	symlinkSync(join(home, ".ssh", "id_ed25519"), join(dir, "innocent-link"));
+	for (const [tool, path] of [
+		["read", "~/.ssh/id_ed25519"],
+		["read", join(home, ".pi/agent/auth.json")],
+		["read", "@.env"],
+		["read", ".env.local"],
+		["grep", "~/.aws"],
+		["find", "~/.config/gh"],
+		["ls", "~/.ssh"],
+		["read", "certs/server.pem"],
+		["read", "innocent-link"],
+		["read", "~/.SSH/id_rsa"],
+		["read", ".ENV"],
+		["read", ".envrc"],
+		["read", "sub/.npmrc"],
+		["read", "../.git-credentials"],
+	]) {
+		assert.ok(secretPathIn(tool, { path }, dir), `${tool} ${path} should be blocked`);
+	}
+	for (const [tool, input] of [
+		["read", { path: "notes.txt" }],
+		["read", { path: ".env.example" }],
+		["grep", { pattern: "x" }],
+		["read", { path: "src/keyboard.ts" }],
+		["web_search", { path: "~/.ssh" }],
+		["read", { path: join(home, ".pi/agent/delegate.json") }],
+		["read", { path: "deploy/id_ed25519.pub" }],
+		["read", { path: "src/monkey.ts" }],
+		["grep", { pattern: ".env", glob: "*.ts" }],
+		["find", { pattern: "**/*.test.mjs" }],
+	]) {
+		assert.equal(secretPathIn(tool, input, dir), undefined, `${tool} ${JSON.stringify(input)} should pass`);
+	}
+	// Globs that name secret files, in grep's `glob` and find's `pattern`.
+	for (const [tool, input] of [
+		["grep", { pattern: "TOKEN", path: ".", glob: "**/.env*" }],
+		["grep", { pattern: "x", glob: "*.pem" }],
+		["grep", { pattern: "x", glob: "{*.ts,id_rsa}" }],
+		["find", { pattern: "**/.ENV" }],
+		["find", { pattern: "~/.ssh/*" }],
+	]) {
+		assert.ok(secretPathIn(tool, input, dir), `${tool} ${JSON.stringify(input)} should be blocked`);
+	}
+	const hook = register(t, { workerRun: "1" }).handlers.tool_call;
+	const blocked = await hook({ toolName: "read", input: { path: "~/.ssh/id_rsa" } }, { cwd: dir });
+	assert.equal(blocked?.block, true);
+	assert.match(blocked.reason, /\.ssh\/id_rsa may hold secrets; delegated workers cannot read it/);
+	assert.equal(await hook({ toolName: "read", input: { path: "notes.txt" } }, { cwd: dir }), undefined);
 });
 
 test("workers are read-only, one-shot, marked as workers, and get the contract and role", async (t) => {
@@ -236,8 +294,18 @@ test("workers are read-only, one-shot, marked as workers, and get the contract a
 	const updates = [];
 	const res = await run(tools, { task: "find foo", role: "scout" }, undefined, (u) => updates.push(u));
 	assert.equal(res.isError, false);
-	assert.equal(WORKER_TOOLS, "read,grep,find,ls,web_search,fetch_content,get_search_content,Skill");
-	assert.match(text(res), new RegExp(`tools=${WORKER_TOOLS} session=none mcp=off role=scout workerRun=1`));
+	assert.equal(LOCAL_TOOLS, "read,grep,find,ls,Skill");
+	assert.match(text(res), new RegExp(`tools=${LOCAL_TOOLS} session=none mcp=off role=scout workerRun=1`));
+	// Only research and challenge get the network.
+	for (const [role, tools] of [
+		["review", LOCAL_TOOLS],
+		["research", WEB_TOOLS],
+		["challenge", WEB_TOOLS],
+	]) {
+		const r = await run(delegateTool(t).tools, { task: "x", role, model: "m/x" });
+		assert.match(text(r), new RegExp(`tools=${tools} session=none`), role);
+	}
+	assert.equal(WEB_TOOLS, "read,grep,find,ls,Skill,web_search,fetch_content,get_search_content");
 	assert.match(text(res), /prompt="Task:\\nfind foo"/);
 	assert.match(text(res), /\[worker exit=0 turns=1 cost=\$0\.0020 \d+s anthropic\/claude-session @low\]$/);
 	assert.ok(updates.length >= 1, "streams progress");
