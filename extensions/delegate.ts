@@ -26,6 +26,10 @@ const PER_TASK_OUTPUT_CAP = 50 * 1024;
 // Round 2 prompts carry every successful round-1 answer; they share this budget, at most 20 KiB each.
 const REBUTTAL_ANSWER_CAP = 20 * 1024;
 const REBUTTAL_ANSWERS_BUDGET = 80 * 1024;
+// Room per answer for its `### Worker #N (model)` header and truncation notice.
+const REBUTTAL_HEADER_ALLOWANCE = 256;
+// A rebuttal task must leave at least this much of the prompt cap for the template and answers.
+const REBUTTAL_MIN_ROOM = 16 * 1024;
 const STDERR_TAIL_BYTES = 2 * 1024;
 const KILL_GRACE_MS = 3000;
 // One argv entry carries the whole prompt; Linux caps a single argument at 128 KiB.
@@ -369,6 +373,8 @@ async function runWorker(
 		"json",
 		"-p",
 		"--no-session",
+		// `--tools` keeps MCP tools unless an entry names one, so MCP is switched off separately.
+		"--no-mcp",
 		"--tools",
 		WORKER_TOOLS,
 		"--thinking",
@@ -487,15 +493,18 @@ async function runWorker(
 			onProgress?.(result);
 		};
 
-		proc.stdout.on("data", (chunk) => {
+		// Decode as a stream, so a UTF-8 character split across chunks stays intact.
+		proc.stdout.setEncoding("utf8");
+		proc.stderr.setEncoding("utf8");
+		proc.stdout.on("data", (chunk: string) => {
 			if (finished) return;
-			buffer += chunk.toString();
+			buffer += chunk;
 			const lines = buffer.split("\n");
 			buffer = lines.pop() ?? "";
 			for (const line of lines) processLine(line);
 		});
 		proc.stderr.on("data", (chunk) => {
-			if (!finished) result.stderr += chunk.toString();
+			if (!finished) result.stderr += chunk;
 		});
 
 		const finish = async (code: number, pipeFailure?: string) => {
@@ -785,6 +794,19 @@ export default function (pi: ExtensionAPI) {
 					);
 				if (params.tasks.length > MAX_PARALLEL_TASKS)
 					return invalid(`Too many parallel tasks (${params.tasks.length}; max ${MAX_PARALLEL_TASKS}).`);
+				const incomplete = params.tasks.findIndex(
+					(t: any) => typeof t?.task !== "string" || !t.task.trim() || typeof t.role !== "string",
+				);
+				if (incomplete >= 0)
+					return invalid(`tasks[${incomplete}] needs a non-empty "task" and a "role" (${ROLE_NAMES.join(", ")}).`);
+				// Round 2 adds the template and answers to the task, so leave room for them before paying for round 1.
+				const tooBig = params.tasks.findIndex(
+					(t: TaskSpec) => Buffer.byteLength(t.task, "utf8") > MAX_PROMPT_BYTES - REBUTTAL_MIN_ROOM,
+				);
+				if (params.rebuttal && tooBig >= 0)
+					return invalid(
+						`tasks[${tooBig}] is too large for a rebuttal round (max ${MAX_PROMPT_BYTES - REBUTTAL_MIN_ROOM} bytes); put large context in a file and pass its path.`,
+					);
 			}
 
 			const tasks: TaskSpec[] = hasParallel
@@ -857,7 +879,14 @@ export default function (pi: ExtensionAPI) {
 				parts.push(`Unavailable: only ${alive.length} worker(s) succeeded in round 1; at least two are required.`);
 				rebuttalFailed = true;
 			} else {
-				const answerCap = Math.min(REBUTTAL_ANSWER_CAP, Math.floor(REBUTTAL_ANSWERS_BUDGET / alive.length));
+				// Answers get what the prompt cap leaves after the task (and per-answer headers), within the budget.
+				const fixedBytes =
+					Math.max(
+						...alive.map(({ i }) => Buffer.byteLength(`Task:\n${rebuttalTask(tasks[i], "", "")}`, "utf8")),
+					) +
+					alive.length * REBUTTAL_HEADER_ALLOWANCE;
+				const answersBudget = Math.min(REBUTTAL_ANSWERS_BUDGET, MAX_PROMPT_BYTES - fixedBytes);
+				const answerCap = Math.max(0, Math.min(REBUTTAL_ANSWER_CAP, Math.floor(answersBudget / alive.length)));
 				const round2Tasks = alive.map(({ r, i }) => {
 					const others = alive
 						.filter((o) => o.i !== i)

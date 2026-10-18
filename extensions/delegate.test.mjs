@@ -84,6 +84,11 @@ if (mode === "hang") {
   emit("partial work so far");
   process.stderr.write("worker stderr line\\n");
   setInterval(() => {}, 1000);
+} else if (mode === "split-utf8") {
+  // Writes one JSON line in two chunks that split the 3-byte "✓" between them.
+  const line = Buffer.from(JSON.stringify({ type: "message_end", message: { role: "assistant", usage: { cost: { total: 0.001 } }, content: [{ type: "text", text: "ok ✓ done" }] } }) + "\\n");
+  const cut = line.indexOf(Buffer.from("✓")) + 1;
+  process.stdout.write(line.subarray(0, cut), () => setTimeout(() => process.stdout.write(line.subarray(cut), () => process.exit(0)), 100));
 } else if (mode === "group-child-holds-pipes") {
   // A same-group child ignores SIGTERM and keeps the inherited pipes open after the leader exits.
   const child = spawn("sh", ["-c", "trap '' TERM; sleep 60"], { stdio: ["ignore", "inherit", "inherit"] });
@@ -103,6 +108,7 @@ if (mode === "hang") {
     "thinking=" + (flag("--thinking") || "none"),
     "tools=" + (flag("--tools") ?? "default"),
     "session=" + (args.includes("--no-session") ? "none" : "?"),
+    "mcp=" + (args.includes("--no-mcp") ? "off" : "on"),
     "role=" + ((flag("--append-system-prompt") || "").match(/Role: ([a-z]+)\\./)?.[1] ?? "none"),
     "workerRun=" + (process.env.ME_PI_RUN || ""),
     "prompt=" + JSON.stringify(prompt),
@@ -231,7 +237,7 @@ test("workers are read-only, one-shot, marked as workers, and get the contract a
 	const res = await run(tools, { task: "find foo", role: "scout" }, undefined, (u) => updates.push(u));
 	assert.equal(res.isError, false);
 	assert.equal(WORKER_TOOLS, "read,grep,find,ls,web_search,fetch_content,get_search_content,Skill");
-	assert.match(text(res), new RegExp(`tools=${WORKER_TOOLS} session=none role=scout workerRun=1`));
+	assert.match(text(res), new RegExp(`tools=${WORKER_TOOLS} session=none mcp=off role=scout workerRun=1`));
 	assert.match(text(res), /prompt="Task:\\nfind foo"/);
 	assert.match(text(res), /\[worker exit=0 turns=1 cost=\$0\.0020 \d+s anthropic\/claude-session @low\]$/);
 	assert.ok(updates.length >= 1, "streams progress");
@@ -344,6 +350,22 @@ test("parallel tasks run with their own model and thinking; bad shapes are rejec
 			/Too many parallel tasks \(9; max 8\)/,
 		],
 		[{ task: "a", role: "scout", rebuttal: true }, /rebuttal needs \{ tasks: \[\.\.\.\] \} with at least two tasks/],
+		[
+			{ tasks: [{ task: "a", role: "scout" }, { role: "scout" }] },
+			/tasks\[1\] needs a non-empty "task" and a "role"/,
+		],
+		[{ tasks: [{ task: "  ", role: "scout" }] }, /tasks\[0\] needs a non-empty "task"/],
+		[{ tasks: [{ task: "a" }] }, /tasks\[0\] needs a non-empty "task" and a "role"/],
+		[
+			{
+				rebuttal: true,
+				tasks: [
+					{ task: "x".repeat(110 * 1024), role: "review" },
+					{ task: "y", role: "review" },
+				],
+			},
+			/tasks\[0\] is too large for a rebuttal round \(max 106496 bytes\)/,
+		],
 		[{ task: "a", role: "scout", timeoutSecs: 0 }, /timeoutSecs must be a positive number/],
 		[{ task: "a", role: "scout", costCapUsd: -1 }, /costCapUsd must be a positive number/],
 	];
@@ -462,6 +484,25 @@ test("rebuttal answers share one budget, so eight long answers still fit the pro
 	const round2 = markerLines(marker).filter((l) => l.includes("Round 2 (rebuttal)"));
 	assert.equal(round2.length, 8);
 	assert.equal(round2[0].match(/\[Output truncated at 10240 bytes\]/g)?.length, 8, "own + 7 others, 10 KiB each");
+});
+
+test("a UTF-8 character split across output chunks is decoded intact", async (t) => {
+	const { tools } = delegateTool(t, { FAKE_PI_MODE: "split-utf8" });
+	const res = await run(tools, { task: "x", role: "scout" });
+	assert.match(text(res), /^ok ✓ done/);
+});
+
+test("rebuttal answers shrink to fit beside a large task", async (t) => {
+	const marker = join(TEST_HOME, "rebuttal-large-task-marker");
+	const { tools } = delegateTool(t, { FAKE_PI_MARKER: marker, FAKE_PI_PAD_BYTES: String(30 * 1024) });
+	const task = `review this diff:\n${"d".repeat(60 * 1024)}`;
+	const res = await run(tools, {
+		rebuttal: true,
+		tasks: Array.from({ length: 4 }, (_, i) => ({ task, role: "review", model: `m/${i}` })),
+	});
+	assert.equal(res.isError, false, text(res).slice(-500));
+	assert.doesNotMatch(text(res), /prompt is \d+ bytes/);
+	assert.equal(markerLines(marker).filter((l) => l.includes("Round 2 (rebuttal)")).length, 4);
 });
 
 test("timeout escalates to SIGKILL for a worker that ignores SIGTERM", async (t) => {
