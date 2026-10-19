@@ -489,9 +489,14 @@ test("model set: scout uses the first model at low; other roles default, else la
 	});
 });
 
-// A command context with scripted answers: `inputs` and `confirms` are consumed in order; `pick` chooses.
+// Keys for the model-set picker, as the terminal sends them.
+const KEY = { enter: "\r", esc: "\x1b", save: "\x13", backspace: "\x7f" };
+const typed = (...parts) => parts.flatMap((p) => (KEY[p] ? [KEY[p]] : [...p]));
+
+// A command context with scripted answers: `keys` drive the picker, `confirms` are consumed in order,
+// `pick` answers selects.
 function commandCtx({
-	inputs = [],
+	keys = [],
 	confirms = [],
 	pick = () => undefined,
 	idle = true,
@@ -515,9 +520,14 @@ function commandCtx({
 				}),
 		},
 		ui: {
-			input: async (title) => {
-				asked.push(title);
-				return inputs.shift();
+			custom: async (factory) => {
+				let result = "picker still open";
+				const picker = factory({}, { fg: (_c, text) => text, bold: (text) => text }, {}, (value) => {
+					result = value;
+				});
+				picker.focused = true;
+				for (const key of keys) picker.handleInput(key);
+				return result;
 			},
 			confirm: async (title) => {
 				asked.push(title);
@@ -532,6 +542,11 @@ function commandCtx({
 	};
 	return { ctx, notes, asked };
 }
+
+const picks = (wanted) => (_title, options) => {
+	const want = wanted.shift();
+	return want === undefined ? undefined : options.find((o) => o.startsWith(want));
+};
 
 test("/delegate status: the set with availability, missing tools, running and recent calls", async (t) => {
 	assert.deepEqual(setup(t, { env: { ME_PI_RUN: "1" } }).commands, {}, "workers get no command");
@@ -597,41 +612,35 @@ test("/delegate status keeps the last 20 calls", async (t) => {
 	assert.equal(notes[0][0].split("\n").filter((l) => l.includes("general claude-haiku")).length, 20);
 });
 
-test("/delegate models: filter, pick in order, default, confirm, then an atomic 0600 write", async (t) => {
+test("/delegate models: the searchable picker starts from the set; default, confirm, atomic 0600 write", async (t) => {
 	const main = setup(t, { config: { models: [HAIKU] } });
 	const path = process.env.ME_PI_DELEGATE_CONFIG;
-	const picker = (picks) => (_title, options) => {
-		const want = picks.shift();
-		return options.find((o) => o.startsWith(want));
-	};
 	const { ctx, notes, asked } = commandCtx({
-		inputs: ["claude"],
+		keys: typed("sonnet", "enter", "save"),
 		confirms: [true, false],
-		pick: picker([SONNET, HAIKU, "Done", HAIKU]),
+		pick: picks([SONNET]),
 	});
 	await main.commands.delegate.handler("models", ctx);
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [SONNET, HAIKU], default: HAIKU });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [HAIKU, SONNET], default: SONNET });
 	assert.equal(statSync(path).mode & 0o777, 0o600);
 	assert.ok(!existsSync(`${path}.${process.pid}.tmp`), "no temp file left");
-	assert.equal(asked[1], "Model 1 (the scout model; pick a cheap, fast one)");
-	assert.match(asked[3], /^Add model 3, or Done \(chosen: claude-sonnet-5-5, claude-haiku-5-5\)$/);
+	assert.deepEqual(asked.slice(0, 2), ["Default model for the other roles", `Write ${path}?`]);
 	assert.equal(ctx.reloaded, false);
 	assert.match(notes.at(-1)[0], /written\. Calls use it now; run \/reload/);
 
-	// Last model as the default writes no "default" key; yes to reload reloads.
+	// Enter on a chosen model removes it. Last model as the default writes no "default" key; yes reloads.
 	const reload = commandCtx({
-		inputs: [""],
+		keys: typed("haiku", "enter", ..."haiku".split("").map(() => "backspace"), "opus", "enter", "save"),
 		confirms: [true, true],
-		pick: picker([OPUS, HAIKU, "Done", "Last model"]),
+		pick: picks(["Last model"]),
 	});
 	await main.commands.delegate.handler("models", reload.ctx);
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [OPUS, HAIKU] });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [SONNET, OPUS] });
 	assert.equal(reload.ctx.reloaded, true);
 
 	// Busy: no reload offer.
-	const busy = commandCtx({ inputs: ["opus"], confirms: [true], idle: false, pick: picker([OPUS]) });
+	const busy = commandCtx({ keys: typed("save"), confirms: [true], idle: false, pick: picks(["Last model"]) });
 	await main.commands.delegate.handler("models", busy.ctx);
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [OPUS] });
 	assert.equal(busy.ctx.reloaded, false);
 	assert.match(busy.notes.at(-1)[0], /Run \/reload when no workers run/);
 
@@ -640,7 +649,7 @@ test("/delegate models: filter, pick in order, default, confirm, then an atomic 
 	const controller = new AbortController();
 	const pending = run(hanging.tool, { task: "x" }, controller.signal);
 	await new Promise((r) => setTimeout(r, 300));
-	const working = commandCtx({ inputs: ["opus"], confirms: [true, true], pick: picker([OPUS]) });
+	const working = commandCtx({ keys: typed("save"), confirms: [true, true], pick: picks(["Last model"]) });
 	await hanging.commands.delegate.handler("models", working.ctx);
 	assert.equal(working.ctx.reloaded, false);
 	assert.match(working.notes.at(-1)[0], /Run \/reload when no workers run/);
@@ -648,52 +657,43 @@ test("/delegate models: filter, pick in order, default, confirm, then an atomic 
 	await pending;
 });
 
-test("/delegate models: the filter prefers ids that start with it, else any part", async (t) => {
-	const main = setup(t, { config: { models: [HAIKU] } });
-	const available = [HAIKU, "openrouter/anthropic/claude-haiku-5.5", OPUS];
-	const offered = async (filter) => {
-		let options;
-		const { ctx } = commandCtx({
-			available,
-			inputs: [filter],
-			pick: (_title, o) => {
-				options = o;
-			},
-		});
-		await main.commands.delegate.handler("models", ctx);
-		return options.map((o) => o.split("  ")[0]);
-	};
-	assert.deepEqual(await offered("Anthropic/"), [HAIKU, OPUS]);
-	assert.deepEqual(await offered("haiku"), [HAIKU, "openrouter/anthropic/claude-haiku-5.5"]);
-	assert.deepEqual(await offered(""), available);
-});
-
-const picks = (wanted) => (_title, options) => {
-	const want = wanted.shift();
-	return want === undefined ? undefined : options.find((o) => o.startsWith(want));
-};
-
-test("/delegate models: cancel, decline, or no match writes nothing", async (t) => {
+test("/delegate models: cancel, an empty set, decline, or no models writes nothing", async (t) => {
 	const main = setup(t, { config: { models: [HAIKU] } });
 	const path = process.env.ME_PI_DELEGATE_CONFIG;
 	const original = readFileSync(path, "utf8");
 	for (const [answers, message] of [
-		[{ inputs: [undefined] }, /cancelled, nothing written/],
-		[{ inputs: ["zzz"] }, /no available model matches "zzz"/],
-		[{ inputs: [""], pick: () => undefined }, /cancelled, nothing written/],
+		[{ keys: typed("esc") }, /cancelled, nothing written/],
+		[{ keys: typed("haiku", "enter", "save") }, /no model picked, nothing written/],
 		// Cancel at the default model, after two models were picked.
-		[{ inputs: [""], confirms: [true], pick: picks([HAIKU, OPUS, "Done", undefined]) }, /cancelled, nothing written/],
-		[{ inputs: ["opus"], confirms: [false], pick: (_t, o) => o[0] }, /nothing written/],
+		[
+			{ keys: typed("opus", "enter", "save"), confirms: [true], pick: picks([undefined]) },
+			/cancelled, nothing written/,
+		],
+		[{ keys: typed("save"), confirms: [false] }, /nothing written/],
+		[{ available: [] }, /no model is available; log in to a provider first/],
 	]) {
 		const { ctx, notes } = commandCtx(answers);
 		await main.commands.delegate.handler("models", ctx);
 		assert.match(notes.at(-1)[0], message);
 		assert.equal(readFileSync(path, "utf8"), original);
 	}
+	const rpc = commandCtx({ confirms: [true] });
+	rpc.ctx.ui.custom = async () => undefined; // RPC mode cannot show custom components.
+	await assert.rejects(main.commands.delegate.handler("models", rpc.ctx), /needs the interactive TUI/);
 	const noUI = commandCtx();
 	noUI.ctx.hasUI = false;
 	await assert.rejects(main.commands.delegate.handler("models", noUI.ctx), /needs the interactive UI/);
 	assert.equal(readFileSync(path, "utf8"), original);
+});
+
+test("/delegate models: an unreadable set is reported, and the picker starts empty", async (t) => {
+	const main = setup(t, { config: "{ not json" });
+	const path = process.env.ME_PI_DELEGATE_CONFIG;
+	const { ctx, notes } = commandCtx({ keys: typed("opus", "enter", "save"), confirms: [true] });
+	await main.commands.delegate.handler("models", ctx);
+	assert.match(notes[0][0], /the current set is unreadable, starting empty \(delegate config .*\)/);
+	assert.equal(notes[0][1], "warning");
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [OPUS] });
 });
 
 test("writeModelSet validates first and replaces a stale temp file", (t) => {

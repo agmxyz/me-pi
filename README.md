@@ -28,7 +28,7 @@ Optional: limit workers to a model set in `~/.pi/agent/delegate.json` (local). P
 
 Run `/reload` to show the set in the tool's parameters. The tool reads the file at each call and names any problem in it.
 
-`/delegate` (or `/delegate status`) shows the set and whether each model is usable, missing tools, running calls, and the last 20 calls with their cost. The call list survives `/reload`. `/delegate models` asks for a filter (only ids that start with it, or if none do, ids that contain it), then the models in order (the first is the scout model), then the default, and writes the file (mode 0600) after you confirm. It offers `/reload` only when the agent is idle and no workers run.
+`/delegate` (or `/delegate status`) shows the set and whether each model is usable, missing tools, running calls, and the last 20 calls with their cost. The call list survives `/reload`. `/delegate models` opens a searchable list like `/model`, with the current set marked: type to filter, Enter adds or removes a model (the order you add them is the set's order; the first is the scout model), Ctrl+S saves, Esc cancels. Then it asks for the default and writes the file (mode 0600) after you confirm. It offers `/reload` only when the agent is idle and no workers run.
 
 ## Use it
 

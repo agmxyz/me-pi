@@ -51,7 +51,8 @@ class Lines implements Component {
 	invalidate(): void {}
 }
 
-const shortModel = (model: string) => model.split("/").pop() ?? model;
+/** `anthropic/claude-haiku-5-5` as `claude-haiku-5-5`. */
+export const shortModel = (model: string) => model.split("/").pop() ?? model;
 // The first line with text, skipping code fences.
 const firstLine = (text: string) =>
 	text

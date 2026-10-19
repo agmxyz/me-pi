@@ -5,6 +5,8 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ModelSet } from "./delegate.ts";
+import { ModelSetPicker } from "./delegate-picker.ts";
+import { shortModel as short } from "./delegate-render.ts";
 
 /** One finished delegate call, kept for `/delegate status`. */
 export interface CallRecord {
@@ -40,7 +42,6 @@ const DEPENDENCIES = [
 ];
 const SUBCOMMANDS = ["status", "models"];
 
-const short = (model: string) => model.split("/").pop() ?? model;
 const seconds = (ms: number) => `${Math.round(ms / 1000)}s`;
 const clock = (at: number) => new Date(at).toTimeString().slice(0, 5);
 
@@ -85,7 +86,7 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 	return lines;
 }
 
-/** Picks the set step by step: filter, models in order (first = scout), default, confirm. */
+/** Picks the set: the searchable picker (models in order, first = scout), then the default, then confirm. */
 // Returns true when the user wants a reload; the caller does it last, because the ctx is stale after it.
 async function pickModels(ctx: ExtensionCommandContext, deps: CommandDeps): Promise<boolean> {
 	const ui = ctx.ui;
@@ -93,30 +94,24 @@ async function pickModels(ctx: ExtensionCommandContext, deps: CommandDeps): Prom
 		ui.notify(message, type);
 		return false;
 	};
-	const title = "Filter models: the start of provider/id, else any part (empty for all)";
-	const filter = (await ui.input(title, "anthropic/"))?.trim().toLowerCase();
-	if (filter === undefined) return stop("Delegate models: cancelled, nothing written.", "info");
-	const all = ctx.modelRegistry.getAvailable().map((m) => ({ id: `${m.provider}/${m.id}`, cost: m.cost }));
-	// "anthropic/" should not also list openrouter/anthropic/...: prefer ids that start with the filter.
-	const starting = all.filter((m) => m.id.toLowerCase().startsWith(filter));
-	const available = starting.length ? starting : all.filter((m) => m.id.toLowerCase().includes(filter));
-	if (!available.length) return stop(`Delegate models: no available model matches "${filter}".`, "warning");
-
-	const label = (m: (typeof available)[number]) => `${m.id}  $${m.cost.input}/$${m.cost.output} per M tokens`;
-	const chosen: string[] = [];
-	const done = "Done";
-	for (;;) {
-		const left = available.filter((m) => !chosen.includes(m.id));
-		if (!left.length) break;
-		const options = [...(chosen.length ? [done] : []), ...left.map(label)];
-		const title = chosen.length
-			? `Add model ${chosen.length + 1}, or Done (chosen: ${chosen.map(short).join(", ")})`
-			: "Model 1 (the scout model; pick a cheap, fast one)";
-		const pick = await ui.select(title, options);
-		if (pick === undefined) return stop("Delegate models: cancelled, nothing written.", "info");
-		if (pick === done) break;
-		chosen.push(left[options.indexOf(pick) - (chosen.length ? 1 : 0)].id);
+	const models = ctx.modelRegistry
+		.getAvailable()
+		.map((m) => ({ id: `${m.provider}/${m.id}`, name: m.name, cost: m.cost }));
+	if (!models.length) return stop("Delegate models: no model is available; log in to a provider first.", "warning");
+	let current: string[] = [];
+	try {
+		current = deps.loadModelSet().models;
+	} catch (err: any) {
+		ui.notify(`Delegate models: the current set is unreadable, starting empty (${err?.message ?? err}).`, "warning");
 	}
+	// Esc gives null; undefined means this UI cannot show custom components (RPC mode).
+	const chosen = await ui.custom<string[] | null>(
+		(_tui, theme, _keybindings, done) => new ModelSetPicker(models, current, theme.fg.bind(theme), done),
+	);
+	if (chosen === undefined)
+		throw new Error("/delegate models needs the interactive TUI; edit delegate.json by hand instead.");
+	if (chosen === null) return stop("Delegate models: cancelled, nothing written.", "info");
+	if (!chosen.length) return stop("Delegate models: no model picked, nothing written.", "warning");
 
 	const last = `Last model (${short(chosen.at(-1) as string)})`;
 	const pickedDefault =
