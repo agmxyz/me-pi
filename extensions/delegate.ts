@@ -6,7 +6,7 @@
  * research, challenge, or `web: true`); the main session does every edit, check, and commit. The models
  * come from a hand-edited set in ~/.pi/agent/delegate.json. In workers this extension only blocks
  * reads of likely secret paths (see secretPathIn) and, with `output: true`, writes outside the worker's own
- * temp directory (see writeBlockedIn).
+ * temp directory (see writeBlockedIn), and blocks tools once the wrap-up budget is spent (see budgetSpent).
  */
 
 import { spawn } from "node:child_process";
@@ -27,7 +27,17 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
-export const LIMITS = { scoutTimeoutSecs: 300, timeoutSecs: 900, costCapUsd: 5, exitGraceMs: 1000 };
+export const LIMITS = {
+	scoutTimeoutSecs: 300,
+	timeoutSecs: 900,
+	costCapUsd: 5,
+	exitGraceMs: 1000,
+	// Wrap-up budget, enforced inside the worker: past it, tool calls are blocked so the model answers
+	// before a hard limit kills it without one.
+	scoutToolCalls: 30,
+	toolCalls: 100,
+	wrapUpShare: 0.8,
+};
 const MAX_RUNS = 4;
 // Model-facing answer size per run; the main session's context is what this extension protects.
 const ANSWER_CAP = 12 * 1024;
@@ -151,6 +161,40 @@ function relativeHint(path: string, target: string, outDir: string, given: strin
 	const suggested = join(outDir, given);
 	const hint = notStrictlyInside(relative(outDir, suggested)) ? "" : `; write to ${suggested} instead`;
 	return `${path} resolves to ${target}, outside ${outDir}${hint}`;
+}
+
+// --- Wrap-up budget (enforced inside workers) ------------------------------------------------------
+
+/** Tool calls allowed, the epoch ms after which tools are blocked, and the cost (USD) after which they are. */
+export interface Budget {
+	tools: number;
+	deadline: number;
+	cost: number;
+}
+
+/** Parses ME_PI_BUDGET; undefined when unset. A malformed value throws: the worker must not run unbounded. */
+export function parseBudget(raw: string | undefined): Budget | undefined {
+	if (!raw) return undefined;
+	let b: any;
+	try {
+		b = JSON.parse(raw);
+	} catch {
+		b = undefined;
+	}
+	if (![b?.tools, b?.deadline, b?.cost].every((n) => typeof n === "number" && Number.isFinite(n)))
+		throw new Error(`delegate: invalid ME_PI_BUDGET ${JSON.stringify(raw)}`);
+	return b;
+}
+
+// Budget blocks a worker may ignore before its run is terminated.
+const MAX_BLOCKED_OVER_BUDGET = 3;
+
+/** Which budget a worker has used up before its next tool call, if any. */
+export function budgetSpent(budget: Budget, calls: number, cost: number, now = Date.now()): string | undefined {
+	if (calls > budget.tools) return `${budget.tools} tool calls`;
+	if (now >= budget.deadline) return "time";
+	if (cost >= budget.cost) return `$${budget.cost.toFixed(2)} cost`;
+	return undefined;
 }
 
 const MAX_LISTED = 50;
@@ -378,7 +422,16 @@ function runWorker(
 			cwd,
 			detached: true,
 			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, ME_PI_RUN: "1", ME_PI_OUTPUT_DIR: result.outDir ?? "" },
+			env: {
+				...process.env,
+				ME_PI_RUN: "1",
+				ME_PI_OUTPUT_DIR: result.outDir ?? "",
+				ME_PI_BUDGET: JSON.stringify({
+					tools: role === "scout" ? LIMITS.scoutToolCalls : LIMITS.toolCalls,
+					deadline: start + LIMITS.wrapUpShare * timeoutMs,
+					cost: LIMITS.wrapUpShare * LIMITS.costCapUsd,
+				} satisfies Budget),
+			},
 		});
 		const pid = proc.pid;
 		const groups = liveGroups();
@@ -609,9 +662,26 @@ export const PROMPT_GUIDELINES = [
 ];
 
 export default function (pi: ExtensionAPI) {
-	// Workers never get the tool, so delegation cannot nest; they only get the secret-path block.
+	// Workers never get the tool, so delegation cannot nest; they only get the wrap-up budget, the secret-path
+	// block, and the output-directory write block.
 	if (process.env.ME_PI_RUN) {
+		const budget = parseBudget(process.env.ME_PI_BUDGET);
+		let calls = 0;
+		let overBudget = 0;
+		let cost = 0;
+		pi.on("message_end", async (event) => {
+			const msg = event.message as any;
+			if (msg?.role === "assistant") cost += costOf(msg.usage ?? {});
+		});
 		pi.on("tool_call", async (event, ctx) => {
+			const spent = budget && budgetSpent(budget, ++calls, cost);
+			if (spent)
+				return {
+					block: true,
+					reason: `Blocked: budget reached (${spent}). Stop using tools; give your final answer now, and list what is unverified.`,
+					// A model that keeps calling tools is stopped; the parent keeps its last text as a partial answer.
+					terminate: ++overBudget > MAX_BLOCKED_OVER_BUDGET,
+				};
 			const secret = secretPathIn(event.toolName, event.input, ctx.cwd);
 			if (secret)
 				return { block: true, reason: `Blocked: ${secret} may hold secrets; delegated workers cannot read it.` };

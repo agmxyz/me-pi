@@ -94,6 +94,7 @@ process.stdin.on("end", () => {
     emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only for files inside " + out + ". Relative paths resolve against the project, not this directory")));
     process.exit(0);
   }
+  if (mode === "echo-budget") { emit(process.env.ME_PI_BUDGET || "none"); process.exit(0); }
   if (mode === "echo-system") { emit(flag("--append-system-prompt") || ""); process.exit(0); }
   if (mode === "silent") process.exit(0);
   if (mode === "ended-midway") { emit("reading more files", { stopReason: "toolUse" }); process.exit(0); }
@@ -212,7 +213,7 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.equal(properties.output.type, "boolean");
 	const worker = setup(t, { env: { ME_PI_RUN: "1" } });
 	assert.equal(worker.tool, undefined, "no nested delegation");
-	assert.deepEqual(Object.keys(worker.handlers), ["tool_call"]);
+	assert.deepEqual(Object.keys(worker.handlers).sort(), ["message_end", "tool_call"]);
 });
 
 test("workers cannot name secret paths in read, grep, find, or ls", async (t) => {
@@ -256,6 +257,61 @@ test("workers cannot name secret paths in read, grep, find, or ls", async (t) =>
 	const blocked = await hook({ toolName: "read", input: { path: "~/.ssh/id_rsa" } }, { cwd: dir });
 	assert.match(blocked.reason, /\.ssh\/id_rsa may hold secrets; delegated workers cannot read it/);
 	assert.equal(await hook({ toolName: "read", input: { path: "notes.txt" } }, { cwd: dir }), undefined);
+});
+
+test("workers get a wrap-up budget: tool calls, 80% of the time limit, 80% of the cost cap", async (t) => {
+	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-budget" } });
+	for (const [role, tools, secs] of [
+		["scout", 30, 300],
+		["review", 100, 900],
+	]) {
+		const before = Date.now();
+		const res = await run(tool, { role, task: "x" });
+		const budget = JSON.parse(text(res).split("\n")[0]);
+		assert.equal(budget.tools, tools, role);
+		assert.equal(budget.cost, 4, role);
+		assert.ok(budget.deadline >= before + secs * 800 && budget.deadline <= Date.now() + secs * 800, role);
+	}
+});
+
+test("past the wrap-up budget, a worker's tool calls are blocked with an answer-now reason", async (t) => {
+	const far = Date.now() + 60_000;
+	const worker = (budget) => setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: JSON.stringify(budget) } }).handlers;
+	const call = (h) => h.tool_call({ toolName: "read", input: { path: "README.md" } }, { cwd: REPO_ROOT });
+
+	const counted = worker({ tools: 2, deadline: far, cost: 1 });
+	assert.equal(await call(counted), undefined);
+	assert.equal(await call(counted), undefined);
+	const over = await call(counted);
+	assert.equal(
+		over.reason,
+		"Blocked: budget reached (2 tool calls). Stop using tools; give your final answer now, and list what is unverified.",
+	);
+	// Three ignored blocks are allowed; the fourth also terminates the run.
+	assert.deepEqual(
+		[over.terminate, (await call(counted)).terminate, (await call(counted)).terminate],
+		[false, false, false],
+	);
+	assert.equal((await call(counted)).terminate, true);
+	// The budget check comes first: an over-budget call to a secret path gets the budget reason.
+	const spentFirst = worker({ tools: 0, deadline: far, cost: 1 });
+	const secret = await spentFirst.tool_call({ toolName: "read", input: { path: ".env" } }, { cwd: REPO_ROOT });
+	assert.match(secret.reason, /budget reached/);
+
+	const priced = worker({ tools: 100, deadline: far, cost: 0.5 });
+	const usage = (cost) => ({ cost: { total: cost } });
+	await priced.message_end({ message: { role: "user", usage: usage(9) } });
+	await priced.message_end({ message: { role: "assistant", usage: usage(0.3) } });
+	assert.equal(await call(priced), undefined);
+	await priced.message_end({ message: { role: "assistant", usage: usage(0.2) } });
+	assert.match((await call(priced)).reason, /budget reached \(\$0\.50 cost\)/);
+
+	const late = worker({ tools: 100, deadline: Date.now() - 1, cost: 1 });
+	assert.match((await call(late)).reason, /budget reached \(time\)/);
+
+	const unbounded = setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: undefined } }).handlers;
+	for (let i = 0; i < 150; i++) assert.equal(await call(unbounded), undefined);
+	assert.throws(() => setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: '{"tools":1}' } }), /invalid ME_PI_BUDGET/);
 });
 
 test("workers write only inside their own output directory", async (t) => {
