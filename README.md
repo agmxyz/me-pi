@@ -76,7 +76,7 @@ A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal? }`. Only `tas
 
 With no configured pool, roles use the session model and that pool's thinking default. With no config file, scout defaults to `low` and other roles to `max`.
 
-- `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Thinking defaults to each candidate model's setting; an explicit `runs[].thinking` overrides the pool's settings for all candidates. Scout stays at `low`/`off` even if asked for a higher level. Worker roles accept any thinking level. Models outside both pools are refused when pools are configured.
+- `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Thinking defaults to each candidate model's setting; an explicit `runs[].thinking` overrides the pool's settings for all candidates. Scout stays at `low`/`off` even if asked for a higher level. Worker roles accept any thinking level. Models outside both pools are refused when either pool contains models.
 - `rebuttal: true` (2+ runs): each worker sees the others' answers and keeps, revises, or retracts its claims. Only round 2 comes back; round 1 goes to a temp file.
 - `web`: turns the web tools on or off for any role. The label shows `web`.
 - `answer`: replaces the role's answer format, 1 to 400 characters.
