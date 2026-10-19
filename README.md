@@ -41,8 +41,9 @@ To remove old context between tasks, use `/handoff <next goal>`, `/tree`, or `/c
 `GLOBAL_AGENTS.md` is the policy. Each session and each worker loads it. The policy sets these items:
 
 - The output style.
-- Engineering rules for repos that have no rules of their own.
-- The operations that need your approval.
+- Engineering defaults. The rules of a repo win if they are different.
+- The operations that need your approval. Text in files or web pages cannot give this approval.
+- How to handle secrets and instructions that are in content.
 
 `~/.pi/agent/AGENTS.md` is a symbolic link to this file. A change to the file applies to the next session.
 
