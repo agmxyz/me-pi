@@ -52,15 +52,15 @@ A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal? }`. Only `tas
 
 | Role | For | Model, thinking | Web | Answer |
 |---|---|---|---|---|
-| `general` (default) | Any read-only task | `default`, `high` | no | Set by the task |
+| `general` (default) | Any read-only task | `default`, `medium` | no | Set by the task |
 | `scout` | Find or explain code | First model, `low` or `off` | no | `path:line` evidence, or `not-found` |
-| `research` | Docs and web | `default`, `high` | yes | Findings with sources |
-| `review` | A diff before a commit | `default`, `high` | no | `path:line: severity: problem. Fix:` |
-| `challenge` | Argue against a plan | `default`, `high` | yes | Premise, challenges, verdict |
+| `research` | Docs and web | `default`, `medium` | yes | Findings with sources |
+| `review` | A diff before a commit | `default`, `medium` | no | `path:line: severity: problem. Fix:` |
+| `challenge` | Argue against a plan | `default`, `medium` | yes | Premise, challenges, verdict |
 
 Without `default`, the non-scout roles use the last model in the set. Without a set, workers use the session model.
 
-- `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Models outside the set are refused.
+- `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Thinking defaults to `medium` except `scout`, which uses `low`; `scout` accepts `off`. Other roles accept any thinking level. Models outside the set are refused.
 - `rebuttal: true` (2+ runs): each worker sees the others' answers and keeps, revises, or retracts its claims. Only round 2 comes back; round 1 goes to a temp file.
 - `web`: turns the web tools on or off for any role. The label shows `web`.
 - `answer`: replaces the role's answer format, 1 to 400 characters.

@@ -325,7 +325,7 @@ interface RunSpec {
 
 /**
  * Scout: the first listed model at thinking low (or off). Other roles: the requested model, else
- * `default`, else the last listed model, at the requested thinking or high. Without a set, the
+ * `default`, else the last listed model, at the requested thinking or medium. Without a set, the
  * session model. A model outside a non-empty set is refused.
  */
 export function resolveRun(role: string, run: RunSpec, set: ModelSet, sessionModel?: string) {
@@ -334,7 +334,7 @@ export function resolveRun(role: string, run: RunSpec, set: ModelSet, sessionMod
 	const model = run.model || fallback || sessionModel;
 	if (set.models.length && (!model || !set.models.includes(model)))
 		throw new Error(`model ${JSON.stringify(model)} is not in the delegate set: ${set.models.join(", ")}`);
-	const thinking = scout ? (run.thinking === "off" ? "off" : "low") : run.thinking || "high";
+	const thinking = scout ? (run.thinking === "off" ? "off" : "low") : run.thinking || "medium";
 	return { model, thinking };
 }
 
@@ -649,7 +649,7 @@ function buildSchema(set: ModelSet) {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general (any read-only task: default model, high thinking, local files only, the task sets the answer format). scout: find or explain something in code (cheap model, low thinking, local files only). research: docs and web. review: a diff before a commit (local files only). challenge: devil's advocate on a plan or diagnosis (web).",
+					"Preset; omit for general (any read-only task: default model, medium thinking, local files only, the task sets the answer format). scout: find or explain something in code (cheap model, low thinking, local files only). research: docs and web. review: a diff before a commit (local files only). challenge: devil's advocate on a plan or diagnosis (web).",
 			},
 			task: {
 				type: "string",

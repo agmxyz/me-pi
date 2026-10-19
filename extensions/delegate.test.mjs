@@ -468,14 +468,15 @@ test("output with no files written says so; without output there is no write too
 	assert.doesNotMatch(without, /Files in|,write/);
 });
 
-test("model set: scout uses the first model at low; other roles default, else last, at high", () => {
+test("model set: scout uses the first model at low; other roles default, else last, at medium", () => {
 	const set = { models: [HAIKU, SONNET, OPUS] };
 	assert.deepEqual(resolveRun("scout", {}, set), { model: HAIKU, thinking: "low" });
 	assert.deepEqual(resolveRun("scout", { thinking: "high" }, set), { model: HAIKU, thinking: "low" });
 	assert.deepEqual(resolveRun("scout", { thinking: "off" }, set), { model: HAIKU, thinking: "off" });
 	assert.deepEqual(resolveRun("scout", { model: SONNET }, set), { model: SONNET, thinking: "low" });
-	assert.deepEqual(resolveRun("review", {}, set), { model: OPUS, thinking: "high" });
-	assert.deepEqual(resolveRun("review", {}, { ...set, default: SONNET }), { model: SONNET, thinking: "high" });
+	assert.deepEqual(resolveRun("review", {}, set), { model: OPUS, thinking: "medium" });
+	assert.deepEqual(resolveRun("review", {}, { ...set, default: SONNET }), { model: SONNET, thinking: "medium" });
+	assert.deepEqual(resolveRun("review", { thinking: "high" }, set), { model: OPUS, thinking: "high" });
 	assert.deepEqual(resolveRun("challenge", { model: OPUS, thinking: "medium" }, set), {
 		model: OPUS,
 		thinking: "medium",
@@ -485,7 +486,7 @@ test("model set: scout uses the first model at low; other roles default, else la
 	assert.deepEqual(resolveRun("scout", {}, { models: [] }, "x/session"), { model: "x/session", thinking: "low" });
 	assert.deepEqual(resolveRun("review", { model: "y/m" }, { models: [] }, "x/session"), {
 		model: "y/m",
-		thinking: "high",
+		thinking: "medium",
 	});
 });
 
@@ -778,21 +779,21 @@ test("roles get their tools: only research and challenge reach the web", async (
 		["challenge", WEB_TOOLS],
 	]) {
 		const res = await run(tool, { role, task: "x" });
-		assert.match(text(res), new RegExp(`model=${OPUS} thinking=high tools=${tools} `), role);
+		assert.match(text(res), new RegExp(`model=${OPUS} thinking=medium tools=${tools} `), role);
 	}
 });
 
-test("the default role is general: local tools, default model, high thinking, no answer format", async (t) => {
+test("the default role is general: local tools, default model, medium thinking, no answer format", async (t) => {
 	const { tool } = setup(t, {
 		config: { models: [HAIKU, SONNET, OPUS], default: SONNET },
 		env: { FAKE_PI_MODE: "echo-system" },
 	});
 	const system = text(await run(tool, { task: "x" }));
-	assert.ok(system.startsWith(`${WORKER_CONTRACT}\nRole: general.\n[claude-sonnet-5-5 @high `), system);
+	assert.ok(system.startsWith(`${WORKER_CONTRACT}\nRole: general.\n[claude-sonnet-5-5 @medium `), system);
 	process.env.FAKE_PI_MODE = "";
 	const res = await run(tool, { task: "x" });
 	assert.equal(res.isError, false, text(res));
-	assert.match(text(res), new RegExp(`^DONE model=${SONNET} thinking=high tools=${LOCAL_TOOLS} .* role=general `));
+	assert.match(text(res), new RegExp(`^DONE model=${SONNET} thinking=medium tools=${LOCAL_TOOLS} .* role=general `));
 });
 
 test("web overrides the role's tools and adds a badge to progress and results", async (t) => {
@@ -800,13 +801,13 @@ test("web overrides the role's tools and adds a badge to progress and results", 
 	const progress = [];
 	const onUpdate = (u) => progress.push(text(u));
 	const on = await run(tool, { role: "review", task: "x", web: true }, undefined, onUpdate);
-	assert.match(text(on), new RegExp(`thinking=high tools=${WEB_TOOLS} .* role=review `));
-	assert.match(text(on), /\n\[claude-opus-5-5 @high web \$0\.0020 \d+s\]$/);
+	assert.match(text(on), new RegExp(`thinking=medium tools=${WEB_TOOLS} .* role=review `));
+	assert.match(text(on), /\n\[claude-opus-5-5 @medium web \$0\.0020 \d+s\]$/);
 	assert.ok(progress.length && progress.every((p) => p.startsWith("Workers [web]\n")), progress.join("|"));
 	progress.length = 0;
 	const off = await run(tool, { role: "research", task: "x", web: false }, undefined, onUpdate);
-	assert.match(text(off), new RegExp(`thinking=high tools=${LOCAL_TOOLS} .* role=research `));
-	assert.match(text(off), /\n\[claude-opus-5-5 @high \$0\.0020 \d+s\]$/);
+	assert.match(text(off), new RegExp(`thinking=medium tools=${LOCAL_TOOLS} .* role=research `));
+	assert.match(text(off), /\n\[claude-opus-5-5 @medium \$0\.0020 \d+s\]$/);
 	assert.ok(progress.length && progress.every((p) => p.startsWith("Workers\n")), progress.join("|"));
 });
 
@@ -879,8 +880,8 @@ test("details carry a view for the TUI: progress per round, then the reported ru
 	assert.deepEqual(
 		view.runs.map((r) => [r.model, r.thinking, r.web, r.done, r.round2Failure ?? null]),
 		[
-			[HAIKU, "high", true, true, null],
-			[OPUS, "high", true, true, "exit 1: rate limited in round 2"],
+			[HAIKU, "medium", true, true, null],
+			[OPUS, "medium", true, true, "exit 1: rate limited in round 2"],
 		],
 	);
 	assert.match(view.runs[0].output, /## Round 2/);
@@ -896,7 +897,7 @@ test("several runs answer the same task in parallel; usage is summed", async (t)
 	});
 	assert.equal(res.isError, false);
 	const out = text(res);
-	assert.match(out, new RegExp(`model=${SONNET} thinking=high`));
+	assert.match(out, new RegExp(`model=${SONNET} thinking=medium`));
 	assert.match(out, new RegExp(`model=${OPUS} thinking=medium`));
 	assert.match(out, /Total: 2 runs, \$0\.0040\.$/);
 	assert.equal(res.usage.cost.total, 0.004);
