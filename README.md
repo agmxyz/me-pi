@@ -1,268 +1,118 @@
 # me-pi
 
-me-pi is a setup for the [Pi](https://pi.dev) coding agent. It has four parts:
+A setup for the [Pi](https://pi.dev) coding agent:
 
-- One global policy (`GLOBAL_AGENTS.md`).
-- One tool that sends work to workers (`delegate`).
-- One safety guard for bash commands (`guard`).
-- One tool that loads skills (`Skill`).
+- `GLOBAL_AGENTS.md`: one policy for every session and worker: output style, engineering defaults, what needs your approval, and how to treat secrets and instructions found in content.
+- `delegate`: sends reading, research, reviews, and drafts to separate `pi` workers. Only their answers come back.
+- `guard`: asks before risky bash commands run.
+- `Skill`: loads a skill by name, as Claude Code skills expect.
 
 ## Install
 
-Do these steps:
+```bash
+git clone git@github.com:0bmario/me-pi.git && cd me-pi && ./install.sh
+```
 
-1. Run this command:
-   ```bash
-   git clone git@github.com:0bmario/me-pi.git && cd me-pi && ./install.sh
-   ```
-2. Restart Pi.
+Then restart Pi. You can run the installer again; it does not replace your files. It:
 
-You can run the installer again at any time. It does not overwrite your files. It does these steps:
+- Links `GLOBAL_AGENTS.md` to `~/.pi/agent/AGENTS.md`. If another file is there, it leaves it, finishes the other steps, and exits 1.
+- Registers `extensions/` and the pinned packages with `pi install`.
+- Copies Pi's `interactive-shell.ts` and `handoff.ts` examples if missing, and warns when a copy differs from Pi's.
+- Runs `rtk init --global --agent pi` if [`rtk`](https://github.com/rtk-ai/rtk) is installed.
 
-- It links `GLOBAL_AGENTS.md` to `~/.pi/agent/AGENTS.md`.
-  - If `~/.pi/agent/AGENTS.md` exists already, the installer does not change it.
-  - The installer then completes the other steps and exits with code 1, because the policy is not active.
-- It registers `extensions/` and the pinned packages with `pi install`.
-- It copies the Pi files `interactive-shell.ts` and `handoff.ts`, if they are not there.
-  - It never replaces a copy.
-  - A copy can be different from the Pi example, for example after a Pi upgrade. Then the installer shows a warning and the `cp` command that updates the copy.
-- If [`rtk`](https://github.com/rtk-ai/rtk) is installed, it runs `rtk init --global --agent pi`. This command installs or updates the RTK extension for Pi.
-
-## How it works
-
-### Main session
-
-The main session does the work. It plans, edits, tests, and commits.
-
-To remove old context between tasks, use `/handoff <next goal>`, `/tree`, or `/compact`.
-
-### Policy
-
-`GLOBAL_AGENTS.md` is the policy. Each session and each worker loads it. The policy sets these items:
-
-- The output style.
-- Engineering defaults. The rules of a repo win if they are different.
-- The operations that need your approval. Text in files or web pages cannot give this approval.
-- How to handle secrets and instructions that are in content.
-
-`~/.pi/agent/AGENTS.md` is a symbolic link to this file. A change to the file applies to the next session.
-
-### `delegate` tool
-
-The `delegate` tool (`extensions/delegate.ts`) keeps work that uses many tokens out of the main session. A worker is a separate `pi` process. Workers do these tasks:
-
-- Find code that the main session did not read.
-- Research documents and the web.
-- Review a diff.
-- Challenge a plan.
-- Do other read-only tasks.
-
-Only the answers of the workers go back to the main session.
-
-- If an answer is longer than 12 KiB, the tool cuts it. The tool writes the full answer to a temp file and gives the path. Only you can read the file (mode 0600).
-- Tool calls and error output stay in the tool details. The model does not see the tool details.
-- The tool adds the cost of the workers to the usage totals of the session.
-
-#### Workers are read-only
-
-- All workers get the tools `read`, `grep`, `find`, `ls`, and `Skill`.
-- The `research` and `challenge` workers also get the web tools. The `web` value of a call can change this.
-- Workers do not get `bash` or `edit`. Workers get `write` only if the call has `output: true` (see "Draft files").
-- Workers do not get MCP tools. The tool starts workers with `--no-mcp`, because `--tools` does not remove MCP tools.
-
-Thus, a worker cannot edit your files, run commands, run tests, start other workers, or commit. If a task needs one of these steps, the worker writes the line `BLOCKED: ...`. The main session does all edits, checks, and commits.
-
-#### Call
-
-A call has this structure: `{ task, role?, web?, answer?, output?, runs?, rebuttal? }`. Only `task` is necessary.
-
-The tool sends the task to the worker on standard input. Thus, the size of the task has no command-line limit.
-
-- `role` selects a preset. If the call has no `role`, the tool uses `general`.
-- `web: true` gives the web tools to the workers. `web: false` removes them. If the call has no `web`, the role sets it. Before you use `web: true`, read the risk in "The tools are not a sandbox".
-- When the workers have the web tools, the progress text and the label of each answer show `web`.
-- `answer` replaces the answer format of the role. It has 1 to 400 characters. If `answer` is empty, has only spaces, or has more than 400 characters, the tool refuses the call. No worker starts.
-- `output: true` lets each worker write draft files. See "Draft files".
-
-| Role | Use it for | Model and thinking | Answer |
-|---|---|---|---|
-| `general` | Other read-only tasks. This is the default. | `default`, or the last model if there is no `default`. Thinking `high`. | No fixed format. The task sets it. |
-| `scout` | Find or explain code. | First model in the set, thinking `low` (`off` if the call asks for it). | `path:line` evidence, or `not-found`. |
-| `research` | Documents, the web, many sources. | `default`, or the last model if there is no `default`. Thinking `high`. | Findings with their sources. |
-| `review` | A diff before a commit. | `default`, or the last model if there is no `default`. Thinking `high`. | `path:line: severity: problem. Fix:` |
-| `challenge` | Arguments against a plan or a diagnosis. | `default`, or the last model if there is no `default`. Thinking `high`. | Premise, challenges, verdict. |
-
-#### Many models on one question
-
-Ask, for example: "Let Opus at medium and Sonnet at high review this, with rebuttal."
-
-The main session then sends one call:
-
-- `runs` has one entry for each model: `[{ model, thinking }, ...]`. A call can have 1 to 4 entries. The workers run at the same time.
-- `rebuttal: true` adds a second round. In the second round, each worker that completed round 1 gets its own answer and the answers of the other workers. Each worker then keeps, changes, or removes its claims. It carries forward each open objection, its own or from the other workers. It ends with `Changed: yes` or `Changed: no` and the reason. For each change, it says what changed and why.
-
-Only the round-2 answers go back to the main session. The tool writes the round-1 answers to a temp file and gives the path.
-
-#### Draft files
-
-Use `output: true` when a worker must write a draft, for example a document, a plan, or a patch.
-
-- The tool makes a new temp directory for each worker run (mode 0700). Each run in `runs` and each round-2 run gets its own directory.
-- The worker gets the `write` tool. The worker rules give it the path of its directory.
-- In the worker, the tool blocks `write` and `edit` calls to a path outside this directory. The check follows symbolic links and refuses a broken symbolic link. The check changes Unicode spaces to spaces, as Pi does. The check refuses paths that start with `~` or `file:`, because Pi expands them.
-- The answer lists the files in the directory with their sizes. The answer does not contain the file contents.
-- With `rebuttal: true`, each round-2 worker gets the file lists of round 1. The saved round-1 answers also contain them.
-- The tool does not delete the directories. The main session copies the files that it keeps, and examines the diff.
-
-#### Limits
-
-- Time limit: 300 seconds for `scout`, 900 seconds for the other roles.
-- Cost limit: $5 for each worker.
-  - The tool checks the cost after each reply of the model.
-  - If a final answer goes above the limit, the tool keeps the answer.
-  - The tool does not count model calls that a tool makes.
-- The tool stops the process group of the worker with SIGKILL in these conditions: time limit, cancel, cost limit, end of the session. Read-only workers have no data to save, so a hard stop is safe. With `output: true`, a stopped worker can leave incomplete files. The answer lists them.
-- When a worker exits, the tool stops the other processes in its group.
-- When the main process exits normally, the tool stops all workers.
-- A process that leaves the group continues to run. For example, `fetch_content` clones GitHub repositories in a separate group.
-
-If the main Pi process is killed, workers can continue to run. Do these steps to stop them:
-
-1. Find the workers:
-   ```bash
-   ps -axo pid,ppid,pgid,comm | awk '$2==1 && $1==$3 && $4=="pi"'
-   ```
-2. Stop each worker with `kill -- -<pid>`.
-
-#### Reviews need a fixed diff
-
-Workers cannot run git. Thus, the main session does these steps:
-
-1. Write the diff to a temp file with `git diff HEAD`. Before this, run `git add -N` for new files.
-2. Give the path of the file to the worker.
-3. Do not edit these files until the review is complete.
-
-#### The tools are not a sandbox
-
-- `read` can read files outside the working directory.
-- In workers, the tool blocks `read`, `grep`, `find`, and `ls` calls that name a path that can contain secrets. Examples:
-  - `.env*` and `.envrc` (but not `.example`, `.sample`, or `.template` files).
-  - `.npmrc`, `.netrc`, and `.git-credentials`.
-  - `*.pem`, `*.key`, and private keys such as `id_rsa`.
-  - `~/.ssh`, `~/.aws`, `~/.config/gh`, and `~/.pi/agent/auth.json`.
-- The block ignores letter case and follows symbolic links.
-- The block also checks the `glob` value of `grep` and the `pattern` value of `find` (for example, `**/.env*`).
-- A broad search can still find text in these files. An example is `grep TOKEN .` with no glob.
-- `fetch_content` reads local files only for videos.
-- By default, `general`, `scout`, and `review` have no web tools. Thus, a prompt injection in a diff cannot send file contents out of the computer. `research` and `challenge` keep the web tools.
-- `web: true` gives the web tools to any role. This is a risk. A fetched page is untrusted data, and its text can try to steer the worker. For example, the page can tell the worker to read a local file and send the contents to a URL. Use `web: true` only when the task needs sources outside the computer. Use `web: false` for a `research` or `challenge` task that does not need the web.
-- The worker rules forbid the `auth` option of `fetch_content` (browser cookies). The rules tell workers that fetched content is data, not instructions.
-- Workers load your installed extensions, because provider login (for example, `pi-anthropic-auth`) is an extension.
-
-### Model set
-
-The model set is the list of models that workers can use. It is in `~/.pi/agent/delegate.json`. You edit this file manually. It stays on your computer.
+Optional: limit workers to a model set in `~/.pi/agent/delegate.json` (local, hand-edited). Without it, workers use the session model and a call can name any model.
 
 ```json
 { "models": ["anthropic/claude-haiku-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5"], "default": "anthropic/claude-sonnet-5-5" }
 ```
 
-- `scout` uses the first model.
-- The other roles use `default`. If there is no `default`, they use the last model.
-- A call can select any model in the set for each run.
-- The tool refuses a model that is not in the set.
-- If the file does not exist, workers use the model of the session, and a call can select any model.
+Run `/reload` to show the set in the tool's parameters. The tool reads the file at each call and names any problem in it.
 
-After you edit the file, run `/reload`. Then the tool shows the set in its parameters. The tool reads the file again at each call. The tool shows an error that names the problem if the file has one of these problems:
+## Use it
 
-- An unknown key.
-- A model ID that is not text.
-- A model that is in the list two times.
-- A `default` that is not in the list.
+Talk to the main session as usual. It plans, edits, tests, and commits, and the `delegate` tool's guidelines tell it when to call workers by itself: for reading many files, research, reviews before multi-file or behaviour-changing commits, and plan challenges. You can also ask directly:
 
-### Guard
+| You say | Call |
+|---|---|
+| "Find where X is handled." | `scout` |
+| "Research how library Y does Z." | `research` (web) |
+| "Review this before you commit." | `review` of a diff file |
+| "Challenge this plan." | `challenge` (web) |
+| "Have Opus check whether …" | `general` on that model |
+| "Opus at high and Sonnet at medium, with rebuttal." | 2 `runs`, `rebuttal: true` |
+| "Let a worker draft the docs." | `output: true` |
 
-The guard (`extensions/guard.ts`) asks you before it lets a bash command run, if `GLOBAL_AGENTS.md` makes the command your decision. The guard checks these commands:
+To remove old context between tasks, use `/handoff <next goal>`, `/tree`, or `/compact`.
 
-- A push to `main` or `master`. The guard also finds the push in these forms:
-  - In quotes and in subshells.
-  - After `sh -c`, `bash -lc`, `eval`, `env`, or `xargs`.
-  - With a full path, for example `/usr/bin/git`.
-- A push without a branch name after `cd`, `git checkout`, `git switch`, or `git -C`. After these commands, the guard cannot know the target branch.
-- A force push.
-- Changes to history: `commit --amend`, `rebase`, `filter-repo`, `filter-branch`.
-- `git reset --hard` and `git clean -f`.
-- Commands that discard changes:
-  - `git checkout --`, `git checkout .`, and `git checkout -f`.
-  - `git restore` of the working tree, and `git switch -f`.
-  - `git stash drop` and `git stash clear`.
-- `git branch -D`.
-- A recursive `rm`. The guard lets it run in these conditions only:
-  - Each target is a build directory (for example, `dist`, `build`, or `node_modules`).
-  - Or each target is a named item in a temp directory (for example, `/tmp/x` or `${TMPDIR:?}/x`).
-  - The guard always asks for `/tmp/*`. It also asks for `$TMPDIR/x`, because this path becomes `/x` if `TMPDIR` is not set.
+## `delegate`
 
-If Pi has no user interface, the guard blocks these commands.
+A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal? }`. Only `task` is required. The worker sees only the task, so the task must name the goal, the paths, and the acceptance criteria.
 
-The guard lets these commands run: pushes to feature branches, pull requests, and `rm` or `rm -f` of a file.
+| Role | For | Model, thinking | Web | Answer |
+|---|---|---|---|---|
+| `general` (default) | Any read-only task | `default`, `high` | no | Set by the task |
+| `scout` | Find or explain code | First model, `low` or `off` | no | `path:line` evidence, or `not-found` |
+| `research` | Docs and web | `default`, `high` | yes | Findings with sources |
+| `review` | A diff before a commit | `default`, `high` | no | `path:line: severity: problem. Fix:` |
+| `challenge` | Argue against a plan | `default`, `high` | yes | Premise, challenges, verdict |
 
-The guard compares text with patterns. It does not parse shell. Thus:
+Without `default`, the non-scout roles use the last model in the set. Without a set, workers use the session model.
 
-- Other forms of a command can get through, for example variables, aliases, and scripts.
-- Quoted text that looks like a command can cause a question. Commit messages are an exception.
-- The guard also checks commands inside the arguments of a command, for example `"$(git push …)"`.
+- `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Models outside the set are refused.
+- `rebuttal: true` (2+ runs): each worker sees the others' answers and keeps, revises, or retracts its claims. Only round 2 comes back; round 1 goes to a temp file.
+- `web`: turns the web tools on or off for any role. The label shows `web`.
+- `answer`: replaces the role's answer format, 1 to 400 characters.
+- `output: true`: each run gets `write`, but only inside its own new temp directory (mode 0700). The answer lists the files and their sizes, not their contents. Copy what you keep and check the diff. The tool does not delete these directories.
 
-To stop or start the guard for the session, use `/guard off` or `/guard on`. The guard is a safety net. The policy text is the rule.
+Results: answers over 12 KiB are cut and saved in full to a temp file (mode 0600). Worker cost is added to the session usage.
 
-### `Skill` tool
+Reviews: workers cannot run git. Write the diff to a file first (`git add -N` new files, then `git diff HEAD > /tmp/x.diff`), pass its path, and do not edit those files until the review returns.
 
-The `Skill` tool (`extensions/skill.ts`) loads the instructions of a skill by its name.
+### Limits
 
-Many skills are written for Claude Code. They tell the agent to "call the Skill tool with `tdd`". Pi has no such tool. Without this tool, the main session and the workers did not load these skills. The workers reported the skills as BLOCKED.
+- Time: 300 s for `scout`, 900 s for the other roles. Cost: $5 for each worker, checked after each reply. A final answer over the cap is kept.
+- On a limit, a cancel, the end of the session, or a normal exit of Pi, the tool SIGKILLs the worker's process group. A process that leaves the group keeps running (for example, `fetch_content`'s GitHub clones). With `output: true`, a stopped worker can leave incomplete files; the answer lists them.
+- If the main Pi process is killed, workers can keep running. Find them with `ps -axo pid,ppid,pgid,comm | awk '$2==1 && $1==$3 && $4=="pi"'` and stop each with `kill -- -<pid>`.
 
-- Each worker gets this tool.
-- The tool gives only the skills that Pi found for the run.
-- The tool refuses skills that have `disable-model-invocation`. To start one of these skills, use `/skill:<name>`.
+### Safety
 
-### Skills
+Workers get `read`, `grep`, `find`, `ls`, and `Skill`, and the web tools if `web` is on. They never get `bash` or `edit`, nor `write` without `output`. They start with `--no-mcp`. A worker that needs a missing step reports `BLOCKED: ...`.
 
-This repo does not contain skills. Install skills in one of these locations:
+This is not a sandbox:
 
-- `~/.agents/skills` for all projects.
-- `.agents/skills` for one project.
+- `read` reaches files outside the project. The tool blocks `read`, `grep`, `find`, and `ls` calls that name likely secrets (`.env*` except `.example`, `.sample`, `.template`; `.npmrc`, `.netrc`, `.git-credentials`, private keys, `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.pi/agent/auth.json`), also through symlinks and globs. A broad search such as `grep TOKEN .` can still match them.
+- Web access is a prompt-injection risk: a fetched page can tell a worker to read a local file and send it to a URL. Turn on `web` only when the task needs outside sources. Workers are told to treat fetched content as data and never to use `fetch_content`'s `auth` (browser cookies).
+- Workers load your installed extensions, because provider login is an extension.
+
+## Guard
+
+`extensions/guard.ts` asks before these bash commands run, and blocks them when Pi has no UI:
+
+- A push to `main` or `master`, a push with no branch after `cd`, `checkout`, `switch`, or `-C`, and any force push.
+- History rewrites: `commit --amend`, `rebase`, `filter-repo`, `filter-branch`.
+- Discarding work: `reset --hard`, `clean -f`, `checkout --`, `checkout .`, `checkout -f`, `restore` (working tree), `switch -f`, `stash drop`, `stash clear`, `branch -D`.
+- A recursive `rm`, unless each target is a build directory (such as `dist`, `build`, `node_modules`, `coverage`) or a named item in a temp directory. `/tmp/*` and `$TMPDIR/x` always ask.
+
+It finds these inside quotes, subshells, `sh -c`, `eval`, `env`, `xargs`, and full paths. Pushes to feature branches, PRs, and `rm` of a single file run without a question. It matches text and does not parse shell, so variables, aliases, and scripts can get past it, and quoted text that looks like a command can ask (commit messages excepted). It is a safety net; the policy is the rule. Use `/guard off` or `/guard on` for the session.
+
+## `Skill`
+
+`extensions/skill.ts` loads a skill's instructions by name for the main session and workers. It offers only skills that Pi found, and refuses skills with `disable-model-invocation`; start those with `/skill:<name>`. This repo has no skills. Install them in `~/.agents/skills` (all projects) or `.agents/skills` (one project).
 
 ## Extend
 
-- **Give a worker a special procedure:** Write or install a skill. Then name the skill in the task, for example "Load the `X` skill first." Workers load skills with `Skill`.
-  - A read-only worker can do the reading and thinking steps of a skill.
-  - A worker reports these steps as BLOCKED: edits, commands, other workers, questions to the user, commits. Use the main session for skills that have these steps.
-- **Add a command to the guard:** Add a check in `classify()` in `extensions/guard.ts`. Add test cases in `extensions/guard.test.mjs`.
-- **Change the policy:** Edit `GLOBAL_AGENTS.md`. Then start a new session.
-- **Add an extension:** Put the `.ts` file in `extensions/`. Add the file to `pi.extensions` in `extensions/package.json`.
+- **Worker procedure:** install a skill and write "Load the `X` skill first" in the task. Workers report edit, command, and question steps as BLOCKED.
+- **Guard rule:** add a check to `classify()` in `extensions/guard.ts` and cases to `extensions/guard.test.mjs`.
+- **Policy:** edit `GLOBAL_AGENTS.md`, then start a new session.
+- **Extension:** add the `.ts` file to `extensions/` and to `pi.extensions` in `extensions/package.json`.
 
 ## Check
 
-You must have Node 22.19.0 or later.
+Requires Node 22.19.0 or later. When you upgrade Pi, update the pinned `@earendil-works/pi-coding-agent` dev dependency and the lock file to the same version.
 
-When you upgrade Pi, update the pinned `@earendil-works/pi-coding-agent` development dependency and the lock file to the same version.
+```bash
+npm ci --prefix extensions        # once, and after package-lock.json changes
+npm run check --prefix extensions
+```
 
-Do these steps:
-
-1. Install the tools. Do this one time, and again after `package-lock.json` changes:
-   ```bash
-   npm ci --prefix extensions
-   ```
-2. Run the check:
-   ```bash
-   npm run check --prefix extensions
-   ```
-
-The check runs these steps in this sequence. It stops at the first failure.
-
-1. Biome: lint and format (`--write`).
-2. `tsc --noEmit`.
-3. `node --test`.
-4. `bin/install.test.sh`.
-5. `git diff --check` against HEAD (staged and unstaged changes).
-
-The development tools are in `extensions/package.json`, because `pi install <local dir>` never runs npm.
+The check runs Biome (lint and format, `--write`), `tsc --noEmit`, `node --test`, `bin/install.test.sh`, and `git diff --check HEAD`. It stops at the first failure.
