@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -22,6 +31,7 @@ const {
 	loadModelSet,
 	resolveRun,
 	secretPathIn,
+	writeBlockedIn,
 } = await import("./delegate.ts");
 
 const DEFAULT_LIMITS = { ...LIMITS };
@@ -42,7 +52,7 @@ const FAKE_BIN = join(TEST_HOME, "fake-pi.mjs");
 writeFileSync(
 	FAKE_BIN,
 	`#!/usr/bin/env node
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -69,6 +79,20 @@ process.stdin.on("end", () => {
   }
   if (mode === "retry-then-ok") { emit("", { stopReason: "error", errorMessage: "overloaded" }); emit("answer after retry"); process.exit(0); }
   if (mode === "error-exit0") { emit("half", { stopReason: "error", errorMessage: "provider error" }); process.exit(0); }
+  if (mode === "write-many") {
+    const out = process.env.ME_PI_OUTPUT_DIR;
+    writeFileSync(out + "/a\\n[forged label]", "x");
+    for (let i = 0; i < 52; i++) writeFileSync(out + "/f" + String(i).padStart(2, "0"), "x");
+    emit("wrote many");
+    process.exit(0);
+  }
+  if (mode === "write-draft") {
+    const out = process.env.ME_PI_OUTPUT_DIR;
+    mkdirSync(out + "/notes");
+    writeFileSync(out + "/notes/draft.md", "DRAFT-BODY");
+    emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (flag("--append-system-prompt") || "").includes("only for files inside " + out));
+    process.exit(0);
+  }
   if (mode === "echo-system") { emit(flag("--append-system-prompt") || ""); process.exit(0); }
   if (mode === "silent") process.exit(0);
   if (mode === "ended-midway") { emit("reading more files", { stopReason: "toolUse" }); process.exit(0); }
@@ -130,7 +154,7 @@ function applyEnv(vars) {
 
 // Sets env vars and limits for one test and restores them afterwards.
 function setup(t, { env = {}, config, limits = {} } = {}) {
-	const vars = { PI_BIN: FAKE_BIN, ME_PI_RUN: undefined, ...env };
+	const vars = { PI_BIN: FAKE_BIN, ME_PI_RUN: undefined, TMPDIR: TEST_HOME, ...env };
 	if (config !== undefined) {
 		const path = join(mkdtempSync(join(TEST_HOME, "cfg-")), "delegate.json");
 		writeFileSync(path, typeof config === "string" ? config : JSON.stringify(config));
@@ -184,6 +208,7 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge"]);
 	assert.equal(properties.web.type, "boolean");
 	assert.equal(properties.answer.maxLength, 400);
+	assert.equal(properties.output.type, "boolean");
 	const worker = setup(t, { env: { ME_PI_RUN: "1" } });
 	assert.equal(worker.tool, undefined, "no nested delegation");
 	assert.deepEqual(Object.keys(worker.handlers), ["tool_call"]);
@@ -230,6 +255,121 @@ test("workers cannot name secret paths in read, grep, find, or ls", async (t) =>
 	const blocked = await hook({ toolName: "read", input: { path: "~/.ssh/id_rsa" } }, { cwd: dir });
 	assert.match(blocked.reason, /\.ssh\/id_rsa may hold secrets; delegated workers cannot read it/);
 	assert.equal(await hook({ toolName: "read", input: { path: "notes.txt" } }, { cwd: dir }), undefined);
+});
+
+test("workers write only inside their own output directory", async (t) => {
+	const out = mkdtempSync(join(TEST_HOME, "out-"));
+	const cwd = mkdtempSync(join(TEST_HOME, "cwd-"));
+	symlinkSync(TEST_HOME, join(out, "escape-link"));
+	for (const [tool, input] of [
+		["write", { path: join(cwd, "x.md") }],
+		["write", { path: "x.md" }],
+		["write", { path: join(out, "../x.md") }],
+		["write", { path: out }],
+		["write", { path: `${out}-sibling/x.md` }],
+		["write", { path: join(out, "escape-link/x.md") }],
+		["write", { path: "~/x.md" }],
+		["write", { path: `file://${out}/x.md` }],
+		["write", {}],
+		["edit", { path: join(cwd, "x.md") }],
+	]) {
+		assert.ok(writeBlockedIn(tool, input, cwd, out), `${tool} ${JSON.stringify(input)} should be blocked`);
+	}
+	for (const input of [{ path: join(out, "a.md") }, { path: `@${out}/new/dir/b.md` }, { path: join(out, "..x.md") }]) {
+		assert.equal(writeBlockedIn("write", input, cwd, out), undefined, `${JSON.stringify(input)} should pass`);
+	}
+	// Pi expands these to $HOME and a file URL, so they are refused even where they would resolve inside.
+	assert.match(writeBlockedIn("write", { path: "~/x.md" }, out, out), /use an absolute path inside/);
+	assert.match(writeBlockedIn("write", { path: "file:x.md" }, out, out), /use an absolute path inside/);
+	// A dangling symlink inside: the write would follow it out.
+	symlinkSync(join(cwd, "made-by-write.md"), join(out, "dangling.md"));
+	assert.match(writeBlockedIn("write", { path: join(out, "dangling.md") }, cwd, out), /cannot be resolved/);
+	// Pi writes `a<NBSP>b/x.md` to `a b/x.md`; a symlink named with the NBSP must not decide the check.
+	mkdirSync(join(cwd, "a b"));
+	symlinkSync(out, join(cwd, "a\u00A0b"));
+	assert.match(writeBlockedIn("write", { path: join(cwd, "a\u00A0b/x.md") }, cwd, out), /is outside/);
+	assert.equal(writeBlockedIn("read", { path: join(cwd, "x.md") }, cwd, out), undefined);
+	assert.match(writeBlockedIn("write", { path: join(out, "a.md") }, cwd, ""), /without `output: true`/);
+
+	const hook = setup(t, { env: { ME_PI_RUN: "1", ME_PI_OUTPUT_DIR: out } }).handlers.tool_call;
+	const blocked = await hook({ toolName: "write", input: { path: join(cwd, "x.md") } }, { cwd });
+	assert.match(blocked.reason, /^Blocked: .*x\.md is outside /);
+	assert.equal(await hook({ toolName: "write", input: { path: join(out, "a.md") } }, { cwd }), undefined);
+	const noOutput = setup(t, { env: { ME_PI_RUN: "1", ME_PI_OUTPUT_DIR: "" } }).handlers.tool_call;
+	assert.ok((await noOutput({ toolName: "write", input: { path: join(out, "a.md") } }, { cwd })).block);
+});
+
+test("output: each worker gets write and a fresh 0700 directory; the result lists files, not contents", async (t) => {
+	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "write-draft" } });
+	const res = await run(tool, { task: "draft", output: true, runs: [{ model: HAIKU }, { model: OPUS }] });
+	assert.equal(res.isError, false, text(res));
+	assert.doesNotMatch(text(res), /DRAFT-BODY/);
+	const dirs = [...text(res).matchAll(/\nFiles in (\S+): notes\/draft\.md \(10 B\)\n/g)].map((m) => m[1]);
+	assert.equal(dirs.length, 2, text(res));
+	assert.notEqual(dirs[0], dirs[1]);
+	for (const dir of dirs) {
+		assert.equal(statSync(dir).mode & 0o777, 0o700);
+		assert.equal(readFileSync(join(dir, "notes/draft.md"), "utf8"), "DRAFT-BODY");
+	}
+	assert.match(text(res), new RegExp(`tools=${LOCAL_TOOLS},write promptNamesDir=true`));
+});
+
+test("output with rebuttal: round 2 gets new directories and the round-1 file lists", async (t) => {
+	const marker = scratch("marker");
+	const { tool } = setup(t, {
+		config: { models: [HAIKU, OPUS] },
+		env: { FAKE_PI_MODE: "write-draft", FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { task: "d", output: true, runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true });
+	assert.equal(res.isError, false, text(res));
+	const dirsOf = (s) => [...s.matchAll(/Files in (\S+): notes\/draft\.md \(10 B\)/g)].map((m) => m[1]);
+	const round1File = text(res).match(/Round-1 answers: (\S+)/)[1];
+	const round1Dirs = dirsOf(readFileSync(round1File, "utf8"));
+	const round2Dirs = dirsOf(text(res));
+	assert.equal(new Set([...round1Dirs, ...round2Dirs]).size, 4, text(res));
+	const round2 = readFileSync(marker, "utf8")
+		.trim()
+		.split("\n")
+		.map(JSON.parse)
+		.filter((c) => c.prompt.includes("## Round 2"));
+	for (const c of round2) assert.deepEqual(dirsOf(c.prompt).sort(), [...round1Dirs].sort());
+});
+
+test("output: the file list is capped and quotes names with control characters", async (t) => {
+	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "write-many" } });
+	const res = text(await run(tool, { task: "x", output: true }));
+	assert.match(res, /: "a\\n\[forged label\]" \(1 B\), f00 \(1 B\), /);
+	assert.match(res, /, f48 \(1 B\), \u2026 3 more\n\[claude-opus-5-5 /);
+	assert.equal(res.split("\n").length, 3, res);
+});
+
+test("output: a failed round-2 run lists its own directory", async (t) => {
+	const { tool } = setup(t, {
+		config: { models: [HAIKU, OPUS] },
+		env: { FAKE_PI_MODE: "fail-round2", FAKE_PI_FAIL_MODEL: OPUS },
+	});
+	const res = await run(tool, { task: "x", output: true, runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true });
+	assert.match(
+		text(res),
+		/round 2 failed: exit 1: rate limited in round 2\nFiles in \S+: none written\nRound-1 answer:/,
+	);
+});
+
+test("output: a failed run still lists its files; a failed mkdtemp is reported", async (t) => {
+	const failed = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "fail" } });
+	assert.match(text(await run(failed.tool, { task: "x", output: true })), /\nFiles in \S+: none written\n\[/);
+	const noTmp = setup(t, { config: { models: [HAIKU, OPUS] }, env: { TMPDIR: join(TEST_HOME, "missing-tmp") } });
+	const res = await run(noTmp.tool, { task: "x", output: true });
+	assert.equal(res.isError, true);
+	assert.match(text(res), /^\u2717 could not create the output directory: ENOENT/);
+});
+
+test("output with no files written says so; without output there is no write tool", async (t) => {
+	const none = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const empty = text(await run(none.tool, { task: "x", output: true }));
+	assert.match(empty, /^DONE .*tools=read,grep,find,ls,Skill,write .*\nFiles in \S+: none written\n\[/);
+	const without = text(await run(none.tool, { task: "x" }));
+	assert.doesNotMatch(without, /Files in|,write/);
 });
 
 test("model set: scout uses the first model at low; other roles default, else last, at high", () => {
@@ -380,6 +520,7 @@ test("bad calls are refused before any worker starts", async (t) => {
 		[{ role: "__proto__", task: "x" }, /role must be one of/],
 		[{ role: "scout", task: "  " }, /task must be a non-empty string/],
 		[{ task: "x", web: "yes" }, /web must be true or false/],
+		[{ task: "x", output: 1 }, /output must be true or false/],
 		[{ task: "x", answer: "" }, /answer must be a non-empty string of at most 400 characters/],
 		[{ task: "x", answer: " \n " }, /answer must be a non-empty string of at most 400 characters/],
 		[{ task: "x", answer: "y".repeat(401) }, /answer must be a non-empty string of at most 400 characters/],

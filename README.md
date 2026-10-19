@@ -67,14 +67,14 @@ Only the answers of the workers go back to the main session.
 
 - All workers get the tools `read`, `grep`, `find`, `ls`, and `Skill`.
 - The `research` and `challenge` workers also get the web tools. The `web` value of a call can change this.
-- Workers do not get `bash`, `edit`, or `write`.
+- Workers do not get `bash` or `edit`. Workers get `write` only if the call has `output: true` (see "Draft files").
 - Workers do not get MCP tools. The tool starts workers with `--no-mcp`, because `--tools` does not remove MCP tools.
 
-Thus, a worker cannot edit files, run commands, run tests, start other workers, or commit. If a task needs one of these steps, the worker writes the line `BLOCKED: ...`. The main session does all edits, checks, and commits.
+Thus, a worker cannot edit your files, run commands, run tests, start other workers, or commit. If a task needs one of these steps, the worker writes the line `BLOCKED: ...`. The main session does all edits, checks, and commits.
 
 #### Call
 
-A call has this structure: `{ task, role?, web?, answer?, runs?, rebuttal? }`. Only `task` is necessary.
+A call has this structure: `{ task, role?, web?, answer?, output?, runs?, rebuttal? }`. Only `task` is necessary.
 
 The tool sends the task to the worker on standard input. Thus, the size of the task has no command-line limit.
 
@@ -82,6 +82,7 @@ The tool sends the task to the worker on standard input. Thus, the size of the t
 - `web: true` gives the web tools to the workers. `web: false` removes them. If the call has no `web`, the role sets it. Before you use `web: true`, read the risk in "The tools are not a sandbox".
 - When the workers have the web tools, the progress text and the label of each answer show `web`.
 - `answer` replaces the answer format of the role. It has 1 to 400 characters. If `answer` is empty, has only spaces, or has more than 400 characters, the tool refuses the call. No worker starts.
+- `output: true` lets each worker write draft files. See "Draft files".
 
 | Role | Use it for | Model and thinking | Answer |
 |---|---|---|---|
@@ -102,6 +103,17 @@ The main session then sends one call:
 
 Only the round-2 answers go back to the main session. The tool writes the round-1 answers to a temp file and gives the path.
 
+#### Draft files
+
+Use `output: true` when a worker must write a draft, for example a document, a plan, or a patch.
+
+- The tool makes a new temp directory for each worker run (mode 0700). Each run in `runs` and each round-2 run gets its own directory.
+- The worker gets the `write` tool. The worker rules give it the path of its directory.
+- In the worker, the tool blocks `write` and `edit` calls to a path outside this directory. The check follows symbolic links and refuses a broken symbolic link. The check changes Unicode spaces to spaces, as Pi does. The check refuses paths that start with `~` or `file:`, because Pi expands them.
+- The answer lists the files in the directory with their sizes. The answer does not contain the file contents.
+- With `rebuttal: true`, each round-2 worker gets the file lists of round 1. The saved round-1 answers also contain them.
+- The tool does not delete the directories. The main session copies the files that it keeps, and examines the diff.
+
 #### Limits
 
 - Time limit: 300 seconds for `scout`, 900 seconds for the other roles.
@@ -109,7 +121,7 @@ Only the round-2 answers go back to the main session. The tool writes the round-
   - The tool checks the cost after each reply of the model.
   - If a final answer goes above the limit, the tool keeps the answer.
   - The tool does not count model calls that a tool makes.
-- The tool stops the process group of the worker with SIGKILL in these conditions: time limit, cancel, cost limit, end of the session. Read-only workers have no data to save, so a hard stop is safe.
+- The tool stops the process group of the worker with SIGKILL in these conditions: time limit, cancel, cost limit, end of the session. Read-only workers have no data to save, so a hard stop is safe. With `output: true`, a stopped worker can leave incomplete files. The answer lists them.
 - When a worker exits, the tool stops the other processes in its group.
 - When the main process exits normally, the tool stops all workers.
 - A process that leaves the group continues to run. For example, `fetch_content` clones GitHub repositories in a separate group.

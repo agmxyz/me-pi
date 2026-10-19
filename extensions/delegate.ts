@@ -5,13 +5,25 @@
  * Workers are `pi --mode json -p` child processes with read, search, and `Skill` tools (plus web tools for
  * research, challenge, or `web: true`); the main session does every edit, check, and commit. The models
  * come from a hand-edited set in ~/.pi/agent/delegate.json. In workers this extension only blocks
- * reads of likely secret paths (see secretPathIn).
+ * reads of likely secret paths (see secretPathIn) and, with `output: true`, writes outside the worker's own
+ * temp directory (see writeBlockedIn).
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	statSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
@@ -84,6 +96,68 @@ export function secretPathIn(toolName: string, input: unknown, cwd: string): str
 	return [absolute, realpathOr(absolute)].find(isSecretPath);
 }
 
+// --- Draft output (enforced inside workers) -------------------------------------------------------
+
+/** The resolved path of a missing file: its nearest existing ancestor with symlinks resolved, plus the rest. */
+// Undefined when an existing entry cannot be resolved, such as a dangling symlink that a write would follow.
+function realTarget(absolute: string): string | undefined {
+	let dir = absolute;
+	const rest: string[] = [];
+	const exists = (p: string) => {
+		try {
+			return Boolean(lstatSync(p));
+		} catch {
+			return false;
+		}
+	};
+	while (!exists(dir) && dirname(dir) !== dir) {
+		rest.unshift(basename(dir));
+		dir = dirname(dir);
+	}
+	try {
+		return join(realpathSync.native(dir), ...rest);
+	} catch {
+		return undefined;
+	}
+}
+
+// Pi turns these into plain spaces before it resolves a path (normalizePath).
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/**
+ * Why a worker's write/edit call is blocked, or undefined when its path is inside `outDir`. `~` and
+ * `file:` paths are refused rather than expanded, so this check cannot resolve them differently from Pi.
+ */
+export function writeBlockedIn(toolName: string, input: unknown, cwd: string, outDir?: string): string | undefined {
+	if (toolName !== "write" && toolName !== "edit") return undefined;
+	if (!outDir) return "delegated workers cannot write files without `output: true`";
+	const path = (input as { path?: unknown } | undefined)?.path;
+	if (typeof path !== "string" || !path) return "no path";
+	const given = path.replace(UNICODE_SPACES, " ").replace(/^@/, "");
+	if (/^(?:~|file:)/i.test(given)) return `use an absolute path inside ${outDir}, not ${path}`;
+	const target = realTarget(resolve(cwd, given));
+	if (!target) return `${path} cannot be resolved`;
+	const inside = relative(realpathOr(outDir), target);
+	if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside))
+		return `${path} is outside ${outDir}`;
+	return undefined;
+}
+
+const MAX_LISTED = 50;
+
+/**
+ * The files a worker wrote into its output directory, as `name (bytes B)`, at most MAX_LISTED. Names
+ * come from the worker: one with control characters is quoted so it cannot add lines to the result.
+ */
+function listOutput(dir: string): string[] {
+	const files = (readdirSync(dir, { recursive: true }) as string[])
+		.filter((name) => statSync(join(dir, name)).isFile())
+		.sort();
+	const shown = (name: string) => (/[\x00-\x1f\x7f]/.test(name) ? JSON.stringify(name) : name);
+	const listed = files.slice(0, MAX_LISTED).map((name) => `${shown(name)} (${statSync(join(dir, name)).size} B)`);
+	return files.length > MAX_LISTED ? [...listed, `\u2026 ${files.length - MAX_LISTED} more`] : listed;
+}
+
 // --- Roles and contract ---------------------------------------------------------------------------
 
 /** A preset: whether its workers get the web tools, and its final answer format (general has none). */
@@ -92,9 +166,10 @@ interface Role {
 	answer?: string;
 }
 
-/** One call's workers: the role, and the web tools and answer format after the call's overrides. */
+/** One call's workers: the role, the web tools and answer format after the call's overrides, and `output`. */
 interface Job extends Role {
 	role: string;
+	output: boolean;
 }
 
 export const ROLES: Record<string, Role> = {
@@ -127,8 +202,13 @@ export const WORKER_CONTRACT = [
 ].join("\n");
 
 // Without an answer format (general, unless the call sets one), the task sets the format.
-const workerSystemPrompt = ({ role, answer }: Job) =>
-	`${WORKER_CONTRACT}\nRole: ${role}.${answer ? ` Final answer format: ${answer}` : ""}`;
+// With an output directory, the worker may also write there; its answer lists the files, not their contents.
+const workerSystemPrompt = ({ role, answer }: Job, outDir?: string) =>
+	`${WORKER_CONTRACT}\nRole: ${role}.${answer ? ` Final answer format: ${answer}` : ""}${
+		outDir
+			? `\nOutput (an exception to the read-only rule): you may also use \`write\`, but only for files inside ${outDir} (use absolute paths); writes anywhere else are blocked. Put your drafts there. Inside your final answer format, also list each file you wrote with one line on what it holds; do not repeat the file contents.`
+			: ""
+	}`;
 
 // --- Model set ------------------------------------------------------------------------------------
 
@@ -227,6 +307,9 @@ export interface RunResult {
 	requested: { model?: string; thinking: string };
 	/** Whether the worker had the web tools. */
 	web: boolean;
+	/** With `output: true`: the worker's own fresh directory, and the files it holds after the run. */
+	outDir?: string;
+	files?: string[];
 	model?: string;
 	output: string;
 	failure?: string;
@@ -261,8 +344,19 @@ function runWorker(
 	const start = Date.now();
 	const { role, web } = job;
 	const result: RunResult = { requested: run, web, output: "", turns: 0, usage: {}, tools: [], stderr: "", ms: 0 };
-	const args = ["--mode", "json", "-p", "--no-session", "--no-mcp", "--tools", web ? WEB_TOOLS : LOCAL_TOOLS];
-	args.push("--thinking", run.thinking, "--append-system-prompt", workerSystemPrompt(job));
+	if (job.output) {
+		try {
+			result.outDir = mkdtempSync(join(tmpdir(), "me-pi-delegate-out-")); // Mode 0700.
+		} catch (err: any) {
+			return Promise.resolve({
+				...result,
+				failure: `could not create the output directory: ${err?.message ?? err}`,
+			});
+		}
+	}
+	const tools = `${web ? WEB_TOOLS : LOCAL_TOOLS}${result.outDir ? ",write" : ""}`;
+	const args = ["--mode", "json", "-p", "--no-session", "--no-mcp", "--tools", tools];
+	args.push("--thinking", run.thinking, "--append-system-prompt", workerSystemPrompt(job, result.outDir));
 	if (run.model) args.push("--model", run.model);
 	const timeoutMs = (role === "scout" ? LIMITS.scoutTimeoutSecs : LIMITS.timeoutSecs) * 1000;
 
@@ -274,7 +368,7 @@ function runWorker(
 			cwd,
 			detached: true,
 			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, ME_PI_RUN: "1" },
+			env: { ...process.env, ME_PI_RUN: "1", ME_PI_OUTPUT_DIR: result.outDir ?? "" },
 		});
 		const pid = proc.pid;
 		const groups = liveGroups();
@@ -301,6 +395,13 @@ function runWorker(
 			proc.stderr.destroy();
 			if (pid !== undefined) groups.delete(pid);
 			result.ms = Date.now() - start;
+			if (result.outDir) {
+				try {
+					result.files = listOutput(result.outDir);
+				} catch (err: any) {
+					result.files = [`(could not list: ${err?.message ?? err})`];
+				}
+			}
 			// A final answer ("stop") counts even if a stop or stray pipe holder came after it.
 			const answered = lastStopReason === "stop" && !result.failure && Boolean(result.output.trim());
 			const lastStderr = result.stderr.trim().split("\n").at(-1)?.slice(0, 300);
@@ -405,18 +506,24 @@ export function saveFull(text: string): string {
 	}
 }
 
+// The paths only: the main session copies or reads the drafts it needs.
+const filesLine = (r: RunResult) =>
+	r.outDir ? `\nFiles in ${r.outDir}: ${r.files?.length ? r.files.join(", ") : "none written"}` : "";
+
 function formatRun(r: RunResult): string {
 	const answer = r.output.trim() || "(empty answer)";
 	if (!r.failure && Buffer.byteLength(answer, "utf8") > ANSWER_CAP)
-		return `${cap(answer, ANSWER_CAP)} Full answer: ${saveFull(answer)}\n${label(r)}`;
-	if (!r.failure) return `${answer}\n${label(r)}`;
+		return `${cap(answer, ANSWER_CAP)} Full answer: ${saveFull(answer)}${filesLine(r)}\n${label(r)}`;
+	if (!r.failure) return `${answer}${filesLine(r)}\n${label(r)}`;
 	const partial = r.output.trim() ? `\nPartial answer:\n${cap(r.output.trim(), FAILED_PARTIAL_CAP)}` : "";
-	return `✗ ${r.failure}${partial}\n${label(r)}`;
+	return `✗ ${r.failure}${partial}${filesLine(r)}\n${label(r)}`;
 }
 
 function rebuttalPrompt(task: string, own: RunResult, others: RunResult[]): string {
-	const answers = others.map((o) => `### ${modelName(o)}\n${cap(o.output.trim(), ANSWER_CAP)}`).join("\n\n");
-	return `Task:\n${task}\n\n## Round 2 (rebuttal)\nYou already answered this task in round 1. Your round-1 answer:\n\n${cap(own.output.trim(), ANSWER_CAP)}\n\nOther workers answered the same task independently:\n\n${answers}\n\nCheck their evidence against yours with your tools where needed. Keep, revise, or retract each of your claims and point out errors in theirs. Final answer in the format your system prompt or the task sets, then \`Changed: yes|no\` with the reason.`;
+	const answers = others
+		.map((o) => `### ${modelName(o)}\n${cap(o.output.trim(), ANSWER_CAP)}${filesLine(o)}`)
+		.join("\n\n");
+	return `Task:\n${task}\n\n## Round 2 (rebuttal)\nYou already answered this task in round 1. Your round-1 answer:\n\n${cap(own.output.trim(), ANSWER_CAP)}${filesLine(own)}\n\nOther workers answered the same task independently:\n\n${answers}\n\nCheck their evidence against yours with your tools where needed. Keep, revise, or retract each of your claims and point out errors in theirs. Final answer in the format your system prompt or the task sets, then \`Changed: yes|no\` with the reason.`;
 }
 
 // --- Tool -----------------------------------------------------------------------------------------
@@ -463,6 +570,11 @@ function buildSchema(set: ModelSet) {
 					properties: { model, thinking: { type: "string", enum: THINKING_LEVELS } },
 				},
 			},
+			output: {
+				type: "boolean",
+				description:
+					"Give each worker `write`, only inside its own fresh temp directory, for drafts (docs, plans, patches). The result lists the file paths, not their contents; copy what you need and check the diff.",
+			},
 			rebuttal: {
 				type: "boolean",
 				description:
@@ -475,13 +587,14 @@ function buildSchema(set: ModelSet) {
 }
 
 export const PROMPT_SNIPPET =
-	"Run read-only workers (general, or the presets scout, research, review, challenge), alone or as a multi-model panel with rebuttal; only their answers come back";
+	"Run read-only workers (general, or the presets scout, research, review, challenge), alone or as a multi-model panel with rebuttal; only their answers come back (drafts only with `output: true`)";
 
 export const PROMPT_GUIDELINES = [
 	"Workers are read-only: they search, research, review, and challenge; you edit, run commands and tests, and commit. Delegate when the work means reading more than about 3 files you will not edit, researching docs or the web, reviewing, or challenging a plan; read 1-3 known files yourself.",
 	"Before a commit that touches 2+ files or adds behaviour, get a fresh review: write `git diff HEAD` to a temp file (`git add -N` new files first) and pass its path with the acceptance criteria, say you ran the checks, keep your self-assessment out, and do not edit those files until the review returns.",
 	"When the user names several models for one question, send one call with one `runs` entry per model (with its thinking) and `rebuttal: true` if they should check each other; then report agreements, disagreements with their evidence, and your verdict.",
 	"Omit `role` for a general worker, or pick the preset that fits; `answer` (at most 400 characters) sets the answer format. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
+	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory and the result lists the files; copy what you keep and check the diff yourself.",
 	"Pass on only what matters from worker answers, and resolve or report every BLOCKED line.",
 ];
 
@@ -490,8 +603,11 @@ export default function (pi: ExtensionAPI) {
 	if (process.env.ME_PI_RUN) {
 		pi.on("tool_call", async (event, ctx) => {
 			const secret = secretPathIn(event.toolName, event.input, ctx.cwd);
-			if (!secret) return undefined;
-			return { block: true, reason: `Blocked: ${secret} may hold secrets; delegated workers cannot read it.` };
+			if (secret)
+				return { block: true, reason: `Blocked: ${secret} may hold secrets; delegated workers cannot read it.` };
+			const write = writeBlockedIn(event.toolName, event.input, ctx.cwd, process.env.ME_PI_OUTPUT_DIR);
+			if (write) return { block: true, reason: `Blocked: ${write}.` };
+			return undefined;
 		});
 		return;
 	}
@@ -514,16 +630,16 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run read-only Pi workers and get back only their answers. Workers read files and load skills; research and challenge, or any call with `web: true`, also use the web. They cannot edit, run commands, or commit.",
+			"Run read-only Pi workers and get back only their answers. Workers read files and load skills; research and challenge, or any call with `web: true`, also use the web. They cannot edit, run commands, or commit; with `output: true` each one can write drafts into its own temp directory.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		parameters: buildSchema(schemaSet) as any,
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
 			const fail = (text: string) => ({ content: [{ type: "text" as const, text }], details: {}, isError: true });
-			const { role = "general", task, web, answer, rebuttal } = params ?? {};
+			const { role = "general", task, web, answer, output, rebuttal } = params ?? {};
 			const unknown = Object.keys(params ?? {}).filter(
-				(k) => !["role", "task", "web", "answer", "runs", "rebuttal"].includes(k),
+				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal"].includes(k),
 			);
 			if (unknown.length)
 				return fail(
@@ -535,7 +651,13 @@ export default function (pi: ExtensionAPI) {
 			if (web !== undefined && typeof web !== "boolean") return fail("web must be true or false");
 			if (answer !== undefined && (typeof answer !== "string" || !answer.trim() || answer.length > MAX_FORMAT))
 				return fail(`answer must be a non-empty string of at most ${MAX_FORMAT} characters`);
-			const job: Job = { role, web: web ?? ROLES[role].web, answer: answer?.trim() ?? ROLES[role].answer };
+			if (output !== undefined && typeof output !== "boolean") return fail("output must be true or false");
+			const job: Job = {
+				role,
+				web: web ?? ROLES[role].web,
+				answer: answer?.trim() ?? ROLES[role].answer,
+				output: output === true,
+			};
 			const specs: RunSpec[] = params.runs ?? [{}];
 			if (!Array.isArray(specs) || specs.length < 1 || specs.length > MAX_RUNS)
 				return fail(`runs must have 1-${MAX_RUNS} entries`);
@@ -628,11 +750,12 @@ export default function (pi: ExtensionAPI) {
 						if (i < 0) return formatRun(r);
 						const r2 = round2[i];
 						if (!r2.failure) return formatRun(r2);
-						return `✗ round 2 failed: ${r2.failure}\nRound-1 answer:\n${formatRun(r)}`;
+						return `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(r)}`;
 					});
 					failed ||= round2.some((r) => r.failure);
 					const full = round1.map(
-						(r) => `## ${modelName(r)} (round 1)\n\n${r.failure ? `✗ ${r.failure}\n` : ""}${r.output.trim()}`,
+						(r) =>
+							`## ${modelName(r)} (round 1)\n\n${r.failure ? `✗ ${r.failure}\n` : ""}${r.output.trim()}${filesLine(r)}`,
 					);
 					note = `Round-1 answers: ${saveFull(full.join("\n\n"))}`;
 				}
