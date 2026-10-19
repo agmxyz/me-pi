@@ -179,8 +179,11 @@ test("registers delegate in the main session; workers get only the secret-path b
 	const main = setup(t);
 	assert.ok(main.tool);
 	assert.deepEqual(Object.keys(main.handlers), ["session_shutdown"]);
-	assert.deepEqual(main.tool.parameters.required, ["role", "task"]);
-	assert.deepEqual(main.tool.parameters.properties.role.enum, ["scout", "research", "review", "challenge"]);
+	const { properties, required } = main.tool.parameters;
+	assert.deepEqual(required, ["task"]);
+	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge"]);
+	assert.equal(properties.web.type, "boolean");
+	assert.equal(properties.answer.maxLength, 400);
 	const worker = setup(t, { env: { ME_PI_RUN: "1" } });
 	assert.equal(worker.tool, undefined, "no nested delegation");
 	assert.deepEqual(Object.keys(worker.handlers), ["tool_call"]);
@@ -304,7 +307,7 @@ test("a scout runs read-only, one-shot, marked as a worker, with the prompt on s
 
 test("each worker gets the contract and its role's answer format", async (t) => {
 	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-system" } });
-	for (const role of Object.keys(ROLES)) {
+	for (const role of ["scout", "research", "review", "challenge"]) {
 		const res = await run(tool, { role, task: "x" });
 		assert.equal(res.isError, false, text(res));
 		assert.ok(text(res).startsWith(WORKER_CONTRACT), role);
@@ -324,12 +327,62 @@ test("roles get their tools: only research and challenge reach the web", async (
 	}
 });
 
+test("the default role is general: local tools, default model, high thinking, no answer format", async (t) => {
+	const { tool } = setup(t, {
+		config: { models: [HAIKU, SONNET, OPUS], default: SONNET },
+		env: { FAKE_PI_MODE: "echo-system" },
+	});
+	const system = text(await run(tool, { task: "x" }));
+	assert.ok(system.startsWith(`${WORKER_CONTRACT}\nRole: general.\n[claude-sonnet-5-5 @high `), system);
+	process.env.FAKE_PI_MODE = "";
+	const res = await run(tool, { task: "x" });
+	assert.equal(res.isError, false, text(res));
+	assert.match(text(res), new RegExp(`^DONE model=${SONNET} thinking=high tools=${LOCAL_TOOLS} .* role=general `));
+});
+
+test("web overrides the role's tools and adds a badge to progress and results", async (t) => {
+	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const progress = [];
+	const onUpdate = (u) => progress.push(text(u));
+	const on = await run(tool, { role: "review", task: "x", web: true }, undefined, onUpdate);
+	assert.match(text(on), new RegExp(`thinking=high tools=${WEB_TOOLS} .* role=review `));
+	assert.match(text(on), /\n\[claude-opus-5-5 @high web \$0\.0020 \d+s\]$/);
+	assert.ok(progress.length && progress.every((p) => p.startsWith("Workers [web]\n")), progress.join("|"));
+	progress.length = 0;
+	const off = await run(tool, { role: "research", task: "x", web: false }, undefined, onUpdate);
+	assert.match(text(off), new RegExp(`thinking=high tools=${LOCAL_TOOLS} .* role=research `));
+	assert.match(text(off), /\n\[claude-opus-5-5 @high \$0\.0020 \d+s\]$/);
+	assert.ok(progress.length && progress.every((p) => p.startsWith("Workers\n")), progress.join("|"));
+});
+
+test("web does not lift scout's thinking cap", async (t) => {
+	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const res = await run(tool, { role: "scout", task: "x", web: true, runs: [{ thinking: "high" }] });
+	assert.match(text(res), new RegExp(`^DONE model=${HAIKU} thinking=low tools=${WEB_TOOLS} .* role=scout `));
+	assert.match(text(res), /\n\[claude-haiku-5-5 @low web \$/);
+});
+
+test("a call's answer replaces the role's format, up to 400 characters", async (t) => {
+	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-system" } });
+	const prompt = (role, format) => `${WORKER_CONTRACT}\nRole: ${role}. Final answer format: ${format}\n[`;
+	const review = text(await run(tool, { role: "review", task: "x", answer: "  a table: option | risk \n" }));
+	assert.ok(review.startsWith(prompt("review", "a table: option | risk")), review);
+	const longest = text(await run(tool, { task: "x", answer: "y".repeat(400) }));
+	assert.ok(longest.startsWith(prompt("general", "y".repeat(400))), longest);
+});
+
 test("bad calls are refused before any worker starts", async (t) => {
 	const marker = scratch("marker");
 	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: { models: [HAIKU, OPUS] } });
 	for (const [params, error] of [
-		[{ role: "implement", task: "x" }, /role must be one of scout, research, review, challenge/],
+		[{ role: "implement", task: "x" }, /role must be one of general, scout, research, review, challenge/],
+		[{ role: "constructor", task: "x" }, /role must be one of/],
+		[{ role: "__proto__", task: "x" }, /role must be one of/],
 		[{ role: "scout", task: "  " }, /task must be a non-empty string/],
+		[{ task: "x", web: "yes" }, /web must be true or false/],
+		[{ task: "x", answer: "" }, /answer must be a non-empty string of at most 400 characters/],
+		[{ task: "x", answer: " \n " }, /answer must be a non-empty string of at most 400 characters/],
+		[{ task: "x", answer: "y".repeat(401) }, /answer must be a non-empty string of at most 400 characters/],
 		[{ role: "review", task: "x", runs: [] }, /runs must have 1-4 entries/],
 		[{ role: "review", task: "x", runs: Array(5).fill({}) }, /runs must have 1-4 entries/],
 		[{ role: "review", task: "x", rebuttal: true }, /rebuttal needs at least 2 runs/],
@@ -379,7 +432,7 @@ test("rebuttal returns only round 2; each worker saw its own and the others' ans
 		new RegExp(`You already answered this task in round 1\\. Your round-1 answer:\\n\\nDONE model=${SONNET}`),
 	);
 	assert.match(sonnet2, new RegExp(`### ${OPUS}\\nDONE model=${OPUS}`));
-	assert.match(sonnet2, /Changed: yes\|no/);
+	assert.match(sonnet2, /Final answer in the format your system prompt or the task sets, then `Changed: yes\|no`/);
 	const out = text(res);
 	assert.equal(out.match(/## Round 2 \(rebuttal\)/g)?.length, 2, "only round-2 answers come back");
 	assert.equal(out.match(/^DONE /gm)?.length, 2, "round-1 answers stay in details");

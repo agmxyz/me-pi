@@ -55,6 +55,7 @@ The `delegate` tool (`extensions/delegate.ts`) keeps work that uses many tokens 
 - Research documents and the web.
 - Review a diff.
 - Challenge a plan.
+- Do other read-only tasks.
 
 Only the answers of the workers go back to the main session.
 
@@ -65,7 +66,7 @@ Only the answers of the workers go back to the main session.
 #### Workers are read-only
 
 - All workers get the tools `read`, `grep`, `find`, `ls`, and `Skill`.
-- The `research` and `challenge` workers also get the web tools.
+- The `research` and `challenge` workers also get the web tools. The `web` value of a call can change this.
 - Workers do not get `bash`, `edit`, or `write`.
 - Workers do not get MCP tools. The tool starts workers with `--no-mcp`, because `--tools` does not remove MCP tools.
 
@@ -73,12 +74,18 @@ Thus, a worker cannot edit files, run commands, run tests, start other workers, 
 
 #### Call
 
-A call has this structure: `{ role, task, runs?, rebuttal? }`.
+A call has this structure: `{ task, role?, web?, answer?, runs?, rebuttal? }`. Only `task` is necessary.
 
 The tool sends the task to the worker on standard input. Thus, the size of the task has no command-line limit.
 
+- `role` selects a preset. If the call has no `role`, the tool uses `general`.
+- `web: true` gives the web tools to the workers. `web: false` removes them. If the call has no `web`, the role sets it. Before you use `web: true`, read the risk in "The tools are not a sandbox".
+- When the workers have the web tools, the progress text and the label of each answer show `web`.
+- `answer` replaces the answer format of the role. It has 1 to 400 characters. If `answer` is empty, has only spaces, or has more than 400 characters, the tool refuses the call. No worker starts.
+
 | Role | Use it for | Model and thinking | Answer |
 |---|---|---|---|
+| `general` | Other read-only tasks. This is the default. | `default`, or the last model if there is no `default`. Thinking `high`. | No fixed format. The task sets it. |
 | `scout` | Find or explain code. | First model in the set, thinking `low` (`off` if the call asks for it). | `path:line` evidence, or `not-found`. |
 | `research` | Documents, the web, many sources. | `default`, or the last model if there is no `default`. Thinking `high`. | Findings with their sources. |
 | `review` | A diff before a commit. | `default`, or the last model if there is no `default`. Thinking `high`. | `path:line: severity: problem. Fix:` |
@@ -135,7 +142,8 @@ Workers cannot run git. Thus, the main session does these steps:
 - The block also checks the `glob` value of `grep` and the `pattern` value of `find` (for example, `**/.env*`).
 - A broad search can still find text in these files. An example is `grep TOKEN .` with no glob.
 - `fetch_content` reads local files only for videos.
-- `scout` and `review` have no web tools. Thus, a prompt injection in a diff cannot send file contents out of the computer. `research` and `challenge` keep the web tools.
+- By default, `general`, `scout`, and `review` have no web tools. Thus, a prompt injection in a diff cannot send file contents out of the computer. `research` and `challenge` keep the web tools.
+- `web: true` gives the web tools to any role. This is a risk. A fetched page is untrusted data, and its text can try to steer the worker. For example, the page can tell the worker to read a local file and send the contents to a URL. Use `web: true` only when the task needs sources outside the computer. Use `web: false` for a `research` or `challenge` task that does not need the web.
 - The worker rules forbid the `auth` option of `fetch_content` (browser cookies). The rules tell workers that fetched content is data, not instructions.
 - Workers load your installed extensions, because provider login (for example, `pi-anthropic-auth`) is an extension.
 
