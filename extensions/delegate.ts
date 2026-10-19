@@ -117,6 +117,9 @@ export const WORKER_CONTRACT = [
 	"- Your final answer goes into another agent's limited context: only what the task asks for, under about 300 words unless the task says otherwise, then what you could not verify.",
 ].join("\n");
 
+const workerSystemPrompt = (role: string) =>
+	`${WORKER_CONTRACT}\nRole: ${role}. Final answer format: ${ROLES[role].answer}`;
+
 // --- Model set ------------------------------------------------------------------------------------
 
 export interface ModelSet {
@@ -246,7 +249,7 @@ function runWorker(
 	const start = Date.now();
 	const result: RunResult = { requested: run, output: "", turns: 0, usage: {}, tools: [], stderr: "", ms: 0 };
 	const args = ["--mode", "json", "-p", "--no-session", "--no-mcp", "--tools", ROLES[role].tools];
-	args.push("--thinking", run.thinking, "--append-system-prompt", `${WORKER_CONTRACT}\nRole: ${role}.`);
+	args.push("--thinking", run.thinking, "--append-system-prompt", workerSystemPrompt(role));
 	if (run.model) args.push("--model", run.model);
 	const timeoutMs = (role === "scout" ? LIMITS.scoutTimeoutSecs : LIMITS.timeoutSecs) * 1000;
 

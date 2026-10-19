@@ -17,6 +17,7 @@ const {
 	LOCAL_TOOLS,
 	WEB_TOOLS,
 	PROMPT_GUIDELINES,
+	ROLES,
 	WORKER_CONTRACT,
 	loadModelSet,
 	resolveRun,
@@ -68,6 +69,7 @@ process.stdin.on("end", () => {
   }
   if (mode === "retry-then-ok") { emit("", { stopReason: "error", errorMessage: "overloaded" }); emit("answer after retry"); process.exit(0); }
   if (mode === "error-exit0") { emit("half", { stopReason: "error", errorMessage: "provider error" }); process.exit(0); }
+  if (mode === "echo-system") { emit(flag("--append-system-prompt") || ""); process.exit(0); }
   if (mode === "silent") process.exit(0);
   if (mode === "ended-midway") { emit("reading more files", { stopReason: "toolUse" }); process.exit(0); }
   if (mode === "crash") { process.stderr.write("boom: last stderr line\\n"); process.exit(3); }
@@ -298,6 +300,16 @@ test("a scout runs read-only, one-shot, marked as a worker, with the prompt on s
 	assert.equal(res.usage.totalTokens, 15);
 	assert.ok(updates.length >= 1, "streams progress");
 	assert.match(WORKER_CONTRACT, /cannot edit files, run commands, delegate, or commit/);
+});
+
+test("each worker gets the contract and its role's answer format", async (t) => {
+	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-system" } });
+	for (const role of Object.keys(ROLES)) {
+		const res = await run(tool, { role, task: "x" });
+		assert.equal(res.isError, false, text(res));
+		assert.ok(text(res).startsWith(WORKER_CONTRACT), role);
+		assert.ok(text(res).includes(`Role: ${role}. Final answer format: ${ROLES[role].answer}`), role);
+	}
 });
 
 test("roles get their tools: only research and challenge reach the web", async (t) => {
