@@ -20,13 +20,15 @@ Then restart Pi. You can run the installer again; it does not replace your files
 - Copies Pi's `interactive-shell.ts` and `handoff.ts` examples if missing, and warns when a copy differs from Pi's.
 - Runs `rtk init --global --agent pi` if [`rtk`](https://github.com/rtk-ai/rtk) is installed.
 
-Optional: limit workers to a model set in `~/.pi/agent/delegate.json` (local, hand-edited). Without it, workers use the session model and a call can name any model.
+Optional: limit workers to a model set in `~/.pi/agent/delegate.json` (local). Pick it with `/delegate models` or edit it by hand. Without it, workers use the session model and a call can name any model.
 
 ```json
 { "models": ["anthropic/claude-haiku-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5"], "default": "anthropic/claude-sonnet-5-5" }
 ```
 
 Run `/reload` to show the set in the tool's parameters. The tool reads the file at each call and names any problem in it.
+
+`/delegate` (or `/delegate status`) shows the set and whether each model is usable, missing tools, running calls, and the last 20 calls with their cost. The call list survives `/reload`. `/delegate models` asks for a filter (only ids that start with it, or if none do, ids that contain it), then the models in order (the first is the scout model), then the default, and writes the file (mode 0600) after you confirm. It offers `/reload` only when the agent is idle and no workers run.
 
 ## Use it
 

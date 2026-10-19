@@ -18,6 +18,8 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
+	rmSync,
 	statSync,
 	writeFileSync,
 	writeSync,
@@ -25,6 +27,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ActiveCall, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import { type DelegateView, progressLines, type RunView, renderCall, renderResult } from "./delegate-render.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
@@ -40,6 +43,7 @@ export const LIMITS = {
 	wrapUpShare: 0.8,
 };
 const MAX_RUNS = 4;
+const HISTORY_SIZE = 20;
 // Model-facing answer size per run; the main session's context is what this extension protects.
 const ANSWER_CAP = 12 * 1024;
 const FAILED_PARTIAL_CAP = 4 * 1024;
@@ -272,7 +276,7 @@ export interface ModelSet {
 	default?: string;
 }
 
-function configPath(): string {
+export function configPath(): string {
 	return process.env.ME_PI_DELEGATE_CONFIG || join(HOME, ".pi", "agent", "delegate.json");
 }
 
@@ -286,6 +290,11 @@ export function loadModelSet(path = configPath()): ModelSet {
 	} catch (err: any) {
 		throw new Error(`${where}: ${err?.message ?? err}`);
 	}
+	return validModelSet(raw, where);
+}
+
+/** The checked set; throws naming the first problem. */
+function validModelSet(raw: any, where: string): ModelSet {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected a JSON object`);
 	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "default");
 	if (unknown.length) throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: models, default)`);
@@ -296,6 +305,17 @@ export function loadModelSet(path = configPath()): ModelSet {
 	if (raw.default !== undefined && !models.includes(raw.default))
 		throw new Error(`${where}: "default" must be one of "models"`);
 	return { models, default: raw.default };
+}
+
+/** Checks the set, then replaces the file atomically (temp file and rename), readable only by you. */
+export function writeModelSet(set: ModelSet, path = configPath()): void {
+	const checked = validModelSet(set, `delegate config ${path}`);
+	mkdirSync(dirname(path), { recursive: true });
+	const temp = `${path}.${process.pid}.tmp`;
+	// A stale temp file from a crash would keep its old mode: remove it, then create the file new.
+	rmSync(temp, { force: true });
+	writeFileSync(temp, `${JSON.stringify(checked, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+	renameSync(temp, path);
 }
 
 interface RunSpec {
@@ -322,6 +342,7 @@ export function resolveRun(role: string, run: RunSpec, set: ModelSet, sessionMod
 
 // Live worker process groups, shared by reloaded module instances, killed when the main process exits.
 const GROUPS_KEY = Symbol.for("me-pi.delegate.groups");
+const HISTORY_KEY = Symbol.for("me-pi.delegate.history");
 function liveGroups(): Set<number> {
 	const shared = globalThis as any;
 	if (!shared[GROUPS_KEY]) {
@@ -719,6 +740,13 @@ export default function (pi: ExtensionAPI) {
 	}
 	let shutdown = new AbortController();
 	const running = new Set<Promise<RunResult>>();
+	// For /delegate status: calls running now, and the last HISTORY_SIZE finished calls.
+	const active = new Map<string, ActiveCall>();
+	// Shared by reloaded instances, like the worker groups, so /reload keeps it.
+	const shared = globalThis as any;
+	shared[HISTORY_KEY] ??= [];
+	const history: CallRecord[] = shared[HISTORY_KEY];
+	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), writeModelSet, history, active });
 	pi.on("session_shutdown", async () => {
 		shutdown.abort();
 		shutdown = new AbortController();
@@ -788,102 +816,114 @@ export default function (pi: ExtensionAPI) {
 				return fail(err.message);
 			}
 
-			const signal = toolSignal ? AbortSignal.any([toolSignal, shutdown.signal]) : shutdown.signal;
-			const cwd = ctx?.cwd ?? process.cwd();
-			const round = async (stage: DelegateView["stage"], prompts: string[], runs: typeof resolved) => {
-				const states: (RunResult | undefined)[] = runs.map(() => undefined);
-				const finished = runs.map(() => false);
-				const progress = () => {
-					const view: DelegateView = {
-						stage,
-						web: job.web,
-						runs: runs.map((r, i) => runView(states[i] ?? { requested: r, web: job.web }, finished[i])),
+			const models = resolved.map((r) => r.model ?? "session model");
+			const start = Date.now();
+			active.set(_id, { role, models, start });
+			try {
+				const signal = toolSignal ? AbortSignal.any([toolSignal, shutdown.signal]) : shutdown.signal;
+				const cwd = ctx?.cwd ?? process.cwd();
+				const round = async (stage: DelegateView["stage"], prompts: string[], runs: typeof resolved) => {
+					const states: (RunResult | undefined)[] = runs.map(() => undefined);
+					const finished = runs.map(() => false);
+					const progress = () => {
+						const view: DelegateView = {
+							stage,
+							web: job.web,
+							runs: runs.map((r, i) => runView(states[i] ?? { requested: r, web: job.web }, finished[i])),
+						};
+						onUpdate?.({ content: [{ type: "text", text: progressLines(view).join("\n") }], details: { view } });
 					};
-					onUpdate?.({ content: [{ type: "text", text: progressLines(view).join("\n") }], details: { view } });
-				};
-				return Promise.all(
-					runs.map(async (r, i) => {
-						const p = runWorker(job, prompts[i], r, cwd, signal, (s) => {
-							states[i] = s;
+					return Promise.all(
+						runs.map(async (r, i) => {
+							const p = runWorker(job, prompts[i], r, cwd, signal, (s) => {
+								states[i] = s;
+								progress();
+							});
+							running.add(p);
+							try {
+								states[i] = await p;
+							} finally {
+								running.delete(p);
+							}
+							finished[i] = true;
 							progress();
-						});
-						running.add(p);
-						try {
-							states[i] = await p;
-						} finally {
-							running.delete(p);
-						}
-						finished[i] = true;
-						progress();
-						return states[i] as RunResult;
-					}),
-				);
-			};
+							return states[i] as RunResult;
+						}),
+					);
+				};
 
-			const round1 = await round(
-				"Workers",
-				resolved.map(() => `Task:\n${task}`),
-				resolved,
-			);
-			// The runs to report, in request order; a failed round-2 run keeps its round-1 answer.
-			let shown: { run: RunResult; failedRound2?: RunResult }[] = round1.map((run) => ({ run }));
-			let round2: RunResult[] = [];
-			let note = "";
-			let failed = round1.some((r) => r.failure);
-			if (rebuttal) {
-				const ok = round1.filter((r) => !r.failure);
-				if (ok.length < 2) {
-					note = `Rebuttal skipped: only ${ok.length} run(s) succeeded in round 1.`;
-					failed = true;
-				} else {
-					const prompts = ok.map((r) =>
-						rebuttalPrompt(
-							task,
-							r,
-							ok.filter((o) => o !== r),
-						),
-					);
-					// Round 2 reruns the requested model ids: the ids Pi reports may lack the provider.
-					round2 = await round(
-						"Rebuttal",
-						prompts,
-						ok.map((r) => r.requested),
-					);
-					shown = round1.map((run) => {
-						const r2 = round2[ok.indexOf(run)];
-						if (!r2) return { run };
-						return r2.failure ? { run, failedRound2: r2 } : { run: r2 };
-					});
-					failed ||= round2.some((r) => r.failure);
-					const full = round1.map(
-						(r) =>
-							`## ${modelName(r)} (round 1)\n\n${r.failure ? `✗ ${r.failure}\n` : ""}${r.output.trim()}${filesLine(r)}`,
-					);
-					note = `Round-1 answers: ${saveFull(full.join("\n\n"))}`;
+				const round1 = await round(
+					"Workers",
+					resolved.map(() => `Task:\n${task}`),
+					resolved,
+				);
+				// The runs to report, in request order; a failed round-2 run keeps its round-1 answer.
+				let shown: { run: RunResult; failedRound2?: RunResult }[] = round1.map((run) => ({ run }));
+				let round2: RunResult[] = [];
+				let note = "";
+				let failed = round1.some((r) => r.failure);
+				if (rebuttal) {
+					const ok = round1.filter((r) => !r.failure);
+					if (ok.length < 2) {
+						note = `Rebuttal skipped: only ${ok.length} run(s) succeeded in round 1.`;
+						failed = true;
+					} else {
+						const prompts = ok.map((r) =>
+							rebuttalPrompt(
+								task,
+								r,
+								ok.filter((o) => o !== r),
+							),
+						);
+						// Round 2 reruns the requested model ids: the ids Pi reports may lack the provider.
+						round2 = await round(
+							"Rebuttal",
+							prompts,
+							ok.map((r) => r.requested),
+						);
+						shown = round1.map((run) => {
+							const r2 = round2[ok.indexOf(run)];
+							if (!r2) return { run };
+							return r2.failure ? { run, failedRound2: r2 } : { run: r2 };
+						});
+						failed ||= round2.some((r) => r.failure);
+						const full = round1.map(
+							(r) =>
+								`## ${modelName(r)} (round 1)\n\n${r.failure ? `✗ ${r.failure}\n` : ""}${r.output.trim()}${filesLine(r)}`,
+						);
+						note = `Round-1 answers: ${saveFull(full.join("\n\n"))}`;
+					}
 				}
+				const all = [...round1, ...round2];
+				const cost = all.reduce((sum, r) => sum + costOf(r.usage), 0);
+				history.push({ at: Date.now(), role, models, cost, ms: Date.now() - start, failed });
+				if (history.length > HISTORY_SIZE) history.shift();
+				const usage = {};
+				for (const r of all) addUsage(usage, r.usage);
+				const footer = all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
+				const sections = shown.map(({ run, failedRound2: r2 }) =>
+					r2
+						? `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(run)}`
+						: formatRun(run),
+				);
+				const view: DelegateView = {
+					stage: "Done",
+					web: job.web,
+					runs: shown.map(({ run, failedRound2: r2 }) =>
+						runView(run, true, r2 && `${r2.failure}${filesLine(r2).replace("\n", "; ")}`),
+					),
+					footer: footer.trim() || undefined,
+				};
+				return {
+					content: [{ type: "text", text: [...sections, footer.trim()].filter(Boolean).join("\n\n---\n\n") }],
+					// The answers are in the view and the content; the rounds keep the rest for debugging.
+					details: { round1: round1.map(withoutOutput), round2: round2.map(withoutOutput), view },
+					usage: usage as any,
+					isError: failed,
+				};
+			} finally {
+				active.delete(_id);
 			}
-			const all = [...round1, ...round2];
-			const usage = {};
-			for (const r of all) addUsage(usage, r.usage);
-			const footer = all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
-			const sections = shown.map(({ run, failedRound2: r2 }) =>
-				r2 ? `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(run)}` : formatRun(run),
-			);
-			const view: DelegateView = {
-				stage: "Done",
-				web: job.web,
-				runs: shown.map(({ run, failedRound2: r2 }) =>
-					runView(run, true, r2 && `${r2.failure}${filesLine(r2).replace("\n", "; ")}`),
-				),
-				footer: footer.trim() || undefined,
-			};
-			return {
-				content: [{ type: "text", text: [...sections, footer.trim()].filter(Boolean).join("\n\n---\n\n") }],
-				// The answers are in the view and the content; the rounds keep the rest for debugging.
-				details: { round1: round1.map(withoutOutput), round2: round2.map(withoutOutput), view },
-				usage: usage as any,
-				isError: failed,
-			};
 		},
 	});
 }

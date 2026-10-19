@@ -32,6 +32,7 @@ const {
 	resolveRun,
 	secretPathIn,
 	writeBlockedIn,
+	writeModelSet,
 } = await import("./delegate.ts");
 const { progressLines } = await import("./delegate-render.ts");
 
@@ -156,7 +157,7 @@ function applyEnv(vars) {
 }
 
 // Sets env vars and limits for one test and restores them afterwards.
-function setup(t, { env = {}, config, limits = {} } = {}) {
+function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	const vars = { PI_BIN: FAKE_BIN, ME_PI_RUN: undefined, TMPDIR: TEST_HOME, ...env };
 	if (config !== undefined) {
 		const path = join(mkdtempSync(join(TEST_HOME, "cfg-")), "delegate.json");
@@ -172,15 +173,23 @@ function setup(t, { env = {}, config, limits = {} } = {}) {
 	});
 	const tools = {};
 	const handlers = {};
-	registerExtension({
+	const commands = {};
+	const pi = {
 		registerTool: (d) => {
 			tools[d.name] = d;
 		},
+		registerCommand: (name, options) => {
+			commands[name] = options;
+		},
+		getAllTools: () => Object.values(tools).map((d) => ({ name: d.name })),
 		on: (event, h) => {
 			handlers[event] = h;
 		},
-	});
-	return { tool: tools.delegate, handlers };
+	};
+	// The call history survives reloads on globalThis; each test starts empty unless it simulates a reload.
+	if (!keepHistory) globalThis[Symbol.for("me-pi.delegate.history")] = [];
+	registerExtension(pi);
+	return { tool: tools.delegate, handlers, commands, pi };
 }
 
 const run = (tool, params, signal, onUpdate) => tool.execute("call", params, signal, onUpdate, CTX);
@@ -478,6 +487,225 @@ test("model set: scout uses the first model at low; other roles default, else la
 		model: "y/m",
 		thinking: "high",
 	});
+});
+
+// A command context with scripted answers: `inputs` and `confirms` are consumed in order; `pick` chooses.
+function commandCtx({
+	inputs = [],
+	confirms = [],
+	pick = () => undefined,
+	idle = true,
+	available = [HAIKU, SONNET, OPUS],
+} = {}) {
+	const notes = [];
+	const asked = [];
+	const ctx = {
+		hasUI: true,
+		isIdle: () => idle,
+		reloaded: false,
+		reload: async () => {
+			ctx.reloaded = true;
+		},
+		modelRegistry: {
+			getAvailable: () =>
+				available.map((m) => {
+					const cut = m.indexOf("/");
+					const [provider, id] = [m.slice(0, cut), m.slice(cut + 1)];
+					return { provider, id, name: id, cost: { input: 1, output: 5 } };
+				}),
+		},
+		ui: {
+			input: async (title) => {
+				asked.push(title);
+				return inputs.shift();
+			},
+			confirm: async (title) => {
+				asked.push(title);
+				return confirms.shift() ?? false;
+			},
+			select: async (title, options) => {
+				asked.push(title);
+				return pick(title, options);
+			},
+			notify: (message, type) => notes.push([message, type]),
+		},
+	};
+	return { ctx, notes, asked };
+}
+
+test("/delegate status: the set with availability, missing tools, running and recent calls", async (t) => {
+	assert.deepEqual(setup(t, { env: { ME_PI_RUN: "1" } }).commands, {}, "workers get no command");
+	const main = setup(t, { config: { models: [HAIKU, OPUS] } });
+	assert.deepEqual(
+		main.commands.delegate.getArgumentCompletions("").map((c) => c.value),
+		["status", "models"],
+	);
+	assert.deepEqual(
+		main.commands.delegate.getArgumentCompletions("m").map((c) => c.value),
+		["models"],
+	);
+	const status = async () => {
+		const { ctx, notes } = commandCtx({ available: [HAIKU] });
+		await main.commands.delegate.handler("", ctx);
+		return notes[0][0];
+	};
+	const before = await status();
+	assert.match(
+		before,
+		new RegExp(`\n  1\\. ${HAIKU} \\(scout\\) \u2713\n  2\\. ${OPUS} \\(default\\) \u2717 not available`),
+	);
+	assert.match(before, /\nTools: missing Skill \(this repo's extensions\/skill\.ts\), web_search \(pi-web-access\)/);
+	assert.match(before, /\nRunning: none\nLast calls: none$/);
+
+	await run(main.tool, { task: "x", runs: [{ model: HAIKU }] });
+	const after = await status();
+	assert.match(after, /\nRunning: none\n/, "a finished call leaves the running list");
+	assert.match(after, /\nLast 1 calls, \$0\.0020:\n {2}\d\d:\d\d \u2713 general claude-haiku-5-5 \$0\.0020 \d+s$/);
+
+	// A reloaded instance keeps the history.
+	const reloaded = setup(t, { config: { models: [HAIKU, OPUS] }, keepHistory: true });
+	const kept = commandCtx();
+	await reloaded.commands.delegate.handler("", kept.ctx);
+	assert.match(kept.notes[0][0], /\nLast 1 calls, \$0\.0020:/);
+
+	const hanging = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "hang" } });
+	const controller = new AbortController();
+	const pending = run(hanging.tool, { role: "review", task: "x" }, controller.signal);
+	await new Promise((r) => setTimeout(r, 300));
+	const { ctx, notes } = commandCtx();
+	await hanging.commands.delegate.handler("status", ctx);
+	assert.match(notes[0][0], /\nRunning \(1\):\n {2}review: claude-opus-5-5 \d+s\n/);
+	controller.abort();
+	await pending;
+
+	const broken = setup(t, { config: { models: [HAIKU], extra: 1 } });
+	const bad = commandCtx();
+	await broken.commands.delegate.handler("status", bad.ctx);
+	assert.match(bad.notes[0][0], /\n {2}\u2717 delegate config .*: unknown key\(s\) extra/);
+	await assert.rejects(
+		broken.commands.delegate.handler("nope", bad.ctx),
+		/^Error: Unknown \/delegate subcommand "nope"\. Use: status, models\.$/,
+	);
+});
+
+test("/delegate status keeps the last 20 calls", async (t) => {
+	const main = setup(t, { config: { models: [HAIKU, OPUS] } });
+	for (let i = 0; i < 21; i++) await run(main.tool, { task: "x", runs: [{ model: HAIKU }] });
+	const { ctx, notes } = commandCtx();
+	await main.commands.delegate.handler("", ctx);
+	assert.match(notes[0][0], /\nLast 20 calls, \$0\.0400:\n/);
+	assert.equal(notes[0][0].split("\n").filter((l) => l.includes("general claude-haiku")).length, 20);
+});
+
+test("/delegate models: filter, pick in order, default, confirm, then an atomic 0600 write", async (t) => {
+	const main = setup(t, { config: { models: [HAIKU] } });
+	const path = process.env.ME_PI_DELEGATE_CONFIG;
+	const picker = (picks) => (_title, options) => {
+		const want = picks.shift();
+		return options.find((o) => o.startsWith(want));
+	};
+	const { ctx, notes, asked } = commandCtx({
+		inputs: ["claude"],
+		confirms: [true, false],
+		pick: picker([SONNET, HAIKU, "Done", HAIKU]),
+	});
+	await main.commands.delegate.handler("models", ctx);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [SONNET, HAIKU], default: HAIKU });
+	assert.equal(statSync(path).mode & 0o777, 0o600);
+	assert.ok(!existsSync(`${path}.${process.pid}.tmp`), "no temp file left");
+	assert.equal(asked[1], "Model 1 (the scout model; pick a cheap, fast one)");
+	assert.match(asked[3], /^Add model 3, or Done \(chosen: claude-sonnet-5-5, claude-haiku-5-5\)$/);
+	assert.equal(ctx.reloaded, false);
+	assert.match(notes.at(-1)[0], /written\. Calls use it now; run \/reload/);
+
+	// Last model as the default writes no "default" key; yes to reload reloads.
+	const reload = commandCtx({
+		inputs: [""],
+		confirms: [true, true],
+		pick: picker([OPUS, HAIKU, "Done", "Last model"]),
+	});
+	await main.commands.delegate.handler("models", reload.ctx);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [OPUS, HAIKU] });
+	assert.equal(reload.ctx.reloaded, true);
+
+	// Busy: no reload offer.
+	const busy = commandCtx({ inputs: ["opus"], confirms: [true], idle: false, pick: picker([OPUS]) });
+	await main.commands.delegate.handler("models", busy.ctx);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [OPUS] });
+	assert.equal(busy.ctx.reloaded, false);
+	assert.match(busy.notes.at(-1)[0], /Run \/reload when no workers run/);
+
+	// Idle agent, but a delegate call still runs: no reload offer either.
+	const hanging = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "hang" } });
+	const controller = new AbortController();
+	const pending = run(hanging.tool, { task: "x" }, controller.signal);
+	await new Promise((r) => setTimeout(r, 300));
+	const working = commandCtx({ inputs: ["opus"], confirms: [true, true], pick: picker([OPUS]) });
+	await hanging.commands.delegate.handler("models", working.ctx);
+	assert.equal(working.ctx.reloaded, false);
+	assert.match(working.notes.at(-1)[0], /Run \/reload when no workers run/);
+	controller.abort();
+	await pending;
+});
+
+test("/delegate models: the filter prefers ids that start with it, else any part", async (t) => {
+	const main = setup(t, { config: { models: [HAIKU] } });
+	const available = [HAIKU, "openrouter/anthropic/claude-haiku-5.5", OPUS];
+	const offered = async (filter) => {
+		let options;
+		const { ctx } = commandCtx({
+			available,
+			inputs: [filter],
+			pick: (_title, o) => {
+				options = o;
+			},
+		});
+		await main.commands.delegate.handler("models", ctx);
+		return options.map((o) => o.split("  ")[0]);
+	};
+	assert.deepEqual(await offered("Anthropic/"), [HAIKU, OPUS]);
+	assert.deepEqual(await offered("haiku"), [HAIKU, "openrouter/anthropic/claude-haiku-5.5"]);
+	assert.deepEqual(await offered(""), available);
+});
+
+const picks = (wanted) => (_title, options) => {
+	const want = wanted.shift();
+	return want === undefined ? undefined : options.find((o) => o.startsWith(want));
+};
+
+test("/delegate models: cancel, decline, or no match writes nothing", async (t) => {
+	const main = setup(t, { config: { models: [HAIKU] } });
+	const path = process.env.ME_PI_DELEGATE_CONFIG;
+	const original = readFileSync(path, "utf8");
+	for (const [answers, message] of [
+		[{ inputs: [undefined] }, /cancelled, nothing written/],
+		[{ inputs: ["zzz"] }, /no available model matches "zzz"/],
+		[{ inputs: [""], pick: () => undefined }, /cancelled, nothing written/],
+		// Cancel at the default model, after two models were picked.
+		[{ inputs: [""], confirms: [true], pick: picks([HAIKU, OPUS, "Done", undefined]) }, /cancelled, nothing written/],
+		[{ inputs: ["opus"], confirms: [false], pick: (_t, o) => o[0] }, /nothing written/],
+	]) {
+		const { ctx, notes } = commandCtx(answers);
+		await main.commands.delegate.handler("models", ctx);
+		assert.match(notes.at(-1)[0], message);
+		assert.equal(readFileSync(path, "utf8"), original);
+	}
+	const noUI = commandCtx();
+	noUI.ctx.hasUI = false;
+	await assert.rejects(main.commands.delegate.handler("models", noUI.ctx), /needs the interactive UI/);
+	assert.equal(readFileSync(path, "utf8"), original);
+});
+
+test("writeModelSet validates first and replaces a stale temp file", (t) => {
+	setup(t);
+	const path = join(mkdtempSync(join(TEST_HOME, "write-")), "sub", "delegate.json");
+	assert.throws(() => writeModelSet({ models: [HAIKU], default: OPUS }, path), /"default" must be one of "models"/);
+	assert.ok(!existsSync(path));
+	mkdirSync(join(path, ".."), { recursive: true });
+	writeFileSync(`${path}.${process.pid}.tmp`, "stale", { mode: 0o644 });
+	writeModelSet({ models: [HAIKU, OPUS] }, path);
+	assert.deepEqual(loadModelSet(path), { models: [HAIKU, OPUS], default: undefined });
+	assert.equal(statSync(path).mode & 0o777, 0o600);
 });
 
 test("the model set file is validated loudly", (t) => {
@@ -876,7 +1104,7 @@ test("normal main-process exit SIGKILLs live workers", { timeout: 20000 }, async
 import register from ${JSON.stringify(new URL("./delegate.ts", import.meta.url).href)};
 import { existsSync } from "node:fs";
 let delegate;
-register({ registerTool: (d) => { delegate = d; }, on: () => {} });
+register({ registerTool: (d) => { delegate = d; }, registerCommand: () => {}, on: () => {} });
 void delegate.execute("p", { role: "scout", task: "hold" }, undefined, undefined, { cwd: ${JSON.stringify(REPO_ROOT)} });
 const deadline = Date.now() + 10000;
 while (!existsSync(${JSON.stringify(pidFile)}) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
