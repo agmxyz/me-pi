@@ -18,8 +18,6 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	renameSync,
-	rmSync,
 	statSync,
 	writeFileSync,
 	writeSync,
@@ -271,19 +269,26 @@ const workerSystemPrompt = ({ role, answer }: Job, outDir?: string) =>
 
 // --- Model pools ----------------------------------------------------------------------------------
 
+export interface ModelEntry {
+	model: string;
+	thinking: string;
+}
+
 export interface ModelPool {
-	models: string[];
+	/** Ordered fallbacks; each model has an independent thinking level. */
+	models: ModelEntry[];
+	/** Thinking used for the session model when this pool is empty. */
 	thinking: string;
 }
 
 export interface ModelSet {
-	version: 2;
+	version: 3;
 	scout: ModelPool;
 	worker: ModelPool;
 }
 
 const defaultModelSet = (): ModelSet => ({
-	version: 2,
+	version: 3,
 	scout: { models: [], thinking: "low" },
 	worker: { models: [], thinking: "max" },
 });
@@ -292,7 +297,7 @@ export function configPath(): string {
 	return process.env.ME_PI_DELEGATE_CONFIG || join(HOME, ".pi", "agent", "delegate.json");
 }
 
-/** A missing file means both pools use the session model. Legacy model sets are migrated in memory. */
+/** A missing file means both pools use the session model. Legacy configs migrate in memory. */
 export function loadModelSet(path = configPath()): ModelSet {
 	if (!existsSync(path)) return defaultModelSet();
 	const where = `delegate config ${path}`;
@@ -312,6 +317,38 @@ function modelIds(value: unknown, where: string): string[] {
 	return value;
 }
 
+function modelEntries(value: unknown, where: string, scout: boolean): ModelEntry[] {
+	if (!Array.isArray(value)) throw new Error(`${where} must be an array of { model, thinking } entries`);
+	const seen = new Set<string>();
+	return value.map((entry, i) => {
+		const itemWhere = `${where}[${i}]`;
+		if (!entry || typeof entry !== "object" || Array.isArray(entry))
+			throw new Error(`${itemWhere}: expected an object`);
+		const unknown = Object.keys(entry).filter((k) => k !== "model" && k !== "thinking");
+		if (unknown.length)
+			throw new Error(`${itemWhere}: unknown key(s) ${unknown.join(", ")} (allowed: model, thinking)`);
+		if (typeof entry.model !== "string" || !entry.model.trim())
+			throw new Error(`${itemWhere}.model must be a non-empty model id`);
+		if (seen.has(entry.model)) throw new Error(`${where} lists model ${JSON.stringify(entry.model)} twice`);
+		seen.add(entry.model);
+		const levels = scout ? ["low", "off"] : THINKING_LEVELS;
+		if (!levels.includes(entry.thinking))
+			throw new Error(`${itemWhere}.thinking must be one of ${levels.join(", ")}`);
+		return { model: entry.model, thinking: entry.thinking };
+	});
+}
+
+function poolThinking(value: unknown, where: string, scout: boolean): string {
+	const levels = scout ? ["low", "off"] : THINKING_LEVELS;
+	if (typeof value !== "string" || !levels.includes(value))
+		throw new Error(`${where} must be one of ${levels.join(", ")}`);
+	return value as string;
+}
+
+function migratePool(models: string[], thinking: string): ModelEntry[] {
+	return models.map((model) => ({ model, thinking }));
+}
+
 function legacyModelSet(raw: any, where: string): ModelSet {
 	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "default");
 	if (unknown.length) throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: models, default)`);
@@ -319,50 +356,54 @@ function legacyModelSet(raw: any, where: string): ModelSet {
 	if (raw.default !== undefined && !models.includes(raw.default))
 		throw new Error(`${where}: "default" must be one of "models"`);
 	const workerFirst = raw.default ?? models.at(-1);
+	const workerModels = workerFirst ? [workerFirst, ...models.filter((m: string) => m !== workerFirst)] : [];
 	return {
-		version: 2,
-		scout: { models: [...models], thinking: "low" },
-		worker: {
-			models: workerFirst ? [workerFirst, ...models.filter((m: string) => m !== workerFirst)] : [],
-			thinking: "max",
-		},
+		version: 3,
+		scout: { models: migratePool(models, "low"), thinking: "low" },
+		worker: { models: migratePool(workerModels, "max"), thinking: "max" },
 	};
 }
 
-function validPool(raw: any, where: string, scout: boolean): ModelPool {
+function migrateV2Pool(raw: any, where: string, scout: boolean): ModelPool {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected an object`);
 	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "thinking");
 	if (unknown.length) throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: models, thinking)`);
 	const models = modelIds(raw.models, `${where}.models`);
-	const levels = scout ? ["low", "off"] : THINKING_LEVELS;
-	if (!levels.includes(raw.thinking)) throw new Error(`${where}.thinking must be one of ${levels.join(", ")}`);
-	return { models, thinking: raw.thinking };
+	const thinking = poolThinking(raw.thinking, `${where}.thinking`, scout);
+	return { models: migratePool(models, thinking), thinking };
 }
 
-/** The checked v2 set; reads the v1 `{ models, default }` format for backward compatibility. */
-function validModelSet(raw: any, where: string): ModelSet {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected a JSON object`);
-	if (raw.version === undefined) return legacyModelSet(raw, where);
-	if (raw.version !== 2) throw new Error(`${where}: unsupported version ${JSON.stringify(raw.version)} (expected 2)`);
-	const unknown = Object.keys(raw).filter((k) => !["version", "scout", "worker"].includes(k));
-	if (unknown.length)
-		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: version, scout, worker)`);
+function validV3Pool(raw: any, where: string, scout: boolean): ModelPool {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected an object`);
+	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "thinking");
+	if (unknown.length) throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: models, thinking)`);
 	return {
-		version: 2,
-		scout: validPool(raw.scout, `${where}.scout`, true),
-		worker: validPool(raw.worker, `${where}.worker`, false),
+		models: modelEntries(raw.models, `${where}.models`, scout),
+		thinking: poolThinking(raw.thinking, `${where}.thinking`, scout),
 	};
 }
 
-/** Checks the pools, then replaces the file atomically (temp file and rename), readable only by you. */
-export function writeModelSet(set: ModelSet, path = configPath()): void {
-	const checked = validModelSet(set, `delegate config ${path}`);
-	mkdirSync(dirname(path), { recursive: true });
-	const temp = `${path}.${process.pid}.tmp`;
-	// A stale temp file from a crash would keep its old mode: remove it, then create the file new.
-	rmSync(temp, { force: true });
-	writeFileSync(temp, `${JSON.stringify(checked, null, 2)}\n`, { mode: 0o600, flag: "wx" });
-	renameSync(temp, path);
+/** The checked v3 set; reads v1 `{ models, default }` and v2 pool configs for compatibility. */
+function validModelSet(raw: any, where: string): ModelSet {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected a JSON object`);
+	if (raw.version === undefined) return legacyModelSet(raw, where);
+	if (raw.version !== 2 && raw.version !== 3)
+		throw new Error(`${where}: unsupported version ${JSON.stringify(raw.version)} (expected 2 or 3)`);
+	const unknown = Object.keys(raw).filter((k) => !["version", "scout", "worker"].includes(k));
+	if (unknown.length)
+		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: version, scout, worker)`);
+	if (raw.version === 2) {
+		return {
+			version: 3,
+			scout: migrateV2Pool(raw.scout, `${where}.scout`, true),
+			worker: migrateV2Pool(raw.worker, `${where}.worker`, false),
+		};
+	}
+	return {
+		version: 3,
+		scout: validV3Pool(raw.scout, `${where}.scout`, true),
+		worker: validV3Pool(raw.worker, `${where}.worker`, false),
+	};
 }
 
 interface RunSpec {
@@ -370,34 +411,48 @@ interface RunSpec {
 	thinking?: string;
 }
 
-export interface ResolvedRun {
-	/** Candidate models in attempt order; `undefined` means Pi's session model. */
-	candidates: (string | undefined)[];
+export interface ResolvedCandidate {
 	model?: string;
 	thinking: string;
 }
 
-/** Scout uses its low/off profile; all other roles use the worker pool and thinking profile. */
+export interface ResolvedRun {
+	/** Candidate models in attempt order; an undefined model means Pi's session model. */
+	candidates: ResolvedCandidate[];
+	model?: string;
+	thinking: string;
+}
+
+/** Scouts use low/off; all other roles use each candidate's configured thinking level. */
 export function resolveRun(role: string, run: RunSpec, set: ModelSet, sessionModel?: string): ResolvedRun {
 	const scout = role === "scout";
 	const pool = scout ? set.scout : set.worker;
-	const configured = [...new Set([...set.scout.models, ...set.worker.models])];
+	const configuredEntries = [...set.scout.models, ...set.worker.models];
+	const configured = [...new Set(configuredEntries.map((entry) => entry.model))];
 	if (run.model && configured.length && !configured.includes(run.model))
 		throw new Error(`model ${JSON.stringify(run.model)} is not in the delegate pools: ${configured.join(", ")}`);
 	const candidates = run.model
-		? pool.models.includes(run.model)
-			? [run.model, ...pool.models.filter((m) => m !== run.model)]
-			: [run.model]
+		? pool.models.some((entry) => entry.model === run.model)
+			? [
+					pool.models.find((entry) => entry.model === run.model)!,
+					...pool.models.filter((entry) => entry.model !== run.model),
+				]
+			: [
+					{
+						model: run.model,
+						thinking: configuredEntries.find((entry) => entry.model === run.model)?.thinking ?? pool.thinking,
+					},
+				]
 		: pool.models.length
 			? [...pool.models]
-			: [sessionModel];
-	const model = candidates[0];
-	const thinking = scout
-		? run.thinking === "off" || (!run.thinking && pool.thinking === "off")
-			? "off"
-			: "low"
-		: run.thinking || pool.thinking;
-	return { candidates, model, thinking };
+			: [{ model: sessionModel, thinking: pool.thinking }];
+	const withOverrides = candidates.map((candidate) => {
+		const requested = run.thinking ?? candidate.thinking;
+		const thinking = scout ? (requested === "off" ? "off" : "low") : requested;
+		return { ...candidate, thinking };
+	});
+	const first = withOverrides[0];
+	return { candidates: withOverrides, model: first.model, thinking: first.thinking };
 }
 
 // --- Worker process -------------------------------------------------------------------------------
@@ -442,8 +497,10 @@ function piCommand(args: string[]): { command: string; args: string[] } {
 
 export interface FallbackAttempt {
 	model?: string;
+	thinking: string;
 	failure: string;
 	nextModel?: string;
+	nextThinking: string;
 }
 
 export interface RunResult {
@@ -659,14 +716,14 @@ async function runWorker(
 	const timeoutMs = (job.role === "scout" ? LIMITS.scoutTimeoutSecs : LIMITS.timeoutSecs) * 1000;
 	const deadline = start + timeoutMs;
 	let costSpent = 0;
-	const candidates = run.candidates.length ? run.candidates : [undefined];
+	const candidates = run.candidates.length ? run.candidates : [{ model: undefined, thinking: run.thinking }];
 	let outDir: string | undefined;
 	if (job.output) {
 		try {
 			outDir = mkdtempSync(join(tmpdir(), "me-pi-delegate-out-")); // Mode 0700.
 		} catch (err: any) {
 			return {
-				requested: { model: candidates[0], thinking: run.thinking },
+				requested: { model: candidates[0].model, thinking: candidates[0].thinking },
 				web: job.web,
 				output: "",
 				failure: `could not create the output directory: ${err?.message ?? err}`,
@@ -682,7 +739,8 @@ async function runWorker(
 	const attempts: RunResult[] = [];
 	const fallbackAttempts: FallbackAttempt[] = [];
 	for (let i = 0; i < candidates.length; i++) {
-		const model = candidates[i];
+		const candidate = candidates[i];
+		const { model, thinking } = candidate;
 		const remainingMs = deadline - Date.now();
 		const remainingCost = LIMITS.costCapUsd - costSpent;
 		if (remainingMs <= 0 || remainingCost <= 0) {
@@ -694,7 +752,7 @@ async function runWorker(
 		const attempt = await runWorkerAttempt(
 			job,
 			prompt,
-			{ model, thinking: run.thinking },
+			{ model, thinking },
 			cwd,
 			signal,
 			(r) => onProgress({ ...r, fallbackAttempts: [...fallbackAttempts] }),
@@ -704,19 +762,26 @@ async function runWorker(
 		attempts.push(attempt);
 		costSpent += costOf(attempt.usage);
 		if (!retryableAvailabilityFailure(attempt.failure) || i === candidates.length - 1) break;
-		const nextModel = candidates[i + 1];
+		const nextCandidate = candidates[i + 1];
+		const nextModel = nextCandidate.model;
 		const nextTime = deadline - Date.now();
 		const nextCost = LIMITS.costCapUsd - costSpent;
 		if (nextTime <= 0 || nextCost <= 0) {
 			attempt.failure = `${attempt.failure}; pool fallback stopped: ${nextTime <= 0 ? "time limit" : `cost cap $${LIMITS.costCapUsd}`} reached`;
 			break;
 		}
-		fallbackAttempts.push({ model, failure: attempt.failure as string, nextModel });
-		const next = nextModel ?? "session model";
+		fallbackAttempts.push({
+			model,
+			thinking,
+			failure: attempt.failure as string,
+			nextModel,
+			nextThinking: nextCandidate.thinking,
+		});
+		const next = `${nextModel ?? "session model"} @${nextCandidate.thinking}`;
 		onProgress({
 			...attempt,
 			fallbackAttempts: [...fallbackAttempts],
-			fallbackMessage: `${model ?? "session model"} failed (${attempt.failure}); trying ${next}`,
+			fallbackMessage: `${model ?? "session model"} @${thinking} failed (${attempt.failure}); trying ${next}`,
 		});
 	}
 
@@ -794,7 +859,8 @@ function runView(
 		outDir: r.outDir,
 		files: r.files,
 		fallbacks: r.fallbackAttempts?.map(
-			(a) => `${a.model ?? "session model"} failed (${a.failure}); next ${a.nextModel ?? "session model"}`,
+			(a) =>
+				`${a.model ?? "session model"} @${a.thinking} failed (${a.failure}); next ${a.nextModel ?? "session model"} @${a.nextThinking}`,
 		),
 		fallbackMessage: r.fallbackMessage,
 	};
@@ -811,7 +877,8 @@ function formatRun(r: RunResult): string {
 		body = `✗ ${r.failure}${partial}${filesLine(r)}\n${label(r)}`;
 	}
 	const fallbacks = (r.fallbackAttempts ?? []).map(
-		(a) => `↻ ${a.model ?? "session model"} failed (${a.failure}); trying ${a.nextModel ?? "session model"}`,
+		(a) =>
+			`↻ ${a.model ?? "session model"} @${a.thinking} failed (${a.failure}); trying ${a.nextModel ?? "session model"} @${a.nextThinking}`,
 	);
 	return [...fallbacks, body].join("\n");
 }
@@ -826,7 +893,7 @@ function rebuttalPrompt(task: string, own: RunResult, others: RunResult[]): stri
 // --- Tool -----------------------------------------------------------------------------------------
 
 function configuredModels(set: ModelSet): string[] {
-	return [...new Set([...set.scout.models, ...set.worker.models])];
+	return [...new Set([...set.scout.models, ...set.worker.models].map((entry) => entry.model))];
 }
 
 function buildSchema(set: ModelSet) {
@@ -841,7 +908,7 @@ function buildSchema(set: ModelSet) {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout model pool at low/off thinking; all other roles use the worker pool and its configured thinking. Each ordered pool tries the next model after rate-limit, overload, or model-unavailable errors. research and challenge can use web tools; all workers are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; availability failures try the next model. research and challenge can use web tools; all workers are read-only.",
 			},
 			task: {
 				type: "string",
@@ -938,7 +1005,7 @@ export default function (pi: ExtensionAPI) {
 	const shared = globalThis as any;
 	shared[HISTORY_KEY] ??= [];
 	const history: CallRecord[] = shared[HISTORY_KEY];
-	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), writeModelSet, history, active });
+	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), history, active });
 	pi.on("session_shutdown", async () => {
 		shutdown.abort();
 		shutdown = new AbortController();

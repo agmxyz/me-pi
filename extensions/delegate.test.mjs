@@ -32,7 +32,6 @@ const {
 	resolveRun,
 	secretPathIn,
 	writeBlockedIn,
-	writeModelSet,
 } = await import("./delegate.ts");
 const { progressLines } = await import("./delegate-render.ts");
 
@@ -50,9 +49,21 @@ const SONNET = "anthropic/claude-sonnet-5-5";
 const OPUS = "anthropic/claude-opus-5-5";
 const LUNA = "openai-codex/gpt-6-luna";
 const POOL_SET = {
-	version: 2,
-	scout: { models: [LUNA, HAIKU], thinking: "off" },
-	worker: { models: [LUNA, OPUS], thinking: "max" },
+	version: 3,
+	scout: {
+		models: [
+			{ model: LUNA, thinking: "off" },
+			{ model: HAIKU, thinking: "off" },
+		],
+		thinking: "low",
+	},
+	worker: {
+		models: [
+			{ model: LUNA, thinking: "max" },
+			{ model: OPUS, thinking: "max" },
+		],
+		thinking: "max",
+	},
 };
 
 // Fake pi: reads the prompt from stdin, echoes how it was invoked; FAKE_PI_MODE drives failures.
@@ -486,30 +497,42 @@ test("output with no files written says so; without output there is no write too
 	assert.doesNotMatch(without, /Files in|,write/);
 });
 
-test("model pools resolve separate scout/worker thinking and ordered fallback candidates", () => {
+test("model pools resolve per-model thinking, ordered fallbacks, and explicit overrides", () => {
 	assert.deepEqual(resolveRun("scout", {}, POOL_SET), {
 		model: LUNA,
-		candidates: [LUNA, HAIKU],
+		candidates: [
+			{ model: LUNA, thinking: "off" },
+			{ model: HAIKU, thinking: "off" },
+		],
 		thinking: "off",
 	});
 	assert.deepEqual(resolveRun("review", {}, POOL_SET), {
 		model: LUNA,
-		candidates: [LUNA, OPUS],
+		candidates: [
+			{ model: LUNA, thinking: "max" },
+			{ model: OPUS, thinking: "max" },
+		],
 		thinking: "max",
 	});
 	assert.deepEqual(resolveRun("research", { model: OPUS, thinking: "high" }, POOL_SET), {
 		model: OPUS,
-		candidates: [OPUS, LUNA],
+		candidates: [
+			{ model: OPUS, thinking: "high" },
+			{ model: LUNA, thinking: "high" },
+		],
 		thinking: "high",
 	});
 	assert.deepEqual(resolveRun("review", { model: HAIKU }, POOL_SET), {
 		model: HAIKU,
-		candidates: [HAIKU],
-		thinking: "max",
+		candidates: [{ model: HAIKU, thinking: "off" }],
+		thinking: "off",
 	});
 	assert.deepEqual(resolveRun("scout", { thinking: "high" }, POOL_SET), {
 		model: LUNA,
-		candidates: [LUNA, HAIKU],
+		candidates: [
+			{ model: LUNA, thinking: "low" },
+			{ model: HAIKU, thinking: "low" },
+		],
 		thinking: "low",
 	});
 });
@@ -536,7 +559,13 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 	);
 	assert.equal(res.details.round1[0].requested.model, SONNET);
 	assert.deepEqual(res.details.round1[0].fallbackAttempts, [
-		{ model: HAIKU, failure: "exit 1: 429 rate_limit_error: too many requests", nextModel: SONNET },
+		{
+			model: HAIKU,
+			thinking: "max",
+			failure: "exit 1: 429 rate_limit_error: too many requests",
+			nextModel: SONNET,
+			nextThinking: "max",
+		},
 	]);
 	assert.match(text(res), /claude-haiku-5-5.*rate_limit_error.*trying anthropic\/claude-sonnet-5-5/s);
 	assert.equal(res.usage.cost.total, 0.004);
@@ -568,6 +597,36 @@ test("fallback attempts share the worker cost cap", async (t) => {
 	assert.equal(res.usage.cost.total, 0.004);
 });
 
+test("per-model thinking follows each ordered candidate during fallback", async (t) => {
+	const marker = scratch("per-model-thinking-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 3,
+			scout: { models: [{ model: LUNA, thinking: "off" }], thinking: "low" },
+			worker: {
+				models: [
+					{ model: LUNA, thinking: "max" },
+					{ model: OPUS, thinking: "low" },
+				],
+				thinking: "max",
+			},
+		},
+		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "review", task: "x" });
+	assert.equal(res.isError, false, text(res));
+	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.deepEqual(
+		calls.map(({ model, thinking }) => [model, thinking]),
+		[
+			[LUNA, "max"],
+			[OPUS, "low"],
+		],
+	);
+	assert.equal(res.details.round1[0].requested.model, OPUS);
+	assert.equal(res.details.round1[0].requested.thinking, "low");
+});
+
 test("model-unavailable errors fall through the same ordered worker pool", async (t) => {
 	const marker = scratch("unavailable-marker");
 	const { tool } = setup(t, {
@@ -593,7 +652,16 @@ test("model-unavailable errors fall through the same ordered worker pool", async
 test("non-availability failures do not trigger pool fallback", async (t) => {
 	const marker = scratch("no-fallback-marker");
 	const { tool } = setup(t, {
-		config: { ...POOL_SET, worker: { models: [HAIKU, SONNET], thinking: "max" } },
+		config: {
+			...POOL_SET,
+			worker: {
+				models: [
+					{ model: HAIKU, thinking: "max" },
+					{ model: SONNET, thinking: "max" },
+				],
+				thinking: "max",
+			},
+		},
 		env: { FAKE_PI_MODE: "fail-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
 	const res = await run(tool, { role: "review", task: "x" });
@@ -606,88 +674,83 @@ test("non-availability failures do not trigger pool fallback", async (t) => {
 	assert.equal(res.details.round1[0].fallbackAttempts.length, 0);
 });
 
-test("legacy model sets migrate to ordered pools and the session model remains the empty-pool fallback", () => {
+test("v1 and v2 configs migrate to per-model levels, and empty pools use the session model", () => {
 	const path = scratch("legacy-delegate.json");
 	writeFileSync(path, JSON.stringify({ models: [HAIKU, SONNET, OPUS], default: SONNET }));
 	const set = loadModelSet(path);
 	assert.deepEqual(set, {
-		version: 2,
-		scout: { models: [HAIKU, SONNET, OPUS], thinking: "low" },
-		worker: { models: [SONNET, HAIKU, OPUS], thinking: "max" },
-	});
-	assert.deepEqual(resolveRun("scout", {}, set), {
-		model: HAIKU,
-		candidates: [HAIKU, SONNET, OPUS],
-		thinking: "low",
-	});
-	assert.deepEqual(resolveRun("scout", { thinking: "high" }, set), {
-		model: HAIKU,
-		candidates: [HAIKU, SONNET, OPUS],
-		thinking: "low",
-	});
-	assert.deepEqual(resolveRun("scout", { thinking: "off" }, set), {
-		model: HAIKU,
-		candidates: [HAIKU, SONNET, OPUS],
-		thinking: "off",
-	});
-	assert.deepEqual(resolveRun("review", {}, set), {
-		model: SONNET,
-		candidates: [SONNET, HAIKU, OPUS],
-		thinking: "max",
-	});
-	assert.deepEqual(resolveRun("review", { thinking: "high" }, set), {
-		model: SONNET,
-		candidates: [SONNET, HAIKU, OPUS],
-		thinking: "high",
+		version: 3,
+		scout: {
+			models: [HAIKU, SONNET, OPUS].map((model) => ({ model, thinking: "low" })),
+			thinking: "low",
+		},
+		worker: {
+			models: [SONNET, HAIKU, OPUS].map((model) => ({ model, thinking: "max" })),
+			thinking: "max",
+		},
 	});
 	assert.deepEqual(resolveRun("review", { model: OPUS, thinking: "medium" }, set), {
 		model: OPUS,
-		candidates: [OPUS, SONNET, HAIKU],
+		candidates: [
+			{ model: OPUS, thinking: "medium" },
+			{ model: SONNET, thinking: "medium" },
+			{ model: HAIKU, thinking: "medium" },
+		],
 		thinking: "medium",
 	});
-	assert.deepEqual(resolveRun("research", { model: HAIKU }, set), {
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [HAIKU, SONNET, OPUS], default: SONNET });
+
+	const v2Path = scratch("v2-delegate.json");
+	writeFileSync(
+		v2Path,
+		JSON.stringify({
+			version: 2,
+			scout: { models: [HAIKU], thinking: "off" },
+			worker: { models: [LUNA, OPUS], thinking: "max" },
+		}),
+	);
+	const v2 = loadModelSet(v2Path);
+	assert.equal(JSON.parse(readFileSync(v2Path, "utf8")).version, 2, "reading a legacy config does not rewrite it");
+	assert.deepEqual(v2, {
+		version: 3,
+		scout: { models: [{ model: HAIKU, thinking: "off" }], thinking: "off" },
+		worker: {
+			models: [LUNA, OPUS].map((model) => ({ model, thinking: "max" })),
+			thinking: "max",
+		},
+	});
+	assert.deepEqual(resolveRun("scout", { thinking: "high" }, v2), {
 		model: HAIKU,
-		candidates: [HAIKU, SONNET, OPUS],
+		candidates: [{ model: HAIKU, thinking: "low" }],
+		thinking: "low",
+	});
+	assert.deepEqual(resolveRun("review", {}, v2), {
+		model: LUNA,
+		candidates: [
+			{ model: LUNA, thinking: "max" },
+			{ model: OPUS, thinking: "max" },
+		],
 		thinking: "max",
 	});
-	assert.throws(() => resolveRun("review", { model: "openai/gpt-x" }, set), /not in the delegate pools/);
+	assert.throws(() => resolveRun("review", { model: "openai/gpt-x" }, v2), /not in the delegate pools/);
+
 	const empty = loadModelSet(join(TEST_HOME, "nope.json"));
 	assert.deepEqual(resolveRun("scout", {}, empty, "x/session"), {
 		model: "x/session",
-		candidates: ["x/session"],
+		candidates: [{ model: "x/session", thinking: "low" }],
 		thinking: "low",
 	});
 	assert.deepEqual(resolveRun("review", { model: "y/m" }, empty, "x/session"), {
 		model: "y/m",
-		candidates: ["y/m"],
+		candidates: [{ model: "y/m", thinking: "max" }],
 		thinking: "max",
 	});
 });
 
-// Keys for the model-set picker, as the terminal sends them.
-const KEY = { enter: "\r", esc: "\x1b", save: "\x13", backspace: "\x7f" };
-const typed = (...parts) => parts.flatMap((p) => (KEY[p] ? [KEY[p]] : [...p]));
-
-// A command context with scripted answers: `keys` drive the picker, `confirms` are consumed in order,
-// `pick` answers selects.
-function commandCtx({
-	keys = [],
-	keySequences,
-	confirms = [],
-	pick = () => undefined,
-	idle = true,
-	available = [HAIKU, SONNET, OPUS],
-} = {}) {
-	const sequences = keySequences?.map((sequence) => [...sequence]);
+function commandCtx({ available = [HAIKU, SONNET, OPUS] } = {}) {
 	const notes = [];
-	const asked = [];
 	const ctx = {
 		hasUI: true,
-		isIdle: () => idle,
-		reloaded: false,
-		reload: async () => {
-			ctx.reloaded = true;
-		},
 		modelRegistry: {
 			getAvailable: () =>
 				available.map((m) => {
@@ -696,33 +759,32 @@ function commandCtx({
 					return { provider, id, name: id, cost: { input: 1, output: 5 } };
 				}),
 		},
-		ui: {
-			custom: async (factory) => {
-				let result = "picker still open";
-				const picker = factory({}, { fg: (_c, text) => text, bold: (text) => text }, {}, (value) => {
-					result = value;
-				});
-				picker.focused = true;
-				for (const key of sequences ? (sequences.shift() ?? []) : keys) picker.handleInput(key);
-				return result;
-			},
-			confirm: async (title) => {
-				asked.push(title);
-				return confirms.shift() ?? false;
-			},
-			select: async (title, options) => {
-				asked.push(title);
-				return pick(title, options);
-			},
-			notify: (message, type) => notes.push([message, type]),
-		},
+		ui: { notify: (message, type) => notes.push([message, type]) },
 	};
-	return { ctx, notes, asked };
+	return { ctx, notes };
 }
 
 test("/delegate status: the set with availability, missing tools, running and recent calls", async (t) => {
 	assert.deepEqual(setup(t, { env: { ME_PI_RUN: "1" } }).commands, {}, "workers get no command");
-	const main = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const main = setup(t, {
+		config: {
+			version: 3,
+			scout: {
+				thinking: "low",
+				models: [
+					{ model: HAIKU, thinking: "low" },
+					{ model: OPUS, thinking: "off" },
+				],
+			},
+			worker: {
+				thinking: "max",
+				models: [
+					{ model: OPUS, thinking: "max" },
+					{ model: HAIKU, thinking: "low" },
+				],
+			},
+		},
+	});
 	assert.deepEqual(
 		main.commands.delegate.getArgumentCompletions("").map((c) => c.value),
 		["status", "models"],
@@ -737,12 +799,9 @@ test("/delegate status: the set with availability, missing tools, running and re
 		return notes[0][0];
 	};
 	const before = await status();
-	assert.match(before, new RegExp(`Scout pool \\(low\\): 1\\. ${HAIKU} \u2713; 2\\. ${OPUS} \u2717 not available`));
-	assert.match(
-		before,
-		new RegExp(
-			`Worker pool \\(max\\): 1\\. ${OPUS} \u2717 not available \\(no login or unknown id\\); 2\\. ${HAIKU} \u2713`,
-		),
+	assert.ok(before.includes(`Scout pool: 1. ${HAIKU} (low) ✓; 2. ${OPUS} (off) ✗ not available`));
+	assert.ok(
+		before.includes(`Worker pool: 1. ${OPUS} (max) ✗ not available (no login or unknown id); 2. ${HAIKU} (low) ✓`),
 	);
 	assert.match(before, /\nTools: missing Skill \(this repo's extensions\/skill\.ts\), web_search \(pi-web-access\)/);
 	assert.match(before, /\nRunning: none\nLast calls: none$/);
@@ -787,192 +846,29 @@ test("/delegate status keeps the last 20 calls", async (t) => {
 	assert.equal(notes[0][0].split("\n").filter((l) => l.includes("general claude-haiku")).length, 20);
 });
 
-test("/delegate models saves separate ordered pools and thinking levels, and allows a model in both", async (t) => {
-	const main = setup(t, {
-		config: {
-			version: 2,
-			scout: { models: [HAIKU], thinking: "low" },
-			worker: { models: [SONNET], thinking: "medium" },
-		},
-	});
-	const path = process.env.ME_PI_DELEGATE_CONFIG;
-	const { ctx, asked } = commandCtx({
-		keySequences: [typed("opus", "enter", "save"), typed("haiku", "enter", "save")],
-		confirms: [true, false],
-		pick: (title) => ({ "Scout thinking": "off", "Worker thinking": "max" })[title],
-	});
-	await main.commands.delegate.handler("models", ctx);
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
-		version: 2,
-		scout: { models: [HAIKU, OPUS], thinking: "off" },
-		worker: { models: [SONNET, HAIKU], thinking: "max" },
-	});
-	assert.deepEqual(loadModelSet(path), {
-		version: 2,
-		scout: { models: [HAIKU, OPUS], thinking: "off" },
-		worker: { models: [SONNET, HAIKU], thinking: "max" },
-	});
-	assert.deepEqual(asked, ["Scout thinking", "Worker thinking", `Write ${path}?`, "Reload now?"]);
-	assert.equal(ctx.reloaded, false);
-});
-
-test("/delegate models saves two ordered pools and offers reload only when idle", async (t) => {
-	const main = setup(t, { config: { models: [HAIKU] } });
-	const path = process.env.ME_PI_DELEGATE_CONFIG;
-	const { ctx, notes, asked } = commandCtx({
-		keySequences: [typed("sonnet", "enter", "save"), typed("opus", "enter", "save")],
-		confirms: [true, false],
-		pick: (_title, options) => options[0],
-	});
-	await main.commands.delegate.handler("models", ctx);
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
-		version: 2,
-		scout: { models: [HAIKU, SONNET], thinking: "low" },
-		worker: { models: [HAIKU, OPUS], thinking: "max" },
-	});
-	assert.equal(statSync(path).mode & 0o777, 0o600);
-	assert.ok(!existsSync(`${path}.${process.pid}.tmp`), "no temp file left");
-	assert.deepEqual(asked, ["Scout thinking", "Worker thinking", `Write ${path}?`, "Reload now?"]);
-	assert.equal(ctx.reloaded, false);
-	assert.match(notes.at(-1)[0], /written\. Calls use them now; run \/reload/);
-
-	// Enter removes a chosen model. Saving with both confirmations reloads the updated pools.
-	const reload = commandCtx({
-		keySequences: [typed("haiku", "enter", "save"), typed("save")],
-		confirms: [true, true],
-		pick: (_title, options) => options[0],
-	});
-	await main.commands.delegate.handler("models", reload.ctx);
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
-		version: 2,
-		scout: { models: [SONNET], thinking: "low" },
-		worker: { models: [HAIKU, OPUS], thinking: "max" },
-	});
-	assert.equal(reload.ctx.reloaded, true);
-
-	// Busy: no reload offer.
-	const busy = commandCtx({
-		keySequences: [typed("save"), typed("save")],
-		confirms: [true],
-		idle: false,
-		pick: (_title, options) => options[0],
-	});
-	await main.commands.delegate.handler("models", busy.ctx);
-	assert.equal(busy.ctx.reloaded, false);
-	assert.match(busy.notes.at(-1)[0], /Run \/reload when no workers run/);
-
-	// Idle agent, but a delegate call still runs: no reload offer either.
-	const hanging = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "hang" } });
-	const controller = new AbortController();
-	const pending = run(hanging.tool, { task: "x" }, controller.signal);
-	await new Promise((r) => setTimeout(r, 300));
-	const working = commandCtx({
-		keySequences: [typed("save"), typed("save")],
-		confirms: [true],
-		pick: (_title, options) => options[0],
-	});
-	await hanging.commands.delegate.handler("models", working.ctx);
-	assert.equal(working.ctx.reloaded, false);
-	assert.match(working.notes.at(-1)[0], /Run \/reload when no workers run/);
-	controller.abort();
-	await pending;
-});
-
-test("/delegate models cancellation and write decline preserve the saved pools", async (t) => {
+test("/delegate models directs users to edit JSON manually without writing it", async (t) => {
 	const main = setup(t, { config: POOL_SET });
 	const path = process.env.ME_PI_DELEGATE_CONFIG;
 	const original = readFileSync(path, "utf8");
-	const keepThinking = (_title, options) => options[0];
-	for (const [answers, message] of [
-		[{ keySequences: [typed("esc")] }, /cancelled, nothing written/],
-		[{ keySequences: [typed("save")], pick: () => undefined }, /cancelled, nothing written/],
-		[{ keySequences: [typed("save"), typed("esc")], pick: keepThinking }, /cancelled, nothing written/],
-		[
-			{
-				keySequences: [typed("save"), typed("save")],
-				pick: (title) => (title === "Worker thinking" ? undefined : "off"),
-			},
-			/cancelled, nothing written/,
-		],
-		[{ keySequences: [typed("save"), typed("save")], pick: keepThinking, confirms: [false] }, /nothing written/],
-		[{ available: [] }, /no model is available; log in to a provider first/],
-	]) {
-		const { ctx, notes } = commandCtx(answers);
-		await main.commands.delegate.handler("models", ctx);
-		assert.match(notes.at(-1)[0], message);
-		assert.equal(readFileSync(path, "utf8"), original);
-	}
-	const rpc = commandCtx();
-	rpc.ctx.ui.custom = async () => undefined; // RPC mode cannot show custom components.
-	await assert.rejects(main.commands.delegate.handler("models", rpc.ctx), /needs the interactive TUI/);
-	const noUI = commandCtx();
-	noUI.ctx.hasUI = false;
-	await assert.rejects(main.commands.delegate.handler("models", noUI.ctx), /needs the interactive UI/);
+	const { ctx, notes } = commandCtx();
+	await main.commands.delegate.handler("models", ctx);
+	assert.deepEqual(notes, [[`Edit ${path} to set ordered models and per-model thinking, then run /reload.`, "info"]]);
 	assert.equal(readFileSync(path, "utf8"), original);
 });
 
-test("/delegate models: an unreadable config is reported, and both pools start empty", async (t) => {
-	const main = setup(t, { config: "{ not json" });
-	const path = process.env.ME_PI_DELEGATE_CONFIG;
-	const { ctx, notes } = commandCtx({
-		keySequences: [typed("opus", "enter", "save"), typed("save")],
-		confirms: [true, false],
-		pick: (title) => (title === "Scout thinking" ? "low" : "max"),
-	});
-	await main.commands.delegate.handler("models", ctx);
-	assert.match(notes[0][0], /the current pools are unreadable, starting empty \(delegate config .*\)/);
-	assert.equal(notes[0][1], "warning");
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
-		version: 2,
-		scout: { models: [OPUS], thinking: "low" },
-		worker: { models: [], thinking: "max" },
-	});
-});
-
-test("writeModelSet validates pools first and replaces a stale temp file", (t) => {
-	setup(t);
-	const path = join(mkdtempSync(join(TEST_HOME, "write-")), "sub", "delegate.json");
-	assert.throws(
-		() => writeModelSet({ ...POOL_SET, scout: { models: [HAIKU], thinking: "high" } }, path),
-		/scout.thinking must be one of low, off/,
-	);
-	assert.ok(!existsSync(path));
-	mkdirSync(join(path, ".."), { recursive: true });
-	writeFileSync(`${path}.${process.pid}.tmp`, "stale", { mode: 0o644 });
-	writeModelSet(POOL_SET, path);
-	assert.deepEqual(loadModelSet(path), POOL_SET);
-	assert.equal(statSync(path).mode & 0o777, 0o600);
-});
-
-test("model pool configs validate loudly and read legacy model sets", (t) => {
+test("v3 model configs validate per-model thinking", (t) => {
 	const write = (content) => {
 		const path = scratch("delegate.json");
 		writeFileSync(path, content);
 		return path;
 	};
 	assert.deepEqual(loadModelSet(join(TEST_HOME, "nope.json")), {
-		version: 2,
+		version: 3,
 		scout: { models: [], thinking: "low" },
 		worker: { models: [], thinking: "max" },
 	});
-	assert.deepEqual(loadModelSet(write(JSON.stringify({ models: [HAIKU, OPUS], default: OPUS }))), {
-		version: 2,
-		scout: { models: [HAIKU, OPUS], thinking: "low" },
-		worker: { models: [OPUS, HAIKU], thinking: "max" },
-	});
-	assert.deepEqual(
-		loadModelSet(
-			write(
-				JSON.stringify({
-					version: 2,
-					scout: { models: [HAIKU], thinking: "low" },
-					worker: { models: [HAIKU, OPUS], thinking: "max" },
-				}),
-			),
-		).scout.models,
-		[HAIKU],
-		"the same model may appear in both pools",
-	);
+	assert.deepEqual(loadModelSet(write(JSON.stringify(POOL_SET))), POOL_SET);
+	assert.equal(loadModelSet(write(JSON.stringify(POOL_SET))).worker.models[1].thinking, "max");
 	for (const [content, error] of [
 		["{", /delegate config .*: /],
 		["[]", /expected a JSON object/],
@@ -980,22 +876,28 @@ test("model pool configs validate loudly and read legacy model sets", (t) => {
 		[JSON.stringify({ models: [{ id: HAIKU }] }), /models.*must be an array of model ids/],
 		[JSON.stringify({ models: [HAIKU, HAIKU] }), /models.*lists a model twice/],
 		[JSON.stringify({ models: [HAIKU], default: OPUS }), /"default" must be one of "models"/],
-		[JSON.stringify({ version: 3 }), /unsupported version 3/],
+		[JSON.stringify({ version: 4 }), /unsupported version 4 \(expected 2 or 3\)/],
 		[
 			JSON.stringify({
-				version: 2,
-				scout: { models: [HAIKU], thinking: "high" },
+				version: 3,
+				scout: { models: [{ model: HAIKU, thinking: "high" }], thinking: "low" },
 				worker: { models: [], thinking: "max" },
 			}),
-			/scout.thinking must be one of low, off/,
+			/scout.models\[0\].thinking must be one of low, off/,
 		],
 		[
 			JSON.stringify({
-				version: 2,
+				version: 3,
 				scout: { models: [], thinking: "low" },
-				worker: { models: [HAIKU, HAIKU], thinking: "max" },
+				worker: {
+					models: [
+						{ model: HAIKU, thinking: "medium" },
+						{ model: HAIKU, thinking: "low" },
+					],
+					thinking: "max",
+				},
 			}),
-			/worker.models lists a model twice/,
+			/worker.models lists model .* twice/,
 		],
 	]) {
 		assert.throws(() => loadModelSet(write(content)), error);
