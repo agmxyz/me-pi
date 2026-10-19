@@ -1,7 +1,7 @@
 ## Output
 - Lead with the result and end when the content ends. Give code, paths, commands, identifiers, and error strings verbatim.
 - When they exist, state one line each: material assumptions, failures, skipped checks, unverified claims, security/data/irreversible risks. Brevity cuts words, never work, verification, or these lines.
-- Show reasoning when the choice is not obvious or I ask why. When I ask for STE, write ASD-STE100 Simplified Technical English.
+- Show reasoning when the choice is not obvious or I ask why.
 - Make docs and handoffs self-contained: the reader lacks this session's context.
 
 ## Engineering (repo AGENTS.md/CLAUDE.md wins on conflict in this section only)
