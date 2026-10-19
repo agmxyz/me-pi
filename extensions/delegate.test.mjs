@@ -306,6 +306,10 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	await priced.message_end({ message: { role: "assistant", usage: usage(0.2) } });
 	assert.match((await call(priced)).reason, /budget reached \(\$0\.50 cost\)/);
 
+	const single = worker({ tools: 1, deadline: far, cost: 1 });
+	await call(single);
+	assert.match((await call(single)).reason, /budget reached \(1 tool call\)\./);
+
 	const late = worker({ tools: 100, deadline: Date.now() - 1, cost: 1 });
 	assert.match((await call(late)).reason, /budget reached \(time\)/);
 

@@ -191,7 +191,7 @@ const MAX_BLOCKED_OVER_BUDGET = 3;
 
 /** Which budget a worker has used up before its next tool call, if any. */
 export function budgetSpent(budget: Budget, calls: number, cost: number, now = Date.now()): string | undefined {
-	if (calls > budget.tools) return `${budget.tools} tool calls`;
+	if (calls > budget.tools) return `${budget.tools} tool call${budget.tools === 1 ? "" : "s"}`;
 	if (now >= budget.deadline) return "time";
 	if (cost >= budget.cost) return `$${budget.cost.toFixed(2)} cost`;
 	return undefined;
