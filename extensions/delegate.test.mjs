@@ -33,6 +33,7 @@ const {
 	secretPathIn,
 	writeBlockedIn,
 } = await import("./delegate.ts");
+const { progressLines } = await import("./delegate-render.ts");
 
 const DEFAULT_LIMITS = { ...LIMITS };
 // A failing lifecycle test can leave a worker running, which would keep this process alive.
@@ -211,6 +212,8 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.equal(properties.web.type, "boolean");
 	assert.equal(properties.answer.maxLength, 400);
 	assert.equal(properties.output.type, "boolean");
+	assert.equal(typeof main.tool.renderCall, "function");
+	assert.equal(typeof main.tool.renderResult, "function");
 	const worker = setup(t, { env: { ME_PI_RUN: "1" } });
 	assert.equal(worker.tool, undefined, "no nested delegation");
 	assert.deepEqual(Object.keys(worker.handlers).sort(), ["message_end", "tool_call"]);
@@ -429,6 +432,14 @@ test("output: a failed round-2 run lists its own directory", async (t) => {
 		text(res),
 		/round 2 failed: exit 1: rate limited in round 2\nFiles in \S+: none written\nRound-1 answer:/,
 	);
+	// The TUI view names the failed round-2 run's directory too, and the rounds do not repeat the answers.
+	assert.match(
+		res.details.view.runs[1].round2Failure,
+		/^exit 1: rate limited in round 2; Files in \S+: none written$/,
+	);
+	assert.equal(res.details.round1[0].output, undefined);
+	assert.equal(res.details.round2[0].output, undefined);
+	assert.match(res.details.round1[0].outDir, /me-pi-delegate-out-/);
 });
 
 test("output: a failed run still lists its files; a failed mkdtemp is reported", async (t) => {
@@ -613,6 +624,39 @@ test("bad calls are refused before any worker starts", async (t) => {
 		assert.match(text(res), error);
 	}
 	assert.equal(existsSync(marker), false, "no worker started");
+});
+
+test("details carry a view for the TUI: progress per round, then the reported runs and the footer", async (t) => {
+	const { tool } = setup(t, {
+		config: { models: [HAIKU, OPUS] },
+		env: { FAKE_PI_MODE: "fail-round2", FAKE_PI_FAIL_MODEL: OPUS },
+	});
+	const updates = [];
+	const res = await run(
+		tool,
+		{ task: "x", web: true, runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true },
+		undefined,
+		(u) => updates.push(u),
+	);
+	const stages = [...new Set(updates.map((u) => u.details.view.stage))];
+	assert.deepEqual(stages, ["Workers", "Rebuttal"]);
+	const last = updates.at(-1);
+	assert.equal(last.content[0].text, progressLines(last.details.view).join("\n"));
+	assert.match(
+		last.content[0].text,
+		/^Rebuttal \[web\]\n\u2713 claude-haiku-5-5 turn 1 \$0\.0020\n\u2717 claude-opus-5-5/,
+	);
+	const view = res.details.view;
+	assert.equal(view.stage, "Done");
+	assert.deepEqual(
+		view.runs.map((r) => [r.model, r.thinking, r.web, r.done, r.round2Failure ?? null]),
+		[
+			[HAIKU, "high", true, true, null],
+			[OPUS, "high", true, true, "exit 1: rate limited in round 2"],
+		],
+	);
+	assert.match(view.runs[0].output, /## Round 2/);
+	assert.match(view.footer, /^Total: 4 runs, \$0\.0080\. Round-1 answers: /);
 });
 
 test("several runs answer the same task in parallel; usage is summed", async (t) => {

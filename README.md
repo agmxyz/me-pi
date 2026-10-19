@@ -64,7 +64,7 @@ Without `default`, the non-scout roles use the last model in the set. Without a 
 - `answer`: replaces the role's answer format, 1 to 400 characters.
 - `output: true`: each run gets `write`, but only inside its own new temp directory (mode 0700). The answer lists the files and their sizes, not their contents. Copy what you keep and check the diff. The tool does not delete these directories.
 
-Results: answers over 12 KiB are cut and saved in full to a temp file (mode 0600). Worker cost is added to the session usage.
+Results: answers over 12 KiB are cut and saved in full to a temp file (mode 0600). Worker cost is added to the session usage. In the TUI, a running call shows each worker's turn, cost, and last tool; a result shows one line per run, and Ctrl+O expands the answers as Markdown. The model gets the full text either way.
 
 Reviews: workers cannot run git. Write the diff to a file first (`git add -N` new files, then `git diff HEAD > /tmp/x.diff`), pass its path, and do not edit those files until the review returns.
 

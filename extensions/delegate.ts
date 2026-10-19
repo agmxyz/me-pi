@@ -25,6 +25,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type DelegateView, progressLines, type RunView, renderCall, renderResult } from "./delegate-render.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
 export const LIMITS = {
@@ -573,6 +574,31 @@ export function saveFull(text: string): string {
 const filesLine = (r: RunResult) =>
 	r.outDir ? `\nFiles in ${r.outDir}: ${r.files?.length ? r.files.join(", ") : "none written"}` : "";
 
+const withoutOutput = ({ output: _output, ...rest }: RunResult) => rest;
+
+/** A run as the TUI shows it; `r` may be a run that has not reported yet. */
+function runView(
+	r: Pick<RunResult, "requested" | "web"> & Partial<RunResult>,
+	done: boolean,
+	round2Failure?: string,
+): RunView {
+	return {
+		model: r.requested.model ?? r.model ?? "session model",
+		thinking: r.requested.thinking,
+		web: r.web,
+		done,
+		failure: r.failure,
+		round2Failure,
+		turns: r.turns ?? 0,
+		cost: costOf(r.usage ?? {}),
+		ms: r.ms ?? 0,
+		lastTool: r.tools?.at(-1),
+		output: r.output ?? "",
+		outDir: r.outDir,
+		files: r.files,
+	};
+}
+
 function formatRun(r: RunResult): string {
 	const answer = r.output.trim() || "(empty answer)";
 	if (!r.failure && Buffer.byteLength(answer, "utf8") > ANSWER_CAP)
@@ -713,6 +739,8 @@ export default function (pi: ExtensionAPI) {
 			"Run read-only Pi workers and get back only their answers. Workers read files and load skills; research and challenge, or any call with `web: true`, also use the web. They cannot edit, run commands, or commit; with `output: true` each one can write drafts into its own temp directory.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
+		renderCall: (args, theme) => renderCall(args, theme),
+		renderResult: (result, options, theme) => renderResult(result as any, options, theme),
 		parameters: buildSchema(schemaSet) as any,
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
@@ -762,20 +790,16 @@ export default function (pi: ExtensionAPI) {
 
 			const signal = toolSignal ? AbortSignal.any([toolSignal, shutdown.signal]) : shutdown.signal;
 			const cwd = ctx?.cwd ?? process.cwd();
-			const round = async (stage: string, prompts: string[], runs: typeof resolved) => {
+			const round = async (stage: DelegateView["stage"], prompts: string[], runs: typeof resolved) => {
 				const states: (RunResult | undefined)[] = runs.map(() => undefined);
 				const finished = runs.map(() => false);
 				const progress = () => {
-					const lines = runs.map((r, i) => {
-						const s = states[i];
-						const icon = !finished[i] ? "⏳" : s?.failure ? "✗" : "✓";
-						const cost = costOf(s?.usage ?? {}).toFixed(4);
-						return `${icon} ${r.model ?? "session model"} turn ${s?.turns ?? 0} $${cost} ${s?.tools.at(-1) ?? ""}`;
-					});
-					onUpdate?.({
-						content: [{ type: "text", text: `${stage}${job.web ? " [web]" : ""}\n${lines.join("\n")}` }],
-						details: { runs: states },
-					});
+					const view: DelegateView = {
+						stage,
+						web: job.web,
+						runs: runs.map((r, i) => runView(states[i] ?? { requested: r, web: job.web }, finished[i])),
+					};
+					onUpdate?.({ content: [{ type: "text", text: progressLines(view).join("\n") }], details: { view } });
 				};
 				return Promise.all(
 					runs.map(async (r, i) => {
@@ -801,7 +825,8 @@ export default function (pi: ExtensionAPI) {
 				resolved.map(() => `Task:\n${task}`),
 				resolved,
 			);
-			let sections = round1.map(formatRun);
+			// The runs to report, in request order; a failed round-2 run keeps its round-1 answer.
+			let shown: { run: RunResult; failedRound2?: RunResult }[] = round1.map((run) => ({ run }));
 			let round2: RunResult[] = [];
 			let note = "";
 			let failed = round1.some((r) => r.failure);
@@ -824,13 +849,10 @@ export default function (pi: ExtensionAPI) {
 						prompts,
 						ok.map((r) => r.requested),
 					);
-					// Keep the request order; a failed round-2 run falls back to its round-1 answer.
-					sections = round1.map((r) => {
-						const i = ok.indexOf(r);
-						if (i < 0) return formatRun(r);
-						const r2 = round2[i];
-						if (!r2.failure) return formatRun(r2);
-						return `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(r)}`;
+					shown = round1.map((run) => {
+						const r2 = round2[ok.indexOf(run)];
+						if (!r2) return { run };
+						return r2.failure ? { run, failedRound2: r2 } : { run: r2 };
 					});
 					failed ||= round2.some((r) => r.failure);
 					const full = round1.map(
@@ -844,9 +866,21 @@ export default function (pi: ExtensionAPI) {
 			const usage = {};
 			for (const r of all) addUsage(usage, r.usage);
 			const footer = all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
+			const sections = shown.map(({ run, failedRound2: r2 }) =>
+				r2 ? `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(run)}` : formatRun(run),
+			);
+			const view: DelegateView = {
+				stage: "Done",
+				web: job.web,
+				runs: shown.map(({ run, failedRound2: r2 }) =>
+					runView(run, true, r2 && `${r2.failure}${filesLine(r2).replace("\n", "; ")}`),
+				),
+				footer: footer.trim() || undefined,
+			};
 			return {
 				content: [{ type: "text", text: [...sections, footer.trim()].filter(Boolean).join("\n\n---\n\n") }],
-				details: { round1, round2 },
+				// The answers are in the view and the content; the rounds keep the rest for debugging.
+				details: { round1: round1.map(withoutOutput), round2: round2.map(withoutOutput), view },
 				usage: usage as any,
 				isError: failed,
 			};
