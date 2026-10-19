@@ -138,9 +138,19 @@ export function writeBlockedIn(toolName: string, input: unknown, cwd: string, ou
 	const target = realTarget(resolve(cwd, given));
 	if (!target) return `${path} cannot be resolved`;
 	const inside = relative(realpathOr(outDir), target);
-	if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside))
-		return `${path} is outside ${outDir}`;
+	if (notStrictlyInside(inside))
+		return isAbsolute(given) ? `${path} is outside ${outDir}` : relativeHint(path, target, outDir, given);
 	return undefined;
+}
+
+/** Whether a path relative to a directory is the directory itself or outside it. */
+const notStrictlyInside = (rel: string) => !rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+
+// Tasks often name a relative path, which Pi resolves against the project: say where it went and where to write.
+function relativeHint(path: string, target: string, outDir: string, given: string): string {
+	const suggested = join(outDir, given);
+	const hint = notStrictlyInside(relative(outDir, suggested)) ? "" : `; write to ${suggested} instead`;
+	return `${path} resolves to ${target}, outside ${outDir}${hint}`;
 }
 
 const MAX_LISTED = 50;
@@ -206,7 +216,7 @@ export const WORKER_CONTRACT = [
 const workerSystemPrompt = ({ role, answer }: Job, outDir?: string) =>
 	`${WORKER_CONTRACT}\nRole: ${role}.${answer ? ` Final answer format: ${answer}` : ""}${
 		outDir
-			? `\nOutput (an exception to the read-only rule): you may also use \`write\`, but only for files inside ${outDir} (use absolute paths); writes anywhere else are blocked. Put your drafts there. Inside your final answer format, also list each file you wrote with one line on what it holds; do not repeat the file contents.`
+			? `\nOutput (an exception to the read-only rule): you may also use \`write\`, but only for files inside ${outDir}. Relative paths resolve against the project, not this directory, so give each file as an absolute path inside it; writes anywhere else are blocked. Put your drafts there. Inside your final answer format, also list each file you wrote with one line on what it holds; do not repeat the file contents.`
 			: ""
 	}`;
 

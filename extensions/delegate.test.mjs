@@ -90,7 +90,8 @@ process.stdin.on("end", () => {
     const out = process.env.ME_PI_OUTPUT_DIR;
     mkdirSync(out + "/notes");
     writeFileSync(out + "/notes/draft.md", "DRAFT-BODY");
-    emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (flag("--append-system-prompt") || "").includes("only for files inside " + out));
+    const sp = flag("--append-system-prompt") || "";
+    emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only for files inside " + out + ". Relative paths resolve against the project, not this directory")));
     process.exit(0);
   }
   if (mode === "echo-system") { emit(flag("--append-system-prompt") || ""); process.exit(0); }
@@ -288,6 +289,21 @@ test("workers write only inside their own output directory", async (t) => {
 	mkdirSync(join(cwd, "a b"));
 	symlinkSync(out, join(cwd, "a\u00A0b"));
 	assert.match(writeBlockedIn("write", { path: join(cwd, "a\u00A0b/x.md") }, cwd, out), /is outside/);
+	// A relative path resolves against the project: the reason says where it went and where to write.
+	const rel = writeBlockedIn("write", { path: "notes/x.md" }, cwd, out);
+	assert.ok(rel.startsWith("notes/x.md resolves to "), rel);
+	assert.ok(rel.endsWith(`, outside ${out}; write to ${join(out, "notes/x.md")} instead`), rel);
+	assert.doesNotMatch(writeBlockedIn("write", { path: "../x.md" }, cwd, out), /write to/);
+	assert.doesNotMatch(writeBlockedIn("write", { path: "." }, cwd, out), /write to/);
+	// A suggestion through a symlink that leaves the directory is still blocked when followed.
+	symlinkSync(cwd, join(out, "linked"));
+	const viaLink = writeBlockedIn("write", { path: "linked/x.md" }, cwd, out);
+	assert.ok(viaLink.endsWith(`; write to ${join(out, "linked/x.md")} instead`), viaLink);
+	assert.match(writeBlockedIn("write", { path: join(out, "linked/x.md") }, cwd, out), /is outside/);
+	assert.equal(
+		writeBlockedIn("write", { path: join(cwd, "x.md") }, cwd, out),
+		`${join(cwd, "x.md")} is outside ${out}`,
+	);
 	assert.equal(writeBlockedIn("read", { path: join(cwd, "x.md") }, cwd, out), undefined);
 	assert.match(writeBlockedIn("write", { path: join(out, "a.md") }, cwd, ""), /without `output: true`/);
 
