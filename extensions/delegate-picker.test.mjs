@@ -36,13 +36,13 @@ function picker(chosen = []) {
 	return { p, type, result: () => result };
 }
 
-test("typing filters like /model; enter adds in order, the first is the scout model; ctrl+s saves", () => {
+test("typing filters like /model; enter adds in order, the first pool model is tried first; ctrl+s saves", () => {
 	const { p, type, result } = picker();
 	type("sonnet", "enter");
 	type("backspace", "backspace", "backspace", "backspace", "backspace", "backspace");
 	type("anthropic/claude haiku", "enter");
 	const screen = p.render(120).map(strip);
-	assert.equal(screen[1], "Set: 1. claude-sonnet-5-5 (scout)  2. claude-haiku-5-5");
+	assert.equal(screen[1], "Set: 1. claude-sonnet-5-5 (first tried)  2. claude-haiku-5-5");
 	assert.match(
 		screen.find((l) => l.includes("→")),
 		/^→ \[2\] anthropic\/claude-haiku-5-5 {2}\$0\.1\/\$0\.5 per M$/,
@@ -63,11 +63,11 @@ test("models that contain the typed words come first, then fuzzy matches", () =>
 
 test("enter on a chosen model removes it; arrows move; esc cancels", () => {
 	const { p, type, result } = picker(["anthropic/claude-haiku-5-5", "anthropic/claude-opus-5-5"]);
-	assert.match(strip(p.render(120)[1]), /^Set: 1\. claude-haiku-5-5 \(scout\) {2}2\. claude-opus-5-5$/);
+	assert.match(strip(p.render(120)[1]), /^Set: 1\. claude-haiku-5-5 \(first tried\) {2}2\. claude-opus-5-5$/);
 	type("enter"); // The first row, haiku: removed.
-	assert.match(strip(p.render(120)[1]), /^Set: 1\. claude-opus-5-5 \(scout\)$/);
+	assert.match(strip(p.render(120)[1]), /^Set: 1\. claude-opus-5-5 \(first tried\)$/);
 	type("down", "enter"); // Sonnet: added after opus.
-	assert.match(strip(p.render(120)[1]), /^Set: 1\. claude-opus-5-5 \(scout\) {2}2\. claude-sonnet-5-5$/);
+	assert.match(strip(p.render(120)[1]), /^Set: 1\. claude-opus-5-5 \(first tried\) {2}2\. claude-sonnet-5-5$/);
 	type("up", "up");
 	assert.match(strip(p.render(200).find((l) => strip(l).startsWith("→"))), /other\/model-29/, "up wraps to the end");
 	type("esc");

@@ -24,6 +24,8 @@ export interface RunView {
 	output: string;
 	outDir?: string;
 	files?: string[];
+	fallbacks?: string[];
+	fallbackMessage?: string;
 }
 
 /** The renderer's part of the tool details: the stage, and the runs shown in it. */
@@ -76,7 +78,10 @@ function icon(run: RunView, fg: Fg): string {
 function runHeader(run: RunView, fg: Fg): string {
 	const web = run.web ? " web" : "";
 	const files = run.files ? ` · ${run.files.length} file${run.files.length === 1 ? "" : "s"}` : "";
-	const meta = `@${run.thinking}${web} $${run.cost.toFixed(4)} ${Math.round(run.ms / 1000)}s${files}`;
+	const fallbacks = run.fallbacks?.length
+		? ` · ${run.fallbacks.length} fallback${run.fallbacks.length === 1 ? "" : "s"}`
+		: "";
+	const meta = `@${run.thinking}${web} $${run.cost.toFixed(4)} ${Math.round(run.ms / 1000)}s${files}${fallbacks}`;
 	return `${icon(run, fg)} ${fg("accent", shortModel(run.model))} ${fg("dim", meta)}`;
 }
 
@@ -91,8 +96,11 @@ function problem(run: RunView): string | undefined {
 export function progressLines(view: DelegateView, fg: Fg = plain): string[] {
 	const header = fg("toolTitle", view.stage) + (view.web ? fg("muted", " [web]") : "");
 	const runs = view.runs.map((r) => {
-		const tail = r.lastTool ? ` ${fg("dim", r.lastTool)}` : "";
-		return `${icon(r, fg)} ${fg("accent", shortModel(r.model))} turn ${r.turns} $${r.cost.toFixed(4)}${tail}`;
+		const tail = [r.lastTool, r.fallbackMessage && `↻ ${r.fallbackMessage}`]
+			.filter(Boolean)
+			.map((text) => fg("dim", text as string))
+			.join(" ");
+		return `${icon(r, fg)} ${fg("accent", shortModel(r.model))} turn ${r.turns} $${r.cost.toFixed(4)}${tail ? ` ${tail}` : ""}`;
 	});
 	return [header, ...runs];
 }
@@ -148,6 +156,8 @@ export function renderResult(
 	view.runs.forEach((r, i) => {
 		if (i > 0) container.addChild(new Spacer(1));
 		container.addChild(new Lines([runHeader(r, fg)]));
+		for (const fallback of r.fallbacks ?? [])
+			container.addChild(new Text(fg("warning", `Fallback: ${fallback}`), 0, 0));
 		const trouble = problem(r);
 		if (trouble) container.addChild(new Text(fg("error", trouble), 0, 0));
 		if (r.output.trim()) container.addChild(new Markdown(r.output.trim(), 0, 0, markdown));

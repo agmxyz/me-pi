@@ -48,6 +48,12 @@ after(() => {
 const HAIKU = "anthropic/claude-haiku-5-5";
 const SONNET = "anthropic/claude-sonnet-5-5";
 const OPUS = "anthropic/claude-opus-5-5";
+const LUNA = "openai-codex/gpt-6-luna";
+const POOL_SET = {
+	version: 2,
+	scout: { models: [LUNA, HAIKU], thinking: "off" },
+	worker: { models: [LUNA, OPUS], thinking: "max" },
+};
 
 // Fake pi: reads the prompt from stdin, echoes how it was invoked; FAKE_PI_MODE drives failures.
 const FAKE_BIN = join(TEST_HOME, "fake-pi.mjs");
@@ -68,15 +74,27 @@ let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
-  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), prompt }) + "\\n");
+  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
+  if (mode === "rate-limit-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
+    process.exit(1);
+  }
+  if (mode === "rate-limit-models" && process.env.FAKE_PI_FAIL_MODELS?.split(",").includes(flag("--model"))) {
+    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
+    process.exit(1);
+  }
+  if (mode === "unavailable-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    emit("", { stopReason: "error", errorMessage: "model not found: unavailable" });
+    process.exit(1);
+  }
   if (mode === "fail" || (mode === "fail-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL)) {
     emit("partial findings", { stopReason: "error", errorMessage: "usage limit reached" });
     process.stderr.write("secret-looking stderr detail\\n");
     process.exit(1);
   }
   if (mode === "fail-round2" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL && prompt.includes("## Round 2")) {
-    emit("", { stopReason: "error", errorMessage: "rate limited in round 2" });
+    emit("", { stopReason: "error", errorMessage: "task-specific error in round 2" });
     process.exit(1);
   }
   if (mode === "retry-then-ok") { emit("", { stopReason: "error", errorMessage: "overloaded" }); emit("answer after retry"); process.exit(0); }
@@ -439,12 +457,12 @@ test("output: a failed round-2 run lists its own directory", async (t) => {
 	const res = await run(tool, { task: "x", output: true, runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true });
 	assert.match(
 		text(res),
-		/round 2 failed: exit 1: rate limited in round 2\nFiles in \S+: none written\nRound-1 answer:/,
+		/round 2 failed: exit 1: task-specific error in round 2\nFiles in \S+: none written\nRound-1 answer:/,
 	);
 	// The TUI view names the failed round-2 run's directory too, and the rounds do not repeat the answers.
 	assert.match(
 		res.details.view.runs[1].round2Failure,
-		/^exit 1: rate limited in round 2; Files in \S+: none written$/,
+		/^exit 1: task-specific error in round 2; Files in \S+: none written$/,
 	);
 	assert.equal(res.details.round1[0].output, undefined);
 	assert.equal(res.details.round2[0].output, undefined);
@@ -468,25 +486,181 @@ test("output with no files written says so; without output there is no write too
 	assert.doesNotMatch(without, /Files in|,write/);
 });
 
-test("model set: scout uses the first model at low; other roles default, else last, at medium", () => {
-	const set = { models: [HAIKU, SONNET, OPUS] };
-	assert.deepEqual(resolveRun("scout", {}, set), { model: HAIKU, thinking: "low" });
-	assert.deepEqual(resolveRun("scout", { thinking: "high" }, set), { model: HAIKU, thinking: "low" });
-	assert.deepEqual(resolveRun("scout", { thinking: "off" }, set), { model: HAIKU, thinking: "off" });
-	assert.deepEqual(resolveRun("scout", { model: SONNET }, set), { model: SONNET, thinking: "low" });
-	assert.deepEqual(resolveRun("review", {}, set), { model: OPUS, thinking: "medium" });
-	assert.deepEqual(resolveRun("review", {}, { ...set, default: SONNET }), { model: SONNET, thinking: "medium" });
-	assert.deepEqual(resolveRun("review", { thinking: "high" }, set), { model: OPUS, thinking: "high" });
-	assert.deepEqual(resolveRun("challenge", { model: OPUS, thinking: "medium" }, set), {
+test("model pools resolve separate scout/worker thinking and ordered fallback candidates", () => {
+	assert.deepEqual(resolveRun("scout", {}, POOL_SET), {
+		model: LUNA,
+		candidates: [LUNA, HAIKU],
+		thinking: "off",
+	});
+	assert.deepEqual(resolveRun("review", {}, POOL_SET), {
+		model: LUNA,
+		candidates: [LUNA, OPUS],
+		thinking: "max",
+	});
+	assert.deepEqual(resolveRun("research", { model: OPUS, thinking: "high" }, POOL_SET), {
 		model: OPUS,
+		candidates: [OPUS, LUNA],
+		thinking: "high",
+	});
+	assert.deepEqual(resolveRun("review", { model: HAIKU }, POOL_SET), {
+		model: HAIKU,
+		candidates: [HAIKU],
+		thinking: "max",
+	});
+	assert.deepEqual(resolveRun("scout", { thinking: "high" }, POOL_SET), {
+		model: LUNA,
+		candidates: [LUNA, HAIKU],
+		thinking: "low",
+	});
+});
+
+test("a rate-limited worker falls back through its pool and reports both attempts", async (t) => {
+	const marker = scratch("fallback-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "review", task: "x" });
+	assert.equal(res.isError, false, text(res));
+	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.deepEqual(
+		calls.map((c) => [c.model, c.thinking]),
+		[
+			[HAIKU, "max"],
+			[SONNET, "max"],
+		],
+	);
+	assert.equal(res.details.round1[0].requested.model, SONNET);
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, [
+		{ model: HAIKU, failure: "exit 1: 429 rate_limit_error: too many requests", nextModel: SONNET },
+	]);
+	assert.match(text(res), /claude-haiku-5-5.*rate_limit_error.*trying anthropic\/claude-sonnet-5-5/s);
+	assert.equal(res.usage.cost.total, 0.004);
+});
+
+test("fallback attempts share the worker cost cap", async (t) => {
+	const marker = scratch("fallback-cost-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET, OPUS], thinking: "max" },
+		},
+		env: {
+			FAKE_PI_MODE: "rate-limit-models",
+			FAKE_PI_FAIL_MODELS: `${HAIKU},${SONNET}`,
+			FAKE_PI_MARKER: marker,
+		},
+		limits: { costCapUsd: 0.003 },
+	});
+	const res = await run(tool, { role: "review", task: "x" });
+	assert.equal(res.isError, true);
+	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.deepEqual(
+		calls.map((call) => call.model),
+		[HAIKU, SONNET],
+	);
+	assert.match(text(res), /stopped: cost cap \$0\.001 reached/);
+	assert.equal(res.usage.cost.total, 0.004);
+});
+
+test("model-unavailable errors fall through the same ordered worker pool", async (t) => {
+	const marker = scratch("unavailable-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "off" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "research", task: "x" });
+	assert.equal(res.isError, false, text(res));
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU, SONNET],
+	);
+	assert.match(text(res), /model not found: unavailable.*trying anthropic\/claude-sonnet-5-5/s);
+});
+
+test("non-availability failures do not trigger pool fallback", async (t) => {
+	const marker = scratch("no-fallback-marker");
+	const { tool } = setup(t, {
+		config: { ...POOL_SET, worker: { models: [HAIKU, SONNET], thinking: "max" } },
+		env: { FAKE_PI_MODE: "fail-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "review", task: "x" });
+	assert.equal(res.isError, true);
+	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.deepEqual(
+		calls.map((call) => call.model),
+		[HAIKU],
+	);
+	assert.equal(res.details.round1[0].fallbackAttempts.length, 0);
+});
+
+test("legacy model sets migrate to ordered pools and the session model remains the empty-pool fallback", () => {
+	const path = scratch("legacy-delegate.json");
+	writeFileSync(path, JSON.stringify({ models: [HAIKU, SONNET, OPUS], default: SONNET }));
+	const set = loadModelSet(path);
+	assert.deepEqual(set, {
+		version: 2,
+		scout: { models: [HAIKU, SONNET, OPUS], thinking: "low" },
+		worker: { models: [SONNET, HAIKU, OPUS], thinking: "max" },
+	});
+	assert.deepEqual(resolveRun("scout", {}, set), {
+		model: HAIKU,
+		candidates: [HAIKU, SONNET, OPUS],
+		thinking: "low",
+	});
+	assert.deepEqual(resolveRun("scout", { thinking: "high" }, set), {
+		model: HAIKU,
+		candidates: [HAIKU, SONNET, OPUS],
+		thinking: "low",
+	});
+	assert.deepEqual(resolveRun("scout", { thinking: "off" }, set), {
+		model: HAIKU,
+		candidates: [HAIKU, SONNET, OPUS],
+		thinking: "off",
+	});
+	assert.deepEqual(resolveRun("review", {}, set), {
+		model: SONNET,
+		candidates: [SONNET, HAIKU, OPUS],
+		thinking: "max",
+	});
+	assert.deepEqual(resolveRun("review", { thinking: "high" }, set), {
+		model: SONNET,
+		candidates: [SONNET, HAIKU, OPUS],
+		thinking: "high",
+	});
+	assert.deepEqual(resolveRun("review", { model: OPUS, thinking: "medium" }, set), {
+		model: OPUS,
+		candidates: [OPUS, SONNET, HAIKU],
 		thinking: "medium",
 	});
-	assert.throws(() => resolveRun("review", { model: "openai/gpt-x" }, set), /not in the delegate set: anthropic/);
-	// No set: the session model, any model allowed.
-	assert.deepEqual(resolveRun("scout", {}, { models: [] }, "x/session"), { model: "x/session", thinking: "low" });
-	assert.deepEqual(resolveRun("review", { model: "y/m" }, { models: [] }, "x/session"), {
+	assert.deepEqual(resolveRun("research", { model: HAIKU }, set), {
+		model: HAIKU,
+		candidates: [HAIKU, SONNET, OPUS],
+		thinking: "max",
+	});
+	assert.throws(() => resolveRun("review", { model: "openai/gpt-x" }, set), /not in the delegate pools/);
+	const empty = loadModelSet(join(TEST_HOME, "nope.json"));
+	assert.deepEqual(resolveRun("scout", {}, empty, "x/session"), {
+		model: "x/session",
+		candidates: ["x/session"],
+		thinking: "low",
+	});
+	assert.deepEqual(resolveRun("review", { model: "y/m" }, empty, "x/session"), {
 		model: "y/m",
-		thinking: "medium",
+		candidates: ["y/m"],
+		thinking: "max",
 	});
 });
 
@@ -498,11 +672,13 @@ const typed = (...parts) => parts.flatMap((p) => (KEY[p] ? [KEY[p]] : [...p]));
 // `pick` answers selects.
 function commandCtx({
 	keys = [],
+	keySequences,
 	confirms = [],
 	pick = () => undefined,
 	idle = true,
 	available = [HAIKU, SONNET, OPUS],
 } = {}) {
+	const sequences = keySequences?.map((sequence) => [...sequence]);
 	const notes = [];
 	const asked = [];
 	const ctx = {
@@ -527,7 +703,7 @@ function commandCtx({
 					result = value;
 				});
 				picker.focused = true;
-				for (const key of keys) picker.handleInput(key);
+				for (const key of sequences ? (sequences.shift() ?? []) : keys) picker.handleInput(key);
 				return result;
 			},
 			confirm: async (title) => {
@@ -543,11 +719,6 @@ function commandCtx({
 	};
 	return { ctx, notes, asked };
 }
-
-const picks = (wanted) => (_title, options) => {
-	const want = wanted.shift();
-	return want === undefined ? undefined : options.find((o) => o.startsWith(want));
-};
 
 test("/delegate status: the set with availability, missing tools, running and recent calls", async (t) => {
 	assert.deepEqual(setup(t, { env: { ME_PI_RUN: "1" } }).commands, {}, "workers get no command");
@@ -566,9 +737,12 @@ test("/delegate status: the set with availability, missing tools, running and re
 		return notes[0][0];
 	};
 	const before = await status();
+	assert.match(before, new RegExp(`Scout pool \\(low\\): 1\\. ${HAIKU} \u2713; 2\\. ${OPUS} \u2717 not available`));
 	assert.match(
 		before,
-		new RegExp(`\n  1\\. ${HAIKU} \\(scout\\) \u2713\n  2\\. ${OPUS} \\(default\\) \u2717 not available`),
+		new RegExp(
+			`Worker pool \\(max\\): 1\\. ${OPUS} \u2717 not available \\(no login or unknown id\\); 2\\. ${HAIKU} \u2713`,
+		),
 	);
 	assert.match(before, /\nTools: missing Skill \(this repo's extensions\/skill\.ts\), web_search \(pi-web-access\)/);
 	assert.match(before, /\nRunning: none\nLast calls: none$/);
@@ -613,34 +787,76 @@ test("/delegate status keeps the last 20 calls", async (t) => {
 	assert.equal(notes[0][0].split("\n").filter((l) => l.includes("general claude-haiku")).length, 20);
 });
 
-test("/delegate models: the searchable picker starts from the set; default, confirm, atomic 0600 write", async (t) => {
+test("/delegate models saves separate ordered pools and thinking levels, and allows a model in both", async (t) => {
+	const main = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [HAIKU], thinking: "low" },
+			worker: { models: [SONNET], thinking: "medium" },
+		},
+	});
+	const path = process.env.ME_PI_DELEGATE_CONFIG;
+	const { ctx, asked } = commandCtx({
+		keySequences: [typed("opus", "enter", "save"), typed("haiku", "enter", "save")],
+		confirms: [true, false],
+		pick: (title) => ({ "Scout thinking": "off", "Worker thinking": "max" })[title],
+	});
+	await main.commands.delegate.handler("models", ctx);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+		version: 2,
+		scout: { models: [HAIKU, OPUS], thinking: "off" },
+		worker: { models: [SONNET, HAIKU], thinking: "max" },
+	});
+	assert.deepEqual(loadModelSet(path), {
+		version: 2,
+		scout: { models: [HAIKU, OPUS], thinking: "off" },
+		worker: { models: [SONNET, HAIKU], thinking: "max" },
+	});
+	assert.deepEqual(asked, ["Scout thinking", "Worker thinking", `Write ${path}?`, "Reload now?"]);
+	assert.equal(ctx.reloaded, false);
+});
+
+test("/delegate models saves two ordered pools and offers reload only when idle", async (t) => {
 	const main = setup(t, { config: { models: [HAIKU] } });
 	const path = process.env.ME_PI_DELEGATE_CONFIG;
 	const { ctx, notes, asked } = commandCtx({
-		keys: typed("sonnet", "enter", "save"),
+		keySequences: [typed("sonnet", "enter", "save"), typed("opus", "enter", "save")],
 		confirms: [true, false],
-		pick: picks([SONNET]),
+		pick: (_title, options) => options[0],
 	});
 	await main.commands.delegate.handler("models", ctx);
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [HAIKU, SONNET], default: SONNET });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+		version: 2,
+		scout: { models: [HAIKU, SONNET], thinking: "low" },
+		worker: { models: [HAIKU, OPUS], thinking: "max" },
+	});
 	assert.equal(statSync(path).mode & 0o777, 0o600);
 	assert.ok(!existsSync(`${path}.${process.pid}.tmp`), "no temp file left");
-	assert.deepEqual(asked.slice(0, 2), ["Default model for the other roles", `Write ${path}?`]);
+	assert.deepEqual(asked, ["Scout thinking", "Worker thinking", `Write ${path}?`, "Reload now?"]);
 	assert.equal(ctx.reloaded, false);
-	assert.match(notes.at(-1)[0], /written\. Calls use it now; run \/reload/);
+	assert.match(notes.at(-1)[0], /written\. Calls use them now; run \/reload/);
 
-	// Enter on a chosen model removes it. Last model as the default writes no "default" key; yes reloads.
+	// Enter removes a chosen model. Saving with both confirmations reloads the updated pools.
 	const reload = commandCtx({
-		keys: typed("haiku", "enter", ..."haiku".split("").map(() => "backspace"), "opus", "enter", "save"),
+		keySequences: [typed("haiku", "enter", "save"), typed("save")],
 		confirms: [true, true],
-		pick: picks(["Last model"]),
+		pick: (_title, options) => options[0],
 	});
 	await main.commands.delegate.handler("models", reload.ctx);
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [SONNET, OPUS] });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+		version: 2,
+		scout: { models: [SONNET], thinking: "low" },
+		worker: { models: [HAIKU, OPUS], thinking: "max" },
+	});
 	assert.equal(reload.ctx.reloaded, true);
 
 	// Busy: no reload offer.
-	const busy = commandCtx({ keys: typed("save"), confirms: [true], idle: false, pick: picks(["Last model"]) });
+	const busy = commandCtx({
+		keySequences: [typed("save"), typed("save")],
+		confirms: [true],
+		idle: false,
+		pick: (_title, options) => options[0],
+	});
 	await main.commands.delegate.handler("models", busy.ctx);
 	assert.equal(busy.ctx.reloaded, false);
 	assert.match(busy.notes.at(-1)[0], /Run \/reload when no workers run/);
@@ -650,7 +866,11 @@ test("/delegate models: the searchable picker starts from the set; default, conf
 	const controller = new AbortController();
 	const pending = run(hanging.tool, { task: "x" }, controller.signal);
 	await new Promise((r) => setTimeout(r, 300));
-	const working = commandCtx({ keys: typed("save"), confirms: [true, true], pick: picks(["Last model"]) });
+	const working = commandCtx({
+		keySequences: [typed("save"), typed("save")],
+		confirms: [true],
+		pick: (_title, options) => options[0],
+	});
 	await hanging.commands.delegate.handler("models", working.ctx);
 	assert.equal(working.ctx.reloaded, false);
 	assert.match(working.notes.at(-1)[0], /Run \/reload when no workers run/);
@@ -658,19 +878,23 @@ test("/delegate models: the searchable picker starts from the set; default, conf
 	await pending;
 });
 
-test("/delegate models: cancel, an empty set, decline, or no models writes nothing", async (t) => {
-	const main = setup(t, { config: { models: [HAIKU] } });
+test("/delegate models cancellation and write decline preserve the saved pools", async (t) => {
+	const main = setup(t, { config: POOL_SET });
 	const path = process.env.ME_PI_DELEGATE_CONFIG;
 	const original = readFileSync(path, "utf8");
+	const keepThinking = (_title, options) => options[0];
 	for (const [answers, message] of [
-		[{ keys: typed("esc") }, /cancelled, nothing written/],
-		[{ keys: typed("haiku", "enter", "save") }, /no model picked, nothing written/],
-		// Cancel at the default model, after two models were picked.
+		[{ keySequences: [typed("esc")] }, /cancelled, nothing written/],
+		[{ keySequences: [typed("save")], pick: () => undefined }, /cancelled, nothing written/],
+		[{ keySequences: [typed("save"), typed("esc")], pick: keepThinking }, /cancelled, nothing written/],
 		[
-			{ keys: typed("opus", "enter", "save"), confirms: [true], pick: picks([undefined]) },
+			{
+				keySequences: [typed("save"), typed("save")],
+				pick: (title) => (title === "Worker thinking" ? undefined : "off"),
+			},
 			/cancelled, nothing written/,
 		],
-		[{ keys: typed("save"), confirms: [false] }, /nothing written/],
+		[{ keySequences: [typed("save"), typed("save")], pick: keepThinking, confirms: [false] }, /nothing written/],
 		[{ available: [] }, /no model is available; log in to a provider first/],
 	]) {
 		const { ctx, notes } = commandCtx(answers);
@@ -678,7 +902,7 @@ test("/delegate models: cancel, an empty set, decline, or no models writes nothi
 		assert.match(notes.at(-1)[0], message);
 		assert.equal(readFileSync(path, "utf8"), original);
 	}
-	const rpc = commandCtx({ confirms: [true] });
+	const rpc = commandCtx();
 	rpc.ctx.ui.custom = async () => undefined; // RPC mode cannot show custom components.
 	await assert.rejects(main.commands.delegate.handler("models", rpc.ctx), /needs the interactive TUI/);
 	const noUI = commandCtx();
@@ -687,53 +911,99 @@ test("/delegate models: cancel, an empty set, decline, or no models writes nothi
 	assert.equal(readFileSync(path, "utf8"), original);
 });
 
-test("/delegate models: an unreadable set is reported, and the picker starts empty", async (t) => {
+test("/delegate models: an unreadable config is reported, and both pools start empty", async (t) => {
 	const main = setup(t, { config: "{ not json" });
 	const path = process.env.ME_PI_DELEGATE_CONFIG;
-	const { ctx, notes } = commandCtx({ keys: typed("opus", "enter", "save"), confirms: [true] });
+	const { ctx, notes } = commandCtx({
+		keySequences: [typed("opus", "enter", "save"), typed("save")],
+		confirms: [true, false],
+		pick: (title) => (title === "Scout thinking" ? "low" : "max"),
+	});
 	await main.commands.delegate.handler("models", ctx);
-	assert.match(notes[0][0], /the current set is unreadable, starting empty \(delegate config .*\)/);
+	assert.match(notes[0][0], /the current pools are unreadable, starting empty \(delegate config .*\)/);
 	assert.equal(notes[0][1], "warning");
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [OPUS] });
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+		version: 2,
+		scout: { models: [OPUS], thinking: "low" },
+		worker: { models: [], thinking: "max" },
+	});
 });
 
-test("writeModelSet validates first and replaces a stale temp file", (t) => {
+test("writeModelSet validates pools first and replaces a stale temp file", (t) => {
 	setup(t);
 	const path = join(mkdtempSync(join(TEST_HOME, "write-")), "sub", "delegate.json");
-	assert.throws(() => writeModelSet({ models: [HAIKU], default: OPUS }, path), /"default" must be one of "models"/);
+	assert.throws(
+		() => writeModelSet({ ...POOL_SET, scout: { models: [HAIKU], thinking: "high" } }, path),
+		/scout.thinking must be one of low, off/,
+	);
 	assert.ok(!existsSync(path));
 	mkdirSync(join(path, ".."), { recursive: true });
 	writeFileSync(`${path}.${process.pid}.tmp`, "stale", { mode: 0o644 });
-	writeModelSet({ models: [HAIKU, OPUS] }, path);
-	assert.deepEqual(loadModelSet(path), { models: [HAIKU, OPUS], default: undefined });
+	writeModelSet(POOL_SET, path);
+	assert.deepEqual(loadModelSet(path), POOL_SET);
 	assert.equal(statSync(path).mode & 0o777, 0o600);
 });
 
-test("the model set file is validated loudly", (t) => {
+test("model pool configs validate loudly and read legacy model sets", (t) => {
 	const write = (content) => {
 		const path = scratch("delegate.json");
 		writeFileSync(path, content);
 		return path;
 	};
-	assert.deepEqual(loadModelSet(join(TEST_HOME, "nope.json")), { models: [] });
-	assert.deepEqual(loadModelSet(write(JSON.stringify({ models: [HAIKU, OPUS], default: OPUS }))), {
-		models: [HAIKU, OPUS],
-		default: OPUS,
+	assert.deepEqual(loadModelSet(join(TEST_HOME, "nope.json")), {
+		version: 2,
+		scout: { models: [], thinking: "low" },
+		worker: { models: [], thinking: "max" },
 	});
+	assert.deepEqual(loadModelSet(write(JSON.stringify({ models: [HAIKU, OPUS], default: OPUS }))), {
+		version: 2,
+		scout: { models: [HAIKU, OPUS], thinking: "low" },
+		worker: { models: [OPUS, HAIKU], thinking: "max" },
+	});
+	assert.deepEqual(
+		loadModelSet(
+			write(
+				JSON.stringify({
+					version: 2,
+					scout: { models: [HAIKU], thinking: "low" },
+					worker: { models: [HAIKU, OPUS], thinking: "max" },
+				}),
+			),
+		).scout.models,
+		[HAIKU],
+		"the same model may appear in both pools",
+	);
 	for (const [content, error] of [
 		["{", /delegate config .*: /],
 		["[]", /expected a JSON object/],
 		[JSON.stringify({ models: [HAIKU], tiers: {} }), /unknown key\(s\) tiers \(allowed: models, default\)/],
-		[JSON.stringify({ models: [{ id: HAIKU }] }), /"models" must be an array of model ids/],
-		[JSON.stringify({ models: [HAIKU, HAIKU] }), /lists a model twice/],
+		[JSON.stringify({ models: [{ id: HAIKU }] }), /models.*must be an array of model ids/],
+		[JSON.stringify({ models: [HAIKU, HAIKU] }), /models.*lists a model twice/],
 		[JSON.stringify({ models: [HAIKU], default: OPUS }), /"default" must be one of "models"/],
+		[JSON.stringify({ version: 3 }), /unsupported version 3/],
+		[
+			JSON.stringify({
+				version: 2,
+				scout: { models: [HAIKU], thinking: "high" },
+				worker: { models: [], thinking: "max" },
+			}),
+			/scout.thinking must be one of low, off/,
+		],
+		[
+			JSON.stringify({
+				version: 2,
+				scout: { models: [], thinking: "low" },
+				worker: { models: [HAIKU, HAIKU], thinking: "max" },
+			}),
+			/worker.models lists a model twice/,
+		],
 	]) {
 		assert.throws(() => loadModelSet(write(content)), error);
 	}
 	const { tool } = setup(t, { config: JSON.stringify({ models: "x" }) });
 	return run(tool, { role: "scout", task: "x" }).then((res) => {
 		assert.equal(res.isError, true);
-		assert.match(text(res), /"models" must be an array/);
+		assert.match(text(res), /models.*must be an array/);
 	});
 });
 
@@ -779,21 +1049,21 @@ test("roles get their tools: only research and challenge reach the web", async (
 		["challenge", WEB_TOOLS],
 	]) {
 		const res = await run(tool, { role, task: "x" });
-		assert.match(text(res), new RegExp(`model=${OPUS} thinking=medium tools=${tools} `), role);
+		assert.match(text(res), new RegExp(`model=${OPUS} thinking=max tools=${tools} `), role);
 	}
 });
 
-test("the default role is general: local tools, default model, medium thinking, no answer format", async (t) => {
+test("the default role is general: local tools, first worker model, max thinking, no answer format", async (t) => {
 	const { tool } = setup(t, {
 		config: { models: [HAIKU, SONNET, OPUS], default: SONNET },
 		env: { FAKE_PI_MODE: "echo-system" },
 	});
 	const system = text(await run(tool, { task: "x" }));
-	assert.ok(system.startsWith(`${WORKER_CONTRACT}\nRole: general.\n[claude-sonnet-5-5 @medium `), system);
+	assert.ok(system.startsWith(`${WORKER_CONTRACT}\nRole: general.\n[claude-sonnet-5-5 @max `), system);
 	process.env.FAKE_PI_MODE = "";
 	const res = await run(tool, { task: "x" });
 	assert.equal(res.isError, false, text(res));
-	assert.match(text(res), new RegExp(`^DONE model=${SONNET} thinking=medium tools=${LOCAL_TOOLS} .* role=general `));
+	assert.match(text(res), new RegExp(`^DONE model=${SONNET} thinking=max tools=${LOCAL_TOOLS} .* role=general `));
 });
 
 test("web overrides the role's tools and adds a badge to progress and results", async (t) => {
@@ -801,13 +1071,13 @@ test("web overrides the role's tools and adds a badge to progress and results", 
 	const progress = [];
 	const onUpdate = (u) => progress.push(text(u));
 	const on = await run(tool, { role: "review", task: "x", web: true }, undefined, onUpdate);
-	assert.match(text(on), new RegExp(`thinking=medium tools=${WEB_TOOLS} .* role=review `));
-	assert.match(text(on), /\n\[claude-opus-5-5 @medium web \$0\.0020 \d+s\]$/);
+	assert.match(text(on), new RegExp(`thinking=max tools=${WEB_TOOLS} .* role=review `));
+	assert.match(text(on), /\n\[claude-opus-5-5 @max web \$0\.0020 \d+s\]$/);
 	assert.ok(progress.length && progress.every((p) => p.startsWith("Workers [web]\n")), progress.join("|"));
 	progress.length = 0;
 	const off = await run(tool, { role: "research", task: "x", web: false }, undefined, onUpdate);
-	assert.match(text(off), new RegExp(`thinking=medium tools=${LOCAL_TOOLS} .* role=research `));
-	assert.match(text(off), /\n\[claude-opus-5-5 @medium \$0\.0020 \d+s\]$/);
+	assert.match(text(off), new RegExp(`thinking=max tools=${LOCAL_TOOLS} .* role=research `));
+	assert.match(text(off), /\n\[claude-opus-5-5 @max \$0\.0020 \d+s\]$/);
 	assert.ok(progress.length && progress.every((p) => p.startsWith("Workers\n")), progress.join("|"));
 });
 
@@ -846,7 +1116,7 @@ test("bad calls are refused before any worker starts", async (t) => {
 		[{ role: "review", task: "x", runs: ["x"] }, /runs\[0\] must be \{ model\?: string, thinking\?: off\|/],
 		[{ role: "review", task: "x", runs: [{}, { thinking: "huge" }] }, /runs\[1\] must be/],
 		[{ role: "review", task: "x", model: OPUS }, /unknown parameter\(s\) model; set model and thinking inside runs/],
-		[{ role: "review", task: "x", runs: [{ model: "openai/gpt-x" }] }, /not in the delegate set/],
+		[{ role: "review", task: "x", runs: [{ model: "openai/gpt-x" }] }, /not in the delegate pools/],
 	]) {
 		const res = await run(tool, params);
 		assert.equal(res.isError, true, JSON.stringify(params));
@@ -880,8 +1150,8 @@ test("details carry a view for the TUI: progress per round, then the reported ru
 	assert.deepEqual(
 		view.runs.map((r) => [r.model, r.thinking, r.web, r.done, r.round2Failure ?? null]),
 		[
-			[HAIKU, "medium", true, true, null],
-			[OPUS, "medium", true, true, "exit 1: rate limited in round 2"],
+			[HAIKU, "max", true, true, null],
+			[OPUS, "max", true, true, "exit 1: task-specific error in round 2"],
 		],
 	);
 	assert.match(view.runs[0].output, /## Round 2/);
@@ -897,7 +1167,7 @@ test("several runs answer the same task in parallel; usage is summed", async (t)
 	});
 	assert.equal(res.isError, false);
 	const out = text(res);
-	assert.match(out, new RegExp(`model=${SONNET} thinking=medium`));
+	assert.match(out, new RegExp(`model=${SONNET} thinking=max`));
 	assert.match(out, new RegExp(`model=${OPUS} thinking=medium`));
 	assert.match(out, /Total: 2 runs, \$0\.0040\.$/);
 	assert.equal(res.usage.cost.total, 0.004);
@@ -952,7 +1222,7 @@ test("a failed round-2 run falls back to its round-1 answer, in request order", 
 	const [first, second] = text(res).split("\n\n---\n\n");
 	assert.match(
 		first,
-		new RegExp(`^✗ round 2 failed: exit 1: rate limited in round 2\\nRound-1 answer:\\nDONE model=${SONNET}`),
+		new RegExp(`^✗ round 2 failed: exit 1: task-specific error in round 2\\nRound-1 answer:\\nDONE model=${SONNET}`),
 	);
 	assert.match(second, /^DONE model=anthropic\/claude-opus-5-5 .*## Round 2 \(rebuttal\)/);
 });

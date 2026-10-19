@@ -20,15 +20,19 @@ Then restart Pi. You can run the installer again; it does not replace your files
 - Copies Pi's `interactive-shell.ts` and `handoff.ts` examples if missing, and warns when a copy differs from Pi's.
 - Runs `rtk init --global --agent pi` if [`rtk`](https://github.com/rtk-ai/rtk) is installed.
 
-Optional: limit workers to a model set in `~/.pi/agent/delegate.json` (local). Pick it with `/delegate models` or edit it by hand. Without it, workers use the session model and a call can name any model.
+Optionally configure ordered model pools and thinking levels in `~/.pi/agent/delegate.json` (local). Pick them with `/delegate models` or edit the file by hand. The same model may appear in both pools:
 
 ```json
-{ "models": ["anthropic/claude-haiku-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5"], "default": "anthropic/claude-sonnet-5-5" }
+{
+  "version": 2,
+  "scout": { "models": ["openai-codex/gpt-6-luna", "anthropic/claude-haiku-5-5"], "thinking": "low" },
+  "worker": { "models": ["openai-codex/gpt-6-luna", "anthropic/claude-sonnet-5-5"], "thinking": "max" }
+}
 ```
 
-Run `/reload` to show the set in the tool's parameters. The tool reads the file at each call and names any problem in it.
+The first model is tried first. Scout uses its pool with `low` or `off`; every other role shares the worker pool and its thinking level. On rate limits, overloads, or model-unavailable errors, the worker tries the next model and reports each fallback. Other failures stop. A `runs[].model` from the active pool is tried first, then the rest of that pool; one found only in the other pool is an exact-model request. With no models in a pool, that role uses the session model. The old `{ "models": [...], "default": "..." }` config remains readable and is migrated when `/delegate models` saves.
 
-`/delegate` (or `/delegate status`) shows the set and whether each model is usable, missing tools, running calls, and the last 20 calls with their cost. The call list survives `/reload`. `/delegate models` opens a searchable list like `/model`, with the current set marked: type to filter, Enter adds or removes a model (the order you add them is the set's order; the first is the scout model), Ctrl+S saves, Esc cancels. Then it asks for the default and writes the file (mode 0600) after you confirm. It offers `/reload` only when the agent is idle and no workers run.
+Run `/reload` to refresh the tool's pool choices. The tool reads the file at each call and names any problem in it. `/delegate status` shows each pool's order and availability, missing tools, running calls, and the last 20 calls with their cost. The call list survives `/reload`. `/delegate models` opens separate searchable lists for Scout and Worker: type to filter, Enter adds or removes a model, Ctrl+S finishes each list, and Esc cancels. It then lets you choose thinking for each pool and writes the file (mode 0600) after confirmation. It offers `/reload` only when the agent is idle and no workers run.
 
 ## Use it
 
@@ -52,15 +56,15 @@ A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal? }`. Only `tas
 
 | Role | For | Model, thinking | Web | Answer |
 |---|---|---|---|---|
-| `general` (default) | Any read-only task | `default`, `medium` | no | Set by the task |
-| `scout` | Find or explain code | First model, `low` or `off` | no | `path:line` evidence, or `not-found` |
-| `research` | Docs and web | `default`, `medium` | yes | Findings with sources |
-| `review` | A diff before a commit | `default`, `medium` | no | `path:line: severity: problem. Fix:` |
-| `challenge` | Argue against a plan | `default`, `medium` | yes | Premise, challenges, verdict |
+| `general` (default) | Any read-only task | Worker pool, configured thinking (`max` by default) | no | Set by the task |
+| `scout` | Find or explain code | Scout pool, `low` by default (`off` also allowed) | no | `path:line` evidence, or `not-found` |
+| `research` | Docs and web | Worker pool, configured thinking | yes | Findings with sources |
+| `review` | A diff before a commit | Worker pool, configured thinking | no | `path:line: severity: problem. Fix:` |
+| `challenge` | Argue against a plan | Worker pool, configured thinking | yes | Premise, challenges, verdict |
 
-Without `default`, the non-scout roles use the last model in the set. Without a set, workers use the session model.
+With no configured pool, roles use the session model. With no config file, scout defaults to `low` and other roles to `max`.
 
-- `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Thinking defaults to `medium` except `scout`, which uses `low`; `scout` accepts `off`. Other roles accept any thinking level. Models outside the set are refused.
+- `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Thinking defaults to the role's pool setting; scout stays at `low`/`off` even if asked for a higher level. Worker roles accept any thinking level. Models outside both pools are refused when pools are configured.
 - `rebuttal: true` (2+ runs): each worker sees the others' answers and keeps, revises, or retracts its claims. Only round 2 comes back; round 1 goes to a temp file.
 - `web`: turns the web tools on or off for any role. The label shows `web`.
 - `answer`: replaces the role's answer format, 1 to 400 characters.

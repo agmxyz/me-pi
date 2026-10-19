@@ -1,7 +1,7 @@
 /**
- * Searchable model-set picker for `/delegate models`, built like Pi's /model selector: type to filter
+ * Searchable model-pool picker for `/delegate models`, built like Pi's /model selector: type to filter
  * (pi-tui's fuzzyFilter), arrows to move, Enter to add or remove a model, Ctrl+S to save, Esc to cancel.
- * The order in which models are added is the set's order; the first is the scout model.
+ * The order in which models are added is the pool's order; the first model is tried first.
  */
 
 import {
@@ -16,7 +16,7 @@ import {
 import { shortModel as short } from "./delegate-render.ts";
 
 export interface PickerModel {
-	/** `provider/id`, as the model set stores it. */
+	/** `provider/id`, as the pool stores it. */
 	id: string;
 	name: string;
 	/** Missing for a set model that is not available now. */
@@ -44,18 +44,26 @@ export class ModelSetPicker implements Component, Focusable {
 	private readonly models: PickerModel[];
 	private readonly fg: Fg;
 	private readonly done: (ids: string[] | null) => void;
+	private readonly title: string;
 	private chosen: string[];
 	private matches: PickerModel[];
 	private index = 0;
 	private _focused = false;
 
-	constructor(models: PickerModel[], chosen: string[], fg: Fg, done: (ids: string[] | null) => void) {
+	constructor(
+		models: PickerModel[],
+		chosen: string[],
+		fg: Fg,
+		done: (ids: string[] | null) => void,
+		title = "Delegate model pool",
+	) {
 		// A set model that is not available now gets a row first, so Enter can remove it.
 		const missing = chosen.filter((id) => !models.some((m) => m.id === id));
 		this.models = [...missing.map((id) => ({ id, name: short(id) })), ...models];
 		this.chosen = [...chosen];
 		this.fg = fg;
 		this.done = done;
+		this.title = title;
 		this.matches = this.models;
 	}
 
@@ -106,13 +114,9 @@ export class ModelSetPicker implements Component, Focusable {
 		const fg = this.fg;
 		const fit = (line: string) => truncateToWidth(line, Math.max(1, width));
 		const set = this.chosen.length
-			? this.chosen.map((id, i) => `${i + 1}. ${short(id)}${i === 0 ? " (scout)" : ""}`).join("  ")
+			? this.chosen.map((id, i) => `${i + 1}. ${short(id)}${i === 0 ? " (first tried)" : ""}`).join("  ")
 			: "none yet";
-		const lines = [
-			fit(fg("accent", "Delegate model set")),
-			fit(`${fg("muted", "Set:")} ${set}`),
-			...this.search.render(width),
-		];
+		const lines = [fit(fg("accent", this.title)), fit(`${fg("muted", "Set:")} ${set}`), ...this.search.render(width)];
 		// A window of VISIBLE rows that keeps the selected row in view.
 		const start = Math.max(0, Math.min(this.index - Math.floor(VISIBLE / 2), this.matches.length - VISIBLE));
 		for (const [offset, m] of this.matches.slice(start, start + VISIBLE).entries()) {

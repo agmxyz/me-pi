@@ -1,10 +1,10 @@
 /**
- * `/delegate` command: `status` (the default) shows the model set, missing tools, running workers, and
- * recent runs; `models` picks the model set from the models you can use and writes delegate.json.
+ * `/delegate` command: `status` (the default) shows the scout/worker pools, missing tools, running workers,
+ * and recent runs; `models` picks each ordered model pool and thinking level, then writes delegate.json.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { ModelSet } from "./delegate.ts";
+import { type ModelSet, THINKING_LEVELS } from "./delegate.ts";
 import { ModelSetPicker } from "./delegate-picker.ts";
 import { shortModel as short } from "./delegate-render.ts";
 
@@ -47,17 +47,24 @@ const clock = (at: number) => new Date(at).toTimeString().slice(0, 5);
 
 /** The status report, one line per fact. */
 export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps: CommandDeps): string[] {
-	const lines = [`Model set: ${deps.configPath()}`];
+	const lines = [`Model pools: ${deps.configPath()}`];
 	try {
 		const set = deps.loadModelSet();
-		if (!set.models.length) lines.push("  none: workers use the session model; a call can name any model");
 		const usable = new Set(ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`));
-		const fallbackDefault = set.default ?? set.models.at(-1);
-		set.models.forEach((m, i) => {
-			const roles = [i === 0 && "scout", m === fallbackDefault && "default"].filter(Boolean).join(", ");
-			const state = usable.has(m) ? "\u2713" : "\u2717 not available (no login or unknown id)";
-			lines.push(`  ${i + 1}. ${m}${roles ? ` (${roles})` : ""} ${state}`);
-		});
+		for (const [name, pool] of [
+			["Scout", set.scout],
+			["Worker", set.worker],
+		] as const) {
+			const models = pool.models.length
+				? pool.models
+						.map((m, i) => {
+							const state = usable.has(m) ? "\u2713" : "\u2717 not available (no login or unknown id)";
+							return `${i + 1}. ${m} ${state}`;
+						})
+						.join("; ")
+				: "session model (no fallback models)";
+			lines.push(`  ${name} pool (${pool.thinking}): ${models}`);
+		}
 	} catch (err: any) {
 		lines.push(`  \u2717 ${err?.message ?? err}`);
 	}
@@ -86,7 +93,7 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 	return lines;
 }
 
-/** Picks the set: the searchable picker (models in order, first = scout), then the default, then confirm. */
+/** Picks both ordered pools and their thinking levels, then writes only after confirmation. */
 // Returns true when the user wants a reload; the caller does it last, because the ctx is stale after it.
 async function pickModels(ctx: ExtensionCommandContext, deps: CommandDeps): Promise<boolean> {
 	const ui = ctx.ui;
@@ -98,42 +105,65 @@ async function pickModels(ctx: ExtensionCommandContext, deps: CommandDeps): Prom
 		.getAvailable()
 		.map((m) => ({ id: `${m.provider}/${m.id}`, name: m.name, cost: m.cost }));
 	if (!models.length) return stop("Delegate models: no model is available; log in to a provider first.", "warning");
-	let current: string[] = [];
+	let current: ModelSet = {
+		version: 2,
+		scout: { models: [], thinking: "low" },
+		worker: { models: [], thinking: "max" },
+	};
 	try {
-		current = deps.loadModelSet().models;
+		current = deps.loadModelSet();
 	} catch (err: any) {
-		ui.notify(`Delegate models: the current set is unreadable, starting empty (${err?.message ?? err}).`, "warning");
+		ui.notify(
+			`Delegate models: the current pools are unreadable, starting empty (${err?.message ?? err}).`,
+			"warning",
+		);
 	}
-	// Esc gives null; undefined means this UI cannot show custom components (RPC mode).
-	const chosen = await ui.custom<string[] | null>(
-		(_tui, theme, _keybindings, done) => new ModelSetPicker(models, current, theme.fg.bind(theme), done),
-	);
-	if (chosen === undefined)
+	const pickPool = async (title: string, chosen: string[]) =>
+		ui.custom<string[] | null>(
+			(_tui, theme, _keybindings, done) => new ModelSetPicker(models, chosen, theme.fg.bind(theme), done, title),
+		);
+	const scoutModels = await pickPool("Scout model pool (ordered)", current.scout.models);
+	if (scoutModels === undefined)
 		throw new Error("/delegate models needs the interactive TUI; edit delegate.json by hand instead.");
-	if (chosen === null) return stop("Delegate models: cancelled, nothing written.", "info");
-	if (!chosen.length) return stop("Delegate models: no model picked, nothing written.", "warning");
+	if (scoutModels === null) return stop("Delegate models: cancelled, nothing written.");
+	const scoutThinking = await ui.select("Scout thinking", [
+		current.scout.thinking,
+		...["low", "off"].filter((x) => x !== current.scout.thinking),
+	]);
+	if (scoutThinking === undefined) return stop("Delegate models: cancelled, nothing written.");
 
-	const last = `Last model (${short(chosen.at(-1) as string)})`;
-	const pickedDefault =
-		chosen.length > 1 ? await ui.select("Default model for the other roles", [last, ...chosen]) : last;
-	if (pickedDefault === undefined) return stop("Delegate models: cancelled, nothing written.", "info");
-	const set: ModelSet = { models: chosen, default: pickedDefault === last ? undefined : pickedDefault };
+	const workerModels = await pickPool("Worker model pool (ordered)", current.worker.models);
+	if (workerModels === undefined)
+		throw new Error("/delegate models needs the interactive TUI; edit delegate.json by hand instead.");
+	if (workerModels === null) return stop("Delegate models: cancelled, nothing written.");
+	const workerThinking = await ui.select("Worker thinking", [
+		current.worker.thinking,
+		...THINKING_LEVELS.filter((x) => x !== current.worker.thinking),
+	]);
+	if (workerThinking === undefined) return stop("Delegate models: cancelled, nothing written.");
 
-	const summary = `${chosen.map((m, i) => `${i + 1}. ${m}`).join("\n")}\nDefault: ${set.default ?? "the last model"}`;
+	const set: ModelSet = {
+		version: 2,
+		scout: { models: scoutModels, thinking: scoutThinking },
+		worker: { models: workerModels, thinking: workerThinking },
+	};
+	const lines = (name: string, pool: ModelSet["scout"]) =>
+		`${name} (${pool.thinking}): ${pool.models.length ? pool.models.join(" → ") : "session model only"}`;
+	const summary = `${lines("Scout pool", set.scout)}\n${lines("Worker pool", set.worker)}`;
 	if (!(await ui.confirm(`Write ${deps.configPath()}?`, summary)))
 		return stop("Delegate models: nothing written.", "info");
 	deps.writeModelSet(set);
 
 	// The tool's parameters show the set from the last load; a reload stops running workers.
 	if (deps.active.size || !ctx.isIdle())
-		return stop("Delegate models: written. Run /reload when no workers run to show the new set.", "info");
-	if (await ui.confirm("Reload now?", "The tool's parameters show the model set from the last load.")) return true;
-	return stop("Delegate models: written. Calls use it now; run /reload to show it in the tool's parameters.");
+		return stop("Delegate models: written. Run /reload when no workers run to show the new pools.", "info");
+	if (await ui.confirm("Reload now?", "The tool's parameters show the pools from the last load.")) return true;
+	return stop("Delegate models: written. Calls use them now; run /reload to show them in the tool's parameters.");
 }
 
 export function registerDelegateCommand(pi: ExtensionAPI, deps: CommandDeps): void {
 	pi.registerCommand("delegate", {
-		description: "Delegate workers: status (default), or models to pick the model set",
+		description: "Delegate workers: status (default), or models to pick the scout/worker pools and thinking levels",
 		getArgumentCompletions: (prefix) =>
 			SUBCOMMANDS.filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {

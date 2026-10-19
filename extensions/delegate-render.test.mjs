@@ -54,11 +54,15 @@ test("progress shows the stage and one line per run; the plain text is what non-
 	const view = {
 		stage: "Rebuttal",
 		web: true,
-		runs: [run({ done: false, lastTool: "read src/a.ts" }), run({ failure: "exit 1" }), run()],
+		runs: [
+			run({ done: false, lastTool: "read src/a.ts", fallbackMessage: "429; trying Sonnet" }),
+			run({ failure: "exit 1" }),
+			run(),
+		],
 	};
 	assert.deepEqual(progressLines(view), [
 		"Rebuttal [web]",
-		"⏳ claude-haiku-5-5 turn 2 $0.0017 read src/a.ts",
+		"⏳ claude-haiku-5-5 turn 2 $0.0017 read src/a.ts ↻ 429; trying Sonnet",
 		"✗ claude-haiku-5-5 turn 2 $0.0017",
 		"✓ claude-haiku-5-5 turn 2 $0.0017",
 	]);
@@ -76,6 +80,7 @@ test("a collapsed result has one line per run, its first answer line or its prob
 			run({ failure: "stopped: timeout after 300s", output: "partial" }),
 			run({ round2Failure: "rate limited" }),
 			run({ outDir: "/tmp/out", files: ["a.md (3 B)", "b.md (4 B)"] }),
+			run({ fallbacks: ["anthropic/claude-haiku-5-5 failed (429); next anthropic/claude-sonnet-5-5"] }),
 			run({ output: "" }),
 			run({ output: "## **Bold** and `code`\nmore" }),
 		],
@@ -87,6 +92,7 @@ test("a collapsed result has one line per run, its first answer line or its prob
 		"✗ claude-haiku-5-5 @low $0.0017 6s stopped: timeout after 300s",
 		"✗ claude-haiku-5-5 @low $0.0017 6s round 2 failed: rate limited (round-1 answer kept)",
 		"✓ claude-haiku-5-5 @low $0.0017 6s · 2 files First line of the answer.",
+		"✓ claude-haiku-5-5 @low $0.0017 6s · 1 fallback First line of the answer.",
 		"✓ claude-haiku-5-5 @low $0.0017 6s (empty answer)",
 		"✓ claude-haiku-5-5 @low $0.0017 6s Bold and code",
 		"Total: 5 runs, $0.0085.",
@@ -99,15 +105,19 @@ test("an expanded result shows each answer as Markdown, its problem, and its fil
 		stage: "Done",
 		web: false,
 		runs: [
-			run({ output: `# Findings\n\n- ${long}` }),
+			run({
+				output: `# Findings\n\n- ${long}`,
+				fallbacks: ["anthropic/claude-haiku-5-5 failed (429); next anthropic/claude-sonnet-5-5"],
+			}),
 			run({ round2Failure: "rate limited", outDir: `/tmp/${long}`, files: [] }),
 		],
 		footer: `Round-1 answers: /tmp/${long}`,
 	};
 	const result = renderResult({ content: [], details: { view } }, { expanded: true, isPartial: false }, theme);
 	const text = draw(result, 60).join("\n");
-	assert.match(text, /^✓ claude-haiku-5-5 @low \$0\.0017 6s\n/);
+	assert.match(text, /^✓ claude-haiku-5-5 @low \$0\.0017 6s · 1 fallback\n/);
 	assert.match(text, /Findings/);
+	assert.match(text, /Fallback: anthropic\/claude-haiku-5-5 failed \(429\)/);
 	assert.ok(text.includes("x".repeat(40)), "the long answer is wrapped, not cut");
 	assert.match(text, /round 2 failed: rate limited \(round-1 answer kept\)/);
 	// The long directory path wraps instead of being cut.
