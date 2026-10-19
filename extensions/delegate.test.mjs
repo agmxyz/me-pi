@@ -573,7 +573,11 @@ test("rebuttal returns only round 2; each worker saw its own and the others' ans
 		new RegExp(`You already answered this task in round 1\\. Your round-1 answer:\\n\\nDONE model=${SONNET}`),
 	);
 	assert.match(sonnet2, new RegExp(`### ${OPUS}\\nDONE model=${OPUS}`));
-	assert.match(sonnet2, /Final answer in the format your system prompt or the task sets, then `Changed: yes\|no`/);
+	assert.match(sonnet2, /Carry forward every objection, yours or theirs, that is still open\./);
+	assert.match(
+		sonnet2,
+		/Final answer in the format your system prompt or the task sets, then `Changed: yes\|no` with the reason and, for each change, what changed and why\./,
+	);
 	const out = text(res);
 	assert.equal(out.match(/## Round 2 \(rebuttal\)/g)?.length, 2, "only round-2 answers come back");
 	assert.equal(out.match(/^DONE /gm)?.length, 2, "round-1 answers stay in details");

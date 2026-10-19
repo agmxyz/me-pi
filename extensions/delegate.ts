@@ -523,7 +523,7 @@ function rebuttalPrompt(task: string, own: RunResult, others: RunResult[]): stri
 	const answers = others
 		.map((o) => `### ${modelName(o)}\n${cap(o.output.trim(), ANSWER_CAP)}${filesLine(o)}`)
 		.join("\n\n");
-	return `Task:\n${task}\n\n## Round 2 (rebuttal)\nYou already answered this task in round 1. Your round-1 answer:\n\n${cap(own.output.trim(), ANSWER_CAP)}${filesLine(own)}\n\nOther workers answered the same task independently:\n\n${answers}\n\nCheck their evidence against yours with your tools where needed. Keep, revise, or retract each of your claims and point out errors in theirs. Final answer in the format your system prompt or the task sets, then \`Changed: yes|no\` with the reason.`;
+	return `Task:\n${task}\n\n## Round 2 (rebuttal)\nYou already answered this task in round 1. Your round-1 answer:\n\n${cap(own.output.trim(), ANSWER_CAP)}${filesLine(own)}\n\nOther workers answered the same task independently:\n\n${answers}\n\nCheck their evidence against yours with your tools where needed. Keep, revise, or retract each of your claims and point out errors in theirs. Carry forward every objection, yours or theirs, that is still open. Final answer in the format your system prompt or the task sets, then \`Changed: yes|no\` with the reason and, for each change, what changed and why.`;
 }
 
 // --- Tool -----------------------------------------------------------------------------------------

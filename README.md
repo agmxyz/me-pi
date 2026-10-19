@@ -99,7 +99,7 @@ Ask, for example: "Let Opus at medium and Sonnet at high review this, with rebut
 The main session then sends one call:
 
 - `runs` has one entry for each model: `[{ model, thinking }, ...]`. A call can have 1 to 4 entries. The workers run at the same time.
-- `rebuttal: true` adds a second round. In the second round, each worker that completed round 1 gets its own answer and the answers of the other workers. Each worker then keeps, changes, or removes its claims.
+- `rebuttal: true` adds a second round. In the second round, each worker that completed round 1 gets its own answer and the answers of the other workers. Each worker then keeps, changes, or removes its claims. It carries forward each open objection, its own or from the other workers. It ends with `Changed: yes` or `Changed: no` and the reason. For each change, it says what changed and why.
 
 Only the round-2 answers go back to the main session. The tool writes the round-1 answers to a temp file and gives the path.
 
