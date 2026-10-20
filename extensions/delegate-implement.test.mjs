@@ -290,7 +290,10 @@ test("a continued branch lists commits from its tip at start, and diffs from the
 	execFileSync("git", ["-C", wt.dir, "add", "-A"]);
 	execFileSync("git", ["-C", wt.dir, "commit", "-q", "-m", "two"]);
 	const out = formatFacts(await finish(wt));
-	assert.match(out, /merge-base with your HEAD/);
+	assert.match(
+		out,
+		new RegExp(`^Branch: ${first.branch} @ \\w+ \\(continued as im95; base \\w+, merge-base with your HEAD\\)$`, "m"),
+	);
 	assert.match(out, /^Commits \(1, oldest first\):\n {2}\w+ two$/m);
 	assert.match(out, /^Diffstat: 2 files changed, 2 insertions\(\+\)$/m);
 });

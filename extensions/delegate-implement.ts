@@ -446,7 +446,7 @@ export async function finish(wt: Worktree, reason?: string): Promise<Facts> {
 export function formatFacts(f: Facts): string {
 	const short = (sha: string) => sha.slice(0, 7);
 	const lines = [
-		`Branch: ${f.branch} @ ${f.tip ? short(f.tip) : "(missing)"} (base ${short(f.base)}, ${f.continued ? "merge-base with your HEAD" : "your HEAD at start"})`,
+		`Branch: ${f.branch} @ ${f.tip ? short(f.tip) : "(missing)"} (${f.continued ? `continued as ${f.id}; base ${short(f.base)}, merge-base with your HEAD` : `base ${short(f.base)}, your HEAD at start`})`,
 		`Commits (${f.commitCount}, oldest first):`,
 		...f.commits.map((c) => `  ${c}`),
 	];

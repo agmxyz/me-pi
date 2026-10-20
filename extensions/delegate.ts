@@ -513,6 +513,8 @@ export function resolveRun(
 const GROUPS_KEY = Symbol.for("me-pi.delegate.groups");
 const HISTORY_KEY = Symbol.for("me-pi.delegate.history");
 const SPEND_KEY = Symbol.for("me-pi.delegate.background-spend");
+// The abort reason of a session shutdown (/reload, /new, /resume, /fork, handoff, exit).
+const SESSION_ENDED = "session ended";
 function liveGroups(): Set<number> {
 	const shared = globalThis as any;
 	if (!shared[GROUPS_KEY]) {
@@ -739,7 +741,8 @@ function runWorkerAttempt(
 
 		const timer = setTimeout(() => stop(`timeout after ${timeoutMs / 1000}s`), timeoutMs);
 		let exitTimer: NodeJS.Timeout | undefined;
-		const onAbort = () => stop("cancelled");
+		// A session shutdown aborts with SESSION_ENDED; /delegate cancel and the turn's abort are a cancel.
+		const onAbort = () => stop(signal.reason === SESSION_ENDED ? "session ended" : "cancelled");
 		signal.addEventListener("abort", onAbort, { once: true });
 
 		proc.stdout.setEncoding("utf8");
@@ -1053,7 +1056,7 @@ export const PROMPT_GUIDELINES = [
 	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory and the result lists the files; copy what you keep and check the diff yourself.",
 	"Pass on only what matters from worker answers, and resolve or report every BLOCKED line.",
 	"For `implement`, set `background: true`. The worker starts from your HEAD commit, not your uncommitted changes. The task names the goal, the files (repo-relative paths only), the acceptance criteria, and the check command.",
-	"An implement result gives the branch, commits, diffstat, and a diff file path, not the diff. Merge only a result with no ✗ line: get a fresh `review` of the diff file, then `git merge <branch>` on a clean tree (no squash) and run the check once. On a tripwire or kept-worktree ✗, report to the user and do not merge. If the check fails after the merge, fix forward (follow-up implement or a commit); never undo the merge without approval. For WIP or review findings, send a follow-up implement with `branch` set. Delete merged branches with `git branch -d`; put discarded ones in one `git branch -D a b c` for the user to approve.",
+	"An implement result gives the branch, commits, diffstat, and a diff file path, not the diff. Merge only a result with no ✗ line: get a fresh `review` of the diff file, then `git merge <branch>` on a clean tree (no squash) and run the check once. On a tripwire or kept-worktree ✗, report to the user and do not merge. Do not read the diff file yourself; pass its path to the `review` worker. Delete the branch only after the post-merge check passed, as its own command (not chained after the check). If the check fails after the merge, fix forward (follow-up implement or a commit); never undo the merge without approval. For WIP or review findings, send a follow-up implement with `branch` set. Delete merged branches with `git branch -d`; put discarded ones in one `git branch -D a b c` for the user to approve.",
 	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile; the answer arrives as a later `delegate` message that starts a turn. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
 ];
 
@@ -1120,7 +1123,7 @@ export default function (pi: ExtensionAPI) {
 	const spend: { cost: number } = shared[SPEND_KEY];
 	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), history, active, cancel });
 	pi.on("session_shutdown", async () => {
-		shutdown.abort();
+		shutdown.abort(SESSION_ENDED);
 		shutdown = new AbortController();
 		await Promise.allSettled([...running]);
 	});
@@ -1247,7 +1250,7 @@ export default function (pi: ExtensionAPI) {
 				job.implement = { wt, trusted: ctx?.isProjectTrusted?.() === true, pids: new Set() };
 			}
 			const startFacts = wt
-				? `${wt.branch} (${wt.id}) from ${wt.base.slice(0, 7)}; ${wt.dirty} uncommitted file(s) in your tree are not in it.${cwdNote}`
+				? `${wt.continued ? `continuing ${wt.branch} as ${wt.id}` : `${wt.branch} (${wt.id})`} from ${wt.base.slice(0, 7)}; ${wt.dirty} uncommitted file(s) in your tree are not in it.${cwdNote}`
 				: "";
 			const call = async (key: string, signal: AbortSignal, onUpdate: ((u: any) => void) | undefined) => {
 				const start = Date.now();

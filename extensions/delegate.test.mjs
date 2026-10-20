@@ -1350,7 +1350,7 @@ test("abort and session shutdown stop running workers; later calls still work", 
 	const pending = run(tool, { role: "scout", task: "x" });
 	await waitFor(() => existsSync(pidFile), "worker start");
 	await handlers.session_shutdown();
-	assert.match(text(await pending), /^✗ stopped: cancelled/);
+	assert.match(text(await pending), /^✗ stopped: session ended/);
 	process.env.FAKE_PI_MODE = "";
 	assert.equal((await run(tool, { role: "scout", task: "x" })).isError, false, "a fresh shutdown signal");
 
@@ -1426,6 +1426,8 @@ test("guidelines keep delegation proportionate and require reviews and BLOCKED h
 	assert.match(all, /Merge only a result with no ✗ line/);
 	assert.match(all, /under the Approval rules/);
 	assert.match(all, /never undo the merge without approval/);
+	assert.match(all, /Do not read the diff file yourself; pass its path to the `review` worker/);
+	assert.match(all, /Delete the branch only after the post-merge check passed, as its own command/);
 	assert.match(PROMPT_SNIPPET, /one `implement` worker that commits on its own branch/);
 });
 
@@ -1640,7 +1642,7 @@ test("implement: session shutdown waits for the WIP commit and sends nothing", a
 	await workerStarted(git);
 	await new Promise((r) => setTimeout(r, 200));
 	await handlers.session_shutdown();
-	assert.match(git("log", "-1", "--format=%s", branch), /^WIP\(delegate im\d+\): stopped: cancelled$/);
+	assert.match(git("log", "-1", "--format=%s", branch), /^WIP\(delegate im\d+\): stopped: session ended$/);
 	assert.equal(git("worktree", "list").split("\n").length, 1);
 	await new Promise((r) => setTimeout(r, 100));
 	assert.equal(messages.length, 0);
@@ -1659,8 +1661,8 @@ test("implement worker env: remote and gh cut-offs, tools, approve, and cwd", as
 		}),
 	});
 	const { repo, ctx } = implementRepo();
-	const echo = async (params, c) => {
-		const res = await run(tool, { role: "implement", task: "x", ...params }, undefined, undefined, c);
+	const echo = async (params, c, updates = []) => {
+		const res = await run(tool, { role: "implement", task: "x", ...params }, undefined, (u) => updates.push(u), c);
 		return { res, ...JSON.parse(text(res).match(/^ENV (.*)$/m)[1]) };
 	};
 	const untrusted = await echo({}, { ...ctx, cwd: join(repo, "sub") });
@@ -1691,7 +1693,9 @@ test("implement worker env: remote and gh cut-offs, tools, approve, and cwd", as
 	const fresh = await echo({}, trusted);
 	assert.deepEqual([fresh.approve, fresh.noApprove], [true, false]);
 	const prior = fresh.res.details.implement.branch;
-	const continued = await echo({ branch: prior }, trusted);
+	const updates = [];
+	const continued = await echo({ branch: prior }, trusted, updates);
+	assert.match(updates[0].content[0].text, new RegExp(`^continuing ${prior.replace("/", "\\/")} as im\\d+ from `));
 	assert.deepEqual([continued.approve, continued.noApprove], [false, true], "no --approve when continuing a branch");
 });
 
