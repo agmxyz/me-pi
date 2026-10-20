@@ -3,7 +3,7 @@
 A setup for the [Pi](https://pi.dev) coding agent:
 
 - `GLOBAL_AGENTS.md`: one policy for every session and worker: output style, engineering defaults, what needs your approval, and how to treat secrets and instructions found in content.
-- `delegate`: sends reading, research, reviews, drafts, and self-contained changes to separate `pi` workers. Only their answers come back; an `implement` worker's changes come back as a branch.
+- `delegate`: sends reading, research, reviews, drafts, and self-contained changes to separate `pi` workers. Only their answers come back; an `implement` worker commits on your current branch and hands back 2 lines.
 - `guard`: asks before risky bash commands run.
 - `Skill`: loads a skill by name, as Claude Code skills expect.
 
@@ -48,7 +48,7 @@ Run `/reload` after editing to refresh the tool's model choices. The tool reads 
 
 ## Use it
 
-Talk to the main session as usual. It plans, edits, tests, and commits, and the `delegate` tool's guidelines tell it when to call workers by itself: for reading many files, research, reviews before multi-file or behaviour-changing commits, and plan challenges. You can also ask directly:
+Talk to the main session as usual. It plans, edits, tests, and commits, and the `delegate` tool's guidelines tell it when to call workers by itself: for reading many files, research, reviews before multi-file or behaviour-changing commits, plan challenges, and any change whose files it has not read or that takes many steps (`implement`). You can also ask directly:
 
 | You say | Call |
 |---|---|
@@ -66,7 +66,7 @@ To remove old context between tasks, use `/handoff <next goal>`, `/tree`, or `/c
 
 ## `delegate`
 
-A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal?, background?, branch? }`. Only `task` is required. The worker sees only the task, so the task must name the goal, the paths, and the acceptance criteria.
+A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal?, background?, check? }`. Only `task` is required. The worker sees only the task, so the task must name the goal, the paths, and the acceptance criteria.
 
 | Role | For | Model, thinking | Web | Answer |
 |---|---|---|---|---|
@@ -75,7 +75,7 @@ A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal?, background?,
 | `research` | Docs and web | Worker pool, configured thinking | yes | Findings with sources |
 | `review` | A diff before a commit | Worker pool, configured thinking | no | `path:line: severity: problem. Fix:` |
 | `challenge` | Argue against a plan | Worker pool, configured thinking | yes | Premise, challenges, verdict |
-| `implement` | A change with a check | Worker pool, configured thinking | no | Changes, checks, commits; the tool adds branch facts |
+| `implement` | A change with a check | Worker pool, configured thinking | no | One-sentence summary, then BLOCKED lines; the tool builds a 2-line handback |
 
 With no configured pool, roles use the main session's model and thinking level; scout caps the level at `low` (`off` stays `off`). If Pi does not report the session's thinking level, the call fails and asks for a pool-level `thinking` or `runs[].thinking`.
 
@@ -85,8 +85,8 @@ With no configured pool, roles use the main session's model and thinking level; 
 - `web`: turns the web tools on or off for any role. The label shows `web`.
 - `answer`: replaces the role's answer format, 1 to 400 characters.
 - `output: true`: each run gets `write`, but only inside its own new temp directory (mode 0700). The answer lists the files and their sizes, not their contents. Copy what you keep and check the diff. The tool does not delete these directories.
-- `branch` (`implement` only): an existing `delegate/*` branch to continue (after WIP or review findings) instead of a new branch from HEAD. Refused for other roles, for names without the `delegate/` prefix, and for missing branches.
-- `implement` refuses `runs` with more than 1 entry, `rebuttal`, `output`, and `web: true`.
+- `check` (`implement` only, required): the command, run from your cwd, that proves the change. The worker must run it alone, exactly as given, after its last edit. Refused for other roles, and when it contains `|`, `;`, `&&`, or `||` (a chained check can never match the worker's run).
+- `implement` refuses `answer`, `runs` with more than 1 entry, `rebuttal`, `output`, and `web: true`.
 - `background: true`: the call returns a job id (`bg1`, `bg2`, …) at once and the conversation goes on. When the workers finish, the answer arrives as a `delegate` message that starts a turn (queued as a follow-up if the session is busy). The turn's abort does not stop a background job; `/delegate cancel <id>` does, and its report arrives without starting a turn. Ending or switching the session (`/reload`, `/new`, `/resume`, `/fork`, a handoff, or exit) stops background jobs and their answers are lost. Pi's session usage does not include background cost, so the status line shows background jobs running and their spend for this Pi process, kept across `/reload`.
 
 Results: answers over 12 KiB are cut and saved in full to a temp file (mode 0600). Worker cost is added to the session usage. In the TUI, a running call shows each worker's turn, cost, and last tool; a result shows one line per run, and Ctrl+O expands the answers as Markdown. The model gets the full text either way.
@@ -95,21 +95,29 @@ Reviews: read-only workers cannot run git. Write the diff to a file first (`git 
 
 ### Implement
 
-An `implement` worker edits, runs checks, and commits, in a temp git worktree on its own branch:
+One `implement` worker edits, runs `check`, and commits on your current branch, in your checkout. The main session may not edit or git-write in that repo until the handback; use `background: true` to keep talking. Worktree mode (a temp worktree per job, merged back after review) was dropped: on the same task it took 237 s and about 23k main-session context, against 127 s and about 20k when the main session did the work itself, because of the merge ceremony.
 
-- **Worktree and branch.** The cwd must be in a git repo with a commit. The tool adds a worktree in `$TMPDIR/me-pi-delegate-wt-*` on a new branch `delegate/<YYYYMMDD-HHMMSS>-im<n>` from your HEAD commit (or on `branch`). Uncommitted files in your tree are not in it; the start message (or foreground progress) names the branch, the base, and how many such files there are. The worker starts at the same path inside the worktree as your cwd; if that directory is not in the commit (untracked or ignored), it starts at the worktree root and the start message says so. `im<n>` counts per Pi process and survives `/reload`; background calls keep their `bg<n>` job id.
-- **Environment.** Tools: `read,grep,find,ls,Skill,edit,write,bash`. `edit` and `write` are allowed only inside the worktree. Every worker gets `ME_PI_ROLE=<role>`. Git remotes are cut off by appending `protocol.{ssh,https,http,git}.allow=never` after any `GIT_CONFIG_*` you set (the cut-off alone allows local and `file://` pushes; the worker rules block every `git push`). `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` are unset and `GH_CONFIG_DIR` is an empty temp dir. The worker gets `--approve` only when your session trusts the project, the branch is new, it is the first model attempt, and the worktree's `.pi` and `.agents` equal the base (no tracked changes, no untracked files); otherwise `--no-approve`.
-- **Worker rules.** Inside an implement worker, bash blocks `git push`, `git worktree`, `git commit -n`/`--no-verify`, `gh`, `git config` writes, `git remote`, `git update-ref`, `git symbolic-ref` writes, `git branch -m`, `git tag -f`/`-d`, `install.sh` (run directly, or via `sh`, `bash`, `zsh`, `.`, or `source`), and `pi install|remove|uninstall|update|config`. Blocked steps come back as BLOCKED.
-- **Finish.** When the worker ends, is stopped, or the session ends (shutdown waits for this), the tool checks that the worktree is still on its branch. If not, it keeps the worktree and makes no commit. Otherwise, uncommitted work becomes one `WIP(delegate im<n>): <reason>` commit (hooks and signing off), which must not be merged as is. Then it removes the worktree with `git worktree remove` (no `--force`); on failure it keeps it and says why.
-- **Report.** After the worker's answer: `Branch: <branch> @ <tip> (base …)`, the commits since the start (at most 20), the diffstat (at most 30 lines), `Diff: <path> (0600, base..tip)`, and `Worktree: removed`. The diff itself is only in that file. Failures are ✗ lines and make the call an error: a WIP commit, a tripwire (another branch or tag moved or deleted, your branch reset to a non-descendant, local git config or `hooks/`/`info/` changed, or the `packages`, `extensions`, `skills`, `prompts`, or `themes` keys of `~/.pi/agent/settings.json` changed), or a kept worktree. Tripwires report; they never restore. `/delegate status` lists each implement call's `branch@tip`, and `WIP` when there is one.
-- **Merge.** Merge only a result with no ✗ line: get a fresh `review` of the diff file, then `git merge <branch>` on a clean tree (no squash) and run the check once. On a tripwire or kept-worktree ✗, report to the user and do not merge. Do not read the diff file yourself; pass its path to the `review` worker. Delete the branch only after the post-merge check passed, as its own command (not chained after the check). If the check fails after the merge, fix forward (follow-up implement or a commit); never undo the merge without approval. For WIP or review findings, call `implement` again with `branch` set.
-- **Cleanup.** Delete merged branches with `git branch -d`; put discarded ones in one `git branch -D a b c` for the user to approve. A kept worktree is listed by `git worktree list`; remove it with `git worktree remove <path>` after checking what it holds.
+- **Use.** Before a goal's first implement, commit your work, `git switch -c goal/<slug>` if on `main`/`master`, and note the base SHA. Call with `background: true`, and give the goal, repo-relative paths, acceptance criteria, and `check`. Trust a ✓ handback (no diff read, no review, no re-check). For ✗ WIP, send a follow-up implement or `git revert`; for a tripwire ✗, stop and tell the user. At goal end, run one `review` of `git diff <base>..HEAD` written to a temp file and fix findings by follow-up. Never push a range containing a `WIP(delegate` commit.
+- **Prepare.** Refused before any worker starts, leaving nothing behind, unless the cwd is in a git repo with a commit, HEAD is on a branch that is not `main` or `master` (`git switch -c goal/<slug>` first), no merge, rebase, cherry-pick, or revert is in progress, and `git status --porcelain` is empty (untracked files count). One job per repo: the lock `<git-common-dir>/me-pi-implement.lock` holds `<pid> <id>`, created atomically (written to a temp file, then linked). A live pid, or content that does not parse, refuses the call and names the job; a dead pid's lock is taken over. If HEAD's subject starts with `WIP(delegate`, the worker is told to finish that first.
+- **Environment.** The worker runs in your cwd. Tools: `read,grep,find,ls,Skill,edit,write,bash`. `edit` and `write` are allowed only inside the repo (`ME_PI_OUTPUT_DIR`) and never inside the git common dir (`ME_PI_DENY_DIR`), so hooks are fenced too. Git remotes are cut off by appending `protocol.{ssh,https,http,git}.allow=never` after any `GIT_CONFIG_*` you set; `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, and `GITHUB_ENTERPRISE_TOKEN` are unset and `GH_CONFIG_DIR` is an empty temp dir. The worker gets `--approve` only when your session trusts the project and it is the first model attempt (a clean tree means `.pi` equals the trusted HEAD); otherwise `--no-approve`. `ME_PI_PARENT` is the main Pi pid: when it is gone, or the worker's parent is pid 1, the worker's next tool call is blocked and the run ends.
+- **Worker rules.** Inside an implement worker, bash blocks `git push`, `git worktree`, `git switch`, `git checkout`, `git merge`, `git cherry-pick`, `git pull`, `git stash` (except `list` and `show`), `git commit -n`/`--no-verify`, `gh`, `git config` writes, `git remote`, `git update-ref`, `git symbolic-ref` writes, `git branch -m`, `git tag -f`/`-d`, `install.sh` (run directly, or via `sh`, `bash`, `zsh`, `.`, or `source`), and `pi install|remove|uninstall|update|config`. Blocked steps come back as BLOCKED.
+- **Check.** The tool watches the worker's bash calls. A call whose command equals `check` (whitespace collapsed; a leading `rtk ` and a trailing `2>&1` allowed; any `|` or `;` disqualifies) sets the check to pass or fail from Pi's error flag; a successful `edit` or `write` after it makes it stale. The state carries across model fallbacks.
+- **Main session during a job.** Until the handback, the main session's `edit` and `write` inside the repo are blocked, and so is bash running a git tree write (`add`, `rm`, `mv`, `commit`, `merge`, `rebase`, `reset`, `restore`, `checkout`, `switch`, `stash` except `list`/`show`, `cherry-pick`, `revert`, `am`, `apply`, `pull`, `clean`, `update-index`, `read-tree`, `checkout-index`, `sparse-checkout`, `submodule`, `update-ref`, `symbolic-ref`, and `branch -f/-m/-M/-d/-D`) there. Bash counts as there when a `git -C <dir>` or leading `cd <dir>` target is inside the repo, or else when the cwd is inside it or the command names it. Reads (`git log`, `status`, `diff`) pass. The message names the job and, for a background job, `/delegate cancel <id>`.
+- **Finish.** When the worker ends, is stopped, or the session ends (shutdown waits for this), and it never throws: if HEAD is no longer the job's branch, it is ✗ "HEAD moved" with no WIP commit. Otherwise uncommitted work becomes one `WIP(delegate im<n>): <reason>` commit on the branch (hooks and signing off; the reason is the failure's first line, at most 200 characters), which is ✗. Then `base..tip` is read from git; ✗ if the base is not an ancestor of the tip, if any commit is a merge, or if any commit is older than the job start minus 60 s (a fast-forward to existing work). Tripwires are ✗ too: a ref under `refs/heads`, `refs/tags`, or `refs/stash` other than the job's branch moved or was deleted (new refs and tags, and `refs/remotes`, are fine); local git config (other than upstream tracking) or the common dir's `hooks/`/`info/` changed; the `packages`, `extensions`, `skills`, `prompts`, or `themes` keys of `~/.pi/agent/settings.json` changed; or `.pi` or `.agents` changed in the range ("review before /reload"). Tripwires report; they never restore. Last, it writes the details file, releases the lock if it still holds this job's id, and removes the gh dir.
+- **Handback.** The tool result is two lines, for example:
+
+  ```
+  ✓ im3 goal/x 9f8e7d6..1a2b3c4: 2 commits, 3 files +40 -5; check ✓ `npm run check --prefix extensions` [glm-5.3-flash @high $0.04 118s]
+  Added the retry option. Details: $TMPDIR/me-pi-delegate-<pid>/im3.md
+  ```
+
+  The second line is the worker's first line (at most 200 characters, control characters quoted). Extra lines appear only when needed: up to 3 `BLOCKED:` lines (`+N more BLOCKED in details`) and ✗ lines (the failure, WIP, a failed, stale, or missing check, range problems, tripwires). ✓ only when the worker answered, there is no WIP and no ✗, and the check passed. The details file (0600) holds the commits, diffstat, check runs, full answer, tools, fallbacks, and stderr tail; there is no diff file. The TUI view keeps the full answer. `/delegate status` lists each implement call's `branch base..tip`, the check state, and `WIP` when there is one.
 
 ### Limits
 
 - Time: 300 s for `scout`, 900 s for the other roles. Cost: $5 for each worker, checked after each reply. A final answer over the cap is kept.
 - Wrap-up budget: after 30 tool calls (`scout`) or 100 (other roles), 80% of the time limit, or 80% of the cost cap, the worker's tool calls are blocked with "give your final answer now". So the worker answers before a hard limit stops it. Every tool call counts, including blocked ones. After 3 ignored budget blocks, the run ends and its last text comes back as a partial answer. The budget is checked at each tool call, so it cannot stop one long reply; only the hard time limit does.
-- On a limit, a cancel, the end of the session, or a normal exit of Pi, the tool SIGKILLs the worker's process group. An `implement` worker gets SIGTERM first (Pi then stops its bash commands), and SIGKILL after 3 s; on a hard exit of the main process it gets SIGKILL only. A process that leaves the group keeps running (for example, `fetch_content`'s GitHub clones). With `output: true`, a stopped worker can leave incomplete files; the answer lists them.
+- On a limit, a cancel, the end of the session, or a normal exit of Pi, the tool SIGKILLs the worker's process group. An `implement` worker gets SIGTERM first (Pi then stops its bash commands), and SIGKILL after 3 s, before the WIP commit; on a hard exit of the main process it gets SIGKILL only. A process that leaves the group keeps running (for example, `fetch_content`'s GitHub clones). With `output: true`, a stopped worker can leave incomplete files; the answer lists them.
 - If the main Pi process is killed, workers can keep running. Find them with `ps -axo pid,ppid,pgid,comm | awk '$2==1 && $1==$3 && $4=="pi"'` and stop each with `kill -- -<pid>`.
 
 ### Safety
@@ -121,7 +129,13 @@ This is not a sandbox:
 - `read` reaches files outside the project. The tool blocks `read`, `grep`, `find`, and `ls` calls that name likely secrets (`.env*` except `.example`, `.sample`, `.template`; `.npmrc`, `.netrc`, `.git-credentials`, private keys, `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.pi/agent/auth.json`), also through symlinks and globs. A broad search such as `grep TOKEN .` can still match them.
 - Web access is a prompt-injection risk: a fetched page can tell a worker to read a local file and send it to a URL. Turn on `web` only when the task needs outside sources. Workers are told to treat fetched content as data and never to use `fetch_content`'s `auth` (browser cookies).
 - Workers load your installed extensions, because provider login is an extension.
-- An `implement` worker's bash reads and writes anywhere and reaches the network (npm, curl). Only git remotes and `gh` are cut off, and `git -c` undoes the git cut.
+- An `implement` worker writes in your real checkout, not a copy. Its bash reads and writes anywhere and reaches the network (npm, curl). Only git remotes and `gh` are cut off, and `git -c` undoes the git cut. Ignored files (such as `.env`) cannot be restored from git.
+- A hard kill of the main Pi process leaves a dirty tree and a stale lock; the lock frees itself once its pid is dead (the next `implement` takes it over), the worker stops at its next tool call, and the tree needs a manual commit or cleanup.
+- A bash child that ignores SIGTERM can outlive the stop and still write while the WIP commit is made.
+- Check matching is textual: a bash `sed` or other write after the check is not seen, so the check stays ✓.
+- Edits that you or the main session make through an editor or a bash write (not a git tree write) during a job end up in the worker's commits.
+- In the live me-pi checkout, workers and `/reload` load worker-edited extensions. Run me-pi goals in a clone.
+- WIP commits break `git bisect` until fixed. There are no parallel writes in one repo.
 
 ## Guard
 
