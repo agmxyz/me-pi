@@ -119,13 +119,24 @@ function gitRisk(
 	}
 }
 
+// A heredoc read by `cat` or `git` (`-m "$(cat <<'EOF'`, `commit -F - <<EOF`): its body is text. The opener line is
+// kept; a heredoc fed to a shell (`bash <<EOF`) is still scanned.
+const TEXT_HEREDOC = /((?:\bcat|\bgit\s[^;&|\n]*?)\s*<<-?\s*(['"]?)(\w+)\2[^\n]*)\n[\s\S]*?\n\t*\3(?=\n|$)/g;
+
+// Empties quoted commit messages, unless they run a command, and text heredoc bodies.
+function withoutMessages(command: string): string {
+	return command
+		.replace(TEXT_HEREDOC, "$1")
+		.replace(MESSAGE_ARG, (arg, flag: string, message: string) =>
+			message.startsWith('"') && /\$\(|\x60/.test(message) ? arg : `${flag}""`,
+		);
+}
+
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
 ): string | undefined {
-	command = command.replace(MESSAGE_ARG, (arg, flag: string, message: string) =>
-		message.startsWith('"') && /\$\(|\x60/.test(message) ? arg : `${flag}""`,
-	);
+	command = withoutMessages(command);
 	const gitCommands = [...command.matchAll(GIT_COMMAND)];
 	// The session's branch is read before the command runs, so it says nothing about the target after
 	// `cd`, `git checkout`/`switch`, or `git -C`/`--git-dir`/`--work-tree`.
@@ -147,6 +158,67 @@ export function classify(
 			targets.length > 0 && targets.every((t) => DISPOSABLE.test(t) && !/(?:^|\/)\.\.(?:\/|$)/.test(t));
 		if (!disposable) return "recursive rm";
 	}
+	return undefined;
+}
+
+// Worker-only rules for the delegate `implement` role: commands that reach past its worktree into state the
+// main checkout shares (refs, the common dir's config, remotes, GitHub, Pi's settings). Always blocked, no prompt.
+const GH_COMMAND = new RegExp(`${AT_COMMAND}gh(?![\\w.-])`);
+const PI_COMMAND = new RegExp(`${AT_COMMAND}pi\\s+(install|remove|uninstall|update|config)(?![\\w-])`);
+// `./install.sh`, `/abs/install.sh`, `sh|bash|zsh [opts] install.sh`, or `.`/`source install.sh`; not `install.test.sh`.
+const INSTALL_SH = new RegExp(
+	`${AT_COMMAND}(?:(?:(?:ba|z)?sh|source|\\.)\\s+(?:-\\w+\\s+)*(?:[\\w.~-]*\\/)*)?install\\.sh(?![\\w.-])`,
+);
+// `git config` forms that only read.
+const CONFIG_READS = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope"]);
+// Options that keep `git config <key>` a read: scopes and value types (`--type X` is dropped first).
+const CONFIG_READ_OPTIONS = new Set(["--local", "--global", "--system", "--worktree", "--bool", "--int", "--path"]);
+
+function workerGitRisk(sub: string, words: string[]): string | undefined {
+	switch (sub) {
+		case "push":
+			return "git push is main-session only";
+		case "worktree":
+			return "git worktree (the extension owns worktrees)";
+		case "commit":
+			return hasShort(words, "n", "--no-verify") ? "git commit --no-verify (hooks must run)" : undefined;
+		case "config": {
+			if (words[0] === "get" || words[0] === "list" || words.some((w) => CONFIG_READS.has(w))) return undefined;
+			const rest = words.filter((w, i) => w !== "--type" && words[i - 1] !== "--type" && !w.startsWith("--type="));
+			const positional = rest.filter((w) => !w.startsWith("-"));
+			const readKey = positional.length === 1 && rest.every((w) => !w.startsWith("-") || CONFIG_READ_OPTIONS.has(w));
+			return readKey ? undefined : "git config write (shared with the main checkout)";
+		}
+		case "remote":
+			return "git remote (shared with the main checkout)";
+		case "update-ref":
+			return "git update-ref (moves shared refs)";
+		case "symbolic-ref":
+			// Reads (`-q HEAD`, `--short HEAD`) pass; setting or deleting a symbolic ref does not.
+			return words.filter((w) => !w.startsWith("-")).length >= 2 || hasShort(words, "d", "--delete")
+				? "git symbolic-ref (moves shared refs)"
+				: undefined;
+		case "branch":
+			return hasShort(words, "[mM]", "--move") ? "git branch -m (renames shared refs)" : undefined;
+		case "tag":
+			return hasShort(words, "[fd]") || words.includes("--force") || words.includes("--delete")
+				? "git tag -f/-d (moves shared refs)"
+				: undefined;
+		default:
+			return undefined;
+	}
+}
+
+export function workerRisk(command: string): string | undefined {
+	command = withoutMessages(command);
+	for (const [, , sub, args] of command.matchAll(GIT_COMMAND)) {
+		const risk = workerGitRisk(sub, wordsOf(args));
+		if (risk) return risk;
+	}
+	if (GH_COMMAND.test(command)) return "gh is main-session only";
+	if (INSTALL_SH.test(command)) return "install.sh would register the worktree in Pi's settings";
+	const pi = command.match(PI_COMMAND);
+	if (pi) return `pi ${pi[1]} would change Pi's settings`;
 	return undefined;
 }
 

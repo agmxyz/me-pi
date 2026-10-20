@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { default: registerGuard, classify } = await import("./guard.ts");
+const { default: registerGuard, classify, workerRisk } = await import("./guard.ts");
 
 const onMain = () => "main";
 const onFeature = () => "feature/x";
@@ -78,6 +78,8 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 		["if true; then git push origin main; fi", onFeature, "push to main/master"],
 		["nohup git push origin main", onFeature, "push to main/master"],
 		["{ git push origin main; }", onFeature, "push to main/master"],
+		["bash <<EOF\ngit push origin main\nEOF", onFeature, "push to main/master"],
+		["git commit -F - <<EOF && git push origin main\nmsg\nEOF", onFeature, "push to main/master"],
 		// History rewrites and other discards.
 		["git commit --amend --no-edit", onFeature, "history rewrite (commit --amend)"],
 		["git rebase -i HEAD~3", onFeature, "history rewrite (rebase)"],
@@ -141,8 +143,71 @@ test("allows feature pushes, PRs, and routine commands", () => {
 		["git switch feature/y", onMain],
 		["git checkout main", onFeature],
 		["rmdir empty-dir", onMain],
+		[`git commit -m "$(cat <<'EOF'\nfix: git push origin main and rm -rf src\nEOF\n)"`, onFeature],
 	]) {
 		assert.equal(classify(command, branch), undefined, `expected allowed: ${command}`);
+	}
+});
+
+test("workerRisk blocks commands that reach past an implement worker's worktree", () => {
+	for (const command of [
+		"git push origin x",
+		"git push . HEAD:main",
+		"git -C x worktree add",
+		"git commit -nm x",
+		"git commit --no-verify -m x",
+		"gh pr list",
+		"git config core.hooksPath x",
+		"git config --unset user.name",
+		"git remote set-url origin x",
+		"git remote -v",
+		"git update-ref refs/heads/main x",
+		"git symbolic-ref HEAD x",
+		"git branch -M x",
+		"git branch --move a b",
+		"git tag -d v1",
+		"git tag --force v1",
+		"./install.sh",
+		"bash install.sh",
+		"sh -x ./install.sh",
+		"/abs/install.sh",
+		"x/install.sh",
+		"cd .. && ./install.sh",
+		"pi install ./x",
+		"pi config",
+		"git symbolic-ref -d HEAD",
+		". ./install.sh",
+		"source install.sh",
+		"bash -n install.sh",
+		"bash <<EOF\n./install.sh\nEOF",
+		"git commit -F - <<EOF && git push\nmsg\nEOF",
+	]) {
+		assert.ok(workerRisk(command), `expected blocked: ${command}`);
+	}
+	for (const command of [
+		"npm run check --prefix extensions",
+		"../bin/install.test.sh",
+		'git commit -m "mention git push"',
+		"git commit -m 'run ./install.sh'",
+		"grep 'gh ' file",
+		"git config --get user.name",
+		"git config user.name",
+		"git config --list --show-origin",
+		"git config get user.name",
+		"git merge main",
+		"git branch -d old",
+		"git tag v1",
+		"cat install.sh",
+		"pi --version",
+		"git symbolic-ref -q HEAD",
+		"git symbolic-ref --short HEAD",
+		"git config --bool core.bare",
+		"git config --type bool --get core.bare",
+		"git config --type=int core.x",
+		`git commit -m "$(cat <<'EOF'\ninstall.sh: link\ngit push is blocked\nEOF\n)"`,
+		"git commit -F - <<EOF\nrun ./install.sh then gh pr list\nEOF",
+	]) {
+		assert.equal(workerRisk(command), undefined, `expected allowed: ${command}`);
 	}
 });
 

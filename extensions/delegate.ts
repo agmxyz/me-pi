@@ -27,6 +27,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type ActiveCall, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import { type DelegateView, progressLines, type RunView, renderCall, renderResult } from "./delegate-render.ts";
+import { workerRisk } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
 export const LIMITS = {
@@ -990,7 +991,7 @@ export const PROMPT_GUIDELINES = [
 
 export default function (pi: ExtensionAPI) {
 	// Workers never get the tool, so delegation cannot nest; they only get the wrap-up budget, the secret-path
-	// block, and the output-directory write block.
+	// block, the output-directory write block, and for `implement` the worker-only bash rules.
 	if (process.env.ME_PI_RUN) {
 		const budget = parseBudget(process.env.ME_PI_BUDGET);
 		let calls = 0;
@@ -1009,6 +1010,10 @@ export default function (pi: ExtensionAPI) {
 					// A model that keeps calling tools is stopped; the parent keeps its last text as a partial answer.
 					terminate: ++overBudget > MAX_BLOCKED_OVER_BUDGET,
 				};
+			if (event.toolName === "bash" && process.env.ME_PI_ROLE === "implement") {
+				const risk = workerRisk(String((event.input as { command?: unknown }).command ?? ""));
+				if (risk) return { block: true, reason: `Blocked: ${risk}; list it as BLOCKED.` };
+			}
 			const secret = secretPathIn(event.toolName, event.input, ctx.cwd);
 			if (secret)
 				return { block: true, reason: `Blocked: ${secret} may hold secrets; delegated workers cannot read it.` };

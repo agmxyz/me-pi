@@ -187,7 +187,15 @@ function applyEnv(vars) {
 
 // Sets env vars and limits for one test and restores them afterwards.
 function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
-	const vars = { PI_BIN: FAKE_BIN, ME_PI_RUN: undefined, TMPDIR: TEST_HOME, ...env };
+	const vars = {
+		PI_BIN: FAKE_BIN,
+		ME_PI_RUN: undefined,
+		ME_PI_OUTPUT_DIR: undefined,
+		ME_PI_BUDGET: undefined,
+		ME_PI_ROLE: undefined,
+		TMPDIR: TEST_HOME,
+		...env,
+	};
 	if (config !== undefined) {
 		const path = join(mkdtempSync(join(TEST_HOME, "cfg-")), "delegate.json");
 		writeFileSync(path, typeof config === "string" ? config : JSON.stringify(config));
@@ -303,6 +311,17 @@ test("workers cannot name secret paths in read, grep, find, or ls", async (t) =>
 	const blocked = await hook({ toolName: "read", input: { path: "~/.ssh/id_rsa" } }, { cwd: dir });
 	assert.match(blocked.reason, /\.ssh\/id_rsa may hold secrets; delegated workers cannot read it/);
 	assert.equal(await hook({ toolName: "read", input: { path: "notes.txt" } }, { cwd: dir }), undefined);
+});
+
+test("implement workers' bash calls are checked against the worker-only rules", async (t) => {
+	const bash = (command) => ({ toolName: "bash", input: { command } });
+	const hook = setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement" } }).handlers.tool_call;
+	const blocked = await hook(bash("git push origin x"), { cwd: REPO_ROOT });
+	assert.equal(blocked?.block, true);
+	assert.match(blocked.reason, /^Blocked: git push is main-session only; list it as BLOCKED\.$/);
+	assert.equal(await hook(bash("npm test"), { cwd: REPO_ROOT }), undefined);
+	const other = setup(t, { env: { ME_PI_RUN: "1" } }).handlers.tool_call;
+	assert.equal(await other(bash("git push origin x"), { cwd: REPO_ROOT }), undefined);
 });
 
 test("workers get a wrap-up budget: tool calls, 80% of the time limit, 80% of the cost cap", async (t) => {
