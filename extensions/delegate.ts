@@ -772,7 +772,7 @@ function runWorkerAttempt(
 const retryableAvailabilityFailure = (failure: string | undefined): boolean =>
 	Boolean(
 		failure &&
-			/\b429\b|rate[_ -]?limit|too many requests|overload(?:ed)?|\b(?:503|529)\b|service unavailable|temporarily unavailable|(?:unknown|unsupported|invalid) model|model.{0,50}(?:not found|unavailable|not available|not supported|does not exist|missing)/i.test(
+			/\b429\b|rate[_ -]?limit|usage limit|quota exceeded|insufficient_quota|too many requests|overload(?:ed)?|\b(?:503|529)\b|service unavailable|temporarily unavailable|(?:unknown|unsupported|invalid) model|model.{0,50}(?:not found|unavailable|not available|not supported|does not exist|missing)/i.test(
 				failure,
 			),
 	);

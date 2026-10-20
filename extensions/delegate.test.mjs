@@ -97,12 +97,16 @@ process.stdin.on("end", () => {
     emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
     process.exit(1);
   }
+  if (mode === "quota-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    emit("", { stopReason: "error", errorMessage: process.env.FAKE_PI_ERROR });
+    process.exit(1);
+  }
   if (mode === "unavailable-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     emit("", { stopReason: "error", errorMessage: "model not found: unavailable" });
     process.exit(1);
   }
   if (mode === "fail" || (mode === "fail-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL)) {
-    emit("partial findings", { stopReason: "error", errorMessage: "usage limit reached" });
+    emit("partial findings", { stopReason: "error", errorMessage: "invalid request: tool schema rejected" });
     process.stderr.write("secret-looking stderr detail\\n");
     process.exit(1);
   }
@@ -622,6 +626,29 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 	]);
 	assert.match(text(res), /claude-haiku-5-5.*rate_limit_error.*trying anthropic\/claude-sonnet-5-5/s);
 	assert.equal(res.usage.cost.total, 0.004);
+});
+
+test("usage-limit and quota errors also fall through the worker pool", async (t) => {
+	// One setup, so its env restore runs once; each case only swaps the error text.
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "quota-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_ERROR: "" },
+	});
+	for (const error of [
+		"Codex error: The usage limit has been reached",
+		"429 quota exceeded for this project",
+		"insufficient_quota: check your plan",
+	]) {
+		process.env.FAKE_PI_ERROR = error;
+		const res = await run(tool, { role: "review", task: "x" });
+		assert.equal(res.isError, false, text(res));
+		assert.equal(res.details.round1[0].requested.model, SONNET, error);
+		assert.equal(res.details.round1[0].fallbackAttempts[0].failure, `exit 1: ${error}`);
+	}
 });
 
 test("fallback attempts share the worker cost cap", async (t) => {
@@ -1240,7 +1267,7 @@ test("a failure is one line plus a bounded partial answer; stderr stays out of t
 	const { tool } = setup(t, { env: { FAKE_PI_MODE: "fail" } });
 	const res = await run(tool, { role: "scout", task: "x" });
 	assert.equal(res.isError, true);
-	assert.match(text(res), /^✗ exit 1: usage limit reached\nPartial answer:\npartial findings\n\[/);
+	assert.match(text(res), /^✗ exit 1: invalid request: tool schema rejected\nPartial answer:\npartial findings\n\[/);
 	assert.doesNotMatch(text(res), /secret-looking stderr/);
 	assert.match(res.details.round1[0].stderr, /secret-looking stderr detail/);
 
