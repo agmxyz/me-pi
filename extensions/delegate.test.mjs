@@ -175,7 +175,7 @@ process.stdin.on("end", () => {
 	{ mode: 0o755 },
 );
 
-const CTX = { cwd: REPO_ROOT, model: { provider: "anthropic", id: "claude-session" } };
+const CTX = { cwd: REPO_ROOT, model: { provider: "anthropic", id: "claude-session" }, thinkingLevel: "high" };
 const text = (res) => res.content.map((c) => c.text).join("\n");
 
 function applyEnv(vars) {
@@ -221,7 +221,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	return { tool: tools.delegate, handlers, commands, pi };
 }
 
-const run = (tool, params, signal, onUpdate) => tool.execute("call", params, signal, onUpdate, CTX);
+const run = (tool, params, signal, onUpdate, ctx = CTX) => tool.execute("call", params, signal, onUpdate, ctx);
 const isAlive = (pid) => {
 	try {
 		process.kill(pid, 0);
@@ -735,16 +735,17 @@ test("v1 and v2 configs migrate to per-model levels, and empty pools use the ses
 	assert.throws(() => resolveRun("review", { model: "openai/gpt-x" }, v2), /not in the delegate pools/);
 
 	const empty = loadModelSet(join(TEST_HOME, "nope.json"));
-	assert.deepEqual(resolveRun("scout", {}, empty, "x/session"), {
+	assert.deepEqual(resolveRun("scout", {}, empty, "x/session", "off"), {
 		model: "x/session",
-		candidates: [{ model: "x/session", thinking: "low" }],
-		thinking: "low",
+		candidates: [{ model: "x/session", thinking: "off" }],
+		thinking: "off",
 	});
-	assert.deepEqual(resolveRun("review", { model: "y/m" }, empty, "x/session"), {
+	assert.deepEqual(resolveRun("review", { model: "y/m" }, empty, "x/session", "medium"), {
 		model: "y/m",
-		candidates: [{ model: "y/m", thinking: "max" }],
-		thinking: "max",
+		candidates: [{ model: "y/m", thinking: "medium" }],
+		thinking: "medium",
 	});
+	assert.throws(() => resolveRun("review", {}, empty, "x/session"), /main session's thinking level is unknown/);
 });
 
 function commandCtx({ available = [HAIKU, SONNET, OPUS] } = {}) {
@@ -837,6 +838,16 @@ test("/delegate status: the set with availability, missing tools, running and re
 	);
 });
 
+test("/delegate status without a config names the main session model and thinking", async (t) => {
+	const main = setup(t);
+	const { ctx, notes } = commandCtx();
+	await main.commands.delegate.handler("status", ctx);
+	assert.ok(
+		notes[0][0].includes("Scout pool: main session model (main session thinking, capped at low, no fallback models)"),
+	);
+	assert.ok(notes[0][0].includes("Worker pool: main session model (main session thinking, no fallback models)"));
+});
+
 test("/delegate status keeps the last 20 calls", async (t) => {
 	const main = setup(t, { config: { models: [HAIKU, OPUS] } });
 	for (let i = 0; i < 21; i++) await run(main.tool, { task: "x", runs: [{ model: HAIKU }] });
@@ -864,9 +875,14 @@ test("v3 model configs validate per-model thinking", (t) => {
 	};
 	assert.deepEqual(loadModelSet(join(TEST_HOME, "nope.json")), {
 		version: 3,
-		scout: { models: [], thinking: "low" },
-		worker: { models: [], thinking: "max" },
+		scout: { models: [] },
+		worker: { models: [] },
 	});
+	assert.deepEqual(
+		loadModelSet(write(JSON.stringify({ version: 3, scout: { models: [] }, worker: { models: [] } }))),
+		{ version: 3, scout: { models: [] }, worker: { models: [] } },
+		"pool-level thinking is optional",
+	);
 	assert.deepEqual(loadModelSet(write(JSON.stringify(POOL_SET))), POOL_SET);
 	assert.equal(loadModelSet(write(JSON.stringify(POOL_SET))).worker.models[1].thinking, "max");
 	for (const [content, error] of [
@@ -953,6 +969,29 @@ test("roles get their tools: only research and challenge reach the web", async (
 		const res = await run(tool, { role, task: "x" });
 		assert.match(text(res), new RegExp(`model=${OPUS} thinking=max tools=${tools} `), role);
 	}
+});
+
+test("without a model config, workers use the main session model", async (t) => {
+	const marker = scratch("session-model-marker");
+	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker } });
+	const sessionContext = { ...CTX, thinkingLevel: "medium" };
+	const general = await run(tool, { task: "x" }, undefined, undefined, sessionContext);
+	const scout = await run(tool, { role: "scout", task: "x" }, undefined, undefined, sessionContext);
+	assert.equal(general.isError, false, text(general));
+	assert.equal(scout.isError, false, text(scout));
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => {
+				const { model, thinking } = JSON.parse(line);
+				return [model, thinking];
+			}),
+		[
+			["anthropic/claude-session", "medium"],
+			["anthropic/claude-session", "low"],
+		],
+	);
 });
 
 test("the default role is general: local tools, first worker model, max thinking, no answer format", async (t) => {
@@ -1278,7 +1317,7 @@ import register from ${JSON.stringify(new URL("./delegate.ts", import.meta.url).
 import { existsSync } from "node:fs";
 let delegate;
 register({ registerTool: (d) => { delegate = d; }, registerCommand: () => {}, on: () => {} });
-void delegate.execute("p", { role: "scout", task: "hold" }, undefined, undefined, { cwd: ${JSON.stringify(REPO_ROOT)} });
+void delegate.execute("p", { role: "scout", task: "hold" }, undefined, undefined, { cwd: ${JSON.stringify(REPO_ROOT)}, thinkingLevel: "low" });
 const deadline = Date.now() + 10000;
 while (!existsSync(${JSON.stringify(pidFile)}) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
 process.exit(existsSync(${JSON.stringify(pidFile)}) ? 0 : 2);

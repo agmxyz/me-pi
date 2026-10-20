@@ -277,8 +277,8 @@ export interface ModelEntry {
 export interface ModelPool {
 	/** Ordered fallbacks; each model has an independent thinking level. */
 	models: ModelEntry[];
-	/** Thinking used for the session model when this pool is empty. */
-	thinking: string;
+	/** Thinking for models without an entry (the session model when the pool is empty); omitted means the main session's level. */
+	thinking?: string;
 }
 
 export interface ModelSet {
@@ -289,15 +289,15 @@ export interface ModelSet {
 
 const defaultModelSet = (): ModelSet => ({
 	version: 3,
-	scout: { models: [], thinking: "low" },
-	worker: { models: [], thinking: "max" },
+	scout: { models: [] },
+	worker: { models: [] },
 });
 
 export function configPath(): string {
 	return process.env.ME_PI_DELEGATE_CONFIG || join(HOME, ".pi", "agent", "delegate.json");
 }
 
-/** A missing file means both pools use the session model. Legacy configs migrate in memory. */
+/** A missing file means both pools use the main session's model and thinking. Legacy configs migrate in memory. */
 export function loadModelSet(path = configPath()): ModelSet {
 	if (!existsSync(path)) return defaultModelSet();
 	const where = `delegate config ${path}`;
@@ -377,10 +377,9 @@ function validV3Pool(raw: any, where: string, scout: boolean): ModelPool {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected an object`);
 	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "thinking");
 	if (unknown.length) throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: models, thinking)`);
-	return {
-		models: modelEntries(raw.models, `${where}.models`, scout),
-		thinking: poolThinking(raw.thinking, `${where}.thinking`, scout),
-	};
+	const models = modelEntries(raw.models, `${where}.models`, scout);
+	if (raw.thinking === undefined) return { models };
+	return { models, thinking: poolThinking(raw.thinking, `${where}.thinking`, scout) };
 }
 
 /** The checked v3 set; reads v1 `{ models, default }` and v2 pool configs for compatibility. */
@@ -424,9 +423,24 @@ export interface ResolvedRun {
 }
 
 /** Scouts use low/off; all other roles use each candidate's configured thinking level. */
-export function resolveRun(role: string, run: RunSpec, set: ModelSet, sessionModel?: string): ResolvedRun {
+export function resolveRun(
+	role: string,
+	run: RunSpec,
+	set: ModelSet,
+	sessionModel?: string,
+	sessionThinking?: string,
+): ResolvedRun {
 	const scout = role === "scout";
 	const pool = scout ? set.scout : set.worker;
+	// Models without an entry: the pool's level, else the main session's.
+	const unlisted = () => {
+		const thinking = run.thinking ?? pool.thinking ?? sessionThinking;
+		if (!thinking)
+			throw new Error(
+				`the main session's thinking level is unknown; set ${scout ? "scout" : "worker"}.thinking in ${configPath()} or pass runs[].thinking`,
+			);
+		return thinking;
+	};
 	const configuredEntries = [...set.scout.models, ...set.worker.models];
 	const configured = [...new Set(configuredEntries.map((entry) => entry.model))];
 	if (run.model && configured.length && !configured.includes(run.model))
@@ -440,12 +454,12 @@ export function resolveRun(role: string, run: RunSpec, set: ModelSet, sessionMod
 			: [
 					{
 						model: run.model,
-						thinking: configuredEntries.find((entry) => entry.model === run.model)?.thinking ?? pool.thinking,
+						thinking: configuredEntries.find((entry) => entry.model === run.model)?.thinking ?? unlisted(),
 					},
 				]
 		: pool.models.length
 			? [...pool.models]
-			: [{ model: sessionModel, thinking: pool.thinking }];
+			: [{ model: sessionModel, thinking: unlisted() }];
 	const withOverrides = candidates.map((candidate) => {
 		const requested = run.thinking ?? candidate.thinking;
 		const thinking = scout ? (requested === "off" ? "off" : "low") : requested;
@@ -1072,7 +1086,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				set = loadModelSet();
 				session = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-				resolved = specs.map((r) => resolveRun(role, r, set, session));
+				resolved = specs.map((r) => resolveRun(role, r, set, session, ctx?.thinkingLevel));
 			} catch (err: any) {
 				return fail(err.message);
 			}
@@ -1145,7 +1159,7 @@ export default function (pi: ExtensionAPI) {
 						round2 = await round(
 							"Rebuttal",
 							prompts,
-							ok.map((r) => resolveRun(role, r.requested, set, session)),
+							ok.map((r) => resolveRun(role, r.requested, set, session, ctx?.thinkingLevel)),
 						);
 						shown = round1.map((run) => {
 							const r2 = round2[ok.indexOf(run)];

@@ -60,7 +60,7 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 							return `${i + 1}. ${entry.model} (${entry.thinking}) ${state}`;
 						})
 						.join("; ")
-				: `session model (${pool.thinking}, no fallback models)`;
+				: `main session model (${pool.thinking ?? (name === "Scout" ? "main session thinking, capped at low" : "main session thinking")}, no fallback models)`;
 			lines.push(`  ${name} pool: ${models}`);
 		}
 	} catch (err: any) {

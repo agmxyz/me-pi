@@ -20,7 +20,7 @@ Then restart Pi. You can run the installer again; it does not replace your files
 - Copies Pi's `interactive-shell.ts` and `handoff.ts` examples if missing, and warns when a copy differs from Pi's.
 - Runs `rtk init --global --agent pi` if [`rtk`](https://github.com/rtk-ai/rtk) is installed.
 
-Optionally configure ordered model pools and per-model thinking in `~/.pi/agent/delegate.json` (local). Edit the JSON by hand; the same model may appear in both pools:
+Without this file, every worker uses the main session's model and thinking level (scout caps it at `low`). Optionally configure ordered model pools and per-model thinking in `~/.pi/agent/delegate.json` (local). Edit the JSON by hand; the same model may appear in both pools:
 
 ```json
 {
@@ -42,7 +42,7 @@ Optionally configure ordered model pools and per-model thinking in `~/.pi/agent/
 }
 ```
 
-Pool order is fallback order. Each entry's `thinking` is used for that model; the pool-level `thinking` is used with the session model when the pool is empty. Scout entries and defaults accept only `low` or `off`; Worker accepts any thinking level. On rate limits, overloads, or model-unavailable errors, the worker tries the next model with that entry's thinking level and reports each fallback. Other failures stop. A `runs[].model` from the active pool is tried first, then the rest of that pool; one found only in the other pool is an exact-model request that uses that entry's thinking. With no models in a pool, that role uses the session model. Version 1 `{ "models": [...], "default": "..." }` and version 2 pool configs remain readable and are migrated in memory.
+Pool order is fallback order. Each entry's `thinking` is used for that model. The optional pool-level `thinking` applies to models without an entry (the session model when the pool is empty); without it they use the main session's thinking level. Scout entries and defaults accept only `low` or `off`; Worker accepts any thinking level. On rate limits, overloads, or model-unavailable errors, the worker tries the next model with that entry's thinking level and reports each fallback. Other failures stop. A `runs[].model` from the active pool is tried first, then the rest of that pool; one found only in the other pool is an exact-model request that uses that entry's thinking. With no models in a pool, that role uses the main session's model. Version 1 `{ "models": [...], "default": "..." }` and version 2 pool configs remain readable and are migrated in memory.
 
 Run `/reload` after editing to refresh the tool's model choices. The tool reads the file at each call and names any problem in it. `/delegate status` shows each model's thinking level and availability, missing tools, running calls, and the last 20 calls with their cost. `/delegate models` prints the config path and manual-edit reminder. The call list survives `/reload`.
 
@@ -68,13 +68,13 @@ A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal? }`. Only `tas
 
 | Role | For | Model, thinking | Web | Answer |
 |---|---|---|---|---|
-| `general` (default) | Any read-only task | Worker pool, configured thinking (`max` by default) | no | Set by the task |
-| `scout` | Find or explain code | Scout pool, `low` by default (`off` also allowed) | no | `path:line` evidence, or `not-found` |
+| `general` (default) | Any read-only task | Worker pool, configured thinking | no | Set by the task |
+| `scout` | Find or explain code | Scout pool, `low` or `off` | no | `path:line` evidence, or `not-found` |
 | `research` | Docs and web | Worker pool, configured thinking | yes | Findings with sources |
 | `review` | A diff before a commit | Worker pool, configured thinking | no | `path:line: severity: problem. Fix:` |
 | `challenge` | Argue against a plan | Worker pool, configured thinking | yes | Premise, challenges, verdict |
 
-With no configured pool, roles use the session model and that pool's thinking default. With no config file, scout defaults to `low` and other roles to `max`.
+With no configured pool, roles use the main session's model and thinking level; scout caps the level at `low` (`off` stays `off`). If Pi does not report the session's thinking level, the call fails and asks for a pool-level `thinking` or `runs[].thinking`.
 
 - `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Thinking defaults to each candidate model's setting; an explicit `runs[].thinking` overrides the pool's settings for all candidates. Scout stays at `low`/`off` even if asked for a higher level. Worker roles accept any thinking level. Models outside both pools are refused when either pool contains models.
 - `rebuttal: true` (2+ runs): each worker sees the others' answers and keeps, revises, or retracts its claims. Only round 2 comes back; round 1 goes to a temp file.
