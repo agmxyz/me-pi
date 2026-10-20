@@ -1,4 +1,0 @@
-interface:
-  display_name: "Task-First UI"
-  short_description: "Design and build task-focused interfaces"
-  default_prompt: "Use $task-first-ui to design or improve this interface around the user’s core task."
