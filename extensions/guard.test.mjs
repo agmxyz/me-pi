@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { default: registerGuard, classify, workerRisk } = await import("./guard.ts");
+const { default: registerGuard, classify, workerRisk, gitTreeWrite, PROTECTED_BRANCHES } = await import("./guard.ts");
 
 const onMain = () => "main";
 const onFeature = () => "feature/x";
@@ -149,7 +149,7 @@ test("allows feature pushes, PRs, and routine commands", () => {
 	}
 });
 
-test("workerRisk blocks commands that reach past an implement worker's worktree", () => {
+test("workerRisk blocks commands that move an implement worker off its branch or reach shared state", () => {
 	for (const command of [
 		"git push origin x",
 		"git push . HEAD:main",
@@ -181,6 +181,18 @@ test("workerRisk blocks commands that reach past an implement worker's worktree"
 		"bash -n install.sh",
 		"bash <<EOF\n./install.sh\nEOF",
 		"git commit -F - <<EOF && git push\nmsg\nEOF",
+		"git switch other",
+		"git switch -c other",
+		"git checkout other",
+		"git checkout -- a.ts",
+		"git merge main",
+		"git cherry-pick abc123",
+		"git stash",
+		"git stash pop",
+		"git stash drop",
+		"git pull",
+		"git pull --rebase origin main",
+		"cd x && git checkout main",
 	]) {
 		assert.ok(workerRisk(command), `expected blocked: ${command}`);
 	}
@@ -194,8 +206,12 @@ test("workerRisk blocks commands that reach past an implement worker's worktree"
 		"git config user.name",
 		"git config --list --show-origin",
 		"git config get user.name",
-		"git merge main",
 		"git branch -d old",
+		"git log --oneline main..HEAD",
+		"git merge-base main HEAD",
+		"git stash list",
+		"git stash show -p",
+		'git commit -m "merge and stash notes"',
 		"git tag v1",
 		"cat install.sh",
 		"pi --version",
@@ -209,6 +225,76 @@ test("workerRisk blocks commands that reach past an implement worker's worktree"
 	]) {
 		assert.equal(workerRisk(command), undefined, `expected allowed: ${command}`);
 	}
+});
+
+test("gitTreeWrite names checkout-writing git subcommands and passes reads", () => {
+	for (const [command, sub] of [
+		["git add -A", "add"],
+		["git rm a.ts", "rm"],
+		["git mv a b", "mv"],
+		["git commit -m x", "commit"],
+		["git merge x", "merge"],
+		["git rebase main", "rebase"],
+		["git reset HEAD~1", "reset"],
+		["git restore --staged a", "restore"],
+		["git checkout x", "checkout"],
+		["git switch -c goal/x", "switch"],
+		["git stash", "stash"],
+		["git stash pop", "stash"],
+		["git stash list && git stash drop", "stash"],
+		["git cherry-pick abc", "cherry-pick"],
+		["git revert HEAD", "revert"],
+		["git am < p.mbox", "am"],
+		["git apply p.diff", "apply"],
+		["git pull", "pull"],
+		["git clean -fd", "clean"],
+		["git update-index --assume-unchanged a", "update-index"],
+		["git read-tree HEAD", "read-tree"],
+		["git checkout-index -a -f", "checkout-index"],
+		["git sparse-checkout set src", "sparse-checkout"],
+		["git submodule update --init", "submodule"],
+		["git update-ref refs/heads/x HEAD", "update-ref"],
+		["git symbolic-ref HEAD refs/heads/x", "symbolic-ref"],
+		["git branch -f goal/x HEAD~1", "branch"],
+		["git branch --force goal/x main", "branch"],
+		["git branch -m old new", "branch"],
+		["git branch -M new", "branch"],
+		["git branch --move old new", "branch"],
+		["git branch -d old", "branch"],
+		["git branch -D old", "branch"],
+		["git branch --delete old", "branch"],
+		["git -C /repo commit -m x", "commit"],
+		["rtk git add .", "add"],
+		["git status && git commit -m x", "commit"],
+		['git log --format="$(git reset --hard)"', "reset"],
+	]) {
+		assert.equal(gitTreeWrite(command), sub, command);
+	}
+	for (const command of [
+		"git log --oneline",
+		"git status --porcelain",
+		"git diff main..HEAD",
+		"git show HEAD",
+		"git branch --show-current",
+		"git branch",
+		"git branch -a",
+		"git branch new-topic",
+		"git fetch origin",
+		"git tag v1",
+		"git rev-parse HEAD",
+		"git merge-base main HEAD",
+		"git stash list",
+		"git stash show -p stash@{0}",
+		"grep 'git commit' README.md",
+		'echo "git add -A"',
+		"npm run check --prefix extensions",
+	]) {
+		assert.equal(gitTreeWrite(command), undefined, `expected allowed: ${command}`);
+	}
+});
+
+test("PROTECTED_BRANCHES is main and master", () => {
+	assert.deepEqual([...PROTECTED_BRANCHES].sort(), ["main", "master"]);
 });
 
 function setup() {

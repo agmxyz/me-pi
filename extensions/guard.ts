@@ -39,7 +39,7 @@ const DISPOSABLE = new RegExp(
 );
 // Push options whose value is a separate word, so it is not mistaken for the remote or a refspec.
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
-const PROTECTED_BRANCHES = new Set(["main", "master"]);
+export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
 
 // Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`, `main"`).
 function wordsOf(args: string): string[] {
@@ -161,8 +161,9 @@ export function classify(
 	return undefined;
 }
 
-// Worker-only rules for the delegate `implement` role: commands that reach past its worktree into state the
-// main checkout shares (refs, the common dir's config, remotes, GitHub, Pi's settings). Always blocked, no prompt.
+// Worker-only rules for the delegate `implement` role: commands that move its checkout off the job's branch, pull in
+// other history, or reach shared state (refs, the common dir's config, remotes, GitHub, Pi's settings).
+// Always blocked, no prompt.
 const GH_COMMAND = new RegExp(`${AT_COMMAND}gh(?![\\w.-])`);
 const PI_COMMAND = new RegExp(`${AT_COMMAND}pi\\s+(install|remove|uninstall|update|config)(?![\\w-])`);
 // `./install.sh`, `/abs/install.sh`, `sh|bash|zsh [opts] install.sh`, or `.`/`source install.sh`; not `install.test.sh`.
@@ -179,7 +180,17 @@ function workerGitRisk(sub: string, words: string[]): string | undefined {
 		case "push":
 			return "git push is main-session only";
 		case "worktree":
-			return "git worktree (the extension owns worktrees)";
+			return "git worktree (adds checkouts that share the repo; main-session only)";
+		case "switch":
+		case "checkout":
+			return `git ${sub} (stay on the job's branch)`;
+		case "merge":
+		case "cherry-pick":
+		case "pull":
+			return `git ${sub} (commit only your own changes)`;
+		case "stash":
+			// `git stash list|show` only read.
+			return words[0] === "list" || words[0] === "show" ? undefined : "git stash (leave failing work uncommitted)";
 		case "commit":
 			return hasShort(words, "n", "--no-verify") ? "git commit --no-verify (hooks must run)" : undefined;
 		case "config": {
@@ -216,9 +227,55 @@ export function workerRisk(command: string): string | undefined {
 		if (risk) return risk;
 	}
 	if (GH_COMMAND.test(command)) return "gh is main-session only";
-	if (INSTALL_SH.test(command)) return "install.sh would register the worktree in Pi's settings";
+	if (INSTALL_SH.test(command)) return "install.sh would change Pi's settings and live links";
 	const pi = command.match(PI_COMMAND);
 	if (pi) return `pi ${pi[1]} would change Pi's settings`;
+	return undefined;
+}
+
+// Subcommands that change the index, the working tree, HEAD, or the branch: blocked in the main session while an
+// implement worker writes in the same checkout. Reads (`git log`, `status`, `diff`, `stash list|show`) pass.
+const TREE_WRITES = new Set([
+	"add",
+	"rm",
+	"mv",
+	"commit",
+	"merge",
+	"rebase",
+	"reset",
+	"restore",
+	"checkout",
+	"switch",
+	"stash",
+	"cherry-pick",
+	"revert",
+	"am",
+	"apply",
+	"pull",
+	"clean",
+	"update-index",
+	"read-tree",
+	"checkout-index",
+	"sparse-checkout",
+	"submodule",
+	"update-ref",
+	"symbolic-ref",
+]);
+
+// The first git subcommand in `command` that writes the checkout (`"commit"`), or undefined.
+export function gitTreeWrite(command: string): string | undefined {
+	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
+		// `git stash list|show` only read.
+		const words = wordsOf(args);
+		if (sub === "stash" && ["list", "show"].includes(words[0])) continue;
+		// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
+		if (
+			sub === "branch" &&
+			(hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w)))
+		)
+			return sub;
+		if (TREE_WRITES.has(sub)) return sub;
+	}
 	return undefined;
 }
 
@@ -246,7 +303,10 @@ export default function (pi: ExtensionAPI) {
 		const risk = classify(command, () => branchIn(ctx.cwd));
 		if (!risk) return undefined;
 		if (!ctx.hasUI)
-			return { block: true, reason: `Blocked (${risk}): needs explicit user approval; no UI to confirm.` };
+			return {
+				block: true,
+				reason: `Blocked (${risk}): needs explicit user approval; no UI to confirm.`,
+			};
 		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command);
 		return ok ? undefined : { block: true, reason: `Blocked by user (${risk}).` };
 	});
