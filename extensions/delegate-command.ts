@@ -15,6 +15,10 @@ export interface CallRecord {
 	cost: number;
 	ms: number;
 	failed: boolean;
+	/** implement: the branch, its tip, and whether finish made a WIP commit. */
+	branch?: string;
+	tip?: string;
+	wip?: boolean;
 }
 
 /** A delegate call that is running now. */
@@ -90,7 +94,7 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 	for (const r of [...deps.history].reverse()) {
 		const mark = r.failed ? "\u2717" : "\u2713";
 		lines.push(
-			`  ${clock(r.at)} ${mark} ${r.role} ${r.models.map(short).join(", ")} $${r.cost.toFixed(4)} ${seconds(r.ms)}`,
+			`  ${clock(r.at)} ${mark} ${r.role} ${r.models.map(short).join(", ")} $${r.cost.toFixed(4)} ${seconds(r.ms)}${r.branch ? ` ${r.branch}@${r.tip?.slice(0, 7) ?? "?"}${r.wip ? " WIP" : ""}` : ""}`,
 		);
 	}
 	return lines;

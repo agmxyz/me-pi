@@ -7,7 +7,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rmdir, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, rmdir, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -195,6 +195,8 @@ export type Worktree = {
 	dirty: number;
 	gitBefore: GitSnapshot;
 	settingsBefore: string;
+	// An empty 0700 dir for GH_CONFIG_DIR, so gh in the worker finds no login; removed by finish.
+	ghConfigDir: string;
 };
 
 export type Facts = {
@@ -243,6 +245,13 @@ export async function prepare(cwd: string, id: string, branch?: string): Promise
 		settingsResources(),
 	]);
 	const dir = await mkdtemp(join(process.env.TMPDIR || tmpdir(), "me-pi-delegate-wt-"));
+	let ghConfigDir: string;
+	try {
+		ghConfigDir = await mkdtemp(join(process.env.TMPDIR || tmpdir(), "me-pi-delegate-gh-"));
+	} catch (err) {
+		await rmdir(dir).catch(() => {});
+		throw err;
+	}
 	const add = await git(
 		repoRoot,
 		branch === undefined ? ["worktree", "add", "-q", "-b", name, dir, headSha] : ["worktree", "add", "-q", dir, name],
@@ -255,6 +264,7 @@ export async function prepare(cwd: string, id: string, branch?: string): Promise
 			if (tip.ok && tip.out.trim() === headSha) await git(repoRoot, ["branch", "-D", name]);
 		}
 		await rmdir(dir).catch(() => {});
+		await rmdir(ghConfigDir).catch(() => {});
 		throw new Error(`git worktree add failed for ${dir}: ${add.err}`);
 	}
 	return {
@@ -270,7 +280,40 @@ export async function prepare(cwd: string, id: string, branch?: string): Promise
 		dirty: status.split("\n").filter(Boolean).length,
 		gitBefore,
 		settingsBefore,
+		ghConfigDir,
 	};
+}
+
+const TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
+const CUT_PROTOCOLS = ["ssh", "https", "http", "git"];
+
+/**
+ * The implement worker's environment: writes fenced to the worktree (ME_PI_OUTPUT_DIR), git remotes cut off by
+ * appending `protocol.<p>.allow=never` after any GIT_CONFIG_* the user set, and gh without a login. These
+ * prevent accidents, not misuse: `git -c` and `env -u` undo them. Provider keys stay; Pi needs them.
+ */
+export function workerEnv(env: NodeJS.ProcessEnv, wt: Worktree): NodeJS.ProcessEnv {
+	const out: NodeJS.ProcessEnv = { ...env, ME_PI_ROLE: "implement", ME_PI_OUTPUT_DIR: wt.dir };
+	for (const name of TOKEN_VARS) delete out[name];
+	out.GH_CONFIG_DIR = wt.ghConfigDir;
+	const count = Number.parseInt(env.GIT_CONFIG_COUNT ?? "", 10);
+	let i = Number.isFinite(count) && count > 0 ? count : 0;
+	for (const protocol of CUT_PROTOCOLS) {
+		out[`GIT_CONFIG_KEY_${i}`] = `protocol.${protocol}.allow`;
+		out[`GIT_CONFIG_VALUE_${i}`] = "never";
+		i++;
+	}
+	out.GIT_CONFIG_COUNT = String(i);
+	return out;
+}
+
+/** Whether the worktree's trust-relevant files (`.pi`, `.agents`) equal the base, tracked and untracked. */
+export async function trustFilesUnchanged(wt: Worktree): Promise<boolean> {
+	const [diff, status] = await Promise.all([
+		git(wt.dir, ["diff", "--quiet", wt.base, "--", ".pi", ".agents"]),
+		git(wt.dir, ["status", "--porcelain", "--", ".pi", ".agents"]),
+	]);
+	return diff.ok && status.ok && !status.out.trim();
 }
 
 // Lines of output, capped; returns the shown lines and how many were left out.
@@ -395,6 +438,7 @@ export async function finish(wt: Worktree, reason?: string): Promise<Facts> {
 		else keep = removed.err || "git worktree remove failed";
 	}
 	facts.worktree.reason = keep;
+	await rm(wt.ghConfigDir, { recursive: true, force: true }).catch(() => {});
 	facts.failed = facts.wip !== undefined || facts.problems.length > 0 || !facts.worktree.removed;
 	return facts;
 }

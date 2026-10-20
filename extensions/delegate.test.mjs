@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -72,7 +73,7 @@ writeFileSync(
 	FAKE_BIN,
 	`#!/usr/bin/env node
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
@@ -125,6 +126,31 @@ process.stdin.on("end", () => {
     emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only for files inside " + out + ". Relative paths resolve against the project, not this directory")));
     process.exit(0);
   }
+  // implement modes: git runs in the worker's cwd, which is inside its worktree.
+  const git = (...a) => spawnSync("git", a, { encoding: "utf8" });
+  if (mode === "implement-commit" || mode === "move-ref") {
+    writeFileSync("feature.txt", "IMPLEMENT-DIFF-BODY\\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "feat: add feature");
+    if (mode === "move-ref") git("update-ref", "refs/heads/other", "HEAD");
+    emit("changed feature.txt; npm test: pass");
+    process.exit(0);
+  }
+  if (mode === "implement-dirty") { writeFileSync("left.txt", "x\\n"); emit("left it uncommitted"); process.exit(0); }
+  if (mode === "implement-hang") {
+    writeFileSync("left.txt", "x\\n");
+    // Pi's print mode exits on SIGTERM; the marker proves TERM came before any SIGKILL.
+    process.on("SIGTERM", () => { appendFileSync(process.env.FAKE_PI_TERMFILE, "TERM\\n"); process.exit(143); });
+    emit("working", { stopReason: "toolUse" });
+    setInterval(() => {}, 1000);
+    return;
+  }
+  if (mode === "echo-env") {
+    const e = process.env;
+    const keys = Object.keys(e).filter((k) => k.startsWith("GIT_CONFIG_") || k.startsWith("GH_") || k.startsWith("GITHUB_") || k === "ME_PI_ROLE" || k === "ME_PI_OUTPUT_DIR");
+    emit("ENV " + JSON.stringify({ env: Object.fromEntries(keys.sort().map((k) => [k, e[k]])), tools: flag("--tools"), approve: args.includes("--approve"), noApprove: args.includes("--no-approve"), cwd: process.cwd() }));
+    process.exit(0);
+  }
   if (mode === "echo-budget") { emit(process.env.ME_PI_BUDGET || "none"); process.exit(0); }
   if (mode === "echo-system") { emit(flag("--append-system-prompt") || ""); process.exit(0); }
   if (mode === "silent") process.exit(0);
@@ -169,6 +195,7 @@ process.stdin.on("end", () => {
     "role=" + ((flag("--append-system-prompt") || "").match(/Role: ([a-z]+)\\./)?.[1] ?? "none"),
     "workerRun=" + (process.env.ME_PI_RUN || ""),
     "prompt=" + JSON.stringify(prompt),
+    ...(args.includes("--approve") ? ["approve=yes"] : args.includes("--no-approve") ? ["approve=no"] : []),
   ].join(" "));
 });
 `,
@@ -259,7 +286,8 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.deepEqual(Object.keys(main.handlers), ["session_shutdown"]);
 	const { properties, required } = main.tool.parameters;
 	assert.deepEqual(required, ["task"]);
-	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge"]);
+	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge", "implement"]);
+	assert.equal(properties.branch.type, "string");
 	assert.equal(properties.web.type, "boolean");
 	assert.equal(properties.answer.maxLength, 400);
 	assert.equal(properties.output.type, "boolean");
@@ -1066,7 +1094,7 @@ test("bad calls are refused before any worker starts", async (t) => {
 	const marker = scratch("marker");
 	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: { models: [HAIKU, OPUS] } });
 	for (const [params, error] of [
-		[{ role: "implement", task: "x" }, /role must be one of general, scout, research, review, challenge/],
+		[{ role: "planner", task: "x" }, /role must be one of general, scout, research, review, challenge, implement$/],
 		[{ role: "constructor", task: "x" }, /role must be one of/],
 		[{ role: "__proto__", task: "x" }, /role must be one of/],
 		[{ role: "scout", task: "  " }, /task must be a non-empty string/],
@@ -1452,4 +1480,295 @@ test("background spend survives /reload", async (t) => {
 	assert.match(statuses[0][1], /^delegate bg: 1 running, \$0\.0\d+ spent$/);
 	assert.ok(!statuses[0][1].endsWith("$0.0000 spent"), "the first job's spend is kept");
 	await waitFor(() => reloaded.messages.length === 1, "the second answer");
+});
+
+// --- implement ---
+
+// A temp repo with one commit on main and a branch `other`, as bin/install.test.sh sets up its fixture.
+function implementRepo() {
+	const repo = mkdtempSync(join(TEST_HOME, "impl-repo-"));
+	const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+	git("init", "-q", "--template=", "-b", "main");
+	git("config", "core.hooksPath", "/dev/null");
+	git("config", "commit.gpgsign", "false");
+	git("config", "user.email", "implement-test@example.invalid");
+	git("config", "user.name", "Implement Test");
+	mkdirSync(join(repo, "sub"));
+	writeFileSync(join(repo, "sub", "a.txt"), "a\n");
+	git("add", "-A");
+	git("commit", "-q", "-m", "initial");
+	git("branch", "other");
+	return { repo, git, ctx: { ...CTX, cwd: repo, isProjectTrusted: () => false } };
+}
+const implementEnv = (mode, extra = {}) => ({
+	FAKE_PI_MODE: mode,
+	PI_CODING_AGENT_DIR: mkdtempSync(join(TEST_HOME, "agent-")),
+	...extra,
+});
+// Resolves once the worker's worktree holds the file the hang modes write before they wait.
+const workerStarted = (git) =>
+	waitFor(() => {
+		const dirs = git("worktree", "list", "--porcelain")
+			.split("\n")
+			.filter((l) => l.startsWith("worktree "))
+			.slice(1);
+		return dirs.some((d) => existsSync(join(d.slice(9), "left.txt")));
+	}, "the worker to start");
+const branchOf = (res) => text(res).match(/^Branch: (delegate\/\S+) @ (\w+)/m);
+
+test("implement commits on its own branch; the result has branch facts, not the diff", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("implement-commit") });
+	const { repo, git, ctx } = implementRepo();
+	writeFileSync(join(repo, "dirty.txt"), "uncommitted\n");
+	const head = git("rev-parse", "HEAD");
+	const updates = [];
+	const res = await run(tool, { role: "implement", task: "add a feature" }, undefined, (u) => updates.push(u), ctx);
+	const out = text(res);
+	assert.equal(res.isError, false, out);
+	assert.ok(out.startsWith("changed feature.txt; npm test: pass"), out);
+	const [, branch, tip] = branchOf(res);
+	assert.match(branch, /^delegate\/\d{8}-\d{6}-im\d+$/, "a foreground call uses an im<n> id");
+	assert.equal(git("rev-parse", "--short=7", branch), tip);
+	assert.match(out, /^Commits \(1, oldest first\):\n {2}\w+ feat: add feature$/m);
+	assert.match(out, /^Diffstat: 1 file changed, 1 insertion\(\+\)$/m);
+	assert.match(out, /^Worktree: removed$/m);
+	assert.doesNotMatch(out, /IMPLEMENT-DIFF-BODY|\u2717/);
+	const diffPath = out.match(/^Diff: (\S+) \(0600, base\.\.tip\)$/m)[1];
+	assert.equal(statSync(diffPath).mode & 0o777, 0o600);
+	assert.match(readFileSync(diffPath, "utf8"), /IMPLEMENT-DIFF-BODY/);
+	assert.equal(git("worktree", "list").split("\n").length, 1, "the worktree is gone");
+	assert.equal(git("rev-parse", "HEAD"), head);
+	assert.equal(git("status", "--porcelain"), "?? dirty.txt");
+	assert.match(
+		updates[0].content[0].text,
+		new RegExp(`^${branch.replace("/", "\\/")} \\(im\\d+\\) from ${head.slice(0, 7)}; 1 uncommitted file\\(s\\)`),
+	);
+	assert.equal(res.details.implement.branch, branch);
+});
+
+test("implement: work left uncommitted becomes a WIP commit and an error", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("implement-dirty") });
+	const { git, ctx } = implementRepo();
+	const res = await run(tool, { role: "implement", task: "x" }, undefined, undefined, ctx);
+	assert.equal(res.isError, true);
+	const [, branch] = branchOf(res);
+	const id = branch.match(/-(im\d+)$/)[1];
+	assert.equal(git("log", "-1", "--format=%s", branch), `WIP(delegate ${id}): left uncommitted by the worker`);
+	assert.match(text(res), /^\u2717 WIP \w+ \(left uncommitted by the worker\): left\.txt\. Do not merge/m);
+});
+
+test("implement: a worker that moves another branch trips the ref tripwire", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("move-ref") });
+	const { ctx } = implementRepo();
+	const res = await run(tool, { role: "implement", task: "x" }, undefined, undefined, ctx);
+	assert.equal(res.isError, true);
+	assert.match(text(res), /^\u2717 Tripwire: refs\/heads\/other moved during the job/m);
+});
+
+test("implement background cancel: SIGTERM first, WIP commit, report without a turn", async (t) => {
+	const termFile = join(mkdtempSync(join(TEST_HOME, "term-")), "term");
+	const { tool, messages, commands } = setup(t, {
+		env: implementEnv("implement-hang", { FAKE_PI_TERMFILE: termFile }),
+		limits: { termGraceMs: 3000 },
+	});
+	const { repo, git } = implementRepo();
+	const ctx = { ...bgCtx().ctx, cwd: repo, isProjectTrusted: () => false };
+	const head = git("rev-parse", "HEAD");
+	const started = await run(tool, { role: "implement", task: "x", background: true }, undefined, undefined, ctx);
+	assert.match(
+		text(started),
+		new RegExp(
+			`^Started background job bg1 \\(.+\\) on delegate/\\S+ \\(im\\d+\\) from ${head.slice(0, 7)}; 0 uncommitted`,
+		),
+	);
+	await workerStarted(git);
+	await new Promise((r) => setTimeout(r, 200));
+	await commands.delegate.handler("cancel bg1", commandCtx().ctx);
+	await waitFor(() => messages.length === 1, "the cancelled job's report");
+	assert.equal(readFileSync(termFile, "utf8"), "TERM\n");
+	assert.deepEqual(messages[0].options, { triggerTurn: false, deliverAs: "followUp" });
+	const content = messages[0].message.content;
+	assert.match(content, /^Background delegate job bg1 failed:\n\n\u2717 stopped: cancelled/);
+	const branch = content.match(/^Branch: (delegate\/\S+) @/m)[1];
+	assert.match(git("log", "-1", "--format=%s", branch), /^WIP\(delegate im\d+\): stopped: cancelled$/);
+	assert.equal(git("worktree", "list").split("\n").length, 1);
+});
+
+test("implement: session shutdown waits for the WIP commit and sends nothing", async (t) => {
+	const termFile = join(mkdtempSync(join(TEST_HOME, "term-")), "term");
+	const { tool, messages, handlers } = setup(t, {
+		env: implementEnv("implement-hang", { FAKE_PI_TERMFILE: termFile }),
+	});
+	const { repo, git } = implementRepo();
+	const ctx = { ...bgCtx().ctx, cwd: repo, isProjectTrusted: () => false };
+	const started = await run(tool, { role: "implement", task: "x", background: true }, undefined, undefined, ctx);
+	const branch = text(started).match(/ on (delegate\/\S+) /)[1];
+	await workerStarted(git);
+	await new Promise((r) => setTimeout(r, 200));
+	await handlers.session_shutdown();
+	assert.match(git("log", "-1", "--format=%s", branch), /^WIP\(delegate im\d+\): stopped: cancelled$/);
+	assert.equal(git("worktree", "list").split("\n").length, 1);
+	await new Promise((r) => setTimeout(r, 100));
+	assert.equal(messages.length, 0);
+});
+
+test("implement worker env: remote and gh cut-offs, tools, approve, and cwd", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("echo-env", {
+			GIT_CONFIG_COUNT: "1",
+			GIT_CONFIG_KEY_0: "user.name",
+			GIT_CONFIG_VALUE_0: "Preset",
+			GH_TOKEN: "t1",
+			GITHUB_TOKEN: "t2",
+			GH_ENTERPRISE_TOKEN: "t3",
+			GITHUB_ENTERPRISE_TOKEN: "t4",
+		}),
+	});
+	const { repo, ctx } = implementRepo();
+	const echo = async (params, c) => {
+		const res = await run(tool, { role: "implement", task: "x", ...params }, undefined, undefined, c);
+		return { res, ...JSON.parse(text(res).match(/^ENV (.*)$/m)[1]) };
+	};
+	const untrusted = await echo({}, { ...ctx, cwd: join(repo, "sub") });
+	const wtDir = untrusted.env.ME_PI_OUTPUT_DIR;
+	assert.match(wtDir, /me-pi-delegate-wt-/);
+	assert.equal(untrusted.cwd, join(realpathSync(TEST_HOME), basename(wtDir), "sub"));
+	assert.equal(untrusted.tools, "read,grep,find,ls,Skill,edit,write,bash");
+	assert.deepEqual([untrusted.approve, untrusted.noApprove], [false, true]);
+	const { GH_CONFIG_DIR, ...env } = untrusted.env;
+	assert.match(GH_CONFIG_DIR, /me-pi-delegate-gh-/);
+	assert.ok(!existsSync(GH_CONFIG_DIR), "finish removes the gh config dir");
+	assert.deepEqual(env, {
+		GIT_CONFIG_COUNT: "5",
+		GIT_CONFIG_KEY_0: "user.name",
+		GIT_CONFIG_KEY_1: "protocol.ssh.allow",
+		GIT_CONFIG_KEY_2: "protocol.https.allow",
+		GIT_CONFIG_KEY_3: "protocol.http.allow",
+		GIT_CONFIG_KEY_4: "protocol.git.allow",
+		GIT_CONFIG_VALUE_0: "Preset",
+		GIT_CONFIG_VALUE_1: "never",
+		GIT_CONFIG_VALUE_2: "never",
+		GIT_CONFIG_VALUE_3: "never",
+		GIT_CONFIG_VALUE_4: "never",
+		ME_PI_OUTPUT_DIR: wtDir,
+		ME_PI_ROLE: "implement",
+	});
+	const trusted = { ...ctx, isProjectTrusted: () => true };
+	const fresh = await echo({}, trusted);
+	assert.deepEqual([fresh.approve, fresh.noApprove], [true, false]);
+	const prior = fresh.res.details.implement.branch;
+	const continued = await echo({ branch: prior }, trusted);
+	assert.deepEqual([continued.approve, continued.noApprove], [false, true], "no --approve when continuing a branch");
+});
+
+test("implement: no --approve on a fallback attempt or when .pi differs from the base", async (t) => {
+	const { tool } = setup(t, {
+		config: POOL_SET,
+		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
+	});
+	const { repo, git, ctx } = implementRepo();
+	const trusted = { ...ctx, isProjectTrusted: () => true };
+	const fallback = await run(tool, { role: "implement", task: "x" }, undefined, undefined, trusted);
+	assert.match(
+		text(fallback),
+		/tools=read,grep,find,ls,Skill,edit,write,bash .* approve=no$/m,
+		"the fallback attempt",
+	);
+	const { trustFilesUnchanged, prepare } = await import("./delegate-implement.ts");
+	mkdirSync(join(repo, ".pi"));
+	writeFileSync(join(repo, ".pi", "x.ts"), "1\n");
+	git("add", "-A");
+	git("commit", "-q", "-m", "pi");
+	const wt = await prepare(repo, "im900");
+	assert.equal(await trustFilesUnchanged(wt), true);
+	writeFileSync(join(wt.dir, ".pi", "x.ts"), "2\n");
+	assert.equal(await trustFilesUnchanged(wt), false, "a tracked change");
+	execFileSync("git", ["-C", wt.dir, "checkout", "-q", "--", ".pi"]);
+	writeFileSync(join(wt.dir, ".pi", "new.ts"), "x\n");
+	assert.equal(await trustFilesUnchanged(wt), false, "an untracked file");
+	execFileSync("git", ["-C", repo, "worktree", "remove", "--force", wt.dir]);
+});
+
+test("implement refusals", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("implement-commit") });
+	const { git, ctx } = implementRepo();
+	git("branch", "feature");
+	for (const [params, c, error] of [
+		[{ role: "implement", task: "x", runs: [{}, {}] }, ctx, /^implement does not take runs with more than 1 entry$/],
+		[{ role: "implement", task: "x", output: true }, ctx, /^implement does not take output$/],
+		[{ role: "implement", task: "x", web: true }, ctx, /^implement does not take web: true$/],
+		[
+			{ role: "implement", task: "x", runs: [{}, {}], rebuttal: true },
+			ctx,
+			/^implement does not take runs with more than 1 entry, rebuttal$/,
+		],
+		[
+			{ role: "review", task: "x", branch: "delegate/x" },
+			ctx,
+			/^branch is a non-empty string, for role implement only$/,
+		],
+		[{ role: "implement", task: "x", branch: "feature" }, ctx, /^branch must start with delegate\/: feature$/],
+		[{ role: "implement", task: "x", branch: "delegate/missing" }, ctx, /^no such branch: delegate\/missing$/],
+		[
+			{ role: "implement", task: "x" },
+			{ ...ctx, cwd: mkdtempSync(join(TEST_HOME, "norepo-")) },
+			/^implement needs a git repository/,
+		],
+	]) {
+		const res = await run(tool, params, undefined, undefined, c);
+		assert.equal(res.isError, true, JSON.stringify(params));
+		assert.match(text(res), error);
+	}
+	assert.equal(git("worktree", "list").split("\n").length, 1);
+});
+
+test("implement: a session that ends during prepare leaves no job, worktree, or message", async (t) => {
+	const { tool, handlers, messages } = setup(t, { env: implementEnv("implement-commit") });
+	const { repo, git } = implementRepo();
+	const ctx = { ...bgCtx().ctx, cwd: repo, isProjectTrusted: () => false };
+	const pending = run(tool, { role: "implement", task: "x", background: true }, undefined, undefined, ctx);
+	await handlers.session_shutdown();
+	assert.equal(git("worktree", "list").split("\n").length, 1, "shutdown waited for the finish");
+	const res = await pending;
+	assert.equal(res.isError, true);
+	assert.equal(text(res), "stopped: session ended");
+	assert.equal(messages.length, 0);
+});
+
+test("implement: parallel calls at the cap cannot both pass it while preparing", async (t) => {
+	const { tool, commands, messages } = setup(t, { env: implementEnv("hang") });
+	const { repo } = implementRepo();
+	const ctx = { ...bgCtx().ctx, cwd: repo, isProjectTrusted: () => false };
+	await run(tool, { role: "scout", task: "x", runs: [{}, {}, {}], background: true }, undefined, undefined, ctx);
+	const results = await Promise.all(
+		[1, 2].map(() => run(tool, { role: "implement", task: "x", background: true }, undefined, undefined, ctx)),
+	);
+	const refused = results.filter((r) => r.isError);
+	assert.equal(refused.length, 1, results.map(text).join("\n"));
+	assert.match(text(refused[0]), /^4 worker\(s\) already running/);
+	const { ctx: cmd } = commandCtx();
+	await commands.delegate.handler("cancel bg1", cmd);
+	await commands.delegate.handler("cancel bg2", cmd);
+	await waitFor(() => messages.length === 2, "both cancelled reports");
+});
+
+test("implement: a cwd missing from the commit starts the worker at the worktree root; status shows the branch", async (t) => {
+	const { tool, commands } = setup(t, { env: implementEnv("echo-env") });
+	const { repo, ctx } = implementRepo();
+	mkdirSync(join(repo, "untracked"));
+	const updates = [];
+	const res = await run(tool, { role: "implement", task: "x" }, undefined, (u) => updates.push(u), {
+		...ctx,
+		cwd: join(repo, "untracked"),
+	});
+	const echoed = JSON.parse(text(res).match(/^ENV (.*)$/m)[1]);
+	assert.equal(echoed.cwd, join(realpathSync(TEST_HOME), basename(echoed.env.ME_PI_OUTPUT_DIR)));
+	assert.match(
+		updates[0].content[0].text,
+		/untracked\/ is not in the commit; the worker starts at the worktree root\./,
+	);
+	const { ctx: cmd, notes } = commandCtx();
+	await commands.delegate.handler("status", cmd);
+	const branch = res.details.implement.branch;
+	assert.match(notes[0][0], new RegExp(` implement .* ${branch.replace("/", "\\/")}@[0-9a-f]{7}$`, "m"));
 });
