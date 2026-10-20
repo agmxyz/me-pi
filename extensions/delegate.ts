@@ -963,6 +963,11 @@ function buildSchema(set: ModelSet) {
 				description:
 					"With 2+ runs: a second round where each worker sees the others' answers and keeps, revises, or retracts claims. Only round-2 answers are returned.",
 			},
+			background: {
+				type: "boolean",
+				description:
+					"Return a job id at once and keep the conversation going; the answer arrives later as a delegate message that starts a turn. Background jobs end on /reload or exit.",
+			},
 		},
 		required: ["task"],
 		additionalProperties: false,
@@ -979,6 +984,7 @@ export const PROMPT_GUIDELINES = [
 	"Omit `role` for a general worker, or pick the preset that fits; `answer` (at most 400 characters) sets the answer format. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
 	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory and the result lists the files; copy what you keep and check the diff yourself.",
 	"Pass on only what matters from worker answers, and resolve or report every BLOCKED line.",
+	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile; the answer arrives as a later `delegate` message that starts a turn. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
 ];
 
 export default function (pi: ExtensionAPI) {
@@ -1015,11 +1021,29 @@ export default function (pi: ExtensionAPI) {
 	const running = new Set<Promise<RunResult>>();
 	// For /delegate status: calls running now, and the last HISTORY_SIZE finished calls.
 	const active = new Map<string, ActiveCall>();
+	// Background jobs by id, with what they spent; Pi's session usage never includes it.
+	const jobs = new Map<string, AbortController>();
+	let jobCount = 0;
+	let backgroundCost = 0;
+	let statusUi: { setStatus?: (key: string, text: string | undefined) => void } | undefined;
+	const showStatus = () =>
+		statusUi?.setStatus?.(
+			"delegate",
+			jobs.size || backgroundCost
+				? `delegate bg: ${jobs.size} running, $${backgroundCost.toFixed(4)} spent`
+				: undefined,
+		);
+	const cancel = (id: string) => {
+		const job = jobs.get(id);
+		if (!job) return `No running background job ${id}.`;
+		job.abort();
+		return `Cancelling background job ${id}.`;
+	};
 	// Shared by reloaded instances, like the worker groups, so /reload keeps it.
 	const shared = globalThis as any;
 	shared[HISTORY_KEY] ??= [];
 	const history: CallRecord[] = shared[HISTORY_KEY];
-	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), history, active });
+	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), history, active, cancel });
 	pi.on("session_shutdown", async () => {
 		shutdown.abort();
 		shutdown = new AbortController();
@@ -1046,9 +1070,9 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
 			const fail = (text: string) => ({ content: [{ type: "text" as const, text }], details: {}, isError: true });
-			const { role = "general", task, web, answer, output, rebuttal } = params ?? {};
+			const { role = "general", task, web, answer, output, rebuttal, background } = params ?? {};
 			const unknown = Object.keys(params ?? {}).filter(
-				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal"].includes(k),
+				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal", "background"].includes(k),
 			);
 			if (unknown.length)
 				return fail(
@@ -1061,6 +1085,8 @@ export default function (pi: ExtensionAPI) {
 			if (answer !== undefined && (typeof answer !== "string" || !answer.trim() || answer.length > MAX_FORMAT))
 				return fail(`answer must be a non-empty string of at most ${MAX_FORMAT} characters`);
 			if (output !== undefined && typeof output !== "boolean") return fail("output must be true or false");
+			if (background !== undefined && typeof background !== "boolean")
+				return fail("background must be true or false");
 			const job: Job = {
 				role,
 				web: web ?? ROLES[role].web,
@@ -1092,118 +1118,182 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const models = resolved.map((r) => r.model ?? "session model");
-			const start = Date.now();
-			active.set(_id, { role, models, start });
-			try {
-				const signal = toolSignal ? AbortSignal.any([toolSignal, shutdown.signal]) : shutdown.signal;
-				const cwd = ctx?.cwd ?? process.cwd();
-				const round = async (stage: DelegateView["stage"], prompts: string[], runs: typeof resolved) => {
-					const states: (RunResult | undefined)[] = runs.map(() => undefined);
-					const finished = runs.map(() => false);
-					const progress = () => {
-						const view: DelegateView = {
-							stage,
-							web: job.web,
-							runs: runs.map((r, i) =>
-								runView(
-									states[i] ?? { requested: { model: r.model, thinking: r.thinking }, web: job.web },
-									finished[i],
+			const busy = [...active.values()].reduce((sum, a) => sum + a.models.length, 0);
+			if (busy + resolved.length > MAX_RUNS)
+				return fail(
+					`${busy} worker(s) already running; at most ${MAX_RUNS} run at once. Wait for a background answer or stop one with /delegate cancel <id>.`,
+				);
+			const call = async (key: string, signal: AbortSignal, onUpdate: ((u: any) => void) | undefined) => {
+				const start = Date.now();
+				active.set(key, { role, models, start, job: background ? key : undefined });
+				try {
+					const cwd = ctx?.cwd ?? process.cwd();
+					const round = async (stage: DelegateView["stage"], prompts: string[], runs: typeof resolved) => {
+						const states: (RunResult | undefined)[] = runs.map(() => undefined);
+						const finished = runs.map(() => false);
+						const progress = () => {
+							const view: DelegateView = {
+								stage,
+								web: job.web,
+								runs: runs.map((r, i) =>
+									runView(
+										states[i] ?? { requested: { model: r.model, thinking: r.thinking }, web: job.web },
+										finished[i],
+									),
 								),
-							),
-						};
-						onUpdate?.({ content: [{ type: "text", text: progressLines(view).join("\n") }], details: { view } });
-					};
-					return Promise.all(
-						runs.map(async (r, i) => {
-							const p = runWorker(job, prompts[i], r, cwd, signal, (s) => {
-								states[i] = s;
-								progress();
+							};
+							onUpdate?.({
+								content: [{ type: "text", text: progressLines(view).join("\n") }],
+								details: { view },
 							});
-							running.add(p);
-							try {
-								states[i] = await p;
-							} finally {
-								running.delete(p);
-							}
-							finished[i] = true;
-							progress();
-							return states[i] as RunResult;
-						}),
-					);
-				};
+						};
+						return Promise.all(
+							runs.map(async (r, i) => {
+								const p = runWorker(job, prompts[i], r, cwd, signal, (s) => {
+									states[i] = s;
+									progress();
+								});
+								running.add(p);
+								try {
+									states[i] = await p;
+								} finally {
+									running.delete(p);
+								}
+								finished[i] = true;
+								progress();
+								return states[i] as RunResult;
+							}),
+						);
+					};
 
-				const round1 = await round(
-					"Workers",
-					resolved.map(() => `Task:\n${task}`),
-					resolved,
-				);
-				// The runs to report, in request order; a failed round-2 run keeps its round-1 answer.
-				let shown: { run: RunResult; failedRound2?: RunResult }[] = round1.map((run) => ({ run }));
-				let round2: RunResult[] = [];
-				let note = "";
-				let failed = round1.some((r) => r.failure);
-				if (rebuttal) {
-					const ok = round1.filter((r) => !r.failure);
-					if (ok.length < 2) {
-						note = `Rebuttal skipped: only ${ok.length} run(s) succeeded in round 1.`;
-						failed = true;
-					} else {
-						const prompts = ok.map((r) =>
-							rebuttalPrompt(
-								task,
-								r,
-								ok.filter((o) => o !== r),
-							),
-						);
-						// Resume each rebuttal on its successful round-1 model, then use remaining pool candidates if needed.
-						round2 = await round(
-							"Rebuttal",
-							prompts,
-							ok.map((r) => resolveRun(role, r.requested, set, session, ctx?.thinkingLevel)),
-						);
-						shown = round1.map((run) => {
-							const r2 = round2[ok.indexOf(run)];
-							if (!r2) return { run };
-							return r2.failure ? { run, failedRound2: r2 } : { run: r2 };
-						});
-						failed ||= round2.some((r) => r.failure);
-						const full = round1.map(
-							(r) =>
-								`## ${modelName(r)} (round 1)\n\n${r.failure ? `✗ ${r.failure}\n` : ""}${r.output.trim()}${filesLine(r)}`,
-						);
-						note = `Round-1 answers: ${saveFull(full.join("\n\n"))}`;
+					const round1 = await round(
+						"Workers",
+						resolved.map(() => `Task:\n${task}`),
+						resolved,
+					);
+					// The runs to report, in request order; a failed round-2 run keeps its round-1 answer.
+					let shown: { run: RunResult; failedRound2?: RunResult }[] = round1.map((run) => ({ run }));
+					let round2: RunResult[] = [];
+					let note = "";
+					let failed = round1.some((r) => r.failure);
+					if (rebuttal) {
+						const ok = round1.filter((r) => !r.failure);
+						if (ok.length < 2) {
+							note = `Rebuttal skipped: only ${ok.length} run(s) succeeded in round 1.`;
+							failed = true;
+						} else {
+							const prompts = ok.map((r) =>
+								rebuttalPrompt(
+									task,
+									r,
+									ok.filter((o) => o !== r),
+								),
+							);
+							// Resume each rebuttal on its successful round-1 model, then use remaining pool candidates if needed.
+							round2 = await round(
+								"Rebuttal",
+								prompts,
+								ok.map((r) => resolveRun(role, r.requested, set, session, ctx?.thinkingLevel)),
+							);
+							shown = round1.map((run) => {
+								const r2 = round2[ok.indexOf(run)];
+								if (!r2) return { run };
+								return r2.failure ? { run, failedRound2: r2 } : { run: r2 };
+							});
+							failed ||= round2.some((r) => r.failure);
+							const full = round1.map(
+								(r) =>
+									`## ${modelName(r)} (round 1)\n\n${r.failure ? `✗ ${r.failure}\n` : ""}${r.output.trim()}${filesLine(r)}`,
+							);
+							note = `Round-1 answers: ${saveFull(full.join("\n\n"))}`;
+						}
 					}
+					const all = [...round1, ...round2];
+					const cost = all.reduce((sum, r) => sum + costOf(r.usage), 0);
+					history.push({
+						at: Date.now(),
+						role,
+						models: round1.map(modelName),
+						cost,
+						ms: Date.now() - start,
+						failed,
+					});
+					if (history.length > HISTORY_SIZE) history.shift();
+					const usage = {};
+					for (const r of all) addUsage(usage, r.usage);
+					const footer =
+						all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
+					const sections = shown.map(({ run, failedRound2: r2 }) =>
+						r2
+							? `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(run)}`
+							: formatRun(run),
+					);
+					const view: DelegateView = {
+						stage: "Done",
+						web: job.web,
+						runs: shown.map(({ run, failedRound2: r2 }) =>
+							runView(run, true, r2 && `${r2.failure}${filesLine(r2).replace("\n", "; ")}`),
+						),
+						footer: footer.trim() || undefined,
+					};
+					return {
+						content: [
+							{ type: "text" as const, text: [...sections, footer.trim()].filter(Boolean).join("\n\n---\n\n") },
+						],
+						// The answers are in the view and the content; the rounds keep the rest for debugging.
+						details: { round1: round1.map(withoutOutput), round2: round2.map(withoutOutput), view },
+						usage: usage as any,
+						isError: failed,
+					};
+				} finally {
+					active.delete(key);
 				}
-				const all = [...round1, ...round2];
-				const cost = all.reduce((sum, r) => sum + costOf(r.usage), 0);
-				history.push({ at: Date.now(), role, models: round1.map(modelName), cost, ms: Date.now() - start, failed });
-				if (history.length > HISTORY_SIZE) history.shift();
-				const usage = {};
-				for (const r of all) addUsage(usage, r.usage);
-				const footer = all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
-				const sections = shown.map(({ run, failedRound2: r2 }) =>
-					r2
-						? `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(run)}`
-						: formatRun(run),
-				);
-				const view: DelegateView = {
-					stage: "Done",
-					web: job.web,
-					runs: shown.map(({ run, failedRound2: r2 }) =>
-						runView(run, true, r2 && `${r2.failure}${filesLine(r2).replace("\n", "; ")}`),
-					),
-					footer: footer.trim() || undefined,
-				};
-				return {
-					content: [{ type: "text", text: [...sections, footer.trim()].filter(Boolean).join("\n\n---\n\n") }],
-					// The answers are in the view and the content; the rounds keep the rest for debugging.
-					details: { round1: round1.map(withoutOutput), round2: round2.map(withoutOutput), view },
-					usage: usage as any,
-					isError: failed,
-				};
-			} finally {
-				active.delete(_id);
+			};
+			if (!background) {
+				const signal = toolSignal ? AbortSignal.any([toolSignal, shutdown.signal]) : shutdown.signal;
+				return call(_id, signal, onUpdate);
 			}
+
+			// The turn's abort does not stop a background job; /delegate cancel and session shutdown do.
+			const id = `bg${++jobCount}`;
+			const controller = new AbortController();
+			const ended = shutdown.signal;
+			jobs.set(id, controller);
+			statusUi = ctx?.ui;
+			const deliver = (text: string, details: unknown, isError: boolean) => {
+				// After shutdown the session that asked is gone; its answer has nowhere to go.
+				if (ended.aborted) return;
+				pi.sendMessage(
+					{
+						customType: "delegate",
+						content: `Background delegate job ${id}${isError ? " failed" : ""}:\n\n${text}`,
+						display: true,
+						details,
+					},
+					// A cancelled job reports without starting a turn: the user stopped it.
+					{ triggerTurn: !controller.signal.aborted, deliverAs: "followUp" },
+				);
+			};
+			call(id, AbortSignal.any([controller.signal, ended]), undefined)
+				.then((result: any) => {
+					backgroundCost += costOf(result.usage ?? {});
+					deliver(result.content.map((c: any) => c.text).join("\n"), result.details, Boolean(result.isError));
+				})
+				.catch((err: any) => deliver(`✗ ${err?.message ?? err}`, {}, true))
+				.finally(() => {
+					jobs.delete(id);
+					showStatus();
+				});
+			showStatus();
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Started background job ${id} (${models.join(", ")}). Its answer arrives as a later message; /delegate cancel ${id} stops it.`,
+					},
+				],
+				details: { background: id },
+			};
 		},
 	});
 }

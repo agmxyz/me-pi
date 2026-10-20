@@ -44,7 +44,7 @@ Without this file, every worker uses the main session's model and thinking level
 
 Pool order is fallback order. Each entry's `thinking` is used for that model. The optional pool-level `thinking` applies to models without an entry (the session model when the pool is empty); without it they use the main session's thinking level. Scout entries and defaults accept only `low` or `off`; Worker accepts any thinking level. On rate limits, overloads, or model-unavailable errors, the worker tries the next model with that entry's thinking level and reports each fallback. Other failures stop. A `runs[].model` from the active pool is tried first, then the rest of that pool; one found only in the other pool is an exact-model request that uses that entry's thinking. With no models in a pool, that role uses the main session's model. Version 1 `{ "models": [...], "default": "..." }` and version 2 pool configs remain readable and are migrated in memory.
 
-Run `/reload` after editing to refresh the tool's model choices. The tool reads the file at each call and names any problem in it. `/delegate status` shows each model's thinking level and availability, missing tools, running calls, and the last 20 calls with their cost. `/delegate models` prints the config path and manual-edit reminder. The call list survives `/reload`.
+Run `/reload` after editing to refresh the tool's model choices. The tool reads the file at each call and names any problem in it. `/delegate status` shows each model's thinking level and availability, missing tools, running calls, and the last 20 calls with their cost. `/delegate models` prints the config path and manual-edit reminder. `/delegate cancel <id>` stops a background job. The call list survives `/reload`.
 
 ## Use it
 
@@ -59,12 +59,13 @@ Talk to the main session as usual. It plans, edits, tests, and commits, and the 
 | "Have Opus check whether …" | `general` on that model |
 | "Opus at high and Sonnet at medium, with rebuttal." | 2 `runs`, `rebuttal: true` |
 | "Let a worker draft the docs." | `output: true` |
+| "Review this in the background while we keep going." | `background: true` |
 
 To remove old context between tasks, use `/handoff <next goal>`, `/tree`, or `/compact`.
 
 ## `delegate`
 
-A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal? }`. Only `task` is required. The worker sees only the task, so the task must name the goal, the paths, and the acceptance criteria.
+A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal?, background? }`. Only `task` is required. The worker sees only the task, so the task must name the goal, the paths, and the acceptance criteria.
 
 | Role | For | Model, thinking | Web | Answer |
 |---|---|---|---|---|
@@ -77,10 +78,12 @@ A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal? }`. Only `tas
 With no configured pool, roles use the main session's model and thinking level; scout caps the level at `low` (`off` stays `off`). If Pi does not report the session's thinking level, the call fails and asks for a pool-level `thinking` or `runs[].thinking`.
 
 - `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Thinking defaults to each candidate model's setting; an explicit `runs[].thinking` overrides the pool's settings for all candidates. Scout stays at `low`/`off` even if asked for a higher level. Worker roles accept any thinking level. Models outside both pools are refused when either pool contains models.
+- At most 4 workers run at once across all calls, foreground and background; a call that would exceed this is refused, not queued.
 - `rebuttal: true` (2+ runs): each worker sees the others' answers and keeps, revises, or retracts its claims. Only round 2 comes back; round 1 goes to a temp file.
 - `web`: turns the web tools on or off for any role. The label shows `web`.
 - `answer`: replaces the role's answer format, 1 to 400 characters.
 - `output: true`: each run gets `write`, but only inside its own new temp directory (mode 0700). The answer lists the files and their sizes, not their contents. Copy what you keep and check the diff. The tool does not delete these directories.
+- `background: true`: the call returns a job id (`bg1`, `bg2`, …) at once and the conversation goes on. When the workers finish, the answer arrives as a `delegate` message that starts a turn (queued as a follow-up if the session is busy). The turn's abort does not stop a background job; `/delegate cancel <id>` does, and its report arrives without starting a turn. `/reload` and exit stop background jobs and their answers are lost. Pi's session usage does not include background cost, so the status line shows background jobs running and spent.
 
 Results: answers over 12 KiB are cut and saved in full to a temp file (mode 0600). Worker cost is added to the session usage. In the TUI, a running call shows each worker's turn, cost, and last tool; a result shows one line per run, and Ctrl+O expands the answers as Markdown. The model gets the full text either way.
 

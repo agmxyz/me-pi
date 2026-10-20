@@ -1,6 +1,6 @@
 /**
  * `/delegate` command: `status` (the default) shows per-model pool settings, availability, running workers,
- * and recent runs; `models` prints the config path for manual editing.
+ * and recent runs; `models` prints the config path for manual editing; `cancel <id>` stops a background job.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -22,6 +22,8 @@ export interface ActiveCall {
 	role: string;
 	models: string[];
 	start: number;
+	/** The background job id, for /delegate cancel. */
+	job?: string;
 }
 
 export interface CommandDeps {
@@ -29,6 +31,8 @@ export interface CommandDeps {
 	loadModelSet: () => ModelSet;
 	history: CallRecord[];
 	active: Map<string, ActiveCall>;
+	/** Stops a background job; returns what happened. */
+	cancel: (id: string) => string;
 }
 
 // Tools that other extensions add; without them workers lose skills or the web.
@@ -38,7 +42,7 @@ const DEPENDENCIES = [
 	["fetch_content", "pi-web-access"],
 	["get_search_content", "pi-web-access"],
 ];
-const SUBCOMMANDS = ["status", "models"];
+const SUBCOMMANDS = ["status", "models", "cancel"];
 
 const seconds = (ms: number) => `${Math.round(ms / 1000)}s`;
 const clock = (at: number) => new Date(at).toTimeString().slice(0, 5);
@@ -78,7 +82,8 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 	const now = Date.now();
 	const active = [...deps.active.values()];
 	lines.push(active.length ? `Running (${active.length}):` : "Running: none");
-	for (const a of active) lines.push(`  ${a.role}: ${a.models.map(short).join(", ")} ${seconds(now - a.start)}`);
+	for (const a of active)
+		lines.push(`  ${a.job ? `${a.job} ` : ""}${a.role}: ${a.models.map(short).join(", ")} ${seconds(now - a.start)}`);
 
 	const total = deps.history.reduce((sum, r) => sum + r.cost, 0);
 	lines.push(deps.history.length ? `Last ${deps.history.length} calls, $${total.toFixed(4)}:` : "Last calls: none");
@@ -97,11 +102,15 @@ function manualModelsMessage(deps: CommandDeps): string {
 
 export function registerDelegateCommand(pi: ExtensionAPI, deps: CommandDeps): void {
 	pi.registerCommand("delegate", {
-		description: "Delegate workers: status (default), or models to show the manual config path",
+		description: "Delegate workers: status (default), models to show the manual config path, or cancel <id>",
 		getArgumentCompletions: (prefix) =>
 			SUBCOMMANDS.filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {
-			const sub = args.trim() || "status";
+			const [sub = "status", id] = args.trim().split(/\s+/).filter(Boolean);
+			if (sub === "cancel") {
+				if (!id) throw new Error("Usage: /delegate cancel <id>, with an id from /delegate status.");
+				return ctx.ui.notify(deps.cancel(id), "info");
+			}
 			if (sub === "status") return ctx.ui.notify(statusLines(pi, ctx, deps).join("\n"), "info");
 			if (sub === "models") return ctx.ui.notify(manualModelsMessage(deps), "info");
 			throw new Error(`Unknown /delegate subcommand "${sub}". Use: ${SUBCOMMANDS.join(", ")}.`);

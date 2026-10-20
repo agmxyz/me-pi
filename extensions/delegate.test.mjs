@@ -203,7 +203,9 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	const tools = {};
 	const handlers = {};
 	const commands = {};
+	const messages = [];
 	const pi = {
+		sendMessage: (message, options) => messages.push({ message, options }),
 		registerTool: (d) => {
 			tools[d.name] = d;
 		},
@@ -218,7 +220,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	// The call history survives reloads on globalThis; each test starts empty unless it simulates a reload.
 	if (!keepHistory) globalThis[Symbol.for("me-pi.delegate.history")] = [];
 	registerExtension(pi);
-	return { tool: tools.delegate, handlers, commands, pi };
+	return { tool: tools.delegate, handlers, commands, pi, messages };
 }
 
 const run = (tool, params, signal, onUpdate, ctx = CTX) => tool.execute("call", params, signal, onUpdate, ctx);
@@ -788,7 +790,7 @@ test("/delegate status: the set with availability, missing tools, running and re
 	});
 	assert.deepEqual(
 		main.commands.delegate.getArgumentCompletions("").map((c) => c.value),
-		["status", "models"],
+		["status", "models", "cancel"],
 	);
 	assert.deepEqual(
 		main.commands.delegate.getArgumentCompletions("m").map((c) => c.value),
@@ -834,7 +836,7 @@ test("/delegate status: the set with availability, missing tools, running and re
 	assert.match(bad.notes[0][0], /\n {2}\u2717 delegate config .*: unknown key\(s\) extra/);
 	await assert.rejects(
 		broken.commands.delegate.handler("nope", bad.ctx),
-		/^Error: Unknown \/delegate subcommand "nope"\. Use: status, models\.$/,
+		/^Error: Unknown \/delegate subcommand "nope"\. Use: status, models, cancel\.$/,
 	);
 });
 
@@ -1341,4 +1343,79 @@ test("guidelines keep delegation proportionate and require reviews and BLOCKED h
 	assert.match(all, /do not edit those files until the review returns/);
 	assert.match(all, /`rebuttal: true`/);
 	assert.match(all, /BLOCKED/);
+});
+
+// A tool context that records the status line.
+const bgCtx = () => {
+	const statuses = [];
+	return { ctx: { ...CTX, ui: { setStatus: (key, value) => statuses.push([key, value]) } }, statuses };
+};
+
+test("background: returns a job id at once, then delivers the answer as a message that starts a turn", async (t) => {
+	const { tool, messages } = setup(t);
+	const { ctx, statuses } = bgCtx();
+	const res = await run(tool, { role: "scout", task: "look around", background: true }, undefined, undefined, ctx);
+	assert.equal(res.isError, undefined);
+	assert.match(
+		text(res),
+		/^Started background job bg1 \(.+\)\. Its answer arrives as a later message; \/delegate cancel bg1 stops it\.$/,
+	);
+	await waitFor(() => messages.length === 1, "the background answer");
+	const [{ message, options }] = messages;
+	assert.deepEqual(options, { triggerTurn: true, deliverAs: "followUp" });
+	assert.equal(message.customType, "delegate");
+	assert.equal(message.display, true);
+	assert.match(message.content, /^Background delegate job bg1:\n\n/);
+	assert.ok(message.details.view, "details keep the run view");
+	assert.match(statuses[0][1], /^delegate bg: 1 running, \$0\.0000 spent$/);
+	assert.match(statuses.at(-1)[1], /^delegate bg: 0 running, \$0\.0\d+ spent$/);
+	assert.ok(!statuses.at(-1)[1].endsWith("$0.0000 spent"), "the job's cost is counted");
+});
+
+test("background: the turn's abort does not stop a job; /delegate cancel does, without starting a turn", async (t) => {
+	const { tool, messages, commands } = setup(t, { env: { FAKE_PI_MODE: "hang" } });
+	const turn = new AbortController();
+	const { ctx } = bgCtx();
+	await run(tool, { role: "scout", task: "x", background: true }, turn.signal, undefined, ctx);
+	turn.abort();
+	await new Promise((r) => setTimeout(r, 300));
+	assert.equal(messages.length, 0, "still running after the turn was aborted");
+	const { ctx: cmd, notes } = commandCtx();
+	await commands.delegate.handler("status", cmd);
+	assert.match(notes[0][0], /Running \(1\):\n {2}bg1 scout: /);
+	await commands.delegate.handler("cancel bg1", cmd);
+	assert.equal(notes[1][0], "Cancelling background job bg1.");
+	await waitFor(() => messages.length === 1, "the cancelled job's report");
+	assert.deepEqual(messages[0].options, { triggerTurn: false, deliverAs: "followUp" });
+	assert.match(messages[0].message.content, /^Background delegate job bg1 failed:\n\n✗ stopped: cancelled/);
+	await commands.delegate.handler("cancel bg1", cmd);
+	assert.equal(notes[2][0], "No running background job bg1.");
+	await assert.rejects(commands.delegate.handler("cancel", cmd), /Usage: \/delegate cancel <id>/);
+});
+
+test("at most 4 workers run at once across foreground and background calls", async (t) => {
+	const { tool, commands, messages } = setup(t, { env: { FAKE_PI_MODE: "hang" } });
+	const { ctx } = bgCtx();
+	await run(tool, { role: "scout", task: "x", runs: [{}, {}, {}], background: true }, undefined, undefined, ctx);
+	const over = await run(tool, { role: "scout", task: "y", runs: [{}, {}] });
+	assert.equal(over.isError, true);
+	assert.match(text(over), /^3 worker\(s\) already running; at most 4 run at once\./);
+	const second = await run(tool, { role: "scout", task: "z", background: true }, undefined, undefined, ctx);
+	assert.match(text(second), /^Started background job bg2 /);
+	const { ctx: cmd } = commandCtx();
+	await commands.delegate.handler("cancel bg1", cmd);
+	await commands.delegate.handler("cancel bg2", cmd);
+	await waitFor(() => messages.length === 2, "both cancelled reports");
+});
+
+test("background: a job stopped by session shutdown delivers nothing; background must be a boolean", async (t) => {
+	const { tool, handlers, messages } = setup(t, { env: { FAKE_PI_MODE: "hang" } });
+	const { ctx } = bgCtx();
+	await run(tool, { role: "scout", task: "x", background: true }, undefined, undefined, ctx);
+	await handlers.session_shutdown();
+	await new Promise((r) => setTimeout(r, 100));
+	assert.equal(messages.length, 0);
+	const bad = await run(tool, { role: "scout", task: "x", background: "yes" });
+	assert.equal(bad.isError, true);
+	assert.equal(text(bad), "background must be true or false");
 });
