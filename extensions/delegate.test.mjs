@@ -218,7 +218,10 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		},
 	};
 	// The call history survives reloads on globalThis; each test starts empty unless it simulates a reload.
-	if (!keepHistory) globalThis[Symbol.for("me-pi.delegate.history")] = [];
+	if (!keepHistory) {
+		globalThis[Symbol.for("me-pi.delegate.history")] = [];
+		globalThis[Symbol.for("me-pi.delegate.background-spend")] = { cost: 0 };
+	}
 	registerExtension(pi);
 	return { tool: tools.delegate, handlers, commands, pi, messages };
 }
@@ -1418,4 +1421,16 @@ test("background: a job stopped by session shutdown delivers nothing; background
 	const bad = await run(tool, { role: "scout", task: "x", background: "yes" });
 	assert.equal(bad.isError, true);
 	assert.equal(text(bad), "background must be true or false");
+});
+
+test("background spend survives /reload", async (t) => {
+	const first = setup(t);
+	await run(first.tool, { role: "scout", task: "x", background: true }, undefined, undefined, bgCtx().ctx);
+	await waitFor(() => first.messages.length === 1, "the first answer");
+	const reloaded = setup(t, { keepHistory: true });
+	const { ctx, statuses } = bgCtx();
+	await run(reloaded.tool, { role: "scout", task: "y", background: true }, undefined, undefined, ctx);
+	assert.match(statuses[0][1], /^delegate bg: 1 running, \$0\.0\d+ spent$/);
+	assert.ok(!statuses[0][1].endsWith("$0.0000 spent"), "the first job's spend is kept");
+	await waitFor(() => reloaded.messages.length === 1, "the second answer");
 });

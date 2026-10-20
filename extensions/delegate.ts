@@ -474,6 +474,7 @@ export function resolveRun(
 // Live worker process groups, shared by reloaded module instances, killed when the main process exits.
 const GROUPS_KEY = Symbol.for("me-pi.delegate.groups");
 const HISTORY_KEY = Symbol.for("me-pi.delegate.history");
+const SPEND_KEY = Symbol.for("me-pi.delegate.background-spend");
 function liveGroups(): Set<number> {
 	const shared = globalThis as any;
 	if (!shared[GROUPS_KEY]) {
@@ -1024,14 +1025,11 @@ export default function (pi: ExtensionAPI) {
 	// Background jobs by id, with what they spent; Pi's session usage never includes it.
 	const jobs = new Map<string, AbortController>();
 	let jobCount = 0;
-	let backgroundCost = 0;
 	let statusUi: { setStatus?: (key: string, text: string | undefined) => void } | undefined;
 	const showStatus = () =>
 		statusUi?.setStatus?.(
 			"delegate",
-			jobs.size || backgroundCost
-				? `delegate bg: ${jobs.size} running, $${backgroundCost.toFixed(4)} spent`
-				: undefined,
+			jobs.size || spend.cost ? `delegate bg: ${jobs.size} running, $${spend.cost.toFixed(4)} spent` : undefined,
 		);
 	const cancel = (id: string) => {
 		const job = jobs.get(id);
@@ -1043,6 +1041,9 @@ export default function (pi: ExtensionAPI) {
 	const shared = globalThis as any;
 	shared[HISTORY_KEY] ??= [];
 	const history: CallRecord[] = shared[HISTORY_KEY];
+	// Background spend for this Pi process, also kept across /reload so the status line never undercounts.
+	shared[SPEND_KEY] ??= { cost: 0 };
+	const spend: { cost: number } = shared[SPEND_KEY];
 	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), history, active, cancel });
 	pi.on("session_shutdown", async () => {
 		shutdown.abort();
@@ -1276,7 +1277,7 @@ export default function (pi: ExtensionAPI) {
 			};
 			call(id, AbortSignal.any([controller.signal, ended]), undefined)
 				.then((result: any) => {
-					backgroundCost += costOf(result.usage ?? {});
+					spend.cost += costOf(result.usage ?? {});
 					deliver(result.content.map((c: any) => c.text).join("\n"), result.details, Boolean(result.isError));
 				})
 				.catch((err: any) => deliver(`✗ ${err?.message ?? err}`, {}, true))
