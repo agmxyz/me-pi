@@ -15,9 +15,9 @@ export interface CallRecord {
 	cost: number;
 	ms: number;
 	failed: boolean;
-	/** implement: the branch, its tip, and whether finish made a WIP commit. */
-	branch?: string;
-	tip?: string;
+	/** implement: `branch base..tip`, the check's state, and whether finish made a WIP commit. */
+	range?: string;
+	check?: string;
 	wip?: boolean;
 }
 
@@ -94,7 +94,7 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 	for (const r of [...deps.history].reverse()) {
 		const mark = r.failed ? "\u2717" : "\u2713";
 		lines.push(
-			`  ${clock(r.at)} ${mark} ${r.role} ${r.models.map(short).join(", ")} $${r.cost.toFixed(4)} ${seconds(r.ms)}${r.branch ? ` ${r.branch}@${r.tip?.slice(0, 7) ?? "?"}${r.wip ? " WIP" : ""}` : ""}`,
+			`  ${clock(r.at)} ${mark} ${r.role} ${r.models.map(short).join(", ")} $${r.cost.toFixed(4)} ${seconds(r.ms)}${r.range ? ` ${r.range} check ${r.check ?? "?"}${r.wip ? " WIP" : ""}` : ""}`,
 		);
 	}
 	return lines;

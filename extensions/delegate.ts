@@ -27,17 +27,17 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type ActiveCall, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
+	type Checkout,
 	type Facts,
 	finish as finishImplement,
-	formatFacts,
+	formatHandback,
+	isCheckRun,
 	nextImplementId,
 	prepare as prepareImplement,
-	trustFilesUnchanged,
-	type Worktree,
 	workerEnv,
 } from "./delegate-implement.ts";
 import { type DelegateView, progressLines, type RunView, renderCall, renderResult } from "./delegate-render.ts";
-import { workerRisk } from "./guard.ts";
+import { gitTreeWrite, workerRisk } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
 export const LIMITS = {
@@ -45,7 +45,7 @@ export const LIMITS = {
 	timeoutSecs: 900,
 	costCapUsd: 5,
 	exitGraceMs: 1000,
-	// implement: SIGTERM first, so Pi stops its bash commands before finish commits and removes the worktree.
+	// implement: SIGTERM first, so Pi stops its bash commands before finish commits WIP.
 	termGraceMs: 3000,
 	// Wrap-up budget, enforced inside the worker: past it, tool calls are blocked so the model answers
 	// before a hard limit kills it without one.
@@ -67,7 +67,7 @@ export const LOCAL_TOOLS = "read,grep,find,ls,Skill";
 // Only research and challenge get the network unless a call sets `web`: a worker reading an untrusted
 // diff or page with both local reads and web tools could be steered into sending file contents out.
 export const WEB_TOOLS = `${LOCAL_TOOLS},web_search,fetch_content,get_search_content`;
-// implement edits, runs commands, and commits, in its own worktree; never with web tools.
+// implement edits, runs commands, and commits, in the coordinator's checkout; never with web tools.
 export const IMPLEMENT_TOOLS = `${LOCAL_TOOLS},edit,write,bash`;
 
 // --- Secret paths (enforced inside workers) -------------------------------------------------------
@@ -153,10 +153,17 @@ function realTarget(absolute: string): string | undefined {
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 /**
- * Why a worker's write/edit call is blocked, or undefined when its path is inside `outDir`. `~` and
- * `file:` paths are refused rather than expanded, so this check cannot resolve them differently from Pi.
+ * Why a worker's write/edit call is blocked, or undefined when its path is inside `outDir` and not inside `denyDir`
+ * (implement: the git common dir). `~` and `file:` paths are refused rather than expanded, so this check cannot
+ * resolve them differently from Pi.
  */
-export function writeBlockedIn(toolName: string, input: unknown, cwd: string, outDir?: string): string | undefined {
+export function writeBlockedIn(
+	toolName: string,
+	input: unknown,
+	cwd: string,
+	outDir?: string,
+	denyDir?: string,
+): string | undefined {
 	if (toolName !== "write" && toolName !== "edit") return undefined;
 	if (!outDir) return "delegated workers cannot write files without `output: true`";
 	const path = (input as { path?: unknown } | undefined)?.path;
@@ -168,6 +175,9 @@ export function writeBlockedIn(toolName: string, input: unknown, cwd: string, ou
 	const inside = relative(realpathOr(outDir), target);
 	if (notStrictlyInside(inside))
 		return isAbsolute(given) ? `${path} is outside ${outDir}` : relativeHint(path, target, outDir, given);
+	const denied = denyDir && relative(realpathOr(denyDir), target);
+	if (denied !== undefined && (denied === "" || !notStrictlyInside(denied)))
+		return `${path} is inside the git directory ${denyDir}`;
 	return undefined;
 }
 
@@ -242,8 +252,8 @@ interface Role {
 interface Job extends Role {
 	role: string;
 	output: boolean;
-	// implement: its worktree, and whether the main session trusts this project (for `--approve`).
-	implement?: { wt: Worktree; trusted: boolean; pids: Set<number> };
+	// implement: its checkout job, and whether the main session trusts this project (for `--approve`).
+	implement?: { job: Checkout; trusted: boolean; pids: Set<number> };
 }
 
 export const ROLES: Record<string, Role> = {
@@ -266,8 +276,7 @@ export const ROLES: Record<string, Role> = {
 	},
 	implement: {
 		web: false,
-		answer:
-			"what changed and why; each check command with pass|fail; commits as `sha subject`; then BLOCKED steps and what is unverified. Never paste the diff.",
+		answer: "First line: one-sentence summary. Then BLOCKED lines. Never paste the diff or test output.",
 	},
 };
 const ROLE_NAMES = Object.keys(ROLES);
@@ -286,20 +295,19 @@ export const WORKER_CONTRACT = contract([
 	"- Your tools only read: files, skills (`Skill` loads a listed skill by name), and, if you have web tools, the web. You cannot edit files, run commands, delegate, or commit. Paths that may hold secrets are blocked.",
 ]);
 
-/** The implement worker's contract; it names the worktree, the branch, and the base. */
-export const implementContract = (wt: Worktree) =>
+/** The implement worker's contract; it names the branch and the check. */
+export const implementContract = (job: Checkout) =>
 	contract([
-		`- You work in a temporary git worktree, \`${wt.dir}\`, on branch \`${wt.branch}\` from \`${wt.base.slice(0, 12)}\`. Edit only inside it; it is removed when you finish. Start with \`git status\` and \`git log --oneline ${wt.base.slice(0, 12)}..HEAD\`: an earlier attempt may have left work.`,
-		"- Install what the repo's instructions name (e.g. `npm ci`), run the check the task or the repo names, and commit each passing step with a plain message: no trailers, never `--no-verify`, `--amend`, or rebase. Delete tracked directories with `git rm -r`.",
-		"- Leave failing or unchecked work uncommitted and say so: it is committed as WIP and never merged as is.",
-		"- You cannot push, use `gh`, run `git worktree`, reach git remotes, run `./install.sh` or `pi install|remove|update|config`, or change files under `~/.pi`. If the task or repo instructions need one, list it as BLOCKED: the coordinator does it after merging.",
+		`- You work in the coordinator's checkout on \`${job.branch}\`; the coordinator waits. Never switch, merge, stash, reset, or rewrite history.`,
+		`- Run \`${job.check.command}\` alone, exactly as given, after your last edit. Commit passing steps (subject plus a why body), never with \`--no-verify\` or \`--amend\`. Leave failing work uncommitted: it is committed as WIP. Delete tracked directories with \`git rm -r\`.`,
+		"- You cannot push, use `gh`, run `git worktree`, reach git remotes, write inside the git directory, run `./install.sh` or `pi install|remove|update|config`, or change files under `~/.pi`. If the task or repo instructions need one, list it as BLOCKED.",
 		"- Stop any background process you start before you answer. Paths that may hold secrets are blocked.",
 	]);
 
 // Without an answer format (general, unless the call sets one), the task sets the format.
 // With an output directory, the worker may also write there; its answer lists the files, not their contents.
 const workerSystemPrompt = ({ role, answer, implement }: Job, outDir?: string) =>
-	`${implement ? implementContract(implement.wt) : WORKER_CONTRACT}\nRole: ${role}.${answer ? ` Final answer format: ${answer}` : ""}${
+	`${implement ? implementContract(implement.job) : WORKER_CONTRACT}\nRole: ${role}.${answer ? ` Final answer format: ${answer}` : ""}${
 		outDir
 			? `\nOutput (an exception to the read-only rule): you may also use \`write\`, but only for files inside ${outDir}. Relative paths resolve against the project, not this directory, so give each file as an absolute path inside it; writes anywhere else are blocked. Put your drafts there. Inside your final answer format, also list each file you wrote with one line on what it holds; do not repeat the file contents.`
 			: ""
@@ -596,6 +604,22 @@ interface AttemptBudget {
 	costCapUsd: number;
 }
 
+/** Updates the check state from a worker's tool_execution_end: the check run alone sets pass|fail; a later edit, stale. */
+export function trackCheck(
+	check: Checkout["check"],
+	calls: Map<string, { tool: string; command: string }>,
+	event: { toolCallId?: unknown; isError?: unknown },
+): void {
+	const call = calls.get(String(event.toolCallId));
+	if (!call) return;
+	calls.delete(String(event.toolCallId));
+	if (call.tool === "bash" && isCheckRun(call.command, check.command)) {
+		check.status = event.isError ? "fail" : "pass";
+		check.runs.push(`${check.status}: ${call.command}`);
+	} else if ((call.tool === "edit" || call.tool === "write") && !event.isError && check.status !== "none")
+		check.status = "stale";
+}
+
 function runWorkerAttempt(
 	job: Job,
 	prompt: string,
@@ -623,7 +647,7 @@ function runWorkerAttempt(
 	const { implement } = job;
 	const tools = implement ? IMPLEMENT_TOOLS : `${web ? WEB_TOOLS : LOCAL_TOOLS}${result.outDir ? ",write" : ""}`;
 	const args = ["--mode", "json", "-p", "--no-session", "--no-mcp", "--tools", tools];
-	// The worktree path has no saved trust decision and JSON mode cannot ask: mirror the main session's, when safe.
+	// JSON mode cannot ask about trust: mirror the main session's, when safe.
 	if (implement) args.push(approve ? "--approve" : "--no-approve");
 	args.push("--thinking", run.thinking, "--append-system-prompt", workerSystemPrompt(job, result.outDir));
 	if (run.model) args.push("--model", run.model);
@@ -637,7 +661,7 @@ function runWorkerAttempt(
 			cwd,
 			detached: true,
 			stdio: ["pipe", "pipe", "pipe"],
-			env: ((env) => (implement ? workerEnv(env, implement.wt) : env))({
+			env: ((env) => (implement ? workerEnv(env, implement.job) : env))({
 				...process.env,
 				ME_PI_RUN: "1",
 				ME_PI_ROLE: role,
@@ -657,6 +681,8 @@ function runWorkerAttempt(
 		let finished = false;
 		let lastStopReason: string | undefined;
 		let buffer = "";
+		// implement: tool calls by id, so a call's end can be matched to its command.
+		const calls = new Map<string, { tool: string; command: string }>();
 
 		let termTimer: NodeJS.Timeout | undefined;
 		const stop = (reason: string) => {
@@ -720,9 +746,17 @@ function runWorkerAttempt(
 			}
 			if (event.type === "tool_execution_start" && typeof event.toolName === "string") {
 				const arg =
-					event.args?.path ?? event.args?.pattern ?? event.args?.query ?? event.args?.url ?? event.args?.name;
+					event.args?.path ??
+					event.args?.pattern ??
+					event.args?.query ??
+					event.args?.url ??
+					event.args?.name ??
+					event.args?.command;
 				result.tools.push(arg ? `${event.toolName} ${String(arg).slice(0, 80)}` : event.toolName);
+				if (implement)
+					calls.set(event.toolCallId, { tool: event.toolName, command: String(event.args?.command ?? "") });
 			}
+			if (implement && event.type === "tool_execution_end") trackCheck(implement.job.check, calls, event);
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
 			const msg = event.message;
 			result.turns++;
@@ -825,9 +859,9 @@ async function runWorker(
 				last.failure = `stopped: ${remainingMs <= 0 ? "time limit" : `cost cap $${LIMITS.costCapUsd}`} reached before trying ${model ?? "session model"}`;
 			break;
 		}
-		// `--approve` only on a new branch's first attempt: a fallback or a continued branch may run earlier work.
-		const impl = job.implement;
-		const approve = impl?.trusted === true && !impl.wt.continued && i === 0 && (await trustFilesUnchanged(impl.wt));
+		// `--approve` only on the first attempt: the tree was clean, so .pi equals the trusted HEAD; a fallback may run
+		// the earlier attempt's edits.
+		const approve = job.implement?.trusted === true && i === 0;
 		const attempt = await runWorkerAttempt(
 			job,
 			prompt,
@@ -988,12 +1022,12 @@ function buildSchema(set: ModelSet) {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; availability failures try the next model. research and challenge can use web tools; implement edits, runs checks, and commits on its own branch in a temp worktree; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; availability failures try the next model. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
 				description:
-					"Self-contained instructions: goal, context, acceptance criteria, paths. The worker sees nothing else. Read-only workers cannot run commands: write diffs or command output to a temp file and pass its path. For implement, name the check command.",
+					"Self-contained instructions: goal, context, acceptance criteria, paths. The worker sees nothing else. Read-only workers cannot run commands: write diffs or command output to a temp file and pass its path. For implement, give the check command as `check`.",
 			},
 			web: {
 				type: "boolean",
@@ -1029,10 +1063,11 @@ function buildSchema(set: ModelSet) {
 				description:
 					"With 2+ runs: a second round where each worker sees the others' answers and keeps, revises, or retracts claims. Only round-2 answers are returned.",
 			},
-			branch: {
+			check: {
 				type: "string",
+				minLength: 1,
 				description:
-					"implement only: an existing `delegate/*` branch to continue (after WIP or review findings) instead of a new branch from HEAD.",
+					"implement only, required: the command, run from your cwd, that proves the change (e.g. `npm run check --prefix extensions`). The worker runs it alone, exactly as given, after its last edit.",
 			},
 			background: {
 				type: "boolean",
@@ -1046,23 +1081,50 @@ function buildSchema(set: ModelSet) {
 }
 
 export const PROMPT_SNIPPET =
-	"Run read-only workers (general, or the presets scout, research, review, challenge), alone or as a multi-model panel with rebuttal, or one `implement` worker that commits on its own branch; only answers and branch facts come back (drafts only with `output: true`)";
+	"Run read-only workers (general, or the presets scout, research, review, challenge), alone or as a multi-model panel with rebuttal, and get back only their answers (drafts only with `output: true`); one `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); you get a 2-line handback";
 
 export const PROMPT_GUIDELINES = [
-	"Read-only workers search, research, review, and challenge; one `implement` worker edits, runs the checks, and commits on its own `delegate/*` branch. You push, open PRs, merge, and delete branches, under the Approval rules. Delegate reading more than about 3 files you will not edit, research, reviews, plan challenges, and self-contained changes that take many steps; make 1-3 file edits yourself.",
-	"Before a commit that touches 2+ files or adds behaviour, get a fresh review: write `git diff HEAD` to a temp file (`git add -N` new files first) and pass its path with the acceptance criteria, say you ran the checks, keep your self-assessment out, and do not edit those files until the review returns.",
+	"Delegate reading more than about 3 files you will not edit, research, reviews, and plan challenges. You push, open PRs, merge, and delete branches, under the Approval rules. Delegate any change whose files you have not read or that takes many steps; edit yourself only 1-3 files you already have in context.",
+	"Before one of your own commits that touches 2+ files or adds behaviour, get a fresh review: write `git diff HEAD` to a temp file (`git add -N` new files first) and pass its path with the acceptance criteria, say you ran the checks, keep your self-assessment out, and do not edit those files until the review returns.",
 	"When the user names several models for one question, send one call with one `runs` entry per model (with its thinking) and `rebuttal: true` if they should check each other; then report agreements, disagreements with their evidence, and your verdict.",
 	"Omit `role` for a general worker, or pick the preset that fits; `answer` (at most 400 characters) sets the answer format. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
 	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory and the result lists the files; copy what you keep and check the diff yourself.",
 	"Pass on only what matters from worker answers, and resolve or report every BLOCKED line.",
-	"For `implement`, set `background: true`. The worker starts from your HEAD commit, not your uncommitted changes. The task names the goal, the files (repo-relative paths only), the acceptance criteria, and the check command.",
-	"An implement result gives the branch, commits, diffstat, and a diff file path, not the diff. Merge only a result with no ✗ line: get a fresh `review` of the diff file, then `git merge <branch>` on a clean tree (no squash) and run the check once. On a tripwire or kept-worktree ✗, report to the user and do not merge. Do not read the diff file yourself; pass its path to the `review` worker. Delete the branch only after the post-merge check passed, as its own command (not chained after the check). If the check fails after the merge, fix forward (follow-up implement or a commit); never undo the merge without approval. For WIP or review findings, send a follow-up implement with `branch` set. Delete merged branches with `git branch -d`; put discarded ones in one `git branch -D a b c` for the user to approve.",
+	"Before a goal's first implement: commit your work, `git switch -c goal/<slug>` if on main/master, note the goal base SHA. Use `background: true`. Give goal, repo-relative paths, acceptance criteria, and `check`. Until the handback, do not edit, commit, or switch branches in that repo.",
+	"Trust a ✓ handback: no diff read, no review, no re-check. ✗ WIP: follow-up implement or `git revert`. Tripwire ✗: stop and tell the user. Resolve BLOCKED lines.",
+	"At goal end: one `review` of `git diff <base>..HEAD` written to a temp file; fix findings by follow-up. Never push a range containing a `WIP(delegate` commit.",
 	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile; the answer arrives as a later `delegate` message that starts a turn. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
 ];
 
+// ESRCH means gone; EPERM means alive under another user.
+const processAlive = (pid: number) => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err: any) {
+		return err?.code !== "ESRCH";
+	}
+};
+
+// `git -C <dir>` or a leading `cd <dir> &&|;`: where a command runs, if it says.
+const TARGET_DIR = /\bgit\s+-C\s+("[^"]*"|'[^']*'|\S+)|^\s*(?:cd|pushd)\s+("[^"]*"|'[^']*'|\S+)\s*(?:&&|;)/;
+function commandDir(command: string, cwd: string): string | undefined {
+	const m = command.match(TARGET_DIR);
+	const dir = (m?.[1] ?? m?.[2])?.replace(/^["']|["']$/g, "");
+	if (dir === undefined) return undefined;
+	const absolute = resolve(cwd, dir === "~" || dir.startsWith("~/") ? join(HOME, dir.slice(1)) : dir);
+	return realTarget(absolute) ?? absolute;
+}
+
+// Whether target is root or inside it; both resolved.
+const within = (root: string, target: string) => {
+	const rel = relative(realpathOr(root), target);
+	return rel === "" || !notStrictlyInside(rel);
+};
+
 export default function (pi: ExtensionAPI) {
 	// Workers never get the tool, so delegation cannot nest; they only get the wrap-up budget, the secret-path
-	// block, the output-directory write block, and for `implement` the worker-only bash rules.
+	// block, the output-directory write block, and for `implement` the worker-only bash rules and the orphan stop.
 	if (process.env.ME_PI_RUN) {
 		const budget = parseBudget(process.env.ME_PI_BUDGET);
 		let calls = 0;
@@ -1073,6 +1135,10 @@ export default function (pi: ExtensionAPI) {
 			if (msg?.role === "assistant") cost += costOf(msg.usage ?? {});
 		});
 		pi.on("tool_call", async (event, ctx) => {
+			// An implement worker whose coordinator died would keep writing in a checkout nobody watches.
+			const parent = Number(process.env.ME_PI_PARENT);
+			if (parent > 0 && (process.ppid === 1 || !processAlive(parent)))
+				return { block: true, reason: "Blocked: the coordinator is gone; stop now.", terminate: true };
 			const spent = budget && budgetSpent(budget, ++calls, cost);
 			if (spent)
 				return {
@@ -1088,7 +1154,13 @@ export default function (pi: ExtensionAPI) {
 			const secret = secretPathIn(event.toolName, event.input, ctx.cwd);
 			if (secret)
 				return { block: true, reason: `Blocked: ${secret} may hold secrets; delegated workers cannot read it.` };
-			const write = writeBlockedIn(event.toolName, event.input, ctx.cwd, process.env.ME_PI_OUTPUT_DIR);
+			const write = writeBlockedIn(
+				event.toolName,
+				event.input,
+				ctx.cwd,
+				process.env.ME_PI_OUTPUT_DIR,
+				process.env.ME_PI_DENY_DIR,
+			);
 			if (write) return { block: true, reason: `Blocked: ${write}.` };
 			return undefined;
 		});
@@ -1100,6 +1172,8 @@ export default function (pi: ExtensionAPI) {
 	const active = new Map<string, ActiveCall>();
 	// Background jobs by id, with what they spent; Pi's session usage never includes it.
 	const jobs = new Map<string, AbortController>();
+	// implement: repo root -> the job writing in it (bg3, or im3 in the foreground), for the main-session block.
+	const writing = new Map<string, string>();
 	let jobCount = 0;
 	let prepareCount = 0;
 	let statusUi: { setStatus?: (key: string, text: string | undefined) => void } | undefined;
@@ -1127,6 +1201,34 @@ export default function (pi: ExtensionAPI) {
 		shutdown = new AbortController();
 		await Promise.allSettled([...running]);
 	});
+	// While an implement worker writes in a checkout, the main session's edits and git tree writes there would end up
+	// in the worker's commits or move its branch.
+	pi.on("tool_call", async (event, ctx) => {
+		if (!writing.size) return undefined;
+		const input = (event.input ?? {}) as { path?: unknown; command?: unknown };
+		for (const [root, id] of writing) {
+			let hit = false;
+			if ((event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string") {
+				const absolute = resolve(ctx.cwd, input.path.replace(UNICODE_SPACES, " ").replace(/^@/, ""));
+				const target = realTarget(absolute);
+				// Unresolvable (a dangling symlink): judged by its resolved parent directory.
+				const parent = realTarget(dirname(absolute));
+				hit = within(root, target ?? (parent ? join(parent, basename(absolute)) : absolute));
+			} else if (event.toolName === "bash") {
+				const command = String(input.command ?? "");
+				const dir = commandDir(command, ctx.cwd);
+				const here =
+					dir !== undefined ? within(root, dir) : within(root, realpathOr(ctx.cwd)) || command.includes(root);
+				hit = here && gitTreeWrite(command) !== undefined;
+			}
+			if (hit)
+				return {
+					block: true,
+					reason: `implement job ${id} is writing in ${root}; wait for its handback${id.startsWith("bg") ? ` or /delegate cancel ${id}` : ""}.`,
+				};
+		}
+		return undefined;
+	});
 
 	let schemaSet: ModelSet = defaultModelSet();
 	try {
@@ -1139,7 +1241,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. `implement` edits, runs commands, and commits in a temp git worktree on a `delegate/*` branch (new, or `branch` to continue); it cannot push or use gh, and the result lists the branch, commits, diffstat, and a diff file.",
+			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme) => renderCall(args, theme),
@@ -1148,9 +1250,9 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
 			const fail = (text: string) => ({ content: [{ type: "text" as const, text }], details: {}, isError: true });
-			const { role = "general", task, web, answer, output, rebuttal, background, branch } = params ?? {};
+			const { role = "general", task, web, answer, output, rebuttal, background, check } = params ?? {};
 			const unknown = Object.keys(params ?? {}).filter(
-				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal", "background", "branch"].includes(k),
+				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal", "background", "check"].includes(k),
 			);
 			if (unknown.length)
 				return fail(
@@ -1165,10 +1267,16 @@ export default function (pi: ExtensionAPI) {
 			if (output !== undefined && typeof output !== "boolean") return fail("output must be true or false");
 			if (background !== undefined && typeof background !== "boolean")
 				return fail("background must be true or false");
-			if (branch !== undefined && (role !== "implement" || typeof branch !== "string" || !branch.trim()))
-				return fail("branch is a non-empty string, for role implement only");
+			if (check !== undefined && (role !== "implement" || typeof check !== "string" || !check.trim()))
+				return fail("check is a non-empty string, for role implement only");
 			if (role === "implement") {
+				if (check === undefined) return fail("implement needs `check`: the command that proves the change");
+				if (/[|;]|&&/.test(check))
+					return fail(
+						"check must be one command without `|`, `;`, `&&`, or `||`: a chained check never matches the worker's run",
+					);
 				const refused = [
+					answer !== undefined && "answer",
 					(params.runs?.length ?? 1) > 1 && "runs with more than 1 entry",
 					rebuttal && "rebuttal",
 					output && "output",
@@ -1214,9 +1322,8 @@ export default function (pi: ExtensionAPI) {
 				);
 			// The session this call belongs to; a shutdown during prepare must not leave a job behind.
 			const ended = shutdown.signal;
-			// implement: the worktree exists before the call starts, so the start message can state its facts.
-			let wt: Worktree | undefined;
-			let cwdNote = "";
+			// implement: the lock and snapshots exist before the call starts, so the start message can state the base.
+			let co: Checkout | undefined;
 			if (role === "implement") {
 				// Holds the worker slot while prepare runs, so parallel calls cannot pass the cap together.
 				const slot = `prepare-${++prepareCount}`;
@@ -1224,8 +1331,8 @@ export default function (pi: ExtensionAPI) {
 				// Tracked through the shutdown-time finish: session_shutdown snapshots `running` once, so the finish
 				// for a session that ended during prepare must be part of the same promise.
 				const preparing = (async () => {
-					const prepared = await prepareImplement(ctx?.cwd ?? process.cwd(), nextImplementId(), branch);
-					if (ended.aborted) await finishImplement(prepared, "stopped: session ended");
+					const prepared = await prepareImplement(ctx?.cwd ?? process.cwd(), nextImplementId(), check.trim());
+					if (ended.aborted) await finishImplement(prepared, { failure: "stopped: session ended" });
 					return prepared;
 				})();
 				const settled = preparing.then(
@@ -1234,7 +1341,7 @@ export default function (pi: ExtensionAPI) {
 				);
 				running.add(settled);
 				try {
-					wt = await preparing;
+					co = await preparing;
 				} catch (err: any) {
 					return fail(err?.message ?? String(err));
 				} finally {
@@ -1242,22 +1349,17 @@ export default function (pi: ExtensionAPI) {
 					active.delete(slot);
 				}
 				if (ended.aborted) return fail("stopped: session ended");
-				// A cwd prefix that is untracked or ignored does not exist in the worktree.
-				if (!existsSync(wt.workerCwd)) {
-					cwdNote = ` ${wt.prefix} is not in the commit; the worker starts at the worktree root.`;
-					wt.workerCwd = wt.dir;
-				}
-				job.implement = { wt, trusted: ctx?.isProjectTrusted?.() === true, pids: new Set() };
+				job.implement = { job: co, trusted: ctx?.isProjectTrusted?.() === true, pids: new Set() };
 			}
-			const startFacts = wt
-				? `${wt.continued ? `continuing ${wt.branch} as ${wt.id}` : `${wt.branch} (${wt.id})`} from ${wt.base.slice(0, 7)}; ${wt.dirty} uncommitted file(s) in your tree are not in it.${cwdNote}`
-				: "";
+			const startFacts = co ? `${co.branch} (${co.id}) from ${co.base.slice(0, 7)}` : "";
+			// implement: an earlier attempt's WIP commit is the worker's first job.
+			const prompt = `Task:\n${task}${co?.wipHead ? "\n\nHEAD is a `WIP(delegate` commit from an earlier attempt: finish that first." : ""}`;
 			const call = async (key: string, signal: AbortSignal, onUpdate: ((u: any) => void) | undefined) => {
 				const start = Date.now();
 				active.set(key, { role, models, start, job: background ? key : undefined });
 				let facts: Facts | undefined;
 				try {
-					const cwd = wt ? wt.workerCwd : (ctx?.cwd ?? process.cwd());
+					const cwd = ctx?.cwd ?? process.cwd();
 					const round = async (stage: DelegateView["stage"], prompts: string[], runs: typeof resolved) => {
 						const states: (RunResult | undefined)[] = runs.map(() => undefined);
 						const finished = runs.map(() => false);
@@ -1301,19 +1403,32 @@ export default function (pi: ExtensionAPI) {
 					try {
 						round1 = await round(
 							"Workers",
-							resolved.map(() => `Task:\n${task}`),
+							resolved.map(() => prompt),
 							resolved,
 						);
 					} catch (err: any) {
-						if (wt) {
+						if (co) {
 							// A worker still running would keep writing while finish commits; stop its group first.
 							for (const pid of job.implement?.pids ?? []) killGroup(pid);
-							facts = await finishImplement(wt, `delegate error: ${err?.message ?? err}`);
+							facts = await finishImplement(co, { failure: `delegate error: ${err?.message ?? err}` });
 						}
-						throw new Error(`${err?.message ?? err}${facts ? `\n${formatFacts(facts)}` : ""}`);
+						throw new Error(`${err?.message ?? err}${facts ? `\n${formatHandback(facts)}` : ""}`);
 					}
 					// implement: the worker's failure or stop reason names the WIP commit.
-					if (wt) facts = await finishImplement(wt, round1[0].failure);
+					if (co) {
+						const r = round1[0];
+						facts = await finishImplement(co, {
+							failure: r.failure,
+							answer: r.output,
+							label: label(r),
+							tools: r.tools,
+							fallbacks: r.fallbackAttempts?.map(
+								(a) =>
+									`${a.model ?? "session model"} @${a.thinking} failed (${a.failure}); next ${a.nextModel ?? "session model"} @${a.nextThinking}`,
+							),
+							stderr: r.stderr,
+						});
+					}
 					// The runs to report, in request order; a failed round-2 run keeps its round-1 answer.
 					let shown: { run: RunResult; failedRound2?: RunResult }[] = round1.map((run) => ({ run }));
 					let round2: RunResult[] = [];
@@ -1353,6 +1468,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					const all = [...round1, ...round2];
 					const cost = all.reduce((sum, r) => sum + costOf(r.usage), 0);
+					const range = facts && `${facts.base.slice(0, 7)}..${facts.tip?.slice(0, 7) ?? "?"}`;
 					history.push({
 						at: Date.now(),
 						role,
@@ -1360,30 +1476,36 @@ export default function (pi: ExtensionAPI) {
 						cost,
 						ms: Date.now() - start,
 						failed,
-						...(facts && { branch: facts.branch, tip: facts.tip, wip: facts.wip !== undefined }),
+						...(facts && {
+							range: `${facts.branch} ${range}`,
+							check: facts.check.status,
+							wip: facts.wip !== undefined,
+						}),
 					});
 					if (history.length > HISTORY_SIZE) history.shift();
 					const usage = {};
 					for (const r of all) addUsage(usage, r.usage);
 					const footer =
 						all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
-					const sections = shown.map(({ run, failedRound2: r2 }) =>
-						r2
-							? `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(run)}`
-							: formatRun(run),
-					);
-					if (facts) sections[0] = `${sections[0]}\n${formatFacts(facts)}`;
+					// implement: the handback replaces the answer; the TUI view keeps the full answer.
+					const sections = facts
+						? [formatHandback(facts)]
+						: shown.map(({ run, failedRound2: r2 }) =>
+								r2
+									? `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(run)}`
+									: formatRun(run),
+							);
 					const view: DelegateView = {
 						stage: "Done",
 						web: job.web,
 						runs: shown.map(({ run, failedRound2: r2 }) =>
 							runView(run, true, r2 && `${r2.failure}${filesLine(r2).replace("\n", "; ")}`),
 						),
-						// implement: branch, tip, and WIP under the runs.
+						// implement: branch, range, check, and WIP under the runs.
 						footer:
 							[
 								facts &&
-									`${facts.branch} @ ${facts.tip?.slice(0, 7) ?? "(missing)"}${facts.wip ? ` WIP ${facts.wip.sha}` : ""}`,
+									`${facts.branch} ${range} check ${facts.check.status}${facts.wip ? ` WIP ${facts.wip.sha}` : ""}`,
 								footer.trim(),
 							]
 								.filter(Boolean)
@@ -1405,11 +1527,12 @@ export default function (pi: ExtensionAPI) {
 					};
 				} finally {
 					active.delete(key);
+					if (co) writing.delete(co.repoRoot);
 				}
 			};
-			// implement: session_shutdown waits for the whole call, so finish commits WIP and removes the worktree.
+			// implement: session_shutdown waits for the whole call, so finish commits WIP and releases the lock.
 			const tracked = <T>(p: Promise<T>): Promise<T> => {
-				if (!wt) return p;
+				if (!co) return p;
 				const settled = p.then(
 					() => {},
 					() => {},
@@ -1419,12 +1542,14 @@ export default function (pi: ExtensionAPI) {
 				return p;
 			};
 			if (!background) {
+				if (co) writing.set(co.repoRoot, co.id);
 				const signal = toolSignal ? AbortSignal.any([toolSignal, ended]) : ended;
 				return tracked(call(_id, signal, onUpdate));
 			}
 
 			// The turn's abort does not stop a background job; /delegate cancel and session shutdown do.
 			const id = `bg${++jobCount}`;
+			if (co) writing.set(co.repoRoot, id);
 			const controller = new AbortController();
 			jobs.set(id, controller);
 			statusUi = ctx?.ui;
@@ -1457,7 +1582,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text" as const,
-						text: `Started background job ${id} (${models.join(", ")})${startFacts ? ` on ${startFacts}` : "."} Its answer arrives as a later message; /delegate cancel ${id} stops it.`,
+						text: `Started background job ${id} (${models.join(", ")})${startFacts ? ` on ${startFacts}.` : "."} Its answer arrives as a later message; /delegate cancel ${id} stops it.`,
 					},
 				],
 				details: { background: id },

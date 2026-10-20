@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -7,6 +7,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -19,8 +20,9 @@ import test from "node:test";
 const {
 	finish,
 	GIT_LIMITS,
-	formatFacts,
+	formatHandback,
 	gitTripwires,
+	isCheckRun,
 	nextImplementId,
 	prepare,
 	settingsResources,
@@ -30,7 +32,7 @@ const {
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-implement-test-"));
 process.on("exit", () => rmSync(TEST_HOME, { recursive: true, force: true }));
-// Worktrees go to TMPDIR and Pi settings to PI_CODING_AGENT_DIR; both stay inside TEST_HOME.
+// The gh dir goes to TMPDIR and Pi settings to PI_CODING_AGENT_DIR; both stay inside TEST_HOME.
 process.env.TMPDIR = TEST_HOME;
 process.env.PI_CODING_AGENT_DIR = join(TEST_HOME, "agent");
 
@@ -57,26 +59,31 @@ function commit(git, repo, name) {
 	return git("rev-parse", "HEAD");
 }
 
-async function tripwires(repo, change) {
+// The job's branch is `job`; only it may move.
+async function tripwires(repo, change, branch = "refs/heads/job") {
 	const before = await snapshotGit(repo);
 	change();
-	return gitTripwires(before, await snapshotGit(repo), repo);
+	return gitTripwires(before, await snapshotGit(repo), branch);
 }
 
-test("no change trips nothing; new refs and delegate/* moves are fine", async () => {
+test("no change trips nothing; the job's branch, new refs and tags, and refs/remotes may change", async () => {
 	const { repo, git } = fixture();
-	git("branch", "delegate/x");
+	git("branch", "job");
 	assert.deepEqual(await tripwires(repo, () => {}), []);
 	const base = git("rev-parse", "HEAD");
 	assert.deepEqual(
 		await tripwires(repo, () => {
-			git("switch", "-q", "delegate/x");
+			git("switch", "-q", "job");
 			commit(git, repo, "b.txt");
 			git("switch", "-q", "main");
 			git("branch", "new-branch", base);
+			git("tag", "v-new");
+			git("update-ref", "refs/remotes/origin/main", base);
 		}),
 		[],
 	);
+	git("update-ref", "refs/remotes/origin/main", git("rev-parse", "job"));
+	assert.deepEqual(await tripwires(repo, () => git("update-ref", "refs/remotes/origin/main", base)), []);
 });
 
 test("another branch moved or deleted is flagged", async () => {
@@ -91,15 +98,6 @@ test("another branch moved or deleted is flagged", async () => {
 	assert.match(moved[0], /^refs\/heads\/other moved during the job/);
 	const deleted = await tripwires(repo, () => git("update-ref", "-d", "refs/heads/other"));
 	assert.deepEqual(deleted, ["refs/heads/other was deleted during the job"]);
-});
-
-test("the main branch may fast-forward, not move to a non-descendant", async () => {
-	const { repo, git } = fixture();
-	assert.deepEqual(await tripwires(repo, () => commit(git, repo, "b.txt")), []);
-	const first = git("rev-list", "--max-parents=0", "HEAD");
-	const reset = await tripwires(repo, () => git("update-ref", "refs/heads/main", first));
-	assert.equal(reset.length, 1);
-	assert.match(reset[0], /^main branch refs\/heads\/main moved to a non-descendant/);
 });
 
 test("local config and hooks/info changes are flagged", async () => {
@@ -126,30 +124,6 @@ test("settings tripwire compares only resource keys", async () => {
 	const changed = settingsTripwire(before, await settingsResources(dir));
 	assert.equal(changed.length, 1);
 	assert.match(changed[0], /\/tmp\/wt\/extensions/);
-});
-
-test("the main session switching branches and committing there is fine; resetting it is not", async () => {
-	const { repo, git } = fixture();
-	git("branch", "feature");
-	const first = git("rev-parse", "HEAD");
-	assert.deepEqual(
-		await tripwires(repo, () => {
-			git("switch", "-q", "feature");
-			commit(git, repo, "b.txt");
-		}),
-		[],
-	);
-	git("switch", "-q", "main");
-	commit(git, repo, "c.txt");
-	const reset = await tripwires(repo, () => {
-		git("switch", "-q", "feature");
-		git("update-ref", "refs/heads/main", first);
-	});
-	assert.equal(reset.length, 1);
-	assert.match(reset[0], /^main branch refs\/heads\/main moved to a non-descendant/);
-	git("switch", "-q", "main");
-	const created = await tripwires(repo, () => git("switch", "-q", "-c", "fresh"));
-	assert.deepEqual(created, []);
 });
 
 test("upstream tracking config may be added or changed; other config and removals still flag", async () => {
@@ -187,134 +161,311 @@ test("a snapshot outside a repository throws so the caller can report the tripwi
 	await assert.rejects(snapshotGit(mkdtempSync(join(TEST_HOME, "norepo-"))), /^Error: git .* failed in /);
 });
 
-// --- Worktree lifecycle ---
+// --- Checkout lifecycle ---
 
-const worktrees = () => readdirSync(TEST_HOME).filter((n) => n.startsWith("me-pi-delegate-wt-"));
+const CHECK = "npm test";
+// A fixture on a goal branch with two commits, so a reset can leave the base.
+function goalFixture() {
+	const f = fixture();
+	commit(f.git, f.repo, "second.txt");
+	f.git("switch", "-q", "-c", "goal/x");
+	return f;
+}
+const lockOf = (repo) => join(repo, ".git", "me-pi-implement.lock");
+const passed = (job) => {
+	job.check.status = "pass";
+	job.check.runs.push(`pass: ${CHECK}`);
+};
+const ok = { answer: "Added the feature.", label: "[m @high $0.0100 3s]" };
 
-test("prepare and finish: worker commits on its branch; facts come from git, the diff only from its file", async () => {
-	const { repo, git } = fixture();
-	mkdirSync(join(repo, "sub"));
-	writeFileSync(join(repo, "sub", "s.txt"), "s\n");
-	git("add", "-A");
-	git("commit", "-q", "-m", "sub");
-	writeFileSync(join(repo, "dirty.txt"), "uncommitted\n");
-	const head = git("rev-parse", "HEAD");
-	const wt = await prepare(join(repo, "sub"), "im90");
-	assert.match(wt.branch, /^delegate\/\d{8}-\d{6}-im90$/);
-	assert.equal(wt.base, head);
-	assert.equal(wt.workerCwd, join(wt.dir, "sub/"));
-	assert.equal(wt.dirty, 1);
-	assert.ok(!existsSync(join(wt.dir, "dirty.txt")), "the worker does not get uncommitted files");
-	const wgit = (...args) => execFileSync("git", ["-C", wt.dir, ...args], { encoding: "utf8" }).trim();
-	writeFileSync(join(wt.dir, "new.txt"), "SECRET-DIFF-CONTENT\n");
-	wgit("add", "-A");
-	wgit("commit", "-q", "-m", "feat: new");
-	const tip = wgit("rev-parse", "HEAD");
-	const facts = await finish(wt);
-	const out = formatFacts(facts);
-	assert.equal(facts.failed, false, out);
-	assert.ok(
-		out.startsWith(`Branch: ${wt.branch} @ ${tip.slice(0, 7)} (base ${head.slice(0, 7)}, your HEAD at start)`),
-		out,
-	);
-	assert.match(out, /^Commits \(1, oldest first\):\n {2}\w{7,} feat: new$/m);
-	assert.match(out, /^Diffstat: 1 file changed, 1 insertion\(\+\)$/m);
-	assert.match(out, /^ {2}new\.txt \| 1 \+$/m);
-	assert.match(out, /^Worktree: removed$/m);
-	assert.doesNotMatch(out, /\u2717|SECRET-DIFF-CONTENT/);
-	assert.match(
-		out,
-		new RegExp(`^Diff: ${facts.diffPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(0600, base\\.\\.tip\\)$`, "m"),
-	);
-	assert.equal(statSync(facts.diffPath).mode & 0o777, 0o600);
-	assert.match(readFileSync(facts.diffPath, "utf8"), /SECRET-DIFF-CONTENT/);
-	assert.ok(!existsSync(wt.dir), "worktree removed");
-	assert.equal(git("rev-parse", `refs/heads/${wt.branch}`), tip);
-	assert.equal(git("rev-parse", "HEAD"), head);
-	assert.equal(git("status", "--porcelain"), "?? dirty.txt");
-});
-
-test("finish commits leftovers as WIP and reports it as a failure", async () => {
-	const { repo } = fixture();
-	const wt = await prepare(repo, "im91");
-	writeFileSync(join(wt.dir, "a.txt"), "changed\n");
-	writeFileSync(join(wt.dir, "b.txt"), "b\n");
-	const facts = await finish(wt, "stopped: timeout after 900s");
-	const out = formatFacts(facts);
-	assert.equal(facts.failed, true);
-	assert.ok(facts.wip);
-	assert.match(
-		out,
-		new RegExp(
-			`^\u2717 WIP ${facts.wip.sha} \\(stopped: timeout after 900s\\): a\\.txt, b\\.txt\\. Do not merge; continue with branch: "${wt.branch}"\\.$`,
-			"m",
-		),
-	);
-	const subject = execFileSync("git", ["-C", repo, "log", "-1", "--format=%s", wt.branch], {
-		encoding: "utf8",
-	}).trim();
-	assert.equal(subject, "WIP(delegate im91): stopped: timeout after 900s");
-	assert.match(out, /^Worktree: removed$/m);
-	const plain = await prepare(repo, "im92");
-	writeFileSync(join(plain.dir, "c.txt"), "c\n");
-	assert.equal((await finish(plain)).wip.reason, "left uncommitted by the worker");
-});
-
-test("finish keeps the worktree and skips WIP when the worker left its branch", async () => {
-	const { repo, git } = fixture();
-	git("branch", "other");
-	const wt = await prepare(repo, "im93");
-	execFileSync("git", ["-C", wt.dir, "switch", "-q", "--detach"]);
-	writeFileSync(join(wt.dir, "x.txt"), "x\n");
-	const facts = await finish(wt);
-	const out = formatFacts(facts);
-	assert.equal(facts.failed, true);
-	assert.equal(facts.wip, undefined);
-	assert.match(out, new RegExp(`^\u2717 worktree HEAD is detached, not ${wt.branch}$`, "m"));
-	assert.match(out, new RegExp(`^\u2717 Worktree kept at ${wt.dir}: `, "m"));
-	assert.ok(existsSync(join(wt.dir, "x.txt")));
-});
-
-test("a continued branch lists commits from its tip at start, and diffs from the merge-base", async () => {
-	const { repo, git } = fixture();
-	const first = await prepare(repo, "im94");
-	writeFileSync(join(first.dir, "one.txt"), "1\n");
-	execFileSync("git", ["-C", first.dir, "add", "-A"]);
-	execFileSync("git", ["-C", first.dir, "commit", "-q", "-m", "one"]);
-	await finish(first);
-	const head = git("rev-parse", "HEAD");
-	const wt = await prepare(repo, "im95", first.branch);
-	assert.equal(wt.branch, first.branch);
-	assert.equal(wt.base, head);
-	writeFileSync(join(wt.dir, "two.txt"), "2\n");
-	execFileSync("git", ["-C", wt.dir, "add", "-A"]);
-	execFileSync("git", ["-C", wt.dir, "commit", "-q", "-m", "two"]);
-	const out = formatFacts(await finish(wt));
-	assert.match(
-		out,
-		new RegExp(`^Branch: ${first.branch} @ \\w+ \\(continued as im95; base \\w+, merge-base with your HEAD\\)$`, "m"),
-	);
-	assert.match(out, /^Commits \(1, oldest first\):\n {2}\w+ two$/m);
-	assert.match(out, /^Diffstat: 2 files changed, 2 insertions\(\+\)$/m);
-});
-
-test("prepare refuses bad branches, non-repos, and empty repos, and leaves no temp dir", async () => {
-	const { repo, git } = fixture();
-	git("branch", "feature");
-	const before = worktrees().length;
-	await assert.rejects(prepare(repo, "im96", "feature"), /branch must start with delegate\/: feature/);
-	await assert.rejects(prepare(repo, "im96", "delegate/missing"), /no such branch: delegate\/missing/);
-	await assert.rejects(prepare(mkdtempSync(join(TEST_HOME, "plain-")), "im96"), /implement needs a git repository/);
+test("prepare refuses before taking the lock and leaves nothing behind", async () => {
+	const plain = mkdtempSync(join(TEST_HOME, "plain-"));
+	await assert.rejects(prepare(plain, "im90", CHECK), /implement needs a git repository with a commit/);
 	const empty = mkdtempSync(join(TEST_HOME, "empty-"));
 	execFileSync("git", ["init", "-q", "--template=", empty]);
-	await assert.rejects(prepare(empty, "im96"), /implement needs a git repository with a commit/);
-	git("branch", "delegate/taken");
-	const busy = await prepare(repo, "im97", "delegate/taken");
-	const refs = git("for-each-ref", "--format=%(refname)");
-	await assert.rejects(prepare(repo, "im98", "delegate/taken"), /git worktree add failed for .*me-pi-delegate-wt-/);
-	assert.equal(git("for-each-ref", "--format=%(refname)"), refs, "a refused add leaves no branch");
-	assert.equal(worktrees().length, before + 1, "only the live worktree's dir remains");
-	await finish(busy);
+	await assert.rejects(prepare(empty, "im90", CHECK), /implement needs a git repository with a commit/);
+	for (const [setup, error] of [
+		[({ repo }) => writeFileSync(join(repo, "a.txt"), "changed\n"), /needs a clean tree/],
+		[({ repo }) => writeFileSync(join(repo, "untracked.txt"), "x\n"), /needs a clean tree/],
+		[({ git }) => git("switch", "-q", "--detach"), /HEAD on a branch, not detached; `git switch -c goal\/<slug>`/],
+		[({ git }) => git("switch", "-q", "main"), /does not commit on main; `git switch -c goal\/<slug>` first/],
+		[({ git }) => git("switch", "-q", "-c", "master"), /does not commit on master/],
+		[
+			({ repo, git }) => writeFileSync(join(repo, ".git", "MERGE_HEAD"), `${git("rev-parse", "HEAD")}\n`),
+			/a merge is in progress/,
+		],
+	]) {
+		const f = goalFixture();
+		setup(f);
+		await assert.rejects(prepare(f.repo, "im90", CHECK), error);
+		assert.ok(!existsSync(lockOf(f.repo)), `no lock after ${error}`);
+	}
+	const { repo } = goalFixture();
+	writeFileSync(lockOf(repo), `${process.pid} im7\n`);
+	await assert.rejects(prepare(repo, "im90", CHECK), /implement job im7 \(pid \d+\) is already writing in /);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im7\n`, "a live lock is kept");
+});
+
+test("an empty or unparseable lock counts as live", async () => {
+	for (const content of ["", "garbage\n"]) {
+		const { repo } = goalFixture();
+		writeFileSync(lockOf(repo), content);
+		await assert.rejects(
+			prepare(repo, "im89", CHECK),
+			/me-pi-implement\.lock is unreadable; another implement job may be starting/,
+		);
+		assert.equal(readFileSync(lockOf(repo), "utf8"), content);
+	}
+});
+
+test("two takeovers of a dead lock: exactly one wins", async () => {
+	const { repo } = goalFixture();
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((r) => dead.once("exit", r));
+	writeFileSync(lockOf(repo), `${dead.pid} im5\n`);
+	const results = await Promise.allSettled([prepare(repo, "im87", CHECK), prepare(repo, "im88", CHECK)]);
+	const won = results.filter((r) => r.status === "fulfilled");
+	assert.equal(won.length, 1, results.map((r) => r.reason?.message).join("; "));
+	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} ${won[0].value.id}\n`);
+	await finish(won[0].value, ok);
+	assert.ok(!existsSync(lockOf(repo)));
+	assert.deepEqual(
+		readdirSync(join(repo, ".git")).filter((n) => n.startsWith("me-pi-implement")),
+		[],
+		"no temp files left",
+	);
+});
+
+test("a lock whose pid is dead is taken over", async () => {
+	const { repo } = goalFixture();
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((r) => dead.once("exit", r));
+	writeFileSync(lockOf(repo), `${dead.pid} im6\n`);
+	const job = await prepare(repo, "im91", CHECK);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im91\n`);
+	await finish(job, ok);
+	assert.ok(!existsSync(lockOf(repo)));
+});
+
+test("finish: worker commits give the range, a clean tree, no lock, and a 0600 details file", async () => {
+	const { repo, git } = goalFixture();
+	const head = git("rev-parse", "HEAD");
+	const job = await prepare(repo, "im92", CHECK);
+	assert.equal(job.branch, "goal/x");
+	assert.equal(job.base, head);
+	assert.equal(job.wipHead, false);
+	assert.equal(job.commonDir, realpathSync(join(repo, ".git")));
+	commit(git, repo, "feature.txt");
+	passed(job);
+	const facts = await finish(job, ok);
+	const out = formatHandback(facts);
+	assert.equal(facts.failed, false, out);
+	const tip = git("rev-parse", "HEAD");
+	const lines = out.split("\n");
+	assert.equal(lines.length, 2, out);
+	assert.equal(
+		lines[0],
+		`✓ im92 goal/x ${head.slice(0, 7)}..${tip.slice(0, 7)}: 1 commit, 1 file +1 -0; check ✓ \`npm test\` [m @high $0.0100 3s]`,
+	);
+	assert.equal(lines[1], `Added the feature. Details: ${facts.detailsPath}`);
+	assert.equal(statSync(facts.detailsPath).mode & 0o777, 0o600);
+	const details = readFileSync(facts.detailsPath, "utf8");
+	assert.match(details, /feature\.txt/);
+	assert.match(details, /Added the feature\./);
+	assert.equal(git("status", "--porcelain"), "");
+	assert.ok(!existsSync(lockOf(repo)));
+	assert.ok(!existsSync(job.ghConfigDir));
+});
+
+test("finish commits leftovers as WIP on the branch with hooks off; odd reasons stay on one line", async () => {
+	const { repo, git } = goalFixture();
+	const job = await prepare(repo, "im93", CHECK);
+	// A hook that would fail the commit: the WIP commit skips it.
+	git("config", "core.hooksPath", join(repo, "hooks"));
+	mkdirSync(join(repo, "hooks"));
+	writeFileSync(join(repo, "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+	writeFileSync(join(repo, "a.txt"), "changed\n");
+	const facts = await finish(job, { failure: "stopped:\nline two" });
+	assert.ok(facts.wip, formatHandback(facts));
+	assert.equal(git("log", "-1", "--format=%s"), "WIP(delegate im93): stopped:");
+	assert.equal(git("rev-parse", "--abbrev-ref", "HEAD"), "goal/x");
+	assert.equal(git("status", "--porcelain"), "");
+	const out = formatHandback(facts);
+	assert.match(out, /^✗ im93 /);
+	assert.match(out, /^✗ WIP \w+ on goal\/x: a\.txt, hooks\/$/m, "the failure line already gives the reason");
+	assert.match(out, /^✗ stopped:$/m);
+	assert.doesNotMatch(out, /^line two/m);
+	assert.ok(!existsSync(lockOf(repo)));
+});
+
+test("finish: a switched branch is ✗ with no WIP", async () => {
+	const { repo, git } = goalFixture();
+	const job = await prepare(repo, "im94", CHECK);
+	git("switch", "-q", "main");
+	writeFileSync(join(repo, "x.txt"), "x\n");
+	passed(job);
+	const facts = await finish(job, ok);
+	assert.equal(facts.wip, undefined);
+	assert.match(formatHandback(facts), /^✗ HEAD moved: now refs\/heads\/main, not goal\/x; no WIP commit$/m);
+	assert.equal(git("status", "--porcelain"), "?? x.txt");
+	assert.ok(!existsSync(lockOf(repo)));
+});
+
+test("finish flags a reset below the base, a merge commit, an old commit, a moved ref, and .pi changes", async () => {
+	const cases = [
+		["reset below the base", ({ git }) => git("reset", "-q", "--hard", "HEAD~1"), /no longer descends from the base/],
+		[
+			"merge commit",
+			({ repo, git }) => {
+				git("switch", "-q", "-c", "side");
+				commit(git, repo, "side.txt");
+				git("switch", "-q", "goal/x");
+				commit(git, repo, "mine.txt");
+				git("merge", "-q", "--no-ff", "--no-edit", "side");
+			},
+			/merge commit\(s\) in the range: \w+/,
+		],
+		[
+			"fast-forward to an older commit",
+			({ git }) => git("merge", "-q", "--ff-only", "old"),
+			/commit\(s\) older than the job \(fast-forward to existing work\?\): \w+/,
+		],
+		[
+			"another ref moved",
+			({ git }) => git("update-ref", "refs/heads/main", "HEAD~1"),
+			/Tripwire: refs\/heads\/main moved during the job/,
+		],
+		[
+			".pi changed",
+			({ repo, git }) => {
+				mkdirSync(join(repo, ".pi"));
+				writeFileSync(join(repo, ".pi", "x.ts"), "x\n");
+				git("add", "-A");
+				git("commit", "-q", "-m", "pi");
+			},
+			/Tripwire: \.pi or \.agents changed \(\.pi\/x\.ts\); review before \/reload/,
+		],
+		[
+			"settings changed",
+			() => {
+				mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+				writeFileSync(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), JSON.stringify({ packages: ["/x"] }));
+			},
+			/Tripwire: Pi settings resources changed during the job/,
+		],
+	];
+	for (const [name, change, error] of cases) {
+		const f = goalFixture();
+		// An existing commit, dated an hour ago, the job's branch can fast-forward to.
+		f.git("branch", "old");
+		f.git("switch", "-q", "old");
+		writeFileSync(join(f.repo, "old.txt"), "old\n");
+		f.git("add", "-A");
+		execFileSync("git", ["-C", f.repo, "commit", "-q", "-m", "old"], {
+			env: { ...process.env, GIT_COMMITTER_DATE: new Date(Date.now() - 3600_000).toISOString() },
+		});
+		f.git("switch", "-q", "goal/x");
+		rmSync(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), { force: true });
+		const job = await prepare(f.repo, "im95", CHECK);
+		change(f);
+		passed(job);
+		const facts = await finish(job, ok);
+		assert.equal(facts.failed, true, name);
+		assert.match(formatHandback(facts), new RegExp(`^✗ .*${error.source}`, "m"), name);
+	}
+	rmSync(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), { force: true });
+});
+
+test("finish never throws; git timeouts become problems and the lock is released", async (t) => {
+	const { repo } = goalFixture();
+	const job = await prepare(repo, "im96", CHECK);
+	const saved = GIT_LIMITS.timeoutMs;
+	t.after(() => {
+		GIT_LIMITS.timeoutMs = saved;
+	});
+	GIT_LIMITS.timeoutMs = 1;
+	const facts = await finish(job, ok);
+	GIT_LIMITS.timeoutMs = saved;
+	assert.equal(facts.failed, true);
+	assert.match(formatHandback(facts), /timed out after 1 ms/);
+	assert.ok(!existsSync(lockOf(repo)));
+});
+
+test("prepare notes a WIP HEAD from an earlier attempt", async () => {
+	const { repo, git } = goalFixture();
+	writeFileSync(join(repo, "a.txt"), "half\n");
+	git("commit", "-qam", "WIP(delegate im1): stopped: cancelled");
+	const job = await prepare(repo, "im97", CHECK);
+	assert.equal(job.wipHead, true);
+	await finish(job, ok);
+});
+
+const facts = (over = {}) => ({
+	id: "im3",
+	branch: "goal/x",
+	base: "9f8e7d6aaaaaaa",
+	tip: "1a2b3c4bbbbbbb",
+	commits: [],
+	commitCount: 2,
+	files: 3,
+	insertions: 40,
+	deletions: 5,
+	stat: "",
+	problems: [],
+	check: { command: "npm run check --prefix extensions", status: "pass", runs: [] },
+	outcome: { answer: "Did it.", label: "[glm @high $0.04 118s]" },
+	detailsPath: "/tmp/me-pi-delegate-1/im3.md",
+	failed: false,
+	...over,
+});
+
+test("formatHandback: a failure shows only its first line, capped at 200 characters", () => {
+	const failure = `${"f".repeat(300)}\nsecond line`;
+	const out = formatHandback(
+		facts({ failed: true, outcome: { failure }, wip: { sha: "abc1234", reason: "x", files: ["a.txt"], more: 0 } }),
+	);
+	assert.ok(out.split("\n").includes(`✗ ${"f".repeat(200)}`), out);
+	assert.doesNotMatch(out, /second line|f{201}/);
+	assert.match(out, /^✗ WIP abc1234 on goal\/x: a\.txt$/m);
+});
+
+test("formatHandback: two lines when ✓; BLOCKED capped; control characters quoted; check problems are ✗", () => {
+	assert.equal(
+		formatHandback(facts()),
+		"✓ im3 goal/x 9f8e7d6..1a2b3c4: 2 commits, 3 files +40 -5; check ✓ `npm run check --prefix extensions` [glm @high $0.04 118s]\nDid it. Details: /tmp/me-pi-delegate-1/im3.md",
+	);
+	const answer = ["Summary", "BLOCKED: a: x", "BLOCKED: b: x", "BLOCKED: c: x", "BLOCKED: d: x", "BLOCKED: e: x"].join(
+		"\n",
+	);
+	const blocked = formatHandback(facts({ outcome: { answer } })).split("\n");
+	assert.equal(blocked[1], "Summary. Details: /tmp/me-pi-delegate-1/im3.md");
+	assert.deepEqual(blocked.slice(2), [
+		"BLOCKED: a: x",
+		"BLOCKED: b: x",
+		"BLOCKED: c: x",
+		"+2 more BLOCKED in details",
+	]);
+	const quoted = formatHandback(facts({ outcome: { answer: `x\u001b[2Jy${"z".repeat(300)}` } })).split("\n");
+	assert.equal(quoted.length, 2);
+	assert.match(quoted[1], /^"x\\u001b\[2Jyz+"\. Details:/);
+	assert.ok(quoted[1].length < 260);
+	for (const [status, line] of [
+		["stale", "✗ check stale: edited after the last run"],
+		["fail", "✗ check failed"],
+		["none", "✗ check not run"],
+	]) {
+		const out = formatHandback(facts({ failed: true, check: { command: "npm test", status, runs: [] } }));
+		assert.match(out, /^✗ im3 /);
+		assert.ok(out.split("\n").includes(line), out);
+	}
+});
+
+test("isCheckRun: exact command, with an optional rtk prefix or 2>&1; no pipes or chains", () => {
+	const check = "npm run check --prefix extensions";
+	for (const c of [check, `rtk ${check}`, `${check} 2>&1`, `  npm run  check --prefix extensions `])
+		assert.equal(isCheckRun(c, check), true, c);
+	for (const c of [`${check} | tail`, `${check}; true`, `${check} || true`, "npm test", `cd x && ${check}`])
+		assert.equal(isCheckRun(c, check), false, c);
 });
 
 test("implement ids increment across a reload", async () => {
@@ -323,59 +474,4 @@ test("implement ids increment across a reload", async () => {
 	const b = reloaded.nextImplementId();
 	assert.equal(Number(b.slice(2)), Number(a.slice(2)) + 1);
 	assert.match(a, /^im\d+$/);
-});
-
-test("the WIP commit ignores hooks and signing the worker configured; odd reasons stay on one line", async () => {
-	const { repo } = fixture();
-	const wt = await prepare(repo, "im80");
-	const wgit = (...args) => execFileSync("git", ["-C", wt.dir, ...args], { encoding: "utf8" });
-	// Worktree-local config, so the main repo's tripwire is unaffected by the setup itself.
-	wgit("config", "extensions.worktreeConfig", "true");
-	wgit("config", "--worktree", "commit.gpgsign", "true");
-	wgit("config", "--worktree", "gpg.program", "false");
-	writeFileSync(join(wt.dir, "a.txt"), "changed\n");
-	const facts = await finish(wt, "stopped:\nline two");
-	assert.ok(facts.wip, formatFacts(facts));
-	const out = formatFacts(facts);
-	assert.match(out, /^\u2717 WIP \w+ \("stopped:\\nline two"\): a\.txt\./m);
-	assert.doesNotMatch(out, /^line two/m);
-});
-
-test("finish keeps the worktree, without WIP, when the job's branch was deleted", async () => {
-	const { repo, git } = fixture();
-	const wt = await prepare(repo, "im81");
-	writeFileSync(join(wt.dir, "a.txt"), "changed\n");
-	git("update-ref", "-d", `refs/heads/${wt.branch}`);
-	const facts = await finish(wt);
-	assert.equal(facts.wip, undefined);
-	assert.equal(facts.worktree.removed, false);
-	assert.match(formatFacts(facts), new RegExp(`^\u2717 branch ${wt.branch} is gone`, "m"));
-});
-
-test("finish flags a branch that no longer contains its start", async () => {
-	const { repo, git } = fixture();
-	const first = await prepare(repo, "im82");
-	writeFileSync(join(first.dir, "one.txt"), "1\n");
-	execFileSync("git", ["-C", first.dir, "add", "-A"]);
-	execFileSync("git", ["-C", first.dir, "commit", "-q", "-m", "one"]);
-	await finish(first);
-	const wt = await prepare(repo, "im83", first.branch);
-	execFileSync("git", ["-C", wt.dir, "reset", "-q", "--hard", git("rev-parse", "HEAD")]);
-	const out = formatFacts(await finish(wt));
-	assert.match(out, new RegExp(`^\u2717 branch no longer contains its start ${wt.start.slice(0, 7)}$`, "m"));
-});
-
-test("finish never throws; git timeouts become problems", async (t) => {
-	const { repo } = fixture();
-	const wt = await prepare(repo, "im84");
-	const saved = GIT_LIMITS.timeoutMs;
-	t.after(() => {
-		GIT_LIMITS.timeoutMs = saved;
-	});
-	GIT_LIMITS.timeoutMs = 1;
-	const facts = await finish(wt);
-	GIT_LIMITS.timeoutMs = saved;
-	assert.equal(facts.failed, true);
-	assert.match(formatFacts(facts), /timed out after 1 ms/);
-	execFileSync("git", ["-C", repo, "worktree", "remove", "--force", wt.dir]);
 });

@@ -113,9 +113,12 @@ export function renderCall(args: any, theme: Theme): Component {
 		.join(", ");
 	const badges = [args?.web === true && "web", args?.rebuttal && "rebuttal", args?.output && "output"].filter(Boolean);
 	const task = firstLine(typeof args?.task === "string" ? args.task : "...");
+	// implement: the check that must pass.
+	const check = typeof args?.check === "string" ? ` ${fg("muted", `check \`${firstLine(args.check)}\``)}` : "";
 	const line =
 		`${theme.bold(fg("toolTitle", "delegate"))} ${fg("accent", args?.role ?? "general")} ${fg("muted", models)}` +
 		(badges.length ? ` ${fg("warning", `[${badges.join(", ")}]`)}` : "") +
+		check +
 		` ${fg("dim", task)}`;
 	return new Lines([line]);
 }
