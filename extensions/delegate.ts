@@ -1024,7 +1024,7 @@ export default function (pi: ExtensionAPI) {
 		return;
 	}
 	let shutdown = new AbortController();
-	const running = new Set<Promise<RunResult>>();
+	const running = new Set<Promise<unknown>>();
 	// For /delegate status: calls running now, and the last HISTORY_SIZE finished calls.
 	const active = new Map<string, ActiveCall>();
 	// Background jobs by id, with what they spent; Pi's session usage never includes it.
