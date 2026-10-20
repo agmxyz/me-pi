@@ -27,6 +27,7 @@ const {
 	LOCAL_TOOLS,
 	WEB_TOOLS,
 	PROMPT_GUIDELINES,
+	PROMPT_SNIPPET,
 	ROLES,
 	WORKER_CONTRACT,
 	loadModelSet,
@@ -1393,6 +1394,12 @@ test("guidelines keep delegation proportionate and require reviews and BLOCKED h
 	assert.match(all, /do not edit those files until the review returns/);
 	assert.match(all, /`rebuttal: true`/);
 	assert.match(all, /BLOCKED/);
+	assert.match(all, /one `implement` worker edits, runs the checks, and commits on its own `delegate\/\*` branch/);
+	assert.match(all, /For `implement`, set `background: true`\. The worker starts from your HEAD commit/);
+	assert.match(all, /Merge only a result with no ✗ line/);
+	assert.match(all, /under the Approval rules/);
+	assert.match(all, /never undo the merge without approval/);
+	assert.match(PROMPT_SNIPPET, /one `implement` worker that commits on its own branch/);
 });
 
 // A tool context that records the status line.

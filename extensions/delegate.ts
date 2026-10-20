@@ -985,12 +985,12 @@ function buildSchema(set: ModelSet) {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; availability failures try the next model. research and challenge can use web tools; all workers are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; availability failures try the next model. research and challenge can use web tools; implement edits, runs checks, and commits on its own branch in a temp worktree; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
 				description:
-					"Self-contained instructions: goal, context, acceptance criteria, paths. The worker sees nothing else and cannot run commands: write diffs or command output to a temp file and pass its path.",
+					"Self-contained instructions: goal, context, acceptance criteria, paths. The worker sees nothing else. Read-only workers cannot run commands: write diffs or command output to a temp file and pass its path. For implement, name the check command.",
 			},
 			web: {
 				type: "boolean",
@@ -1043,15 +1043,17 @@ function buildSchema(set: ModelSet) {
 }
 
 export const PROMPT_SNIPPET =
-	"Run read-only workers (general, or the presets scout, research, review, challenge), alone or as a multi-model panel with rebuttal; only their answers come back (drafts only with `output: true`)";
+	"Run read-only workers (general, or the presets scout, research, review, challenge), alone or as a multi-model panel with rebuttal, or one `implement` worker that commits on its own branch; only answers and branch facts come back (drafts only with `output: true`)";
 
 export const PROMPT_GUIDELINES = [
-	"Workers are read-only: they search, research, review, and challenge; you edit, run commands and tests, and commit. Delegate when the work means reading more than about 3 files you will not edit, researching docs or the web, reviewing, or challenging a plan; read 1-3 known files yourself.",
+	"Read-only workers search, research, review, and challenge; one `implement` worker edits, runs the checks, and commits on its own `delegate/*` branch. You push, open PRs, merge, and delete branches, under the Approval rules. Delegate reading more than about 3 files you will not edit, research, reviews, plan challenges, and self-contained changes that take many steps; make 1-3 file edits yourself.",
 	"Before a commit that touches 2+ files or adds behaviour, get a fresh review: write `git diff HEAD` to a temp file (`git add -N` new files first) and pass its path with the acceptance criteria, say you ran the checks, keep your self-assessment out, and do not edit those files until the review returns.",
 	"When the user names several models for one question, send one call with one `runs` entry per model (with its thinking) and `rebuttal: true` if they should check each other; then report agreements, disagreements with their evidence, and your verdict.",
 	"Omit `role` for a general worker, or pick the preset that fits; `answer` (at most 400 characters) sets the answer format. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
 	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory and the result lists the files; copy what you keep and check the diff yourself.",
 	"Pass on only what matters from worker answers, and resolve or report every BLOCKED line.",
+	"For `implement`, set `background: true`. The worker starts from your HEAD commit, not your uncommitted changes. The task names the goal, the files (repo-relative paths only), the acceptance criteria, and the check command.",
+	"An implement result gives the branch, commits, diffstat, and a diff file path, not the diff. Merge only a result with no ✗ line: get a fresh `review` of the diff file, then `git merge <branch>` on a clean tree (no squash) and run the check once. On a tripwire or kept-worktree ✗, report to the user and do not merge. If the check fails after the merge, fix forward (follow-up implement or a commit); never undo the merge without approval. For WIP or review findings, send a follow-up implement with `branch` set. Delete merged branches with `git branch -d`; put discarded ones in one `git branch -D a b c` for the user to approve.",
 	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile; the answer arrives as a later `delegate` message that starts a turn. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
 ];
 
@@ -1134,7 +1136,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run read-only Pi workers and get back only their answers. Workers read files and load skills; research and challenge, or any call with `web: true`, also use the web. They cannot edit, run commands, or commit; with `output: true` each one can write drafts into its own temp directory.",
+			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. `implement` edits, runs commands, and commits in a temp git worktree on a `delegate/*` branch (new, or `branch` to continue); it cannot push or use gh, and the result lists the branch, commits, diffstat, and a diff file.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme) => renderCall(args, theme),
@@ -1374,7 +1376,15 @@ export default function (pi: ExtensionAPI) {
 						runs: shown.map(({ run, failedRound2: r2 }) =>
 							runView(run, true, r2 && `${r2.failure}${filesLine(r2).replace("\n", "; ")}`),
 						),
-						footer: footer.trim() || undefined,
+						// implement: branch, tip, and WIP under the runs.
+						footer:
+							[
+								facts &&
+									`${facts.branch} @ ${facts.tip?.slice(0, 7) ?? "(missing)"}${facts.wip ? ` WIP ${facts.wip.sha}` : ""}`,
+								footer.trim(),
+							]
+								.filter(Boolean)
+								.join(" · ") || undefined,
 					};
 					return {
 						content: [
