@@ -272,6 +272,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	if (!keepHistory) {
 		globalThis[Symbol.for("me-pi.delegate.history")] = [];
 		globalThis[Symbol.for("me-pi.delegate.background-spend")] = { cost: 0 };
+		globalThis[Symbol.for("me-pi.delegate.job-count")] = { n: 0 };
 	}
 	registerExtension(pi);
 	return { tool: tools.delegate, handlers, commands, pi, messages };
@@ -1456,6 +1457,10 @@ test("guidelines keep delegation proportionate and require reviews and BLOCKED h
 	assert.match(all, /Until the handback, do not edit, commit, or switch branches in that repo/);
 	assert.match(all, /Trust a ✓ handback: no diff read, no review, no re-check/);
 	assert.match(all, /Tripwire ✗: stop and tell the user/);
+	assert.match(
+		all,
+		/tell the reviewer which check passed \(from the handbacks\) so it does not report the check as BLOCKED/,
+	);
 	assert.match(all, /Never push a range containing a `WIP\(delegate` commit/);
 	assert.doesNotMatch(all, /git merge|delegate\/\*/);
 	assert.match(
@@ -1548,6 +1553,23 @@ test("background spend survives /reload", async (t) => {
 	await run(reloaded.tool, { role: "scout", task: "y", background: true }, undefined, undefined, ctx);
 	assert.match(statuses[0][1], /^delegate bg: 1 running, \$0\.0\d+ spent$/);
 	assert.ok(!statuses[0][1].endsWith("$0.0000 spent"), "the first job's spend is kept");
+	await waitFor(() => reloaded.messages.length === 1, "the second answer");
+});
+
+test("background job ids do not repeat after /reload", async (t) => {
+	const first = setup(t);
+	const one = await run(first.tool, { role: "scout", task: "x", background: true }, undefined, undefined, bgCtx().ctx);
+	assert.match(text(one), /^Started background job bg1 /);
+	await waitFor(() => first.messages.length === 1, "the first answer");
+	const reloaded = setup(t, { keepHistory: true });
+	const two = await run(
+		reloaded.tool,
+		{ role: "scout", task: "y", background: true },
+		undefined,
+		undefined,
+		bgCtx().ctx,
+	);
+	assert.match(text(two), /^Started background job bg2 /);
 	await waitFor(() => reloaded.messages.length === 1, "the second answer");
 });
 

@@ -522,6 +522,7 @@ export function resolveRun(
 const GROUPS_KEY = Symbol.for("me-pi.delegate.groups");
 const HISTORY_KEY = Symbol.for("me-pi.delegate.history");
 const SPEND_KEY = Symbol.for("me-pi.delegate.background-spend");
+const JOBS_KEY = Symbol.for("me-pi.delegate.job-count");
 // The abort reason of a session shutdown (/reload, /new, /resume, /fork, handoff, exit).
 const SESSION_ENDED = "session ended";
 function liveGroups(): Set<number> {
@@ -1099,7 +1100,7 @@ export const PROMPT_GUIDELINES = [
 	"Pass on only what matters from worker answers, and resolve or report every BLOCKED line.",
 	"Before a goal's first implement: commit your work, `git switch -c goal/<slug>` if on main/master, note the goal base SHA. Use `background: true`. Give goal, repo-relative paths, acceptance criteria, and `check`. Until the handback, do not edit, commit, or switch branches in that repo.",
 	"Trust a ✓ handback: no diff read, no review, no re-check. ✗ WIP: follow-up implement or `git revert`. Tripwire ✗: stop and tell the user. Resolve BLOCKED lines.",
-	"At goal end: one `review` of `git diff <base>..HEAD` written to a temp file; fix findings by follow-up. Never push a range containing a `WIP(delegate` commit.",
+	"At goal end: one `review` of `git diff <base>..HEAD` written to a temp file; tell the reviewer which check passed (from the handbacks) so it does not report the check as BLOCKED; fix findings by follow-up. Never push a range containing a `WIP(delegate` commit.",
 	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile; the answer arrives as a later `delegate` message that starts a turn. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
 ];
 
@@ -1181,7 +1182,6 @@ export default function (pi: ExtensionAPI) {
 	const jobs = new Map<string, AbortController>();
 	// implement: repo root -> the job writing in it (bg3, or im3 in the foreground), for the main-session block.
 	const writing = new Map<string, string>();
-	let jobCount = 0;
 	let prepareCount = 0;
 	let statusUi: { setStatus?: (key: string, text: string | undefined) => void } | undefined;
 	const showStatus = () =>
@@ -1202,6 +1202,9 @@ export default function (pi: ExtensionAPI) {
 	// Background spend for this Pi process, also kept across /reload so the status line never undercounts.
 	shared[SPEND_KEY] ??= { cost: 0 };
 	const spend: { cost: number } = shared[SPEND_KEY];
+	// Background job ids (bg<n>), kept across /reload so ids never repeat within one Pi process.
+	shared[JOBS_KEY] ??= { n: 0 };
+	const jobCount: { n: number } = shared[JOBS_KEY];
 	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), history, active, cancel });
 	pi.on("session_shutdown", async () => {
 		shutdown.abort(SESSION_ENDED);
@@ -1557,7 +1560,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// The turn's abort does not stop a background job; /delegate cancel and session shutdown do.
-			const id = `bg${++jobCount}`;
+			const id = `bg${++jobCount.n}`;
 			if (co) writing.set(co.repoRoot, id);
 			const controller = new AbortController();
 			jobs.set(id, controller);
