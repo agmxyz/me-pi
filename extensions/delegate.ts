@@ -655,7 +655,11 @@ function runWorkerAttempt(
 	const { timeoutMs, costCapUsd } = budget;
 
 	return new Promise((done) => {
-		if (signal.aborted) return done({ ...result, failure: "cancelled before start" });
+		if (signal.aborted)
+			return done({
+				...result,
+				failure: signal.reason === SESSION_ENDED ? "session ended before start" : "cancelled before start",
+			});
 		const { command, args: argv } = piCommand(args);
 		// Detached: the worker leads its own process group, so one SIGKILL stops its children too.
 		const proc = spawn(command, argv, {

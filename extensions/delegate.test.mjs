@@ -1371,6 +1371,16 @@ test("abort and session shutdown stop running workers; later calls still work", 
 	assert.match(text(await run(tool, { role: "scout", task: "x" }, pre.signal)), /^✗ cancelled before start/);
 });
 
+test("a session-ended abort before worker start reports the session shutdown reason", async (t) => {
+	const marker = scratch("pre-aborted-session-end");
+	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker } });
+	const sessionEnded = new AbortController();
+	sessionEnded.abort("session ended");
+	const res = await run(tool, { role: "scout", task: "x" }, sessionEnded.signal);
+	assert.match(text(res), /^✗ session ended before start/);
+	assert.equal(existsSync(marker), false, "worker did not start");
+});
+
 test(
 	"leader exit kills a same-group child holding the pipes; an escaped one is bounded",
 	{ timeout: 20000 },
