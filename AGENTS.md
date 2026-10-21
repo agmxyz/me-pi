@@ -1,1 +1,3 @@
-`install.sh` symlinks `GLOBAL_AGENTS.md` to `~/.pi/agent/AGENTS.md`, so edits apply to every new session. `./install.sh` registers this checkout's path in `~/.pi/agent/settings.json`: run it only from the live checkout's main session, never from a worktree, temp clone, or delegate worker. When adding a pointer to a new installed path, add its link in `install.sh` and run `./install.sh` before relying on it. See `README.md` for how the setup works; verify every change with `npm run check --prefix extensions` (README Check).
+- `GLOBAL_AGENTS.md` is the live policy of every new Pi session and worker; `README.md` explains the setup.
+- Run `./install.sh` only from the live checkout's main session, never from a worktree, temp clone, or worker: it registers this checkout's path in `~/.pi/agent/settings.json`. A pointer to a new installed path needs its link in `install.sh` and an `./install.sh` run first.
+- Done means `npm run check --prefix extensions` passes.
