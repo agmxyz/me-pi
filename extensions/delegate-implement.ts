@@ -189,6 +189,8 @@ export type Checkout = {
 	gitBefore: GitSnapshot;
 	settingsBefore: string;
 	lockPath: string;
+	// TMPDIR at prepare: finish writes the details file here even if the environment changed since.
+	tmpRoot: string;
 	// An empty 0700 dir for GH_CONFIG_DIR, so gh in the worker finds no login; removed by finish.
 	ghConfigDir: string;
 };
@@ -347,7 +349,8 @@ export async function prepare(cwd: string, id: string, check: string): Promise<C
 			settingsResources(),
 			gitOrThrow(repoRoot, ["log", "-1", "--format=%s"]),
 		]);
-		const ghConfigDir = await mkdtemp(join(process.env.TMPDIR || tmpdir(), "me-pi-delegate-gh-"));
+		const tmpRoot = process.env.TMPDIR || tmpdir();
+		const ghConfigDir = await mkdtemp(join(tmpRoot, "me-pi-delegate-gh-"));
 		return {
 			id,
 			repoRoot,
@@ -361,6 +364,7 @@ export async function prepare(cwd: string, id: string, check: string): Promise<C
 			gitBefore,
 			settingsBefore,
 			lockPath,
+			tmpRoot,
 			ghConfigDir,
 		};
 	} catch (err) {
@@ -444,7 +448,7 @@ export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Fact
 		facts.problems.push(`finish failed: ${(err as Error).message}`);
 	}
 	try {
-		facts.detailsPath = await writeDetails(facts);
+		facts.detailsPath = await writeDetails(facts, job.tmpRoot);
 	} catch (err) {
 		facts.problems.push(`details not saved: ${(err as Error).message}`);
 	}
@@ -559,8 +563,8 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 }
 
 // 5. Everything the handback leaves out, in a 0600 file the coordinator reads only when it needs to.
-async function writeDetails(f: Facts): Promise<string> {
-	const dir = join(tmpdir(), `me-pi-delegate-${process.pid}`);
+async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
+	const dir = join(tmpRoot, `me-pi-delegate-${process.pid}`);
 	await mkdir(dir, { recursive: true, mode: 0o700 });
 	const path = join(dir, `${f.id}.md`);
 	const o = f.outcome;

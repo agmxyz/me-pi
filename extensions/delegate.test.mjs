@@ -4,6 +4,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -1836,6 +1837,41 @@ test("implement worker env: fences, parent, remote and gh cut-offs, tools, appro
 	assert.deepEqual([trusted.approve, trusted.noApprove], [true, false]);
 });
 
+test("implement refuses runs[].model and runs[].thinking: it uses the worker pool", async (t) => {
+	const { tool } = setup(t, { config: POOL_SET, env: implementEnv("implement-commit") });
+	const { ctx, lock } = implementRepo();
+	for (const r of [{ model: OPUS }, { thinking: "low" }, { model: LUNA, thinking: "max" }]) {
+		const res = await run(tool, implement({ runs: [r] }), undefined, undefined, ctx);
+		assert.equal(res.isError, true);
+		assert.equal(text(res), "implement uses the worker pool in delegate.json; set models there");
+		assert.ok(!existsSync(lock), "refused before prepare");
+	}
+	const plain = await run(tool, implement({ runs: [{}] }), undefined, undefined, ctx);
+	assert.match(text(plain), /^✗ im\d+ goal\/x .*\[gpt-6-luna @max /, "an empty run entry still runs on the pool");
+});
+
+test("implement follows the worker pool in order, with each entry's thinking", async (t) => {
+	const { tool } = setup(t, {
+		config: POOL_SET,
+		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
+	});
+	const { ctx } = implementRepo();
+	const res = await run(tool, implement(), undefined, undefined, ctx);
+	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
+	assert.match(details, new RegExp(`^${LUNA} @max failed \\(exit 1: 429 .*; next ${OPUS} @max$`, "m"));
+});
+
+test("implement gets its own time limit; the wrap-up deadline is 80% of it", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("echo-budget") });
+	const { ctx } = implementRepo();
+	const before = Date.now();
+	const res = await run(tool, implement(), undefined, undefined, ctx);
+	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
+	const budget = JSON.parse(details.match(/^\{"tools".*\}$/m)[0]);
+	assert.equal(LIMITS.implementTimeoutSecs, 1800);
+	assert.ok(budget.deadline >= before + 1800 * 800 && budget.deadline <= Date.now() + 1800 * 800);
+});
+
 test("implement: no --approve on a fallback attempt", async (t) => {
 	const { tool } = setup(t, {
 		config: POOL_SET,
@@ -1906,4 +1942,21 @@ test("implement: parallel calls at the cap cannot both pass it while preparing",
 	await commands.delegate.handler("cancel bg1", cmd);
 	await commands.delegate.handler("cancel bg2", cmd);
 	await waitFor(() => messages.length === 2, "both cancelled reports");
+});
+
+// Last: every job above, refused, failed, cancelled, or stopped by shutdown, removed its gh config dir. Scans TEST_HOME
+// and the alternate TMPDIRs set above: missing-tmp and the not-a-dir blocker's parent.
+test("no gh config dir outlives its job", () => {
+	const roots = [
+		TEST_HOME,
+		join(TEST_HOME, "missing-tmp"),
+		...readdirSync(TEST_HOME)
+			.filter((n) => n.startsWith("not-a-dir-"))
+			.map((n) => join(TEST_HOME, n)),
+	].filter((dir) => existsSync(dir) && statSync(dir).isDirectory());
+	assert.ok(roots.length >= 2, "the blocker's parent is scanned");
+	assert.deepEqual(
+		roots.flatMap((dir) => readdirSync(dir).filter((n) => n.startsWith("me-pi-delegate-gh-"))),
+		[],
+	);
 });

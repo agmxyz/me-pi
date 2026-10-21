@@ -79,14 +79,14 @@ A call is `{ task, role?, web?, answer?, output?, runs?, rebuttal?, background?,
 
 With no configured pool, roles use the main session's model and thinking level; scout caps the level at `low` (`off` stays `off`). If Pi does not report the session's thinking level, the call fails and asks for a pool-level `thinking` or `runs[].thinking`.
 
-- `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Thinking defaults to each candidate model's setting; an explicit `runs[].thinking` overrides the pool's settings for all candidates. Scout stays at `low`/`off` even if asked for a higher level. Worker roles accept any thinking level. Models outside both pools are refused when either pool contains models.
+- `runs`: 1 to 4 `{ model, thinking }` entries, run in parallel. Thinking defaults to each candidate model's setting; an explicit `runs[].thinking` overrides the pool's settings for all candidates. Scout stays at `low`/`off` even if asked for a higher level. Worker roles accept any thinking level. Models outside both pools are refused when either pool contains models. `implement` refuses `runs[].model` and `runs[].thinking`: it uses the worker pool in `delegate.json` in order, with each entry's thinking level and fallbacks.
 - At most 4 workers run at once across all calls, foreground and background; a call that would exceed this is refused, not queued.
 - `rebuttal: true` (2+ runs): each worker sees the others' answers and keeps, revises, or retracts its claims. Only round 2 comes back; round 1 goes to a temp file.
 - `web`: turns the web tools on or off for any role. The label shows `web`.
 - `answer`: replaces the role's answer format, 1 to 400 characters.
 - `output: true`: each run gets `write`, but only inside its own new temp directory (mode 0700). The answer lists the files and their sizes, not their contents. Copy what you keep and check the diff. The tool does not delete these directories.
 - `check` (`implement` only, required): the command, run from your cwd, that proves the change. The worker must run it alone, exactly as given, after its last edit. Refused for other roles, and when it contains `|`, `;`, `&&`, or `||` (a chained check can never match the worker's run).
-- `implement` refuses `answer`, `runs` with more than 1 entry, `rebuttal`, `output`, and `web: true`.
+- `implement` refuses `answer`, `runs` with more than 1 entry or with `model` or `thinking`, `rebuttal`, `output`, and `web: true`.
 - `background: true`: the call returns a job id (`bg1`, `bg2`, …) at once and the conversation goes on. When the workers finish, the answer arrives as a `delegate` message that starts a turn (queued as a follow-up if the session is busy). The turn's abort does not stop a background job; `/delegate cancel <id>` does, and its report arrives without starting a turn. Ending or switching the session (`/reload`, `/new`, `/resume`, `/fork`, a handoff, or exit) stops background jobs and their answers are lost. Pi's session usage does not include background cost, so the status line shows background jobs running and their spend for this Pi process, kept across `/reload`.
 
 Results: answers over 12 KiB are cut and saved in full to a temp file (mode 0600). Worker cost is added to the session usage. In the TUI, a running call shows each worker's turn, cost, and last tool; a result shows one line per run, and Ctrl+O expands the answers as Markdown. The model gets the full text either way.
@@ -115,7 +115,7 @@ One `implement` worker edits, runs `check`, and commits on your current branch, 
 
 ### Limits
 
-- Time: 300 s for `scout`, 900 s for the other roles. Cost: $5 for each worker, checked after each reply. A final answer over the cap is kept.
+- Time: 300 s for `scout`, 1800 s for `implement`, 900 s for the other roles. Cost: $5 for each worker, checked after each reply. A final answer over the cap is kept.
 - Wrap-up budget: after 30 tool calls (`scout`) or 100 (other roles), 80% of the time limit, or 80% of the cost cap, the worker's tool calls are blocked with "give your final answer now". So the worker answers before a hard limit stops it. Every tool call counts, including blocked ones. After 3 ignored budget blocks, the run ends and its last text comes back as a partial answer. The budget is checked at each tool call, so it cannot stop one long reply; only the hard time limit does.
 - On a limit, a cancel, the end of the session, or a normal exit of Pi, the tool SIGKILLs the worker's process group. An `implement` worker gets SIGTERM first (Pi then stops its bash commands), and SIGKILL after 3 s, before the WIP commit; on a hard exit of the main process it gets SIGKILL only. A process that leaves the group keeps running (for example, `fetch_content`'s GitHub clones). With `output: true`, a stopped worker can leave incomplete files; the answer lists them.
 - If the main Pi process is killed, workers can keep running. Find them with `ps -axo pid,ppid,pgid,comm | awk '$2==1 && $1==$3 && $4=="pi"'` and stop each with `kill -- -<pid>`.

@@ -475,3 +475,11 @@ test("implement ids increment across a reload", async () => {
 	assert.equal(Number(b.slice(2)), Number(a.slice(2)) + 1);
 	assert.match(a, /^im\d+$/);
 });
+
+// Last: every job above, refused, failed, cancelled, or stopped by shutdown, removed its gh config dir.
+test("no gh config dir outlives its job", () => {
+	assert.deepEqual(
+		readdirSync(TEST_HOME).filter((n) => n.startsWith("me-pi-delegate-gh-")),
+		[],
+	);
+});

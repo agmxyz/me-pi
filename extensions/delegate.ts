@@ -43,6 +43,7 @@ import { gitTreeWrite, workerRisk } from "./guard.ts";
 export const LIMITS = {
 	scoutTimeoutSecs: 300,
 	timeoutSecs: 900,
+	implementTimeoutSecs: 1800,
 	costCapUsd: 5,
 	exitGraceMs: 1000,
 	// implement: SIGTERM first, so Pi stops its bash commands before finish commits WIP.
@@ -823,7 +824,9 @@ async function runWorker(
 	onProgress: (r: RunResult) => void,
 ): Promise<RunResult> {
 	const start = Date.now();
-	const timeoutMs = (job.role === "scout" ? LIMITS.scoutTimeoutSecs : LIMITS.timeoutSecs) * 1000;
+	const secs =
+		{ scout: LIMITS.scoutTimeoutSecs, implement: LIMITS.implementTimeoutSecs }[job.role] ?? LIMITS.timeoutSecs;
+	const timeoutMs = secs * 1000;
 	const deadline = start + timeoutMs;
 	let costSpent = 0;
 	const candidates = run.candidates.length ? run.candidates : [{ model: undefined, thinking: run.thinking }];
@@ -1046,7 +1049,7 @@ function buildSchema(set: ModelSet) {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker on the role's default model. For several models on the same task, one entry per model (run in parallel).",
+					"Omit for one worker on the role's default model. For several models on the same task, one entry per model (run in parallel). Not for implement: it uses the worker pool in delegate.json in order.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -1283,6 +1286,8 @@ export default function (pi: ExtensionAPI) {
 					web === true && "web: true",
 				].filter(Boolean);
 				if (refused.length) return fail(`implement does not take ${refused.join(", ")}`);
+				if (params.runs?.some((r: any) => r?.model !== undefined || r?.thinking !== undefined))
+					return fail("implement uses the worker pool in delegate.json; set models there");
 			}
 			const job: Job = {
 				role,
