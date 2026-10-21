@@ -8,10 +8,10 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { PROTECTED_BRANCHES } from "./guard.ts";
 
@@ -381,9 +381,38 @@ const normalized = (command: string) =>
 		.replace(/^rtk /, "")
 		.replace(/ ?2>&1$/, "");
 
-/** Whether a bash command is the job's check, run alone: pipes and `;`/`||` chains never count. */
-export function isCheckRun(command: string, check: string): boolean {
-	if (/[|;]/.test(command)) return false;
+/** A path through its symlinks (macOS /tmp is /private/tmp), or as given when it does not exist. */
+export function realpathOr(path: string): string {
+	try {
+		return realpathSync.native(path);
+	} catch {
+		return path; // Missing path: nothing to resolve; the tool reports it.
+	}
+}
+
+// One leading `cd <dir> &&` or `cd <dir>;`, `<dir>` bare or quoted.
+const LEADING_CD = /^\s*cd\s+("[^"]*"|'[^']*'|[^\s;&|'"]+)\s*(&&|;)\s*/;
+// Shell expansion in a bare or double-quoted dir: the dir it names is not the text.
+const EXPANDS = /[$`\\~*?[]/;
+
+/**
+ * Whether a bash command is the job's check, run alone from `cwd`: one leading `cd <dir> &&` (or `;`) is allowed
+ * when `<dir>` is literal and resolves to `cwd` (under `&&`, it must exist); any other pipe or `;`/`&&`/`||` chain
+ * never counts.
+ */
+export function isCheckRun(command: string, check: string, cwd: string): boolean {
+	const cd = LEADING_CD.exec(command);
+	if (cd) {
+		const [whole, raw, sep] = cd;
+		if (!raw.startsWith("'") && EXPANDS.test(raw)) return false;
+		const given = raw.replace(/^(["'])(.*)\1$/, "$2");
+		// Unnormalized, as the shell walks it: `missing/..` fails there.
+		if (sep === "&&" && !existsSync(isAbsolute(given) ? given : `${cwd}/${given}`)) return false;
+		const dir = resolve(cwd, given);
+		if (realpathOr(dir) !== realpathOr(resolve(cwd))) return false;
+		command = command.slice(whole.length);
+	}
+	if (/[|;&]/.test(command.replace(/ ?2>&1\s*$/, ""))) return false;
 	return normalized(command) === normalized(check);
 }
 

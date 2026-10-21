@@ -34,6 +34,7 @@ import {
 	isCheckRun,
 	nextImplementId,
 	prepare as prepareImplement,
+	realpathOr,
 	workerEnv,
 } from "./delegate-implement.ts";
 import { type DelegateView, progressLines, type RunView, renderCall, renderResult } from "./delegate-render.ts";
@@ -97,14 +98,6 @@ const NOT_SECRET = /\.(?:example|sample|template|pub)$/;
 // A glob (grep's `glob`, find's `pattern`) that names a secret file or directory, such as `**/.env*`.
 const SECRET_GLOB =
 	/(?:^|[/{,*])(?:\.env|\.ssh|\.gnupg|\.aws|\.netrc|\.npmrc|\.pypirc|\.git-credentials|id_(?:rsa|dsa|ecdsa|ed25519)|auth\.json)|\.(?:pem|key|p12|pfx)(?:$|[},])/i;
-
-function realpathOr(path: string): string {
-	try {
-		return realpathSync.native(path);
-	} catch {
-		return path; // Missing path: nothing to resolve; the tool reports it.
-	}
-}
 
 function isSecretPath(path: string): boolean {
 	const lower = path.toLowerCase();
@@ -612,11 +605,12 @@ export function trackCheck(
 	check: Checkout["check"],
 	calls: Map<string, { tool: string; command: string }>,
 	event: { toolCallId?: unknown; isError?: unknown },
+	cwd: string,
 ): void {
 	const call = calls.get(String(event.toolCallId));
 	if (!call) return;
 	calls.delete(String(event.toolCallId));
-	if (call.tool === "bash" && isCheckRun(call.command, check.command)) {
+	if (call.tool === "bash" && isCheckRun(call.command, check.command, cwd)) {
 		check.status = event.isError ? "fail" : "pass";
 		check.runs.push(`${check.status}: ${call.command}`);
 	} else if ((call.tool === "edit" || call.tool === "write") && !event.isError && check.status !== "none")
@@ -763,7 +757,7 @@ function runWorkerAttempt(
 				if (implement)
 					calls.set(event.toolCallId, { tool: event.toolName, command: String(event.args?.command ?? "") });
 			}
-			if (implement && event.type === "tool_execution_end") trackCheck(implement.job.check, calls, event);
+			if (implement && event.type === "tool_execution_end") trackCheck(implement.job.check, calls, event, cwd);
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
 			const msg = event.message;
 			result.turns++;

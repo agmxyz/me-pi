@@ -462,10 +462,56 @@ test("formatHandback: two lines when ✓; BLOCKED capped; control characters quo
 
 test("isCheckRun: exact command, with an optional rtk prefix or 2>&1; no pipes or chains", () => {
 	const check = "npm run check --prefix extensions";
+	const cwd = "/repo/my dir";
 	for (const c of [check, `rtk ${check}`, `${check} 2>&1`, `  npm run  check --prefix extensions `])
-		assert.equal(isCheckRun(c, check), true, c);
-	for (const c of [`${check} | tail`, `${check}; true`, `${check} || true`, "npm test", `cd x && ${check}`])
-		assert.equal(isCheckRun(c, check), false, c);
+		assert.equal(isCheckRun(c, check, cwd), true, c);
+	for (const c of [`${check} | tail`, `${check}; true`, `${check} || true`, `${check} && echo`, "npm test"])
+		assert.equal(isCheckRun(c, check, cwd), false, c);
+});
+
+test("isCheckRun: one leading cd to the job cwd counts; any other cd or chain does not", () => {
+	const check = "npm run check --prefix extensions";
+	const cwd = join(TEST_HOME, "my dir");
+	mkdirSync(join(cwd, "extensions"), { recursive: true });
+	for (const c of [`cd "${cwd}" && ${check}`, `cd '${cwd}/' && ${check} 2>&1`, `cd . && ${check}`, `cd .; ${check}`])
+		assert.equal(isCheckRun(c, check, cwd), true, c);
+	for (const c of [
+		`cd extensions && ${check}`,
+		`cd /other && ${check}`,
+		`cd ${cwd.replace(" ", "\\ ")} && ${check}`,
+		`cd . && ${check} && echo`,
+		`cd . && cd . && ${check}`,
+		`cd . || ${check}`,
+	])
+		assert.equal(isCheckRun(c, check, cwd), false, c);
+});
+
+test("isCheckRun: a cd through a symlink to the job cwd counts", () => {
+	const check = "npm run check --prefix extensions";
+	const real = mkdtempSync(join(TEST_HOME, "real-"));
+	const link = join(TEST_HOME, `link-${Date.now()}`);
+	symlinkSync(real, link);
+	assert.equal(isCheckRun(`cd ${link} && ${check}`, check, real), true);
+	assert.equal(isCheckRun(`cd ${real} && ${check}`, check, link), true);
+	assert.equal(isCheckRun(`cd ${link}/.. && ${check}`, check, real), false);
+});
+
+test("isCheckRun: a cd dir with shell expansion, or a missing dir under &&, does not count", () => {
+	const check = "npm test";
+	const cwd = TEST_HOME;
+	for (const c of [
+		"cd $HOME/.. && npm test",
+		"cd ~/.. && npm test",
+		'cd "$(mktemp -d)/.." && npm test',
+		"cd `pwd` && npm test",
+		"cd ./* && npm test",
+		"cd .? && npm test",
+		"cd [.] && npm test",
+		`cd ${cwd}/missing/.. && npm test`,
+	])
+		assert.equal(isCheckRun(c, check, cwd), false, c);
+	assert.equal(isCheckRun("cd '.' && npm test", check, cwd), true);
+	assert.equal(isCheckRun(`cd ${cwd}/missing/..; npm test`, check, cwd), true);
 });
 
 test("implement ids increment across a reload", async () => {
