@@ -1472,7 +1472,11 @@ test("guidelines keep delegation proportionate and require reviews and BLOCKED h
 		all,
 		/tell the reviewer each `check` that passed on the final commit \(from the handbacks\) so it does not report the check as BLOCKED/,
 	);
-	assert.match(all, /Never push a range containing a `WIP\(delegate` commit/);
+	assert.match(
+		all,
+		/Push a goal branch only when the user asked for a PR or the tracker needs one, and only when its last implement handback is ✓ \(or its WIP was reverted\)\. If its range contains `WIP\(delegate` commits, say so in the PR body and ask the user to squash-merge it \(merging needs their approval\); never merge WIP commits unsquashed\./,
+	);
+	assert.doesNotMatch(all, /Never push a range containing a `WIP\(delegate` commit/);
 	assert.match(all, /one background `implement` per ticket, in dependency order, on the goal branch/);
 	assert.match(all, /worktree, reset, merger, and cleanup steps are no-ops/);
 	assert.match(all, /`scout` or general with `output: true`; pass its directory to later tasks/);
@@ -1495,7 +1499,7 @@ test("guidelines keep delegation proportionate and require reviews and BLOCKED h
 	);
 	assert.match(
 		all,
-		/after the first ✓, push the goal branch and open a draft PR with `Closes #N`; mark it ready at goal end/,
+		/after the first ✓, push the goal branch and open a draft PR with `Closes #N` \(push again only after a ✓\); mark it ready at goal end/,
 	);
 	assert.match(
 		all,
