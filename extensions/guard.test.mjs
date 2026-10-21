@@ -272,6 +272,9 @@ test("gitTreeWrite names checkout-writing git subcommands and passes reads", () 
 	}
 	for (const command of [
 		"git log --oneline",
+		"git log --oneline -5",
+		"git blame README.md",
+		"git grep foo",
 		"git status --porcelain",
 		"git diff main..HEAD",
 		"git show HEAD",
