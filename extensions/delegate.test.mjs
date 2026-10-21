@@ -272,7 +272,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	if (!keepHistory) {
 		globalThis[Symbol.for("me-pi.delegate.history")] = [];
 		globalThis[Symbol.for("me-pi.delegate.background-spend")] = { cost: 0 };
-		globalThis[Symbol.for("me-pi.delegate.job-count")] = { n: 0 };
+		globalThis[Symbol.for("me-pi.delegate.job-count")] = 0;
 	}
 	registerExtension(pi);
 	return { tool: tools.delegate, handlers, commands, pi, messages };
@@ -1459,7 +1459,7 @@ test("guidelines keep delegation proportionate and require reviews and BLOCKED h
 	assert.match(all, /Tripwire ✗: stop and tell the user/);
 	assert.match(
 		all,
-		/tell the reviewer which check passed \(from the handbacks\) so it does not report the check as BLOCKED/,
+		/tell the reviewer each `check` that passed on the final commit \(from the handbacks\) so it does not report the check as BLOCKED/,
 	);
 	assert.match(all, /Never push a range containing a `WIP\(delegate` commit/);
 	assert.doesNotMatch(all, /git merge|delegate\/\*/);
