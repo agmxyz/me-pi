@@ -1462,6 +1462,45 @@ test("guidelines keep delegation proportionate and require reviews and BLOCKED h
 		/tell the reviewer each `check` that passed on the final commit \(from the handbacks\) so it does not report the check as BLOCKED/,
 	);
 	assert.match(all, /Never push a range containing a `WIP\(delegate` commit/);
+	assert.match(all, /one background `implement` per ticket, in dependency order, on the goal branch/);
+	assert.match(all, /worktree, reset, merger, and cleanup steps are no-ops/);
+	assert.match(all, /`scout` or general with `output: true`; pass its directory to later tasks/);
+	assert.match(all, /two `review` calls in one turn, one for standards and one for the spec/);
+	assert.match(all, /commit the spec and tickets before the first job/);
+	assert.match(all, /the worker must not ask questions: decide per the spec, and list open questions as BLOCKED/);
+	assert.match(
+		all,
+		/A ticket is done only on a ✓ handback; the worker closes a local ticket only in its passing commit/,
+	);
+	assert.match(all, /write `gh issue view` output to temp files and pass the paths; close nothing per job/);
+	assert.match(
+		all,
+		/after the goal review, put `Closes #N` in the PR body, or close issues only with the user's approval/,
+	);
+	assert.doesNotMatch(all, /close issues yourself/);
+	assert.match(
+		all,
+		/agree its test seams with the user \(or take them from the ticket\/spec\) and list them in the task as confirmed/,
+	);
+	assert.match(
+		all,
+		/after the first ✓, push the goal branch and open a draft PR with `Closes #N`; mark it ready at goal end/,
+	);
+	assert.match(
+		all,
+		/two calls, standards and spec, when following code-review; pass the path to the code-review skill's SKILL\.md/,
+	);
+	assert.match(all, /\(this overrides a skill's fix-all step\)/);
+	assert.match(
+		all,
+		/On each ✓ handback, start the next ready ticket in the same turn; never say you are waiting without a running job/,
+	);
+	assert.match(all, /the last job's `check` is the full suite/);
+	assert.match(
+		all,
+		/At most one fix job, for high\/medium findings; report spec ambiguities and the rest to the user \(this overrides a skill's fix-all step\), no re-review loop/,
+	);
+	assert.doesNotMatch(all, /fix findings by follow-up/);
 	assert.doesNotMatch(all, /git merge|delegate\/\*/);
 	assert.match(
 		PROMPT_SNIPPET,
