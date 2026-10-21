@@ -30,6 +30,11 @@ const run = (over = {}) => ({
 });
 const long = "x".repeat(300);
 
+test("an implement call preview shows its check", () => {
+	const call = renderCall({ role: "implement", task: "Add x", check: "npm test\nmore" }, theme);
+	assert.deepEqual(draw(call, 200), ["delegate implement default check `npm test` Add x"]);
+});
+
 test("the call preview is one line: role, models with thinking, badges, the task's first line", () => {
 	const call = renderCall(
 		{

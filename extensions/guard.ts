@@ -39,7 +39,7 @@ const DISPOSABLE = new RegExp(
 );
 // Push options whose value is a separate word, so it is not mistaken for the remote or a refspec.
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
-const PROTECTED_BRANCHES = new Set(["main", "master"]);
+export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
 
 // Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`, `main"`).
 function wordsOf(args: string): string[] {
@@ -119,13 +119,24 @@ function gitRisk(
 	}
 }
 
+// A heredoc read by `cat` or `git` (`-m "$(cat <<'EOF'`, `commit -F - <<EOF`): its body is text. The opener line is
+// kept; a heredoc fed to a shell (`bash <<EOF`) is still scanned.
+const TEXT_HEREDOC = /((?:\bcat|\bgit\s[^;&|\n]*?)\s*<<-?\s*(['"]?)(\w+)\2[^\n]*)\n[\s\S]*?\n\t*\3(?=\n|$)/g;
+
+// Empties quoted commit messages, unless they run a command, and text heredoc bodies.
+function withoutMessages(command: string): string {
+	return command
+		.replace(TEXT_HEREDOC, "$1")
+		.replace(MESSAGE_ARG, (arg, flag: string, message: string) =>
+			message.startsWith('"') && /\$\(|\x60/.test(message) ? arg : `${flag}""`,
+		);
+}
+
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
 ): string | undefined {
-	command = command.replace(MESSAGE_ARG, (arg, flag: string, message: string) =>
-		message.startsWith('"') && /\$\(|\x60/.test(message) ? arg : `${flag}""`,
-	);
+	command = withoutMessages(command);
 	const gitCommands = [...command.matchAll(GIT_COMMAND)];
 	// The session's branch is read before the command runs, so it says nothing about the target after
 	// `cd`, `git checkout`/`switch`, or `git -C`/`--git-dir`/`--work-tree`.
@@ -146,6 +157,124 @@ export function classify(
 		const disposable =
 			targets.length > 0 && targets.every((t) => DISPOSABLE.test(t) && !/(?:^|\/)\.\.(?:\/|$)/.test(t));
 		if (!disposable) return "recursive rm";
+	}
+	return undefined;
+}
+
+// Worker-only rules for the delegate `implement` role: commands that move its checkout off the job's branch, pull in
+// other history, or reach shared state (refs, the common dir's config, remotes, GitHub, Pi's settings).
+// Always blocked, no prompt.
+const GH_COMMAND = new RegExp(`${AT_COMMAND}gh(?![\\w.-])`);
+const PI_COMMAND = new RegExp(`${AT_COMMAND}pi\\s+(install|remove|uninstall|update|config)(?![\\w-])`);
+// `./install.sh`, `/abs/install.sh`, `sh|bash|zsh [opts] install.sh`, or `.`/`source install.sh`; not `install.test.sh`.
+const INSTALL_SH = new RegExp(
+	`${AT_COMMAND}(?:(?:(?:ba|z)?sh|source|\\.)\\s+(?:-\\w+\\s+)*(?:[\\w.~-]*\\/)*)?install\\.sh(?![\\w.-])`,
+);
+// `git config` forms that only read.
+const CONFIG_READS = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope"]);
+// Options that keep `git config <key>` a read: scopes and value types (`--type X` is dropped first).
+const CONFIG_READ_OPTIONS = new Set(["--local", "--global", "--system", "--worktree", "--bool", "--int", "--path"]);
+
+function workerGitRisk(sub: string, words: string[]): string | undefined {
+	switch (sub) {
+		case "push":
+			return "git push is main-session only";
+		case "worktree":
+			return "git worktree (adds checkouts that share the repo; main-session only)";
+		case "switch":
+		case "checkout":
+			return `git ${sub} (stay on the job's branch)`;
+		case "merge":
+		case "cherry-pick":
+		case "pull":
+			return `git ${sub} (commit only your own changes)`;
+		case "stash":
+			// `git stash list|show` only read.
+			return words[0] === "list" || words[0] === "show" ? undefined : "git stash (leave failing work uncommitted)";
+		case "commit":
+			return hasShort(words, "n", "--no-verify") ? "git commit --no-verify (hooks must run)" : undefined;
+		case "config": {
+			if (words[0] === "get" || words[0] === "list" || words.some((w) => CONFIG_READS.has(w))) return undefined;
+			const rest = words.filter((w, i) => w !== "--type" && words[i - 1] !== "--type" && !w.startsWith("--type="));
+			const positional = rest.filter((w) => !w.startsWith("-"));
+			const readKey = positional.length === 1 && rest.every((w) => !w.startsWith("-") || CONFIG_READ_OPTIONS.has(w));
+			return readKey ? undefined : "git config write (shared with the main checkout)";
+		}
+		case "remote":
+			return "git remote (shared with the main checkout)";
+		case "update-ref":
+			return "git update-ref (moves shared refs)";
+		case "symbolic-ref":
+			// Reads (`-q HEAD`, `--short HEAD`) pass; setting or deleting a symbolic ref does not.
+			return words.filter((w) => !w.startsWith("-")).length >= 2 || hasShort(words, "d", "--delete")
+				? "git symbolic-ref (moves shared refs)"
+				: undefined;
+		case "branch":
+			return hasShort(words, "[mM]", "--move") ? "git branch -m (renames shared refs)" : undefined;
+		case "tag":
+			return hasShort(words, "[fd]") || words.includes("--force") || words.includes("--delete")
+				? "git tag -f/-d (moves shared refs)"
+				: undefined;
+		default:
+			return undefined;
+	}
+}
+
+export function workerRisk(command: string): string | undefined {
+	command = withoutMessages(command);
+	for (const [, , sub, args] of command.matchAll(GIT_COMMAND)) {
+		const risk = workerGitRisk(sub, wordsOf(args));
+		if (risk) return risk;
+	}
+	if (GH_COMMAND.test(command)) return "gh is main-session only";
+	if (INSTALL_SH.test(command)) return "install.sh would change Pi's settings and live links";
+	const pi = command.match(PI_COMMAND);
+	if (pi) return `pi ${pi[1]} would change Pi's settings`;
+	return undefined;
+}
+
+// Subcommands that change the index, the working tree, HEAD, or the branch: blocked in the main session while an
+// implement worker writes in the same checkout. Reads (`git log`, `status`, `diff`, `stash list|show`) pass.
+const TREE_WRITES = new Set([
+	"add",
+	"rm",
+	"mv",
+	"commit",
+	"merge",
+	"rebase",
+	"reset",
+	"restore",
+	"checkout",
+	"switch",
+	"stash",
+	"cherry-pick",
+	"revert",
+	"am",
+	"apply",
+	"pull",
+	"clean",
+	"update-index",
+	"read-tree",
+	"checkout-index",
+	"sparse-checkout",
+	"submodule",
+	"update-ref",
+	"symbolic-ref",
+]);
+
+// The first git subcommand in `command` that writes the checkout (`"commit"`), or undefined.
+export function gitTreeWrite(command: string): string | undefined {
+	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
+		// `git stash list|show` only read.
+		const words = wordsOf(args);
+		if (sub === "stash" && ["list", "show"].includes(words[0])) continue;
+		// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
+		if (
+			sub === "branch" &&
+			(hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w)))
+		)
+			return sub;
+		if (TREE_WRITES.has(sub)) return sub;
 	}
 	return undefined;
 }
@@ -174,7 +303,10 @@ export default function (pi: ExtensionAPI) {
 		const risk = classify(command, () => branchIn(ctx.cwd));
 		if (!risk) return undefined;
 		if (!ctx.hasUI)
-			return { block: true, reason: `Blocked (${risk}): needs explicit user approval; no UI to confirm.` };
+			return {
+				block: true,
+				reason: `Blocked (${risk}): needs explicit user approval; no UI to confirm.`,
+			};
 		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command);
 		return ok ? undefined : { block: true, reason: `Blocked by user (${risk}).` };
 	});

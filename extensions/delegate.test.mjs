@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -26,6 +28,7 @@ const {
 	LOCAL_TOOLS,
 	WEB_TOOLS,
 	PROMPT_GUIDELINES,
+	PROMPT_SNIPPET,
 	ROLES,
 	WORKER_CONTRACT,
 	loadModelSet,
@@ -72,7 +75,7 @@ writeFileSync(
 	FAKE_BIN,
 	`#!/usr/bin/env node
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
@@ -95,12 +98,16 @@ process.stdin.on("end", () => {
     emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
     process.exit(1);
   }
+  if (mode === "quota-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    emit("", { stopReason: "error", errorMessage: process.env.FAKE_PI_ERROR });
+    process.exit(1);
+  }
   if (mode === "unavailable-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     emit("", { stopReason: "error", errorMessage: "model not found: unavailable" });
     process.exit(1);
   }
   if (mode === "fail" || (mode === "fail-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL)) {
-    emit("partial findings", { stopReason: "error", errorMessage: "usage limit reached" });
+    emit("partial findings", { stopReason: "error", errorMessage: "invalid request: tool schema rejected" });
     process.stderr.write("secret-looking stderr detail\\n");
     process.exit(1);
   }
@@ -123,6 +130,41 @@ process.stdin.on("end", () => {
     writeFileSync(out + "/notes/draft.md", "DRAFT-BODY");
     const sp = flag("--append-system-prompt") || "";
     emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only for files inside " + out + ". Relative paths resolve against the project, not this directory")));
+    process.exit(0);
+  }
+  // implement modes: git runs in the worker's cwd, the coordinator's checkout.
+  const git = (...a) => spawnSync("git", a, { encoding: "utf8" });
+  // A tool call as Pi's JSON mode reports it: start, then end with isError.
+  let toolId = 0;
+  const tool = (toolName, args, isError = false) => {
+    const toolCallId = "t" + ++toolId;
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName, result: {}, isError }));
+  };
+  if (mode === "implement-commit" || mode === "move-ref") {
+    writeFileSync("feature.txt", "IMPLEMENT-DIFF-BODY\\n");
+    git("add", "-A");
+    git("commit", "-q", "-m", "feat: add feature");
+    if (mode === "move-ref") git("update-ref", "refs/heads/other", "HEAD");
+    const ran = process.env.FAKE_PI_RAN ?? "npm test";
+    if (ran) tool("bash", { command: ran }, Boolean(process.env.FAKE_PI_CHECK_FAIL));
+    if (process.env.FAKE_PI_EDIT_AFTER) tool("edit", { path: "feature.txt" });
+    emit("Added feature.txt.\\nIMPLEMENT-DIFF-BODY is in the details only");
+    process.exit(0);
+  }
+  if (mode === "implement-dirty") { writeFileSync("left.txt", "x\\n"); tool("bash", { command: "npm test" }); emit("left it uncommitted"); process.exit(0); }
+  if (mode === "implement-hang") {
+    writeFileSync("left.txt", "x\\n");
+    // Pi's print mode exits on SIGTERM; the marker proves TERM came before any SIGKILL.
+    process.on("SIGTERM", () => { appendFileSync(process.env.FAKE_PI_TERMFILE, "TERM\\n"); process.exit(143); });
+    emit("working", { stopReason: "toolUse" });
+    setInterval(() => {}, 1000);
+    return;
+  }
+  if (mode === "echo-env") {
+    const e = process.env;
+    const keys = Object.keys(e).filter((k) => k.startsWith("GIT_CONFIG_") || k.startsWith("GH_") || k.startsWith("GITHUB_") || k === "ME_PI_ROLE" || k === "ME_PI_OUTPUT_DIR" || k === "ME_PI_DENY_DIR" || k === "ME_PI_PARENT");
+    emit("ENV " + JSON.stringify({ env: Object.fromEntries(keys.sort().map((k) => [k, e[k]])), tools: flag("--tools"), approve: args.includes("--approve"), noApprove: args.includes("--no-approve"), cwd: process.cwd() }));
     process.exit(0);
   }
   if (mode === "echo-budget") { emit(process.env.ME_PI_BUDGET || "none"); process.exit(0); }
@@ -169,6 +211,7 @@ process.stdin.on("end", () => {
     "role=" + ((flag("--append-system-prompt") || "").match(/Role: ([a-z]+)\\./)?.[1] ?? "none"),
     "workerRun=" + (process.env.ME_PI_RUN || ""),
     "prompt=" + JSON.stringify(prompt),
+    ...(args.includes("--approve") ? ["approve=yes"] : args.includes("--no-approve") ? ["approve=no"] : []),
   ].join(" "));
 });
 `,
@@ -187,7 +230,15 @@ function applyEnv(vars) {
 
 // Sets env vars and limits for one test and restores them afterwards.
 function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
-	const vars = { PI_BIN: FAKE_BIN, ME_PI_RUN: undefined, TMPDIR: TEST_HOME, ...env };
+	const vars = {
+		PI_BIN: FAKE_BIN,
+		ME_PI_RUN: undefined,
+		ME_PI_OUTPUT_DIR: undefined,
+		ME_PI_BUDGET: undefined,
+		ME_PI_ROLE: undefined,
+		TMPDIR: TEST_HOME,
+		...env,
+	};
 	if (config !== undefined) {
 		const path = join(mkdtempSync(join(TEST_HOME, "cfg-")), "delegate.json");
 		writeFileSync(path, typeof config === "string" ? config : JSON.stringify(config));
@@ -221,6 +272,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	if (!keepHistory) {
 		globalThis[Symbol.for("me-pi.delegate.history")] = [];
 		globalThis[Symbol.for("me-pi.delegate.background-spend")] = { cost: 0 };
+		globalThis[Symbol.for("me-pi.delegate.job-count")] = 0;
 	}
 	registerExtension(pi);
 	return { tool: tools.delegate, handlers, commands, pi, messages };
@@ -248,10 +300,12 @@ const scratch = (name) => join(mkdtempSync(join(TEST_HOME, `${name}-`)), name);
 test("registers delegate in the main session; workers get only the secret-path block", (t) => {
 	const main = setup(t);
 	assert.ok(main.tool);
-	assert.deepEqual(Object.keys(main.handlers), ["session_shutdown"]);
+	assert.deepEqual(Object.keys(main.handlers), ["session_shutdown", "tool_call"]);
 	const { properties, required } = main.tool.parameters;
 	assert.deepEqual(required, ["task"]);
-	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge"]);
+	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge", "implement"]);
+	assert.equal(properties.check.type, "string");
+	assert.equal(properties.branch, undefined);
 	assert.equal(properties.web.type, "boolean");
 	assert.equal(properties.answer.maxLength, 400);
 	assert.equal(properties.output.type, "boolean");
@@ -303,6 +357,17 @@ test("workers cannot name secret paths in read, grep, find, or ls", async (t) =>
 	const blocked = await hook({ toolName: "read", input: { path: "~/.ssh/id_rsa" } }, { cwd: dir });
 	assert.match(blocked.reason, /\.ssh\/id_rsa may hold secrets; delegated workers cannot read it/);
 	assert.equal(await hook({ toolName: "read", input: { path: "notes.txt" } }, { cwd: dir }), undefined);
+});
+
+test("implement workers' bash calls are checked against the worker-only rules", async (t) => {
+	const bash = (command) => ({ toolName: "bash", input: { command } });
+	const hook = setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement" } }).handlers.tool_call;
+	const blocked = await hook(bash("git push origin x"), { cwd: REPO_ROOT });
+	assert.equal(blocked?.block, true);
+	assert.match(blocked.reason, /^Blocked: git push is main-session only; list it as BLOCKED\.$/);
+	assert.equal(await hook(bash("npm test"), { cwd: REPO_ROOT }), undefined);
+	const other = setup(t, { env: { ME_PI_RUN: "1" } }).handlers.tool_call;
+	assert.equal(await other(bash("git push origin x"), { cwd: REPO_ROOT }), undefined);
 });
 
 test("workers get a wrap-up budget: tool calls, 80% of the time limit, 80% of the cost cap", async (t) => {
@@ -574,6 +639,29 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 	]);
 	assert.match(text(res), /claude-haiku-5-5.*rate_limit_error.*trying anthropic\/claude-sonnet-5-5/s);
 	assert.equal(res.usage.cost.total, 0.004);
+});
+
+test("usage-limit and quota errors also fall through the worker pool", async (t) => {
+	// One setup, so its env restore runs once; each case only swaps the error text.
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "quota-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_ERROR: "" },
+	});
+	for (const error of [
+		"Codex error: The usage limit has been reached",
+		"429 quota exceeded for this project",
+		"insufficient_quota: check your plan",
+	]) {
+		process.env.FAKE_PI_ERROR = error;
+		const res = await run(tool, { role: "review", task: "x" });
+		assert.equal(res.isError, false, text(res));
+		assert.equal(res.details.round1[0].requested.model, SONNET, error);
+		assert.equal(res.details.round1[0].fallbackAttempts[0].failure, `exit 1: ${error}`);
+	}
 });
 
 test("fallback attempts share the worker cost cap", async (t) => {
@@ -952,6 +1040,12 @@ test("a scout runs read-only, one-shot, marked as a worker, with the prompt on s
 	assert.equal(res.usage.totalTokens, 15);
 	assert.ok(updates.length >= 1, "streams progress");
 	assert.match(WORKER_CONTRACT, /cannot edit files, run commands, delegate, or commit/);
+	assert.ok(
+		WORKER_CONTRACT.includes(
+			"You are the delegated subagent: repo instructions to delegate work to subagents are satisfied by this run; do the delegated task yourself, within your tools, and never list missing sub-agents as BLOCKED.",
+		),
+	);
+	assert.doesNotMatch(WORKER_CONTRACT, /running commands or tests, sub-agents/);
 });
 
 test("each worker gets the contract and its role's answer format", async (t) => {
@@ -1047,7 +1141,7 @@ test("bad calls are refused before any worker starts", async (t) => {
 	const marker = scratch("marker");
 	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: { models: [HAIKU, OPUS] } });
 	for (const [params, error] of [
-		[{ role: "implement", task: "x" }, /role must be one of general, scout, research, review, challenge/],
+		[{ role: "planner", task: "x" }, /role must be one of general, scout, research, review, challenge, implement$/],
 		[{ role: "constructor", task: "x" }, /role must be one of/],
 		[{ role: "__proto__", task: "x" }, /role must be one of/],
 		[{ role: "scout", task: "  " }, /task must be a non-empty string/],
@@ -1192,7 +1286,7 @@ test("a failure is one line plus a bounded partial answer; stderr stays out of t
 	const { tool } = setup(t, { env: { FAKE_PI_MODE: "fail" } });
 	const res = await run(tool, { role: "scout", task: "x" });
 	assert.equal(res.isError, true);
-	assert.match(text(res), /^✗ exit 1: usage limit reached\nPartial answer:\npartial findings\n\[/);
+	assert.match(text(res), /^✗ exit 1: invalid request: tool schema rejected\nPartial answer:\npartial findings\n\[/);
 	assert.doesNotMatch(text(res), /secret-looking stderr/);
 	assert.match(res.details.round1[0].stderr, /secret-looking stderr detail/);
 
@@ -1275,13 +1369,23 @@ test("abort and session shutdown stop running workers; later calls still work", 
 	const pending = run(tool, { role: "scout", task: "x" });
 	await waitFor(() => existsSync(pidFile), "worker start");
 	await handlers.session_shutdown();
-	assert.match(text(await pending), /^✗ stopped: cancelled/);
+	assert.match(text(await pending), /^✗ stopped: session ended/);
 	process.env.FAKE_PI_MODE = "";
 	assert.equal((await run(tool, { role: "scout", task: "x" })).isError, false, "a fresh shutdown signal");
 
 	const pre = new AbortController();
 	pre.abort();
 	assert.match(text(await run(tool, { role: "scout", task: "x" }, pre.signal)), /^✗ cancelled before start/);
+});
+
+test("a session-ended abort before worker start reports the session shutdown reason", async (t) => {
+	const marker = scratch("pre-aborted-session-end");
+	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker } });
+	const sessionEnded = new AbortController();
+	sessionEnded.abort("session ended");
+	const res = await run(tool, { role: "scout", task: "x" }, sessionEnded.signal);
+	assert.match(text(res), /^✗ session ended before start/);
+	assert.equal(existsSync(marker), false, "worker did not start");
 });
 
 test(
@@ -1342,10 +1446,81 @@ process.exit(existsSync(${JSON.stringify(pidFile)}) ? 0 : 2);
 
 test("guidelines keep delegation proportionate and require reviews and BLOCKED handling", () => {
 	const all = PROMPT_GUIDELINES.join("\n");
-	assert.match(all, /more than about 3 files you will not edit/);
+	assert.ok(
+		all.includes(
+			"Meet repo instructions to delegate to subagents by using delegate workers; their review rules are met by your goal-end review.",
+		),
+	);
+	assert.match(all, /Delegate any change whose files you have not read or that takes many steps/);
+	assert.match(
+		all,
+		/Delegate reading more than about 3 files you will not edit, research, reviews, and plan challenges\./,
+	);
+	assert.match(all, /You push, open PRs, merge, and delete branches, under the Approval rules\./);
+	assert.match(all, /Before one of your own commits that touches 2\+ files/);
 	assert.match(all, /do not edit those files until the review returns/);
 	assert.match(all, /`rebuttal: true`/);
 	assert.match(all, /BLOCKED/);
+	assert.match(
+		all,
+		/`git switch -c goal\/<slug>` if on main\/master, note the goal base SHA\. Use `background: true`/,
+	);
+	assert.match(all, /Until the handback, do not edit, commit, or switch branches in that repo/);
+	assert.match(all, /Trust a ✓ handback: no diff read, no review, no re-check/);
+	assert.match(all, /Tripwire ✗: stop and tell the user/);
+	assert.match(
+		all,
+		/tell the reviewer each `check` that passed on the final commit \(from the handbacks\) so it does not report the check as BLOCKED/,
+	);
+	assert.match(
+		all,
+		/Push a goal branch only when the user asked for a PR or the tracker needs one, and only when its last implement handback is ✓ \(or its WIP was reverted\)\. If its range contains `WIP\(delegate` commits, say so in the PR body and ask the user to squash-merge it \(merging needs their approval\); never merge WIP commits unsquashed\./,
+	);
+	assert.doesNotMatch(all, /Never push a range containing a `WIP\(delegate` commit/);
+	assert.match(all, /one background `implement` per ticket, in dependency order, on the goal branch/);
+	assert.match(all, /worktree, reset, merger, and cleanup steps are no-ops/);
+	assert.match(all, /`scout` or general with `output: true`; pass its directory to later tasks/);
+	assert.match(all, /two `review` calls in one turn, one for standards and one for the spec/);
+	assert.match(all, /commit the spec and tickets before the first job/);
+	assert.match(all, /the worker must not ask questions: decide per the spec, and list open questions as BLOCKED/);
+	assert.match(
+		all,
+		/A ticket is done only on a ✓ handback; the worker closes a local ticket only in its passing commit/,
+	);
+	assert.match(all, /write `gh issue view` output to temp files and pass the paths; close nothing per job/);
+	assert.match(
+		all,
+		/after the goal review, put `Closes #N` in the PR body, or close issues only with the user's approval/,
+	);
+	assert.doesNotMatch(all, /close issues yourself/);
+	assert.match(
+		all,
+		/agree its test seams with the user \(or take them from the ticket\/spec\) and list them in the task as confirmed/,
+	);
+	assert.match(
+		all,
+		/after the first ✓, push the goal branch and open a draft PR with `Closes #N` \(push again only after a ✓\); mark it ready at goal end/,
+	);
+	assert.match(
+		all,
+		/two calls, standards and spec, when following code-review; pass the path to the code-review skill's SKILL\.md/,
+	);
+	assert.match(all, /\(this overrides a skill's fix-all step\)/);
+	assert.match(
+		all,
+		/On each ✓ handback, start the next ready ticket in the same turn; never say you are waiting without a running job/,
+	);
+	assert.match(all, /the last job's `check` is the full suite/);
+	assert.match(
+		all,
+		/At most one fix job, for high\/medium findings; report spec ambiguities and the rest to the user \(this overrides a skill's fix-all step\), no re-review loop/,
+	);
+	assert.doesNotMatch(all, /fix findings by follow-up/);
+	assert.doesNotMatch(all, /git merge|delegate\/\*/);
+	assert.match(
+		PROMPT_SNIPPET,
+		/one `implement` worker edits, runs `check`, and commits on your current branch \(clean tree, not main\/master, one per repo\); you get a 2-line handback/,
+	);
 });
 
 // A tool context that records the status line.
@@ -1433,4 +1608,441 @@ test("background spend survives /reload", async (t) => {
 	assert.match(statuses[0][1], /^delegate bg: 1 running, \$0\.0\d+ spent$/);
 	assert.ok(!statuses[0][1].endsWith("$0.0000 spent"), "the first job's spend is kept");
 	await waitFor(() => reloaded.messages.length === 1, "the second answer");
+});
+
+test("background job ids do not repeat after /reload", async (t) => {
+	const first = setup(t);
+	const one = await run(first.tool, { role: "scout", task: "x", background: true }, undefined, undefined, bgCtx().ctx);
+	assert.match(text(one), /^Started background job bg1 /);
+	await waitFor(() => first.messages.length === 1, "the first answer");
+	const reloaded = setup(t, { keepHistory: true });
+	const two = await run(
+		reloaded.tool,
+		{ role: "scout", task: "y", background: true },
+		undefined,
+		undefined,
+		bgCtx().ctx,
+	);
+	assert.match(text(two), /^Started background job bg2 /);
+	await waitFor(() => reloaded.messages.length === 1, "the second answer");
+});
+
+// --- implement ---
+
+const CHECK = "npm test";
+// A temp repo on `goal/x` with one commit and a branch `other`, as bin/install.test.sh sets up its fixture.
+function implementRepo() {
+	const repo = mkdtempSync(join(TEST_HOME, "impl-repo-"));
+	const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+	git("init", "-q", "--template=", "-b", "main");
+	git("config", "core.hooksPath", "/dev/null");
+	git("config", "commit.gpgsign", "false");
+	git("config", "user.email", "implement-test@example.invalid");
+	git("config", "user.name", "Implement Test");
+	mkdirSync(join(repo, "sub"));
+	writeFileSync(join(repo, "sub", "a.txt"), "a\n");
+	git("add", "-A");
+	git("commit", "-q", "-m", "initial");
+	git("branch", "other");
+	git("switch", "-q", "-c", "goal/x");
+	const real = realpathSync(repo);
+	return {
+		repo,
+		real,
+		git,
+		lock: join(real, ".git", "me-pi-implement.lock"),
+		ctx: { ...CTX, cwd: repo, isProjectTrusted: () => false },
+	};
+}
+const implementEnv = (mode, extra = {}) => ({
+	FAKE_PI_MODE: mode,
+	PI_CODING_AGENT_DIR: mkdtempSync(join(TEST_HOME, "agent-")),
+	...extra,
+});
+const implement = (extra = {}) => ({ role: "implement", task: "add a feature", check: CHECK, ...extra });
+// Resolves once a hang-mode worker has written the file it writes before it waits.
+const workerStarted = (repo) => waitFor(() => existsSync(join(repo, "left.txt")), "the worker to start");
+
+test("implement commits on the current branch; the result is a 2-line handback and a 0600 details file", async (t) => {
+	const { tool, commands } = setup(t, { env: implementEnv("implement-commit") });
+	const { git, lock, ctx } = implementRepo();
+	const head = git("rev-parse", "HEAD");
+	const updates = [];
+	const res = await run(tool, implement(), undefined, (u) => updates.push(u), ctx);
+	const out = text(res);
+	assert.equal(res.isError, false, out);
+	const tip = git("rev-parse", "HEAD");
+	const lines = out.split("\n");
+	assert.equal(lines.length, 2, out);
+	assert.match(
+		lines[0],
+		new RegExp(
+			`^✓ im\\d+ goal/x ${head.slice(0, 7)}\\.\\.${tip.slice(0, 7)}: 1 commit, 1 file \\+1 -0; check ✓ \`npm test\` \\[.+\\]$`,
+		),
+	);
+	const detailsPath = lines[1].match(/^Added feature\.txt\. Details: (\S+)$/)[1];
+	assert.equal(statSync(detailsPath).mode & 0o777, 0o600);
+	assert.match(readFileSync(detailsPath, "utf8"), /IMPLEMENT-DIFF-BODY is in the details only/);
+	assert.doesNotMatch(out, /IMPLEMENT-DIFF-BODY/);
+	assert.equal(git("log", "-1", "--format=%s"), "feat: add feature");
+	assert.equal(git("rev-parse", "--abbrev-ref", "HEAD"), "goal/x");
+	assert.equal(git("status", "--porcelain"), "");
+	assert.ok(!existsSync(lock), "the lock is released");
+	assert.match(updates[0].content[0].text, new RegExp(`^goal/x \\(im\\d+\\) from ${head.slice(0, 7)}`));
+	assert.equal(res.details.implement.branch, "goal/x");
+	assert.match(
+		res.details.view.runs[0].output,
+		/IMPLEMENT-DIFF-BODY is in the details only/,
+		"the TUI keeps the answer",
+	);
+	const { ctx: cmd, notes } = commandCtx();
+	await commands.delegate.handler("status", cmd);
+	assert.match(
+		notes[0][0],
+		new RegExp(` implement .* goal/x ${head.slice(0, 7)}\\.\\.${tip.slice(0, 7)} check pass$`, "m"),
+	);
+});
+
+test("implement: work left uncommitted becomes a WIP commit on the branch and an error", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("implement-dirty") });
+	const { git, ctx } = implementRepo();
+	const res = await run(tool, implement(), undefined, undefined, ctx);
+	assert.equal(res.isError, true);
+	const id = text(res).match(/^✗ (im\d+) /)[1];
+	assert.equal(git("log", "-1", "--format=%s"), `WIP(delegate ${id}): left uncommitted by the worker`);
+	assert.match(text(res), /^✗ WIP \w+ on goal\/x \(left uncommitted by the worker\): left\.txt$/m);
+	assert.equal(git("status", "--porcelain"), "");
+});
+
+test("implement: a failed check, an edit after the check, or no check run is ✗", async (t) => {
+	for (const [extra, line] of [
+		[{ FAKE_PI_CHECK_FAIL: "1" }, "✗ check failed"],
+		[{ FAKE_PI_EDIT_AFTER: "1" }, "✗ check stale: edited after the last run"],
+		[{ FAKE_PI_RAN: "" }, "✗ check not run"],
+		[{ FAKE_PI_RAN: "npm test | tail" }, "✗ check not run"],
+	]) {
+		const clean = { FAKE_PI_CHECK_FAIL: undefined, FAKE_PI_EDIT_AFTER: undefined, FAKE_PI_RAN: undefined };
+		const { tool } = setup(t, { env: implementEnv("implement-commit", { ...clean, ...extra }) });
+		const { ctx } = implementRepo();
+		const res = await run(tool, implement(), undefined, undefined, ctx);
+		assert.equal(res.isError, true, JSON.stringify(extra));
+		assert.ok(text(res).split("\n").includes(line), text(res));
+	}
+	const { tool } = setup(t, {
+		env: implementEnv("implement-commit", {
+			FAKE_PI_CHECK_FAIL: undefined,
+			FAKE_PI_EDIT_AFTER: undefined,
+			FAKE_PI_RAN: "rtk npm test 2>&1",
+		}),
+	});
+	const res = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(res.isError, false, text(res));
+});
+
+test("implement: a worker that moves another branch trips the ref tripwire", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("move-ref") });
+	const { ctx } = implementRepo();
+	const res = await run(tool, implement(), undefined, undefined, ctx);
+	assert.equal(res.isError, true);
+	assert.match(text(res), /^✗ Tripwire: refs\/heads\/other moved during the job/m);
+});
+
+test("implement refusals leave no lock", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("implement-commit") });
+	const { repo, git, lock, ctx } = implementRepo();
+	for (const [params, c, error] of [
+		[{ role: "implement", task: "x" }, ctx, /^implement needs `check`: the command that proves the change$/],
+		[implement({ answer: "a table" }), ctx, /^implement does not take answer$/],
+		[implement({ branch: "goal/x" }), ctx, /^unknown parameter\(s\) branch;/],
+		[implement({ runs: [{}, {}] }), ctx, /^implement does not take runs with more than 1 entry$/],
+		[implement({ output: true }), ctx, /^implement does not take output$/],
+		[implement({ web: true }), ctx, /^implement does not take web: true$/],
+		[
+			implement({ runs: [{}, {}], rebuttal: true }),
+			ctx,
+			/^implement does not take runs with more than 1 entry, rebuttal$/,
+		],
+		[{ role: "review", task: "x", check: CHECK }, ctx, /^check is a non-empty string, for role implement only$/],
+		...["npm test | tail", "npm test; true", "npm test && x", "npm test || true"].map((check) => [
+			implement({ check }),
+			ctx,
+			/^check must be one command without `\|`, `;`, `&&`, or `\|\|`: a chained check never matches/,
+		]),
+		[implement(), { ...ctx, cwd: mkdtempSync(join(TEST_HOME, "norepo-")) }, /^implement needs a git repository/],
+	]) {
+		const res = await run(tool, params, undefined, undefined, c);
+		assert.equal(res.isError, true, JSON.stringify(params));
+		assert.match(text(res), error);
+	}
+	writeFileSync(join(repo, "dirty.txt"), "x\n");
+	assert.match(text(await run(tool, implement(), undefined, undefined, ctx)), /^implement needs a clean tree/);
+	rmSync(join(repo, "dirty.txt"));
+	git("switch", "-q", "main");
+	assert.match(text(await run(tool, implement(), undefined, undefined, ctx)), /^implement does not commit on main/);
+	assert.ok(!existsSync(lock));
+});
+
+test("implement: a second job in the same repo is refused; the main session's writes there are blocked until the handback", async (t) => {
+	const { tool, handlers, messages, commands } = setup(t, {
+		env: implementEnv("implement-hang", { FAKE_PI_TERMFILE: scratch("term") }),
+	});
+	const { repo, real, lock, ctx } = implementRepo();
+	const bg = { ...bgCtx().ctx, cwd: repo, isProjectTrusted: () => false };
+	const started = await run(tool, implement({ background: true }), undefined, undefined, bg);
+	assert.match(text(started), /^Started background job bg1 \(.+\) on goal\/x \(im\d+\) from \w{7}\./);
+	await workerStarted(repo);
+	const second = await run(tool, implement(), undefined, undefined, ctx);
+	assert.match(text(second), /^implement job im\d+ \(pid \d+\) is already writing in /);
+	const hook = handlers.tool_call;
+	const outside = mkdtempSync(join(TEST_HOME, "outside-"));
+	const blocked = await hook({ toolName: "edit", input: { path: join(repo, "sub", "a.txt") } }, { cwd: outside });
+	assert.equal(blocked?.block, true);
+	assert.equal(
+		blocked.reason,
+		`implement job bg1 is writing in ${real}; wait for its handback or /delegate cancel bg1.`,
+	);
+	assert.equal((await hook({ toolName: "write", input: { path: "sub/new.txt" } }, { cwd: repo }))?.block, true);
+	assert.equal(
+		(await hook({ toolName: "bash", input: { command: "git commit -m x" } }, { cwd: join(repo, "sub") }))?.block,
+		true,
+	);
+	assert.equal(
+		(await hook({ toolName: "bash", input: { command: `git -C ${real} add -A` } }, { cwd: outside }))?.block,
+		true,
+	);
+	assert.equal(await hook({ toolName: "bash", input: { command: "git log --oneline" } }, { cwd: repo }), undefined);
+	assert.equal(await hook({ toolName: "edit", input: { path: join(outside, "x.txt") } }, { cwd: repo }), undefined);
+	assert.equal(await hook({ toolName: "bash", input: { command: "git commit -m x" } }, { cwd: outside }), undefined);
+	// An explicit target decides, resolved against the cwd.
+	const bash = (command, cwd) => hook({ toolName: "bash", input: { command } }, { cwd });
+	assert.equal(await bash(`git -C ${outside} commit -m x`, repo), undefined);
+	assert.equal(await bash(`cd ${outside} && git add -A`, repo), undefined);
+	assert.equal((await bash("cd sub && git add -A", repo))?.block, true);
+	assert.equal((await bash(`git -C ${repo}/sub commit -m x`, outside))?.block, true);
+	assert.equal((await bash("git -C .. commit -m x", join(repo, "sub")))?.block, true);
+	// A dangling symlink cannot be resolved: blocked only under the root.
+	symlinkSync(join(TEST_HOME, "missing-target"), join(outside, "dangling"));
+	symlinkSync(join(TEST_HOME, "missing-target"), join(repo, "dangling"));
+	assert.equal(
+		await hook({ toolName: "write", input: { path: join(outside, "dangling") } }, { cwd: repo }),
+		undefined,
+	);
+	assert.equal(
+		(await hook({ toolName: "write", input: { path: join(repo, "dangling") } }, { cwd: outside }))?.block,
+		true,
+	);
+	await commands.delegate.handler("cancel bg1", commandCtx().ctx);
+	await waitFor(() => messages.length === 1, "the cancelled job's report");
+	assert.ok(!existsSync(lock));
+	assert.equal(
+		await hook({ toolName: "edit", input: { path: join(repo, "sub", "a.txt") } }, { cwd: repo }),
+		undefined,
+	);
+});
+
+test("implement background cancel: SIGTERM first, WIP commit, lock gone, report without a turn", async (t) => {
+	const termFile = scratch("term");
+	const { tool, messages, commands } = setup(t, {
+		env: implementEnv("implement-hang", { FAKE_PI_TERMFILE: termFile }),
+		limits: { termGraceMs: 3000 },
+	});
+	const { repo, git, lock } = implementRepo();
+	const ctx = { ...bgCtx().ctx, cwd: repo, isProjectTrusted: () => false };
+	await run(tool, implement({ background: true }), undefined, undefined, ctx);
+	await workerStarted(repo);
+	await new Promise((r) => setTimeout(r, 200));
+	await commands.delegate.handler("cancel bg1", commandCtx().ctx);
+	await waitFor(() => messages.length === 1, "the cancelled job's report");
+	assert.equal(readFileSync(termFile, "utf8"), "TERM\n");
+	assert.deepEqual(messages[0].options, { triggerTurn: false, deliverAs: "followUp" });
+	const content = messages[0].message.content;
+	assert.match(content, /^Background delegate job bg1 failed:\n\n✗ im\d+ goal\/x /);
+	assert.match(content, /^✗ stopped: cancelled$/m);
+	assert.match(git("log", "-1", "--format=%s"), /^WIP\(delegate im\d+\): stopped: cancelled$/);
+	assert.ok(!existsSync(lock));
+});
+
+test("implement: session shutdown waits for the WIP commit and the lock release, and sends nothing", async (t) => {
+	const { tool, messages, handlers } = setup(t, {
+		env: implementEnv("implement-hang", { FAKE_PI_TERMFILE: scratch("term") }),
+	});
+	const { repo, git, lock } = implementRepo();
+	const ctx = { ...bgCtx().ctx, cwd: repo, isProjectTrusted: () => false };
+	await run(tool, implement({ background: true }), undefined, undefined, ctx);
+	await workerStarted(repo);
+	await new Promise((r) => setTimeout(r, 200));
+	await handlers.session_shutdown();
+	assert.match(git("log", "-1", "--format=%s"), /^WIP\(delegate im\d+\): stopped: session ended$/);
+	assert.ok(!existsSync(lock));
+	await new Promise((r) => setTimeout(r, 100));
+	assert.equal(messages.length, 0);
+});
+
+test("implement worker env: fences, parent, remote and gh cut-offs, tools, approve, and cwd", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("echo-env", {
+			GIT_CONFIG_COUNT: "1",
+			GIT_CONFIG_KEY_0: "user.name",
+			GIT_CONFIG_VALUE_0: "Preset",
+			GH_TOKEN: "t1",
+			GITHUB_TOKEN: "t2",
+			GH_ENTERPRISE_TOKEN: "t3",
+			GITHUB_ENTERPRISE_TOKEN: "t4",
+		}),
+	});
+	const { repo, real, ctx } = implementRepo();
+	const echo = async (c) => {
+		const res = await run(tool, implement(), undefined, undefined, c);
+		return JSON.parse(readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8").match(/^ENV (.*)$/m)[1]);
+	};
+	const untrusted = await echo({ ...ctx, cwd: join(repo, "sub") });
+	assert.equal(realpathSync(untrusted.cwd), join(real, "sub"));
+	assert.equal(untrusted.tools, "read,grep,find,ls,Skill,edit,write,bash");
+	assert.deepEqual([untrusted.approve, untrusted.noApprove], [false, true]);
+	const { GH_CONFIG_DIR, ...env } = untrusted.env;
+	assert.match(GH_CONFIG_DIR, /me-pi-delegate-gh-/);
+	assert.ok(!existsSync(GH_CONFIG_DIR), "finish removes the gh config dir");
+	assert.deepEqual(env, {
+		GIT_CONFIG_COUNT: "5",
+		GIT_CONFIG_KEY_0: "user.name",
+		GIT_CONFIG_KEY_1: "protocol.ssh.allow",
+		GIT_CONFIG_KEY_2: "protocol.https.allow",
+		GIT_CONFIG_KEY_3: "protocol.http.allow",
+		GIT_CONFIG_KEY_4: "protocol.git.allow",
+		GIT_CONFIG_VALUE_0: "Preset",
+		GIT_CONFIG_VALUE_1: "never",
+		GIT_CONFIG_VALUE_2: "never",
+		GIT_CONFIG_VALUE_3: "never",
+		GIT_CONFIG_VALUE_4: "never",
+		ME_PI_DENY_DIR: join(real, ".git"),
+		ME_PI_OUTPUT_DIR: real,
+		ME_PI_PARENT: String(process.pid),
+		ME_PI_ROLE: "implement",
+	});
+	const trusted = await echo({ ...ctx, isProjectTrusted: () => true });
+	assert.deepEqual([trusted.approve, trusted.noApprove], [true, false]);
+});
+
+test("implement refuses runs[].model and runs[].thinking: it uses the worker pool", async (t) => {
+	const { tool } = setup(t, { config: POOL_SET, env: implementEnv("implement-commit") });
+	const { ctx, lock } = implementRepo();
+	for (const r of [{ model: OPUS }, { thinking: "low" }, { model: LUNA, thinking: "max" }]) {
+		const res = await run(tool, implement({ runs: [r] }), undefined, undefined, ctx);
+		assert.equal(res.isError, true);
+		assert.equal(text(res), "implement uses the worker pool in delegate.json; set models there");
+		assert.ok(!existsSync(lock), "refused before prepare");
+	}
+	const plain = await run(tool, implement({ runs: [{}] }), undefined, undefined, ctx);
+	assert.match(text(plain), /^✗ im\d+ goal\/x .*\[gpt-6-luna @max /, "an empty run entry still runs on the pool");
+});
+
+test("implement follows the worker pool in order, with each entry's thinking", async (t) => {
+	const { tool } = setup(t, {
+		config: POOL_SET,
+		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
+	});
+	const { ctx } = implementRepo();
+	const res = await run(tool, implement(), undefined, undefined, ctx);
+	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
+	assert.match(details, new RegExp(`^${LUNA} @max failed \\(exit 1: 429 .*; next ${OPUS} @max$`, "m"));
+});
+
+test("implement gets its own time limit; the wrap-up deadline is 80% of it", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("echo-budget") });
+	const { ctx } = implementRepo();
+	const before = Date.now();
+	const res = await run(tool, implement(), undefined, undefined, ctx);
+	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
+	const budget = JSON.parse(details.match(/^\{"tools".*\}$/m)[0]);
+	assert.equal(LIMITS.implementTimeoutSecs, 1800);
+	assert.ok(budget.deadline >= before + 1800 * 800 && budget.deadline <= Date.now() + 1800 * 800);
+});
+
+test("implement: no --approve on a fallback attempt", async (t) => {
+	const { tool } = setup(t, {
+		config: POOL_SET,
+		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
+	});
+	const { ctx } = implementRepo();
+	const res = await run(tool, implement(), undefined, undefined, { ...ctx, isProjectTrusted: () => true });
+	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
+	assert.match(details, /approve=no/, "the fallback attempt");
+	assert.match(details, /^openai-codex\/gpt-6-luna @max failed \(exit 1: 429 /m);
+});
+
+test("implement workers cannot write inside the git dir and stop when their coordinator is gone", async (t) => {
+	const { real } = implementRepo();
+	const env = { ME_PI_RUN: "1", ME_PI_ROLE: "implement", ME_PI_OUTPUT_DIR: real, ME_PI_DENY_DIR: join(real, ".git") };
+	const hook = setup(t, { env: { ...env, ME_PI_PARENT: String(process.ppid) } }).handlers.tool_call;
+	const intoGit = await hook({ toolName: "write", input: { path: ".git/hooks/pre-commit" } }, { cwd: real });
+	assert.equal(intoGit?.block, true);
+	assert.match(intoGit.reason, /is inside the git directory /);
+	assert.equal(await hook({ toolName: "write", input: { path: "sub/new.txt" } }, { cwd: real }), undefined);
+	const alive = setup(t, { env: { ...env, ME_PI_PARENT: String(process.pid) } }).handlers.tool_call;
+	assert.equal(await alive({ toolName: "read", input: { path: "sub/a.txt" } }, { cwd: real }), undefined);
+	const gone = spawn(process.execPath, ["-e", ""]);
+	await new Promise((r) => gone.once("exit", r));
+	const orphan = setup(t, { env: { ...env, ME_PI_PARENT: String(gone.pid) } }).handlers.tool_call;
+	const stopped = await orphan({ toolName: "read", input: { path: "sub/a.txt" } }, { cwd: real });
+	assert.deepEqual(stopped, { block: true, reason: "Blocked: the coordinator is gone; stop now.", terminate: true });
+});
+
+test("implement: a WIP HEAD from an earlier attempt reaches the worker's prompt", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("") });
+	const { repo, git, ctx } = implementRepo();
+	writeFileSync(join(repo, "sub", "a.txt"), "half\n");
+	git("commit", "-qam", "WIP(delegate im1): stopped: cancelled");
+	const res = await run(tool, implement(), undefined, undefined, ctx);
+	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
+	assert.match(details, /HEAD is a `WIP\(delegate` commit from an earlier attempt: finish that first\./);
+});
+
+test("implement: a session that ends during prepare leaves no job, lock, or message", async (t) => {
+	const { tool, handlers, messages } = setup(t, { env: implementEnv("implement-commit") });
+	const { repo, lock } = implementRepo();
+	const ctx = { ...bgCtx().ctx, cwd: repo, isProjectTrusted: () => false };
+	const pending = run(tool, implement({ background: true }), undefined, undefined, ctx);
+	await handlers.session_shutdown();
+	assert.ok(!existsSync(lock), "shutdown waited for the finish");
+	const res = await pending;
+	assert.equal(res.isError, true);
+	assert.equal(text(res), "stopped: session ended");
+	assert.equal(messages.length, 0);
+});
+
+test("implement: parallel calls at the cap cannot both pass it while preparing", async (t) => {
+	const { tool, commands, messages } = setup(t, { env: implementEnv("hang") });
+	const ctxs = [implementRepo(), implementRepo()].map(({ repo }) => ({
+		...bgCtx().ctx,
+		cwd: repo,
+		isProjectTrusted: () => false,
+	}));
+	await run(tool, { role: "scout", task: "x", runs: [{}, {}, {}], background: true }, undefined, undefined, ctxs[0]);
+	const results = await Promise.all(
+		ctxs.map((c) => run(tool, implement({ background: true }), undefined, undefined, c)),
+	);
+	const refused = results.filter((r) => r.isError);
+	assert.equal(refused.length, 1, results.map(text).join("\n"));
+	assert.match(text(refused[0]), /^4 worker\(s\) already running/);
+	const { ctx: cmd } = commandCtx();
+	await commands.delegate.handler("cancel bg1", cmd);
+	await commands.delegate.handler("cancel bg2", cmd);
+	await waitFor(() => messages.length === 2, "both cancelled reports");
+});
+
+// Last: every job above, refused, failed, cancelled, or stopped by shutdown, removed its gh config dir. Scans TEST_HOME
+// and the alternate TMPDIRs set above: missing-tmp and the not-a-dir blocker's parent.
+test("no gh config dir outlives its job", () => {
+	const roots = [
+		TEST_HOME,
+		join(TEST_HOME, "missing-tmp"),
+		...readdirSync(TEST_HOME)
+			.filter((n) => n.startsWith("not-a-dir-"))
+			.map((n) => join(TEST_HOME, n)),
+	].filter((dir) => existsSync(dir) && statSync(dir).isDirectory());
+	assert.ok(roots.length >= 2, "the blocker's parent is scanned");
+	assert.deepEqual(
+		roots.flatMap((dir) => readdirSync(dir).filter((n) => n.startsWith("me-pi-delegate-gh-"))),
+		[],
+	);
 });

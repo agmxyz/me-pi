@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { default: registerGuard, classify } = await import("./guard.ts");
+const { default: registerGuard, classify, workerRisk, gitTreeWrite, PROTECTED_BRANCHES } = await import("./guard.ts");
 
 const onMain = () => "main";
 const onFeature = () => "feature/x";
@@ -78,6 +78,8 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 		["if true; then git push origin main; fi", onFeature, "push to main/master"],
 		["nohup git push origin main", onFeature, "push to main/master"],
 		["{ git push origin main; }", onFeature, "push to main/master"],
+		["bash <<EOF\ngit push origin main\nEOF", onFeature, "push to main/master"],
+		["git commit -F - <<EOF && git push origin main\nmsg\nEOF", onFeature, "push to main/master"],
 		// History rewrites and other discards.
 		["git commit --amend --no-edit", onFeature, "history rewrite (commit --amend)"],
 		["git rebase -i HEAD~3", onFeature, "history rewrite (rebase)"],
@@ -141,9 +143,161 @@ test("allows feature pushes, PRs, and routine commands", () => {
 		["git switch feature/y", onMain],
 		["git checkout main", onFeature],
 		["rmdir empty-dir", onMain],
+		[`git commit -m "$(cat <<'EOF'\nfix: git push origin main and rm -rf src\nEOF\n)"`, onFeature],
 	]) {
 		assert.equal(classify(command, branch), undefined, `expected allowed: ${command}`);
 	}
+});
+
+test("workerRisk blocks commands that move an implement worker off its branch or reach shared state", () => {
+	for (const command of [
+		"git push origin x",
+		"git push . HEAD:main",
+		"git -C x worktree add",
+		"git commit -nm x",
+		"git commit --no-verify -m x",
+		"gh pr list",
+		"git config core.hooksPath x",
+		"git config --unset user.name",
+		"git remote set-url origin x",
+		"git remote -v",
+		"git update-ref refs/heads/main x",
+		"git symbolic-ref HEAD x",
+		"git branch -M x",
+		"git branch --move a b",
+		"git tag -d v1",
+		"git tag --force v1",
+		"./install.sh",
+		"bash install.sh",
+		"sh -x ./install.sh",
+		"/abs/install.sh",
+		"x/install.sh",
+		"cd .. && ./install.sh",
+		"pi install ./x",
+		"pi config",
+		"git symbolic-ref -d HEAD",
+		". ./install.sh",
+		"source install.sh",
+		"bash -n install.sh",
+		"bash <<EOF\n./install.sh\nEOF",
+		"git commit -F - <<EOF && git push\nmsg\nEOF",
+		"git switch other",
+		"git switch -c other",
+		"git checkout other",
+		"git checkout -- a.ts",
+		"git merge main",
+		"git cherry-pick abc123",
+		"git stash",
+		"git stash pop",
+		"git stash drop",
+		"git pull",
+		"git pull --rebase origin main",
+		"cd x && git checkout main",
+	]) {
+		assert.ok(workerRisk(command), `expected blocked: ${command}`);
+	}
+	for (const command of [
+		"npm run check --prefix extensions",
+		"../bin/install.test.sh",
+		'git commit -m "mention git push"',
+		"git commit -m 'run ./install.sh'",
+		"grep 'gh ' file",
+		"git config --get user.name",
+		"git config user.name",
+		"git config --list --show-origin",
+		"git config get user.name",
+		"git branch -d old",
+		"git log --oneline main..HEAD",
+		"git merge-base main HEAD",
+		"git stash list",
+		"git stash show -p",
+		'git commit -m "merge and stash notes"',
+		"git tag v1",
+		"cat install.sh",
+		"pi --version",
+		"git symbolic-ref -q HEAD",
+		"git symbolic-ref --short HEAD",
+		"git config --bool core.bare",
+		"git config --type bool --get core.bare",
+		"git config --type=int core.x",
+		`git commit -m "$(cat <<'EOF'\ninstall.sh: link\ngit push is blocked\nEOF\n)"`,
+		"git commit -F - <<EOF\nrun ./install.sh then gh pr list\nEOF",
+	]) {
+		assert.equal(workerRisk(command), undefined, `expected allowed: ${command}`);
+	}
+});
+
+test("gitTreeWrite names checkout-writing git subcommands and passes reads", () => {
+	for (const [command, sub] of [
+		["git add -A", "add"],
+		["git rm a.ts", "rm"],
+		["git mv a b", "mv"],
+		["git commit -m x", "commit"],
+		["git merge x", "merge"],
+		["git rebase main", "rebase"],
+		["git reset HEAD~1", "reset"],
+		["git restore --staged a", "restore"],
+		["git checkout x", "checkout"],
+		["git switch -c goal/x", "switch"],
+		["git stash", "stash"],
+		["git stash pop", "stash"],
+		["git stash list && git stash drop", "stash"],
+		["git cherry-pick abc", "cherry-pick"],
+		["git revert HEAD", "revert"],
+		["git am < p.mbox", "am"],
+		["git apply p.diff", "apply"],
+		["git pull", "pull"],
+		["git clean -fd", "clean"],
+		["git update-index --assume-unchanged a", "update-index"],
+		["git read-tree HEAD", "read-tree"],
+		["git checkout-index -a -f", "checkout-index"],
+		["git sparse-checkout set src", "sparse-checkout"],
+		["git submodule update --init", "submodule"],
+		["git update-ref refs/heads/x HEAD", "update-ref"],
+		["git symbolic-ref HEAD refs/heads/x", "symbolic-ref"],
+		["git branch -f goal/x HEAD~1", "branch"],
+		["git branch --force goal/x main", "branch"],
+		["git branch -m old new", "branch"],
+		["git branch -M new", "branch"],
+		["git branch --move old new", "branch"],
+		["git branch -d old", "branch"],
+		["git branch -D old", "branch"],
+		["git branch --delete old", "branch"],
+		["git -C /repo commit -m x", "commit"],
+		["rtk git add .", "add"],
+		["git status && git commit -m x", "commit"],
+		['git log --format="$(git reset --hard)"', "reset"],
+	]) {
+		assert.equal(gitTreeWrite(command), sub, command);
+	}
+	for (const command of [
+		"git log --oneline",
+		"git log --oneline -5",
+		"git blame README.md",
+		"git grep foo",
+		"git status --porcelain",
+		"git diff main..HEAD",
+		"git show HEAD",
+		"git branch --show-current",
+		"git branch",
+		"git branch -a",
+		"git branch new-topic",
+		"git fetch origin",
+		"git tag v1",
+		"git rev-parse HEAD",
+		"git merge-base main HEAD",
+		"git stash list",
+		"git stash show -p stash@{0}",
+		"grep 'git commit' README.md",
+		'echo "git add -A"',
+		"npm run check --prefix extensions",
+	]) {
+		assert.equal(gitTreeWrite(command), undefined, `expected allowed: ${command}`);
+	}
+});
+
+test("PROTECTED_BRANCHES is main and master", () => {
+	assert.deepEqual([...PROTECTED_BRANCHES].sort(), ["main", "master"]);
 });
 
 function setup() {

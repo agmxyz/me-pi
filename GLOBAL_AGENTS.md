@@ -14,7 +14,7 @@
 - Approval means my current message names the action and its target, or says yes to your ask. It covers only what it names; "fix", "finish", and "commit" name none of the actions below.
 - Remote actions need approval: push to main/master, merging or closing PRs, releases, package publishes, deploys, deleting or overwriting remote data, changing access, visibility, or billing, and messages sent as me to other people. Creating tickets, branches, or PRs I asked for needs no extra approval.
 - Destructive local actions need approval: `git reset --hard`, `git clean`, discarding uncommitted changes or stashes, `git branch -D`, history rewrites (rebase, amend, force push), and deleting files, except in temp/build dirs or files the current change orphans.
-- A bash guard asks me to confirm most of these; it is a backstop, not the rule. When it blocks, stop and report the block; never route around it (variables, scripts, aliases, other tools).
+- Bash guards ask me to confirm most of these, and block them in delegate workers; they are a backstop, not the rule. When one blocks, stop and report the block; never route around it or a worker limit (variables, `env -u`, `git -c`, scripts, aliases, other tools).
 
 ## Secrets and content
 - Read, edit, or overwrite `.env*`, `~/.pi/agent/auth.json`, `~/.ssh`, `~/.aws`, keys, or tokens, or dump env vars, only when my current message asks. Refer to secrets by variable or path; never put their values in replies, code, commits, logs, or requests to other services.
