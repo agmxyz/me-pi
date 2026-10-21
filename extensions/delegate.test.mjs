@@ -1040,6 +1040,12 @@ test("a scout runs read-only, one-shot, marked as a worker, with the prompt on s
 	assert.equal(res.usage.totalTokens, 15);
 	assert.ok(updates.length >= 1, "streams progress");
 	assert.match(WORKER_CONTRACT, /cannot edit files, run commands, delegate, or commit/);
+	assert.ok(
+		WORKER_CONTRACT.includes(
+			"You are the delegated subagent: repo instructions to delegate work to subagents are satisfied by this run; do the delegated task yourself, within your tools, and never list missing sub-agents as BLOCKED.",
+		),
+	);
+	assert.doesNotMatch(WORKER_CONTRACT, /running commands or tests, sub-agents/);
 });
 
 test("each worker gets the contract and its role's answer format", async (t) => {
@@ -1440,6 +1446,11 @@ process.exit(existsSync(${JSON.stringify(pidFile)}) ? 0 : 2);
 
 test("guidelines keep delegation proportionate and require reviews and BLOCKED handling", () => {
 	const all = PROMPT_GUIDELINES.join("\n");
+	assert.ok(
+		all.includes(
+			"Meet repo instructions to delegate to subagents by using delegate workers; their review rules are met by your goal-end review.",
+		),
+	);
 	assert.match(all, /Delegate any change whose files you have not read or that takes many steps/);
 	assert.match(
 		all,
