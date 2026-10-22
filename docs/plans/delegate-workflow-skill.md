@@ -17,7 +17,7 @@ Use job rather than ticket in generic tool guidance. Accept a passing implement 
 
 Move into `extensions/skills/implement-goal/SKILL.md`: personal precommit review policy, goal-base tracking, committing spec/tickets, ticket sequencing and test seams, Claude Code skill overlay, tracker lifecycle, draft PR timing, final suite and goal-wide review, reviewer awareness of checks already passed, one-fix cap, and WIP disclosure/squash-merge guidance. Preserve stronger repository and user requirements. The skill must not grant remote/destructive approval.
 
-Add a strong inline pointer: for a spec, ticketed goal, or PR workflow, load `implement-goal` before the first implement job. Include a single-ticket/PR routing case so the lifecycle rules do not depend on having multiple tickets. Ship it through the existing extensions/package.json pi.skills manifest. Verify Pi 1.3.0 actually discovers it; explicit CLI skill loading is not evidence of package discovery. No author-global routing dependency.
+Add a strong inline pointer: for a spec, ticketed goal, or PR workflow, load `implement-goal` before the first implement job. Include a single-ticket/PR routing case so the lifecycle rules do not depend on having multiple tickets. Ship it through the existing extensions/package.json pi.skills manifest. Verify Pi 1.3.0 actually discovers it; explicit CLI skill loading is not evidence of package discovery. No author-global routing dependency. T1 keeps both candidate artifacts outside live extension source and applies the prompt/manifest patch only to a scratch package clone.
 
 Keep existing runtime semantics. Update README paths/usage and tests affected by moving guidelines; avoid brittle verbatim prose pins, favor structural checks, a word budget, and relevant behavior assertions.
 
@@ -28,7 +28,7 @@ Observed with injected guidance: seven-round review/fix loop before fix cap, wai
 ## Confirmed test seams
 
 1. Existing extension suite and install smoke tests: `npm run check --prefix extensions`.
-2. Package discovery: isolated agent settings load the candidate extension package and expose `implement-goal` without explicit `--skill`; exactly one delegate tool is registered. Workers inherit their arm's agent environment.
+2. Offline package discovery: `node test/workflow/prepare.mjs` starts Pi 1.3.0 in isolated offline RPC mode for both arms. `get_commands` confirms B's `implement-goal` has `source: "skill"` and `sourceInfo.origin: "package"`, with no explicit `--skill`; a scratch probe confirms exactly one `delegate` tool in each arm. No model is invoked. The paired lifecycle remains UNRUN. Workers inherit their arm's agent environment.
 3. Two identical scratch toy repositories, same model/provider/thinking/limits and equivalent global policies/pools: A uses current guidelines, B uses candidate guidance and packaged skill. No reminders at handbacks or goal end. No remote targets; no actual pushes or tracker closures.
 4. Ticket 1 conditionally implements then reports `BLOCKED: oracle unavailable` and leaves changes uncommitted while the harness oracle is unavailable. The condition lives in the ticket, not a permanent main-session instruction. Finish must produce a non-cancel WIP and failing handback. Harness enables the oracle; main must dispatch recovery before dependent ticket 2. Worker manipulation of the oracle makes the run inconclusive. Existing implement-dirty fake-pi test is the deterministic WIP lifecycle seam.
 5. Ticket 2 prescribes a known incomplete first pass; full spec remains visible to main/reviewer. Goal review should identify it and trigger at most one fix job. A reviewer miss makes the run inconclusive, not passing. This tests lifecycle, not model competence.
@@ -39,15 +39,15 @@ Authentication for isolated agents requires current user approval before tempora
 
 ## Adoption gate
 
-Do not change live guidelines or advertise the split as validated until the live comparison passes. If B fails or either arm is inconclusive, retain current workflow injection (generic wording may be a later separate change); report evidence and BLOCKED items. Do not add an opt-out flag.
+Do not change live guidelines or advertise the split as validated until the live comparison passes. T1 preparation and offline package-discovery evidence are recorded in `docs/plans/delegate-workflow-skill-evidence.md`; the authenticated A/B is UNRUN because explicit user approval for temporary auth symlinks is pending. T2 remains pending. If B fails or either arm is inconclusive, retain current workflow injection (generic wording may be a later separate change); report evidence and BLOCKED items. Do not add an opt-out flag.
 
 ## Tickets
 
 ### T1 — Prepare candidate and validation harness
 
-Status: TODO.
+Status: PREPARED — offline validation passed; adoption blocked, live comparison UNRUN.
 
-In scratch, draft lean guidelines and packaged skill, verify package discovery, and prepare/run the paired toy lifecycle test if authentication is approved. Commit a reproducible validation harness or documented test procedure plus a sanitized evidence report to this branch; keep live source/manifest unchanged. No secrets in evidence. If provider availability or permissions block the live comparison, report BLOCKED with the exact missing prerequisite; do not claim passing results. Run the full check before committing. T1 can pass as preparation only if the report explicitly leaves adoption blocked and T2 remains pending.
+The candidate artifacts are in `test/workflow/candidate/`; the scratch-only preparation, package-discovery check, paired goal fixtures, oracle gate, and A/B procedure are in `test/workflow/`. The sanitized evidence report is `docs/plans/delegate-workflow-skill-evidence.md`. Keep live extension source/manifest unchanged. No secrets in evidence. The authenticated comparison is blocked pending explicit user approval for temporary auth symlinks; do not claim live results. T1 closes only as preparation in a passing commit, with T2 still pending.
 
 ### T2 — Adopt validated workflow split
 
