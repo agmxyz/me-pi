@@ -38,6 +38,59 @@ export interface DelegateView {
 	footer?: string;
 }
 
+/** Safe, prompt-independent details for one active worker in the main-session widget. */
+export interface ActivityWidgetRow {
+	id: string;
+	worker: number;
+	workerCount: number;
+	role: string;
+	model: string;
+	thinking: string;
+	startedAt: number;
+	lastTool?: string;
+	fallbacks: number;
+	stage: "Workers" | "Rebuttal";
+}
+
+const stripWidgetControls = (value: string) =>
+	value
+		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+
+/** A compact, prompt-free activity panel; its caller supplies only sanitized worker metadata. */
+export function activityWidget(rows: () => readonly ActivityWidgetRow[], theme: Theme): Component {
+	return {
+		render(width: number): string[] {
+			const current = rows();
+			if (!current.length) return [];
+			const fg: Fg = theme.fg.bind(theme);
+			const shown = current.slice(0, 4).map((row) => {
+				const id = stripWidgetControls(row.id);
+				const model = stripWidgetControls(row.model);
+				const role = stripWidgetControls(row.role);
+				const thinking = stripWidgetControls(row.thinking);
+				const tool = row.lastTool ? stripWidgetControls(row.lastTool) : "";
+				const workerId = row.workerCount > 1 ? `${id}#${row.worker}` : id;
+				const elapsed = Math.max(0, Math.floor((Date.now() - row.startedAt) / 1000));
+				const stage = row.stage === "Rebuttal" ? fg("warning", " R2") : "";
+				const fallback = row.fallbacks > 0 ? fg("warning", " ↻") : "";
+				const tail = `${fg("dim", `@${thinking} ${elapsed}s`)}${fallback}${tool ? ` · ${fg("toolTitle", tool)}` : ""}`;
+				return `${fg("warning", "🧑‍🍳")} ${fg("accent", workerId)} ${fg("muted", role)}${stage} ${fg("accent", model)} ${tail}`;
+			});
+			const overflow = current.length - shown.length;
+			const lines = [
+				fg("toolTitle", "Delegate activity"),
+				...shown,
+				...(overflow > 0 ? [fg("dim", `… ${overflow} more worker${overflow === 1 ? "" : "s"}`)] : []),
+			];
+			return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+		},
+		invalidate(): void {},
+	};
+}
+
 type Fg = (color: any, text: string) => string;
 const plain: Fg = (_color, text) => text;
 

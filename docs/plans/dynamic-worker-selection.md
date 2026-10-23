@@ -34,7 +34,7 @@ Add a compact panel near the main prompt using Pi's existing setWidget API, list
 
 ## Ticket: main-session delegate activity widget
 
-Status: open
+Status: closed
 
 Depends on: stop on explicit model failure.
 

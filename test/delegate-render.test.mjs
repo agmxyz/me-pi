@@ -6,7 +6,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 // Pi sets up its theme before any tool renders; the Markdown theme needs it.
 initTheme(undefined, false);
 
-const { progressLines, renderCall, renderResult } = await import("../extensions/delegate-render.ts");
+const { activityWidget, progressLines, renderCall, renderResult } = await import("../extensions/delegate-render.ts");
 
 // Colours as real ANSI codes, so width checks measure only visible text.
 const theme = { fg: (_color, text) => `\x1b[31m${text}\x1b[39m`, bold: (text) => `\x1b[1m${text}\x1b[22m` };
@@ -29,6 +29,54 @@ const run = (over = {}) => ({
 	...over,
 });
 const long = "x".repeat(300);
+
+test("the activity widget is compact, bounded, themed, sanitized, and Unicode-width-safe", () => {
+	const colors = [];
+	const widgetTheme = {
+		fg: (color, text) => {
+			colors.push(color);
+			return `\x1b[31m${text}\x1b[39m`;
+		},
+	};
+	const startedAt = Date.now() - 2500;
+	const rows = Array.from({ length: 6 }, (_, index) => ({
+		id: "bg1",
+		worker: index + 1,
+		workerCount: 6,
+		role: index === 0 ? "scout" : "review",
+		model: "anthropic/claude-haiku-5-5",
+		thinking: "low",
+		startedAt,
+		lastTool: index === 0 ? "read" : "grep",
+		fallbacks: index === 0 ? 1 : 0,
+		stage: index === 0 ? "Rebuttal" : "Workers",
+	}));
+	const component = activityWidget(() => rows, widgetTheme);
+	const lines = draw(component, 200);
+	assert.equal(lines.length, 6, "heading, at most four workers, and overflow count");
+	assert.match(lines[1], /^🧑‍🍳 bg1#1 scout R2 anthropic\/claude-haiku-5-5 @low 2s ↻ · read$/);
+	assert.match(lines[4], /bg1#4 review/);
+	assert.equal(lines[5], "… 2 more workers");
+	assert.ok(colors.includes("warning") && colors.includes("accent") && colors.includes("muted"));
+	assert.ok(colors.includes("dim") && colors.includes("toolTitle"));
+	for (const width of [1, 2, 8, 14, 20, 40]) assertFits(component, width);
+	assert.deepEqual(activityWidget(() => [], widgetTheme).render(80), []);
+
+	const hostile = activityWidget(
+		() => [
+			{
+				...rows[0],
+				id: "call\u001b[31m\nsecond",
+				model: "provider/model\u001b[2J",
+				lastTool: "read\n",
+			},
+		],
+		widgetTheme,
+	);
+	const hostileText = draw(hostile, 200).join("\n");
+	assert.match(hostileText, /call second/);
+	assert.doesNotMatch(hostileText, /\u001b/);
+});
 
 test("an implement call preview shows its check", () => {
 	const call = renderCall({ role: "implement", task: "Add x", check: "npm test\nmore" }, theme);

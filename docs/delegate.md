@@ -36,7 +36,7 @@ Edit the JSON yourself, then `/reload` to reload the extension. Use `/delegate m
 
 ## Run and stop work
 
-For a long task, ask Pi to use `background: true`. It returns a `bg<n>` job ID; `/delegate status` shows running IDs and recent calls, and `/delegate cancel <id>` requests cancellation. At most four workers can run at once across calls. `/reload`, session replacement, or Pi exit ends background jobs; wait for them before reloading when possible. In an interactive session, Ctrl+O expands live delegate progress to show up to eight recent sanitized tool labels per worker; the collapsed view stays compact.
+For a long task, ask Pi to use `background: true`. It returns a `bg<n>` job ID; `/delegate status` shows running IDs and recent calls, and `/delegate cancel <id>` requests cancellation. At most four workers can run at once across calls. `/reload`, session replacement, or Pi exit ends background jobs; wait for them before reloading when possible. In the TUI, a compact panel above the prompt shows active foreground and background workers with their call/job ID, role, current model and thinking level, elapsed seconds, and latest sanitized tool name. It updates as tools start and once per second for elapsed time, and hides when idle. The panel never includes task text, tool arguments or results, stderr, or reasoning. Ctrl+O still expands live delegate tool progress to show up to eight recent sanitized tool labels per worker; the collapsed view stays compact.
 
 A `research` task needs the separately installed web extension; installing me-pi alone does not provide web tools. Web-enabled workers can read project files as well as fetched pages, so enable web only when outside sources are needed and treat fetched content as untrusted data.
 

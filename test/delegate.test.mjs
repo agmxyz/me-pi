@@ -202,7 +202,8 @@ process.stdin.on("end", () => {
       args: { path: "PRIVATE_ARGUMENT", command: "PRIVATE_COMMAND", output: "PRIVATE_OUTPUT", reasoning: "PRIVATE_REASONING" },
     }));
     process.stdout.write(activity.join("\\n") + "\\n");
-    setTimeout(() => { emit("activity answer"); process.exit(0); }, 250);
+    process.stderr.write("PRIVATE_STDERR\\n");
+    setTimeout(() => { emit("activity answer"); process.exit(0); }, Number(process.env.FAKE_PI_ACTIVITY_DELAY || 250));
     return;
   }
   if (mode === "expensive") {
@@ -1887,6 +1888,209 @@ const bgCtx = () => {
 	const statuses = [];
 	return { ctx: { ...CTX, ui: { setStatus: (key, value) => statuses.push([key, value]) } }, statuses };
 };
+
+function tuiCtx() {
+	const updates = [];
+	const requests = [];
+	const snapshots = [];
+	let component;
+	const tui = {
+		requestRender: () => {
+			requests.push(Date.now());
+			snapshots.push(component?.render(240) ?? []);
+		},
+	};
+	const ui = {
+		setStatus: () => {},
+		setWidget: (key, content) => {
+			updates.push([key, content]);
+			component =
+				content === undefined
+					? undefined
+					: typeof content === "function"
+						? content(tui, { fg: (_color, value) => value })
+						: { render: () => content };
+		},
+	};
+	return {
+		ctx: { ...CTX, mode: "tui", ui },
+		updates,
+		requests,
+		snapshots,
+		widget: (width = 240) => component?.render(width) ?? [],
+	};
+}
+
+function trackIntervals(t) {
+	const originalSetInterval = globalThis.setInterval;
+	const originalClearInterval = globalThis.clearInterval;
+	const active = new Map();
+	let nextId = 0;
+	globalThis.setInterval = (callback, delay) => {
+		const handle = { id: ++nextId, callback, delay, unref() {} };
+		active.set(handle, delay);
+		return handle;
+	};
+	globalThis.clearInterval = (handle) => active.delete(handle);
+	t.after(() => {
+		globalThis.setInterval = originalSetInterval;
+		globalThis.clearInterval = originalClearInterval;
+	});
+	return active;
+}
+
+test(
+	"the TUI widget shows coalesced foreground and background tool activity by stable ID without payloads",
+	{ timeout: 10000 },
+	async (t) => {
+		const { tool, messages } = setup(t, {
+			config: POOL_SET,
+			env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "1200" },
+		});
+		const intervals = trackIntervals(t);
+		const ui = tuiCtx();
+		const first = await run(
+			tool,
+			{ role: "scout", task: "PRIVATE_TASK_ONE", runs: [{ model: HAIKU }], background: true },
+			undefined,
+			undefined,
+			ui.ctx,
+		);
+		assert.match(text(first), /^Started background job bg1 /);
+		const second = await run(
+			tool,
+			{ role: "research", task: "PRIVATE_TASK_TWO", runs: [{ model: OPUS }], background: true },
+			undefined,
+			undefined,
+			ui.ctx,
+		);
+		assert.match(text(second), /^Started background job bg2 /);
+
+		let foregroundDone = false;
+		const foreground = tool
+			.execute(
+				"call-foreground-9",
+				{ role: "review", task: "PRIVATE_TASK_THREE", runs: [{ model: LUNA, thinking: "low" }] },
+				undefined,
+				undefined,
+				ui.ctx,
+			)
+			.then((result) => {
+				foregroundDone = true;
+				return result;
+			});
+		await waitFor(
+			() => {
+				const panel = ui.widget().join("\n");
+				return (
+					panel.includes("bg1 scout anthropic/claude-haiku-5-5 @off") &&
+					panel.includes("bg2 research anthropic/claude-opus-5-5 @max") &&
+					panel.includes("call-foreground-9 review openai-codex/gpt-6-luna @low") &&
+					panel.includes("read") &&
+					panel.includes("grep")
+				);
+			},
+			"widget tool-start updates before turn completion",
+			2000,
+		);
+		assert.equal(foregroundDone, false, "foreground tool call is still waiting on its answer");
+		const live = ui.widget().join("\n");
+		assert.doesNotMatch(
+			live,
+			/PRIVATE_(?:TASK_ONE|TASK_TWO|TASK_THREE|ARGUMENT|COMMAND|OUTPUT|REASONING|STDERR)|activity answer|stderr/i,
+		);
+		assert.equal(ui.widget().length, 4, "one heading and three active worker rows");
+		assert.deepEqual([...intervals.values()], [1000], "one TUI-only elapsed timer for the active panel");
+		const timer = [...intervals.keys()][0];
+		const rendersBeforeTick = ui.requests.length;
+		timer.callback();
+		assert.equal(ui.requests.length, rendersBeforeTick + 1, "each one-second tick refreshes elapsed time");
+
+		assert.equal((await foreground).isError, false);
+		await waitFor(() => messages.length === 2, "both background answers");
+		assert.deepEqual(ui.widget(), [], "the widget hides when every worker is idle");
+		assert.equal(intervals.size, 0, "completion clears the elapsed timer");
+	},
+);
+
+test("the TUI widget tracks the current configured fallback candidate", async (t) => {
+	const { tool } = setup(t, {
+		config: {
+			version: 3,
+			scout: { models: [], thinking: "low" },
+			worker: {
+				models: [
+					{ model: HAIKU, thinking: "high" },
+					{ model: SONNET, thinking: "low" },
+				],
+				thinking: "medium",
+			},
+		},
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU },
+	});
+	const ui = tuiCtx();
+	const result = await run(tool, { role: "review", task: "fallback widget" }, undefined, undefined, ui.ctx);
+	assert.equal(result.isError, false);
+	assert.ok(
+		ui.snapshots.some((snapshot) =>
+			snapshot.some((line) => line.includes("claude-sonnet-5-5 @low") && line.includes("↻")),
+		),
+		"the widget switches to the next actual candidate and marks its fallback",
+	);
+	assert.deepEqual(ui.widget(), [], "the final candidate completion hides the widget");
+});
+
+test("the TUI widget shows the rebuttal stage", async (t) => {
+	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const ui = tuiCtx();
+	const result = await run(
+		tool,
+		{ role: "review", task: "PRIVATE_REBUTTAL_TASK", runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
+	assert.equal(result.isError, false);
+	assert.ok(ui.snapshots.some((snapshot) => snapshot.some((line) => line.includes("R2"))));
+	assert.doesNotMatch(ui.snapshots.flat().join("\n"), /PRIVATE_REBUTTAL_TASK|DONE model=/);
+	assert.deepEqual(ui.widget(), [], "the widget hides after the rebuttal finishes");
+});
+
+test("the TUI widget cleans up on cancellation and session replacement", async (t) => {
+	const intervals = trackIntervals(t);
+	const main = setup(t, { env: { FAKE_PI_MODE: "hang" } });
+	const ui = tuiCtx();
+	const { tool, handlers, commands, messages } = main;
+	await run(tool, { role: "scout", task: "cancel me", background: true }, undefined, undefined, ui.ctx);
+	await waitFor(() => ui.widget().some((line) => line.includes("bg1 scout")), "background widget row");
+	assert.equal(intervals.size, 1);
+	await commands.delegate.handler("cancel bg1", commandCtx().ctx);
+	await waitFor(() => messages.length === 1, "cancelled report");
+	assert.deepEqual(ui.widget(), [], "cancellation hides the idle widget");
+	assert.equal(intervals.size, 0, "cancellation clears the elapsed timer");
+
+	await run(tool, { role: "scout", task: "session replacement", background: true }, undefined, undefined, ui.ctx);
+	await waitFor(() => ui.widget().some((line) => line.includes("bg2 scout")), "second background widget row");
+	assert.equal(intervals.size, 1);
+	await handlers.session_shutdown({ reason: "new" });
+	assert.deepEqual(ui.widget(), [], "session replacement removes the widget");
+	assert.equal(intervals.size, 0, "session replacement clears the elapsed timer");
+});
+
+test("non-TUI worker execution creates no widget or elapsed timer", async (t) => {
+	const intervals = trackIntervals(t);
+	let widgetCalls = 0;
+	const { tool } = setup(t, { env: { FAKE_PI_MODE: "tool-activity" } });
+	const printCtx = {
+		...CTX,
+		mode: "print",
+		ui: { setWidget: () => widgetCalls++ },
+	};
+	const printed = await run(tool, { role: "scout", task: "not interactive" }, undefined, undefined, printCtx);
+	assert.equal(printed.isError, false);
+	assert.equal(widgetCalls, 0, "print mode never touches setWidget");
+	assert.equal(intervals.size, 0, "non-TUI calls create no timer");
+});
 
 test("background: returns a job id at once, then delivers the answer as a message that starts a turn", async (t) => {
 	const { tool, messages } = setup(t);

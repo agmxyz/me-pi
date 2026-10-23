@@ -22,12 +22,25 @@ export interface CallRecord {
 }
 
 /** A delegate call that is running now. */
+export interface ActiveWorker {
+	index: number;
+	model: string;
+	thinking: string;
+	startedAt: number;
+	active: boolean;
+	lastTool?: string;
+	fallbacks: number;
+}
+
 export interface ActiveCall {
 	role: string;
 	models: string[];
 	start: number;
 	/** The background job id, for /delegate cancel. */
 	job?: string;
+	/** Current per-worker activity, kept on the existing active-call record. */
+	workers?: ActiveWorker[];
+	stage?: "Workers" | "Rebuttal";
 }
 
 export interface CommandDeps {
