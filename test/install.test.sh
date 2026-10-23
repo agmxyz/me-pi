@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hermetic install regression test: all HOME/package writes stay under /tmp.
-# Usage: bin/install.test.sh
+# Usage: test/install.test.sh
 set -euo pipefail
 
 TESTS_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

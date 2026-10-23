@@ -28,7 +28,7 @@ Make `me-pi` an explicit Pi package instead of relying on directory discovery. C
 
 ### P1 — Root package, development tooling and test layout
 
-Status: TODO.
+Status: DONE.
 
 Implement root manifest/tooling and test relocation, compatibility check shim, focused package assertions, and corresponding README development/layout updates. Keep the old installed directory's explicit entrypoints usable until P2/main-session installer registration. No real ./install.sh execution. Run acceptance command and close P1 only in a passing commit.
 

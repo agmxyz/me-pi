@@ -15,6 +15,6 @@
 		"types": ["node"],
 		"noEmit": true
 	},
-	"include": ["*.ts"],
-	"exclude": ["rtk.ts", "interactive-shell.ts"]
+	"include": ["extensions/*.ts"],
+	"exclude": ["extensions/rtk.ts", "extensions/interactive-shell.ts"]
 }

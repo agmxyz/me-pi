@@ -8,25 +8,31 @@ A setup for the [Pi](https://pi.dev) coding agent: one global policy plus three 
 |---|---|
 | `GLOBAL_AGENTS.md` | Policy for every Pi session and worker: output, engineering defaults, approval, secrets. Linked to `~/.pi/agent/AGENTS.md`. |
 | `AGENTS.md` | Instructions for working on this repo. |
-| `install.sh` | Links the policy, registers `extensions/` and `pi-web-access` with `pi install`, copies Pi's `interactive-shell.ts` and `handoff.ts` examples, runs `rtk init` if present. Idempotent; never overwrites your policy file or copied examples. |
-| `bin/install.test.sh` | Hermetic test of `install.sh` (all writes under `/tmp`). |
+| `package.json` | Public Pi package manifest and root development commands; explicitly lists the three extension entrypoints. |
+| `package-lock.json`, `tsconfig.json`, `biome.json` | The single root source for pinned development dependencies, type checking, and lint configuration. |
+| `install.sh` | Links the policy, registers the compatibility `extensions/` package and `pi-web-access` with `pi install`, copies Pi's `interactive-shell.ts` and `handoff.ts` examples, runs `rtk init` if present. Idempotent; never overwrites your policy file or copied examples. |
+| `extensions/package.json` | Private compatibility manifest for the existing `extensions/` installation; keeps its three explicit entrypoints and forwards `check` to the root. |
+| `test/install.test.sh` | Hermetic test of `install.sh` (all writes under `/tmp`). |
 | `extensions/delegate.ts` | The `delegate` tool: roles, model pools, worker processes, limits, in-worker blocks. |
 | `extensions/delegate-implement.ts` | The `implement` role's checkout lifecycle: `prepare`, `finish`, `formatHandback`. |
 | `extensions/delegate-command.ts` | `/delegate status \| models \| cancel <id>`. |
 | `extensions/delegate-render.ts` | TUI view of calls and results. |
 | `extensions/guard.ts` | Asks before risky bash; also the implement worker's bash rules. |
 | `extensions/skill.ts` | The `Skill` tool. |
-| `extensions/*.test.mjs` | Tests, one file per module. |
+| `test/*.test.mjs` | Extension behavior tests and package-manifest assertions. |
 
 ## Install and Check
 
 Needs `pi` on PATH and Node ≥22.19.
 
 ```bash
-git clone git@github.com:0bmario/me-pi.git && cd me-pi && ./install.sh   # then restart Pi
-npm ci --prefix extensions          # once, and after package-lock.json changes
-npm run check --prefix extensions   # Biome, tsc, node --test, bin/install.test.sh, git diff --check
+git clone https://github.com/0bmario/me-pi.git && cd me-pi && ./install.sh   # then restart Pi
+npm ci                         # once, and after package-lock.json changes
+npm run check                  # Biome, tsc, node --test, test/install.test.sh, git diff --check
+npm run check --prefix extensions  # compatibility command; forwards to the root check
 ```
+
+The root manifest is the public Pi package declaration. Until the installer is updated, `install.sh` still registers `extensions/`; its compatibility manifest keeps that installed path usable.
 
 Optional model pools live in `~/.pi/agent/delegate.json` (local, hand-edited, `/reload` after). Without it every worker uses the main session's model and thinking. Shape and validation: `validModelSet`, `resolveRun` in `extensions/delegate.ts`.
 
@@ -96,6 +102,6 @@ Loads a skill's instructions by name. Exists because Claude Code skills say "cal
 - **Worker instructions and answer formats:** `ROLES`, `CONTRACT_SHARED`, `WORKER_CONTRACT`, `implementContract`.
 - **Limits:** `LIMITS`, `MAX_RUNS`, `ANSWER_CAP` (`delegate.ts`); `GIT_LIMITS`, `CLOCK_SKEW_MS` (`delegate-implement.ts`).
 - **Secret paths:** `HOME_SECRETS`, `SECRET_NAMES`, `SECRET_GLOB`.
-- **Guard rules:** `classify` (main session), `workerRisk` (implement), `TREE_WRITES` (main-session fence) in `guard.ts`; add cases to `guard.test.mjs`.
+- **Guard rules:** `classify` (main session), `workerRisk` (implement), `TREE_WRITES` (main-session fence) in `guard.ts`; add cases to `test/guard.test.mjs`.
 - **Worker procedure:** install a skill and put "Load the `X` skill first" in the task.
-- **New extension:** add the `.ts` file to `extensions/` and to `pi.extensions` in `extensions/package.json`.
+- **New extension:** add the `.ts` file to `extensions/` and list its root-relative path in `pi.extensions` in `package.json`. Until the installer switches to the root package, keep `extensions/package.json`'s compatibility entrypoints in sync.

@@ -6,7 +6,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 // Pi sets up its theme before any tool renders; the Markdown theme needs it.
 initTheme(undefined, false);
 
-const { progressLines, renderCall, renderResult } = await import("./delegate-render.ts");
+const { progressLines, renderCall, renderResult } = await import("../extensions/delegate-render.ts");
 
 // Colours as real ANSI codes, so width checks measure only visible text.
 const theme = { fg: (_color, text) => `\x1b[31m${text}\x1b[39m`, bold: (text) => `\x1b[1m${text}\x1b[22m` };

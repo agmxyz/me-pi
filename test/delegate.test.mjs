@@ -35,8 +35,8 @@ const {
 	resolveRun,
 	secretPathIn,
 	writeBlockedIn,
-} = await import("./delegate.ts");
-const { progressLines } = await import("./delegate-render.ts");
+} = await import("../extensions/delegate.ts");
+const { progressLines } = await import("../extensions/delegate-render.ts");
 
 const DEFAULT_LIMITS = { ...LIMITS };
 // A failing lifecycle test can leave a worker running, which would keep this process alive.
@@ -1422,7 +1422,7 @@ test("normal main-process exit SIGKILLs live workers", { timeout: 20000 }, async
 	writeFileSync(
 		script,
 		`
-import register from ${JSON.stringify(new URL("./delegate.ts", import.meta.url).href)};
+import register from ${JSON.stringify(new URL("../extensions/delegate.ts", import.meta.url).href)};
 import { existsSync } from "node:fs";
 let delegate;
 register({ registerTool: (d) => { delegate = d; }, registerCommand: () => {}, on: () => {} });
@@ -1630,7 +1630,7 @@ test("background job ids do not repeat after /reload", async (t) => {
 // --- implement ---
 
 const CHECK = "npm test";
-// A temp repo on `goal/x` with one commit and a branch `other`, as bin/install.test.sh sets up its fixture.
+// A temp repo on `goal/x` with one commit and a branch `other`, as test/install.test.sh sets up its fixture.
 function implementRepo() {
 	const repo = mkdtempSync(join(TEST_HOME, "impl-repo-"));
 	const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
