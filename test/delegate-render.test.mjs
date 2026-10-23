@@ -67,13 +67,65 @@ test("progress shows the stage and one line per run; the plain text is what non-
 	};
 	assert.deepEqual(progressLines(view), [
 		"Rebuttal [web]",
-		"⏳ claude-haiku-5-5 turn 2 $0.0017 read src/a.ts ↻ 429; trying Sonnet",
-		"✗ claude-haiku-5-5 turn 2 $0.0017",
-		"✓ claude-haiku-5-5 turn 2 $0.0017",
+		"--* claude-haiku-5-5 @low turn 2 $0.0017 read src/a.ts ↻ 429; trying Sonnet",
+		"✗ claude-haiku-5-5 @low turn 2 $0.0017",
+		"✓ claude-haiku-5-5 @low turn 2 $0.0017",
 	]);
 	const partial = renderResult({ content: [], details: { view } }, { expanded: false, isPartial: true }, theme);
 	assert.deepEqual(draw(partial, 200), progressLines(view));
 	for (const width of [8, 30]) assertFits(partial, width);
+});
+
+test("expanded partial progress shows bounded per-run activity while collapsed progress stays compact", () => {
+	const view = {
+		stage: "Workers",
+		web: false,
+		runs: [
+			run({
+				model: "provider/worker-a",
+				thinking: "high",
+				done: false,
+				turns: 1,
+				lastTool: "read",
+				activity: ["grep", "read"],
+				output: "ANSWER_SECRET",
+			}),
+			run({
+				model: "provider/worker-b",
+				thinking: "low",
+				failure: "exit 1",
+				lastTool: "web_search",
+				activity: ["web_search"],
+			}),
+		],
+	};
+	const collapsed = renderResult({ content: [], details: { view } }, { expanded: false, isPartial: true }, theme);
+	assert.deepEqual(draw(collapsed, 200), [
+		"Workers",
+		"--* worker-a @high turn 1 $0.0017 read",
+		"✗ worker-b @low turn 2 $0.0017 web_search",
+	]);
+	const expanded = renderResult({ content: [], details: { view } }, { expanded: true, isPartial: true }, theme);
+	assert.deepEqual(draw(expanded, 200), [
+		"Workers",
+		"--* worker-a @high turn 1 $0.0017 read",
+		"  grep",
+		"  read",
+		"✗ worker-b @low turn 2 $0.0017 web_search",
+		"  web_search",
+	]);
+	assert.doesNotMatch(draw(expanded, 200).join("\n"), /ANSWER_SECRET/);
+	for (const width of [8, 20, 40]) assertFits(expanded, width);
+
+	const unusual = renderResult(
+		{
+			content: [],
+			details: { view: { ...view, runs: [run({ done: false, lastTool: "🚀\nread", activity: ["工具 e\u0301"] })] } },
+		},
+		{ expanded: true, isPartial: true },
+		theme,
+	);
+	for (const width of [1, 8, 20]) assertFits(unusual, width);
 });
 
 test("a collapsed result has one line per run, its first answer line or its problem, and the footer", () => {
@@ -180,5 +232,5 @@ test("line breaks inside a single line are flattened; previews skip code fences"
 		{ expanded: false, isPartial: true },
 		theme,
 	);
-	assert.deepEqual(draw(progress, 200), ["Workers", "\u23f3 claude-haiku-5-5 turn 2 $0.0017 grep a b"]);
+	assert.deepEqual(draw(progress, 200), ["Workers", "--* claude-haiku-5-5 @low turn 2 $0.0017 grep a b"]);
 });

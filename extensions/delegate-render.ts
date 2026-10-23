@@ -21,6 +21,7 @@ export interface RunView {
 	cost: number;
 	ms: number;
 	lastTool?: string;
+	activity?: string[];
 	output: string;
 	outDir?: string;
 	files?: string[];
@@ -70,7 +71,7 @@ const plainPreview = (text: string) =>
 		.replace(/^#+\s*/, "");
 
 function icon(run: RunView, fg: Fg): string {
-	if (!run.done) return fg("warning", "⏳");
+	if (!run.done) return fg("warning", "--*");
 	return run.failure || run.round2Failure ? fg("error", "✗") : fg("success", "✓");
 }
 
@@ -93,14 +94,15 @@ function problem(run: RunView): string | undefined {
 }
 
 /** Live progress, one line per run; also the plain text that non-TUI modes show. */
-export function progressLines(view: DelegateView, fg: Fg = plain): string[] {
+export function progressLines(view: DelegateView, fg: Fg = plain, expanded = false): string[] {
 	const header = fg("toolTitle", view.stage) + (view.web ? fg("muted", " [web]") : "");
-	const runs = view.runs.map((r) => {
+	const runs = view.runs.flatMap((r) => {
 		const tail = [r.lastTool, r.fallbackMessage && `↻ ${r.fallbackMessage}`]
 			.filter(Boolean)
 			.map((text) => fg("dim", text as string))
 			.join(" ");
-		return `${icon(r, fg)} ${fg("accent", shortModel(r.model))} turn ${r.turns} $${r.cost.toFixed(4)}${tail ? ` ${tail}` : ""}`;
+		const row = `${icon(r, fg)} ${fg("accent", shortModel(r.model))} ${fg("dim", `@${r.thinking} turn ${r.turns} $${r.cost.toFixed(4)}`)}${tail ? ` ${tail}` : ""}`;
+		return [row, ...(expanded ? (r.activity ?? []).map((tool) => fg("dim", `  ${tool}`)) : [])];
 	});
 	return [header, ...runs];
 }
@@ -142,7 +144,7 @@ export function renderResult(
 			options.expanded || more <= 0 ? lines : [...lines.slice(0, FALLBACK_LINES), `\u2026 (${more} more lines)`];
 		return new Text(fg("toolOutput", shown.join("\n")), 0, 0);
 	}
-	if (options.isPartial || view.stage !== "Done") return new Lines(progressLines(view, fg));
+	if (options.isPartial || view.stage !== "Done") return new Lines(progressLines(view, fg, options.expanded));
 
 	const footer = view.footer ? [fg("dim", view.footer)] : [];
 	if (!options.expanded) {

@@ -57,6 +57,21 @@ export const LIMITS = {
 };
 const MAX_RUNS = 4;
 const HISTORY_SIZE = 20;
+const MAX_TOOL_HISTORY = 8;
+const PROGRESS_COALESCE_MS = 40;
+const WORKER_TOOL_LABELS = new Set([
+	"read",
+	"grep",
+	"find",
+	"ls",
+	"Skill",
+	"web_search",
+	"fetch_content",
+	"get_search_content",
+	"write",
+	"edit",
+	"bash",
+]);
 // Model-facing answer size per run; the main session's context is what this extension protects.
 const ANSWER_CAP = 12 * 1024;
 const FAILED_PARTIAL_CAP = 4 * 1024;
@@ -618,6 +633,14 @@ export function trackCheck(
 		check.status = "stale";
 }
 
+function toolLabel(name: string): string {
+	const label = name
+		.replace(/[^A-Za-z0-9_-]+/g, "_")
+		.replace(/^_+|_+$/g, "")
+		.slice(0, 32);
+	return WORKER_TOOL_LABELS.has(label) ? label : "tool";
+}
+
 function runWorkerAttempt(
 	job: Job,
 	prompt: string,
@@ -687,6 +710,32 @@ function runWorkerAttempt(
 		const calls = new Map<string, { tool: string; command: string }>();
 
 		let termTimer: NodeJS.Timeout | undefined;
+		let progressTimer: NodeJS.Timeout | undefined;
+		let progressPending = false;
+		const clearProgressTimer = () => {
+			clearTimeout(progressTimer);
+			progressTimer = undefined;
+		};
+		const cancelPendingProgress = () => {
+			clearProgressTimer();
+			progressPending = false;
+		};
+		const flushProgress = () => {
+			clearProgressTimer();
+			if (!progressPending) return;
+			progressPending = false;
+			onProgress(result);
+		};
+		const scheduleProgress = () => {
+			progressPending = true;
+			if (progressTimer) return;
+			progressTimer = setTimeout(() => {
+				progressTimer = undefined;
+				if (!progressPending || finished) return;
+				progressPending = false;
+				onProgress(result);
+			}, PROGRESS_COALESCE_MS);
+		};
 		const stop = (reason: string) => {
 			if (finished || stopped || pid === undefined) return;
 			stopped = reason;
@@ -707,7 +756,9 @@ function runWorkerAttempt(
 		const finish = (code: number | null, problem?: string) => {
 			if (finished) return;
 			if (buffer.trim()) processLine(buffer);
+			flushProgress();
 			finished = true;
+			clearProgressTimer();
 			clearTimeout(timer);
 			clearTimeout(exitTimer);
 			clearTimeout(termTimer);
@@ -747,16 +798,11 @@ function runWorkerAttempt(
 				return; // Not an event (pi prints only JSON lines in this mode).
 			}
 			if (event.type === "tool_execution_start" && typeof event.toolName === "string") {
-				const arg =
-					event.args?.path ??
-					event.args?.pattern ??
-					event.args?.query ??
-					event.args?.url ??
-					event.args?.name ??
-					event.args?.command;
-				result.tools.push(arg ? `${event.toolName} ${String(arg).slice(0, 80)}` : event.toolName);
+				result.tools.push(toolLabel(event.toolName));
+				if (result.tools.length > MAX_TOOL_HISTORY) result.tools.shift();
 				if (implement)
 					calls.set(event.toolCallId, { tool: event.toolName, command: String(event.args?.command ?? "") });
+				scheduleProgress();
 			}
 			if (implement && event.type === "tool_execution_end") trackCheck(implement.job.check, calls, event, cwd);
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
@@ -772,6 +818,7 @@ function runWorkerAttempt(
 			result.failure = bad ? msg.errorMessage || `model stopped: ${msg.stopReason}` : undefined;
 			// A final reply ("stop") is kept even when it crosses the cap; only continuing runs are stopped.
 			if (msg.stopReason !== "stop" && costOf(result.usage) >= costCapUsd) stop(`cost cap $${costCapUsd} reached`);
+			cancelPendingProgress();
 			onProgress(result);
 		};
 
@@ -872,7 +919,12 @@ async function runWorker(
 			{ model, thinking },
 			cwd,
 			signal,
-			(r) => onProgress({ ...r, fallbackAttempts: [...fallbackAttempts] }),
+			(r) =>
+				onProgress({
+					...r,
+					tools: [...attempts.flatMap((previous) => previous.tools), ...r.tools].slice(-MAX_TOOL_HISTORY),
+					fallbackAttempts: [...fallbackAttempts],
+				}),
 			outDir,
 			{ timeoutMs: remainingMs, costCapUsd: remainingCost },
 			approve,
@@ -911,7 +963,7 @@ async function runWorker(
 		...last,
 		usage,
 		turns: attempts.reduce((sum, attempt) => sum + attempt.turns, 0),
-		tools: attempts.flatMap((attempt) => attempt.tools),
+		tools: attempts.flatMap((attempt) => attempt.tools).slice(-MAX_TOOL_HISTORY),
 		stderr: attempts
 			.map((attempt) => attempt.stderr)
 			.filter(Boolean)
@@ -973,6 +1025,7 @@ function runView(
 		cost: costOf(r.usage ?? {}),
 		ms: r.ms ?? 0,
 		lastTool: r.tools?.at(-1),
+		activity: r.tools?.slice(-MAX_TOOL_HISTORY),
 		output: r.output ?? "",
 		outDir: r.outDir,
 		files: r.files,

@@ -173,6 +173,18 @@ process.stdin.on("end", () => {
   if (mode === "ended-midway") { emit("reading more files", { stopReason: "toolUse" }); process.exit(0); }
   if (mode === "crash") { process.stderr.write("boom: last stderr line\\n"); process.exit(3); }
   if (mode === "hang") { emit("working", { stopReason: "toolUse" }); setInterval(() => {}, 1000); return; }
+  if (mode === "tool-activity") {
+    const selected = (flag("--model") || "").includes("haiku") ? "read" : "grep";
+    const activity = Array.from({ length: 12 }, (_, i) => JSON.stringify({
+      type: "tool_execution_start",
+      toolCallId: "activity-" + i,
+      toolName: i === 10 ? "PRIVATE_REASONING" : i === 11 ? "\\u001b" + selected + "\\n" : selected,
+      args: { path: "PRIVATE_ARGUMENT", command: "PRIVATE_COMMAND", output: "PRIVATE_OUTPUT", reasoning: "PRIVATE_REASONING" },
+    }));
+    process.stdout.write(activity.join("\\n") + "\\n");
+    setTimeout(() => { emit("activity answer"); process.exit(0); }, 250);
+    return;
+  }
   if (mode === "expensive") {
     console.log(JSON.stringify({ type: "tool_execution_start", toolName: "read", args: { path: "src/a.ts" } }));
     emit("still going", { cost: 9, stopReason: "toolUse" });
@@ -617,8 +629,21 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 		},
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "review", task: "x" });
+	const progress = [];
+	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
 	assert.equal(res.isError, false, text(res));
+	assert.ok(
+		progress.some(
+			(update) => update.details.view.runs[0].model === HAIKU && update.details.view.runs[0].thinking === "max",
+		),
+	);
+	assert.ok(
+		progress.some(
+			(update) => update.details.view.runs[0].model === SONNET && update.details.view.runs[0].thinking === "max",
+		),
+	);
+	assert.ok(progress.some((update) => update.content[0].text.includes("claude-haiku-5-5 @max")));
+	assert.ok(progress.some((update) => update.content[0].text.includes("claude-sonnet-5-5 @max")));
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
 		calls.map((c) => [c.model, c.thinking]),
@@ -706,8 +731,20 @@ test("per-model thinking follows each ordered candidate during fallback", async 
 		},
 		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "review", task: "x" });
+	const progress = [];
+	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
 	assert.equal(res.isError, false, text(res));
+	assert.ok(
+		progress.some(
+			(update) => update.details.view.runs[0].model === LUNA && update.details.view.runs[0].thinking === "max",
+		),
+	);
+	assert.ok(
+		progress.some(
+			(update) => update.details.view.runs[0].model === OPUS && update.details.view.runs[0].thinking === "low",
+		),
+	);
+	assert.ok(progress.some((update) => update.content[0].text.includes("claude-opus-5-5 @low")));
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
 		calls.map(({ model, thinking }) => [model, thinking]),
@@ -1024,6 +1061,71 @@ test("the schema offers only the set's models", (t) => {
 	assert.equal(setup(t).tool.parameters.properties.runs.items.properties.model.enum, undefined);
 });
 
+test(
+	"tool starts publish bounded sanitized live activity independently before a turn completes",
+	{ timeout: 5000 },
+	async (t) => {
+		const { tool } = setup(t, {
+			config: {
+				version: 3,
+				scout: { models: [], thinking: "low" },
+				worker: {
+					models: [
+						{ model: HAIKU, thinking: "high" },
+						{ model: SONNET, thinking: "low" },
+					],
+				},
+			},
+			env: { FAKE_PI_MODE: "tool-activity" },
+		});
+		let resolveActivity;
+		const updates = [];
+		const firstActivity = new Promise((resolve) => {
+			resolveActivity = resolve;
+		});
+		const pending = run(
+			tool,
+			{ task: "inspect", runs: [{ model: HAIKU }, { model: SONNET }] },
+			undefined,
+			(update) => {
+				updates.push(update);
+				if (update.details.view.runs.every((run) => run.activity?.length)) resolveActivity(update);
+			},
+		);
+		const live = await firstActivity;
+		assert.deepEqual(
+			live.details.view.runs.map(({ model, thinking, done, turns, activity }) => [
+				model,
+				thinking,
+				done,
+				turns,
+				activity,
+			]),
+			[
+				[HAIKU, "high", false, 0, ["read", "read", "read", "read", "read", "read", "tool", "read"]],
+				[SONNET, "low", false, 0, ["grep", "grep", "grep", "grep", "grep", "grep", "tool", "grep"]],
+			],
+		);
+		assert.match(live.content[0].text, /--\* claude-haiku-5-5 @high turn 0/);
+		assert.match(live.content[0].text, /--\* claude-sonnet-5-5 @low turn 0/);
+		assert.doesNotMatch(JSON.stringify(live), /PRIVATE_(?:ARGUMENT|COMMAND|OUTPUT|REASONING)|\\u001b/);
+		const result = await pending;
+		assert.equal(result.isError, false);
+		assert.deepEqual(
+			result.details.round1.map(({ tools }) => tools),
+			[
+				["read", "read", "read", "read", "read", "read", "tool", "read"],
+				["grep", "grep", "grep", "grep", "grep", "grep", "tool", "grep"],
+			],
+		);
+		assert.ok(updates.length <= 8, `tool-start burst was not coalesced: ${updates.length} updates`);
+		assert.ok(
+			updates.at(-1).details.view.runs.every((run) => run.done),
+			"final progress was flushed",
+		);
+	},
+);
+
 test("a scout runs read-only, one-shot, marked as a worker, with the prompt on stdin", async (t) => {
 	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
 	const updates = [];
@@ -1074,10 +1176,19 @@ test("without a model config, workers use the main session model", async (t) => 
 	const marker = scratch("session-model-marker");
 	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker } });
 	const sessionContext = { ...CTX, thinkingLevel: "medium" };
-	const general = await run(tool, { task: "x" }, undefined, undefined, sessionContext);
+	const generalProgress = [];
+	const general = await run(tool, { task: "x" }, undefined, (update) => generalProgress.push(update), sessionContext);
 	const scout = await run(tool, { role: "scout", task: "x" }, undefined, undefined, sessionContext);
 	assert.equal(general.isError, false, text(general));
 	assert.equal(scout.isError, false, text(scout));
+	assert.ok(
+		generalProgress.some(
+			(update) =>
+				update.details.view.runs[0].model === "anthropic/claude-session" &&
+				update.details.view.runs[0].thinking === "medium",
+		),
+	);
+	assert.ok(generalProgress.some((update) => update.content[0].text.includes("claude-session @medium")));
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -1183,7 +1294,7 @@ test("details carry a view for the TUI: progress per round, then the reported ru
 	assert.equal(last.content[0].text, progressLines(last.details.view).join("\n"));
 	assert.match(
 		last.content[0].text,
-		/^Rebuttal \[web\]\n\u2713 claude-haiku-5-5 turn 1 \$0\.0020\n\u2717 claude-opus-5-5/,
+		/^Rebuttal \[web\]\n\u2713 claude-haiku-5-5 @max turn 1 \$0\.0020\n\u2717 claude-opus-5-5 @max/,
 	);
 	const view = res.details.view;
 	assert.equal(view.stage, "Done");
@@ -1336,7 +1447,7 @@ test("the cost cap stops a continuing worker but keeps a final answer", { timeou
 	const capped = await run(setup(t, { env: { FAKE_PI_MODE: "expensive" } }).tool, { role: "scout", task: "x" });
 	assert.equal(capped.isError, true);
 	assert.match(text(capped), /^✗ stopped: cost cap \$5 reached\nPartial answer:\nstill going/);
-	assert.deepEqual(capped.details.round1[0].tools, ["read src/a.ts"]);
+	assert.deepEqual(capped.details.round1[0].tools, ["read"]);
 	const final = await run(setup(t, { env: { FAKE_PI_MODE: "final-over-cap" } }).tool, { role: "scout", task: "x" });
 	assert.equal(final.isError, false);
 	assert.match(text(final), /^complete answer\n/);

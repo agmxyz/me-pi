@@ -8,7 +8,7 @@ Activity consists of concise, sanitized tool labels, not raw arguments, tool out
 
 ## Ticket: implement live activity
 
-Status: open
+Status: done
 
 Paths: extensions/delegate.ts, extensions/delegate-render.ts, relevant test fixtures/tests under test/, docs/delegate.md if user-facing documentation needs updating.
 

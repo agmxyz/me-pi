@@ -32,7 +32,7 @@ Replace the example IDs with your provider/model IDs. Each pool's `models` array
 
 ## Run and stop work
 
-For a long task, ask Pi to use `background: true`. It returns a `bg<n>` job ID; `/delegate status` shows running IDs and recent calls, and `/delegate cancel <id>` requests cancellation. At most four workers can run at once across calls. `/reload`, session replacement, or Pi exit ends background jobs; wait for them before reloading when possible.
+For a long task, ask Pi to use `background: true`. It returns a `bg<n>` job ID; `/delegate status` shows running IDs and recent calls, and `/delegate cancel <id>` requests cancellation. At most four workers can run at once across calls. `/reload`, session replacement, or Pi exit ends background jobs; wait for them before reloading when possible. In an interactive session, Ctrl+O expands live delegate progress to show up to eight recent sanitized tool labels per worker; the collapsed view stays compact.
 
 A `research` task needs the separately installed web extension; installing me-pi alone does not provide web tools. Web-enabled workers can read project files as well as fetched pages, so enable web only when outside sources are needed and treat fetched content as untrusted data.
 
