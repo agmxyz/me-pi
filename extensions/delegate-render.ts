@@ -71,7 +71,7 @@ const plainPreview = (text: string) =>
 		.replace(/^#+\s*/, "");
 
 function icon(run: RunView, fg: Fg): string {
-	if (!run.done) return fg("warning", "--*");
+	if (!run.done) return fg("warning", "🧑‍🍳");
 	return run.failure || run.round2Failure ? fg("error", "✗") : fg("success", "✓");
 }
 

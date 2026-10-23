@@ -1106,8 +1106,9 @@ test(
 				[SONNET, "low", false, 0, ["grep", "grep", "grep", "grep", "grep", "grep", "tool", "grep"]],
 			],
 		);
-		assert.match(live.content[0].text, /--\* claude-haiku-5-5 @high turn 0/);
-		assert.match(live.content[0].text, /--\* claude-sonnet-5-5 @low turn 0/);
+		assert.match(live.content[0].text, /🧑‍🍳 claude-haiku-5-5 @high turn 0/);
+		assert.match(live.content[0].text, /🧑‍🍳 claude-sonnet-5-5 @low turn 0/);
+		assert.doesNotMatch(live.content[0].text, /--\*/);
 		assert.doesNotMatch(JSON.stringify(live), /PRIVATE_(?:ARGUMENT|COMMAND|OUTPUT|REASONING)|\\u001b/);
 		const result = await pending;
 		assert.equal(result.isError, false);

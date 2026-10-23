@@ -67,10 +67,11 @@ test("progress shows the stage and one line per run; the plain text is what non-
 	};
 	assert.deepEqual(progressLines(view), [
 		"Rebuttal [web]",
-		"--* claude-haiku-5-5 @low turn 2 $0.0017 read src/a.ts ↻ 429; trying Sonnet",
+		"🧑‍🍳 claude-haiku-5-5 @low turn 2 $0.0017 read src/a.ts ↻ 429; trying Sonnet",
 		"✗ claude-haiku-5-5 @low turn 2 $0.0017",
 		"✓ claude-haiku-5-5 @low turn 2 $0.0017",
 	]);
+	assert.doesNotMatch(progressLines(view).join("\n"), /--\*/);
 	const partial = renderResult({ content: [], details: { view } }, { expanded: false, isPartial: true }, theme);
 	assert.deepEqual(draw(partial, 200), progressLines(view));
 	for (const width of [8, 30]) assertFits(partial, width);
@@ -102,13 +103,13 @@ test("expanded partial progress shows bounded per-run activity while collapsed p
 	const collapsed = renderResult({ content: [], details: { view } }, { expanded: false, isPartial: true }, theme);
 	assert.deepEqual(draw(collapsed, 200), [
 		"Workers",
-		"--* worker-a @high turn 1 $0.0017 read",
+		"🧑‍🍳 worker-a @high turn 1 $0.0017 read",
 		"✗ worker-b @low turn 2 $0.0017 web_search",
 	]);
 	const expanded = renderResult({ content: [], details: { view } }, { expanded: true, isPartial: true }, theme);
 	assert.deepEqual(draw(expanded, 200), [
 		"Workers",
-		"--* worker-a @high turn 1 $0.0017 read",
+		"🧑‍🍳 worker-a @high turn 1 $0.0017 read",
 		"  grep",
 		"  read",
 		"✗ worker-b @low turn 2 $0.0017 web_search",
@@ -232,5 +233,5 @@ test("line breaks inside a single line are flattened; previews skip code fences"
 		{ expanded: false, isPartial: true },
 		theme,
 	);
-	assert.deepEqual(draw(progress, 200), ["Workers", "--* claude-haiku-5-5 @low turn 2 $0.0017 grep a b"]);
+	assert.deepEqual(draw(progress, 200), ["Workers", "🧑‍🍳 claude-haiku-5-5 @low turn 2 $0.0017 grep a b"]);
 });
