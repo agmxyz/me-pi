@@ -24,8 +24,8 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type ActiveCall, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
 	type Checkout,
 	type Facts,
@@ -37,7 +37,15 @@ import {
 	realpathOr,
 	workerEnv,
 } from "./delegate-implement.ts";
-import { type DelegateView, progressLines, type RunView, renderCall, renderResult } from "./delegate-render.ts";
+import {
+	type ActivityWidgetRow,
+	activityWidget,
+	type DelegateView,
+	progressLines,
+	type RunView,
+	renderCall,
+	renderResult,
+} from "./delegate-render.ts";
 import { gitTreeWrite, workerRisk } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
@@ -57,6 +65,21 @@ export const LIMITS = {
 };
 const MAX_RUNS = 4;
 const HISTORY_SIZE = 20;
+const MAX_TOOL_HISTORY = 8;
+const PROGRESS_COALESCE_MS = 40;
+const WORKER_TOOL_LABELS = new Set([
+	"read",
+	"grep",
+	"find",
+	"ls",
+	"Skill",
+	"web_search",
+	"fetch_content",
+	"get_search_content",
+	"write",
+	"edit",
+	"bash",
+]);
 // Model-facing answer size per run; the main session's context is what this extension protects.
 const ANSWER_CAP = 12 * 1024;
 const FAILED_PARTIAL_CAP = 4 * 1024;
@@ -483,21 +506,16 @@ export function resolveRun(
 		return thinking;
 	};
 	const configuredEntries = [...set.scout.models, ...set.worker.models];
-	const configured = [...new Set(configuredEntries.map((entry) => entry.model))];
-	if (run.model && configured.length && !configured.includes(run.model))
-		throw new Error(`model ${JSON.stringify(run.model)} is not in the delegate pools: ${configured.join(", ")}`);
 	const candidates = run.model
-		? pool.models.some((entry) => entry.model === run.model)
-			? [
-					pool.models.find((entry) => entry.model === run.model)!,
-					...pool.models.filter((entry) => entry.model !== run.model),
-				]
-			: [
-					{
-						model: run.model,
-						thinking: configuredEntries.find((entry) => entry.model === run.model)?.thinking ?? unlisted(),
-					},
-				]
+		? [
+				{
+					model: run.model,
+					thinking:
+						pool.models.find((entry) => entry.model === run.model)?.thinking ??
+						configuredEntries.find((entry) => entry.model === run.model)?.thinking ??
+						unlisted(),
+				},
+			]
 		: pool.models.length
 			? [...pool.models]
 			: [{ model: sessionModel, thinking: unlisted() }];
@@ -508,6 +526,29 @@ export function resolveRun(
 	});
 	const first = withOverrides[0];
 	return { candidates: withOverrides, model: first.model, thinking: first.thinking };
+}
+
+function resumeRun(base: ResolvedRun, result: RunResult): ResolvedRun {
+	const index = base.candidates.findIndex(
+		(candidate) => candidate.model === result.requested.model && candidate.thinking === result.requested.thinking,
+	);
+	const candidates = base.candidates.slice(index < 0 ? 0 : index);
+	const first = candidates[0];
+	return { candidates, model: first.model, thinking: first.thinking };
+}
+
+function initialActivity(runs: ResolvedRun[], sessionModel: string | undefined, startedAt: number): ActiveWorker[] {
+	return runs.map((run, index) => {
+		const candidate = run.candidates[0];
+		return {
+			index: index + 1,
+			model: candidate.model ?? sessionModel ?? "session model",
+			thinking: candidate.thinking,
+			startedAt,
+			active: true,
+			fallbacks: 0,
+		};
+	});
 }
 
 // --- Worker process -------------------------------------------------------------------------------
@@ -618,6 +659,14 @@ export function trackCheck(
 		check.status = "stale";
 }
 
+function toolLabel(name: string): string {
+	const label = name
+		.replace(/[^A-Za-z0-9_-]+/g, "_")
+		.replace(/^_+|_+$/g, "")
+		.slice(0, 32);
+	return WORKER_TOOL_LABELS.has(label) ? label : "tool";
+}
+
 function runWorkerAttempt(
 	job: Job,
 	prompt: string,
@@ -687,6 +736,32 @@ function runWorkerAttempt(
 		const calls = new Map<string, { tool: string; command: string }>();
 
 		let termTimer: NodeJS.Timeout | undefined;
+		let progressTimer: NodeJS.Timeout | undefined;
+		let progressPending = false;
+		const clearProgressTimer = () => {
+			clearTimeout(progressTimer);
+			progressTimer = undefined;
+		};
+		const cancelPendingProgress = () => {
+			clearProgressTimer();
+			progressPending = false;
+		};
+		const flushProgress = () => {
+			clearProgressTimer();
+			if (!progressPending) return;
+			progressPending = false;
+			onProgress(result);
+		};
+		const scheduleProgress = () => {
+			progressPending = true;
+			if (progressTimer) return;
+			progressTimer = setTimeout(() => {
+				progressTimer = undefined;
+				if (!progressPending || finished) return;
+				progressPending = false;
+				onProgress(result);
+			}, PROGRESS_COALESCE_MS);
+		};
 		const stop = (reason: string) => {
 			if (finished || stopped || pid === undefined) return;
 			stopped = reason;
@@ -707,7 +782,9 @@ function runWorkerAttempt(
 		const finish = (code: number | null, problem?: string) => {
 			if (finished) return;
 			if (buffer.trim()) processLine(buffer);
+			flushProgress();
 			finished = true;
+			clearProgressTimer();
 			clearTimeout(timer);
 			clearTimeout(exitTimer);
 			clearTimeout(termTimer);
@@ -747,16 +824,11 @@ function runWorkerAttempt(
 				return; // Not an event (pi prints only JSON lines in this mode).
 			}
 			if (event.type === "tool_execution_start" && typeof event.toolName === "string") {
-				const arg =
-					event.args?.path ??
-					event.args?.pattern ??
-					event.args?.query ??
-					event.args?.url ??
-					event.args?.name ??
-					event.args?.command;
-				result.tools.push(arg ? `${event.toolName} ${String(arg).slice(0, 80)}` : event.toolName);
+				result.tools.push(toolLabel(event.toolName));
+				if (result.tools.length > MAX_TOOL_HISTORY) result.tools.shift();
 				if (implement)
 					calls.set(event.toolCallId, { tool: event.toolName, command: String(event.args?.command ?? "") });
+				scheduleProgress();
 			}
 			if (implement && event.type === "tool_execution_end") trackCheck(implement.job.check, calls, event, cwd);
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
@@ -772,6 +844,7 @@ function runWorkerAttempt(
 			result.failure = bad ? msg.errorMessage || `model stopped: ${msg.stopReason}` : undefined;
 			// A final reply ("stop") is kept even when it crosses the cap; only continuing runs are stopped.
 			if (msg.stopReason !== "stop" && costOf(result.usage) >= costCapUsd) stop(`cost cap $${costCapUsd} reached`);
+			cancelPendingProgress();
 			onProgress(result);
 		};
 
@@ -872,7 +945,12 @@ async function runWorker(
 			{ model, thinking },
 			cwd,
 			signal,
-			(r) => onProgress({ ...r, fallbackAttempts: [...fallbackAttempts] }),
+			(r) =>
+				onProgress({
+					...r,
+					tools: [...attempts.flatMap((previous) => previous.tools), ...r.tools].slice(-MAX_TOOL_HISTORY),
+					fallbackAttempts: [...fallbackAttempts],
+				}),
 			outDir,
 			{ timeoutMs: remainingMs, costCapUsd: remainingCost },
 			approve,
@@ -898,6 +976,7 @@ async function runWorker(
 		const next = `${nextModel ?? "session model"} @${nextCandidate.thinking}`;
 		onProgress({
 			...attempt,
+			requested: { model: nextCandidate.model, thinking: nextCandidate.thinking },
 			fallbackAttempts: [...fallbackAttempts],
 			fallbackMessage: `${model ?? "session model"} @${thinking} failed (${attempt.failure}); trying ${next}`,
 		});
@@ -911,7 +990,7 @@ async function runWorker(
 		...last,
 		usage,
 		turns: attempts.reduce((sum, attempt) => sum + attempt.turns, 0),
-		tools: attempts.flatMap((attempt) => attempt.tools),
+		tools: attempts.flatMap((attempt) => attempt.tools).slice(-MAX_TOOL_HISTORY),
 		stderr: attempts
 			.map((attempt) => attempt.stderr)
 			.filter(Boolean)
@@ -973,6 +1052,7 @@ function runView(
 		cost: costOf(r.usage ?? {}),
 		ms: r.ms ?? 0,
 		lastTool: r.tools?.at(-1),
+		activity: r.tools?.slice(-MAX_TOOL_HISTORY),
 		output: r.output ?? "",
 		outDir: r.outDir,
 		files: r.files,
@@ -1014,11 +1094,50 @@ function configuredModels(set: ModelSet): string[] {
 	return [...new Set([...set.scout.models, ...set.worker.models].map((entry) => entry.model))];
 }
 
-function buildSchema(set: ModelSet) {
-	const models = configuredModels(set);
-	const model = models.length
-		? { type: "string", enum: models, description: "A model from the user's scout or worker pool." }
-		: { type: "string", description: "A Pi model id; omit for the session model." };
+interface ModelAvailabilityRegistry {
+	find(provider: string, modelId: string): { provider: string; id: string } | undefined;
+	getAvailable(): readonly { provider: string; id: string }[];
+	hasConfiguredAuth(model: { provider: string; id: string }): boolean;
+}
+
+/** Validate unlisted explicit models without inspecting or returning credential material. */
+function validateOneOffModel(modelId: string, registry: unknown): void {
+	const separator = modelId.indexOf("/");
+	if (separator <= 0 || separator === modelId.length - 1)
+		throw new Error(`model ${JSON.stringify(modelId)} must be an exact Pi model ID in provider/model form`);
+	const provider = modelId.slice(0, separator);
+	const id = modelId.slice(separator + 1);
+	const api = registry as ModelAvailabilityRegistry | undefined;
+	if (
+		!api ||
+		typeof api.find !== "function" ||
+		typeof api.getAvailable !== "function" ||
+		typeof api.hasConfiguredAuth !== "function"
+	)
+		throw new Error(
+			`cannot validate model ${JSON.stringify(modelId)}: Pi's model registry lacks catalog/auth lookup`,
+		);
+	const model = api.find(provider, id);
+	if (!model || model.provider !== provider || model.id !== id)
+		throw new Error(`unknown model ${JSON.stringify(modelId)}: no exact provider/model match in Pi's catalog`);
+	const available = api.getAvailable();
+	if (!Array.isArray(available)) throw new Error("Pi's model registry returned an invalid available-model list");
+	if (available.some((candidate) => candidate.provider === provider && candidate.id === id)) return;
+	if (!api.hasConfiguredAuth(model))
+		throw new Error(
+			`model ${JSON.stringify(modelId)} is unauthenticated: Pi has no configured authentication for provider ${JSON.stringify(provider)}`,
+		);
+	throw new Error(
+		`model ${JSON.stringify(modelId)} is unavailable: Pi does not list it as available; provider authentication may not be usable`,
+	);
+}
+
+function buildSchema() {
+	const model = {
+		type: "string",
+		minLength: 1,
+		description: "An exact Pi model ID in provider/model form; omit to use the role's configured model selection.",
+	};
 	return {
 		type: "object",
 		properties: {
@@ -1026,7 +1145,7 @@ function buildSchema(set: ModelSet) {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; availability failures try the next model. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; when model is omitted, availability failures try the next pool model. Explicit models never fall back. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
@@ -1050,7 +1169,7 @@ function buildSchema(set: ModelSet) {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker on the role's default model. For several models on the same task, one entry per model (run in parallel). Not for implement: it uses the worker pool in delegate.json in order.",
+					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back, even when listed in the role's pool. Only an omitted model uses ordered pool fallback on availability failures. For several models on the same task, use one entry per model. Not for implement: it uses the worker pool in delegate.json in order.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -1176,11 +1295,64 @@ export default function (pi: ExtensionAPI) {
 	const running = new Set<Promise<unknown>>();
 	// For /delegate status: calls running now, and the last HISTORY_SIZE finished calls.
 	const active = new Map<string, ActiveCall>();
+	let activeCallCount = 0;
+	let foregroundCount = 0;
+	let preparationCount = 0;
+	const ACTIVITY_WIDGET_KEY = "delegate-activity";
+	let activityUi: Pick<ExtensionContext["ui"], "setWidget"> | undefined;
+	let activityTui: { requestRender: () => void } | undefined;
+	let activityTimer: NodeJS.Timeout | undefined;
+	const activityRows = (): ActivityWidgetRow[] =>
+		[...active.entries()].flatMap(([id, call]) =>
+			(call.workers ?? [])
+				.filter((worker) => worker.active)
+				.map((worker) => ({
+					id,
+					displayId: call.job ?? call.displayId,
+					worker: worker.index,
+					workerCount: call.workers?.length ?? 0,
+					role: call.role,
+					model: worker.model,
+					thinking: worker.thinking,
+					startedAt: worker.startedAt,
+					lastTool: worker.lastTool,
+					fallbacks: worker.fallbacks,
+					stage: call.stage ?? "Workers",
+				})),
+		);
+	const clearActivityWidget = () => {
+		clearInterval(activityTimer);
+		activityTimer = undefined;
+		const tui = activityTui;
+		activityUi?.setWidget(ACTIVITY_WIDGET_KEY, undefined);
+		tui?.requestRender();
+		activityUi = undefined;
+		activityTui = undefined;
+	};
+	const updateActivityWidget = (ctx: ExtensionContext, signal?: AbortSignal) => {
+		if (!activityRows().length) {
+			clearActivityWidget();
+			return;
+		}
+		if (signal?.aborted) return;
+		if (ctx.mode !== "tui") return;
+		if (!activityUi) {
+			activityUi = ctx.ui;
+			activityUi.setWidget(ACTIVITY_WIDGET_KEY, (tui, theme) => {
+				activityTui = tui;
+				return activityWidget(activityRows, theme);
+			});
+		}
+		if (!activityTimer) {
+			activityTimer = setInterval(() => activityTui?.requestRender(), 1000);
+			activityTimer.unref();
+		}
+		activityTui?.requestRender();
+	};
 	// Background jobs by id, with what they spent; Pi's session usage never includes it.
 	const jobs = new Map<string, AbortController>();
 	// implement: repo root -> the job writing in it (bg3, or im3 in the foreground), for the main-session block.
 	const writing = new Map<string, string>();
-	let prepareCount = 0;
 	let statusUi: { setStatus?: (key: string, text: string | undefined) => void } | undefined;
 	const showStatus = () =>
 		statusUi?.setStatus?.(
@@ -1202,6 +1374,7 @@ export default function (pi: ExtensionAPI) {
 	const spend: { cost: number } = shared[SPEND_KEY];
 	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), history, active, cancel });
 	pi.on("session_shutdown", async () => {
+		clearActivityWidget();
 		shutdown.abort(SESSION_ENDED);
 		shutdown = new AbortController();
 		await Promise.allSettled([...running]);
@@ -1235,13 +1408,6 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
-	let schemaSet: ModelSet = defaultModelSet();
-	try {
-		schemaSet = loadModelSet();
-	} catch {
-		// Reported when the tool runs, with the reason.
-	}
-
 	pi.registerTool({
 		name: "delegate",
 		label: "Delegate",
@@ -1251,7 +1417,7 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme) => renderCall(args, theme),
 		renderResult: (result, options, theme) => renderResult(result as any, options, theme),
-		parameters: buildSchema(schemaSet) as any,
+		parameters: buildSchema() as any,
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
 			const fail = (text: string) => ({ content: [{ type: "text" as const, text }], details: {}, isError: true });
@@ -1304,7 +1470,7 @@ export default function (pi: ExtensionAPI) {
 				(r: any) =>
 					!r ||
 					typeof r !== "object" ||
-					(r.model !== undefined && typeof r.model !== "string") ||
+					(r.model !== undefined && (typeof r.model !== "string" || !r.model.trim())) ||
 					(r.thinking !== undefined && !THINKING_LEVELS.includes(r.thinking)),
 			);
 			if (badRun >= 0)
@@ -1316,6 +1482,9 @@ export default function (pi: ExtensionAPI) {
 			try {
 				set = loadModelSet();
 				session = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+				const configured = new Set(configuredModels(set));
+				for (const spec of specs)
+					if (spec.model && !configured.has(spec.model)) validateOneOffModel(spec.model, ctx?.modelRegistry);
 				resolved = specs.map((r) => resolveRun(role, r, set, session, ctx?.thinkingLevel));
 			} catch (err: any) {
 				return fail(err.message);
@@ -1327,14 +1496,26 @@ export default function (pi: ExtensionAPI) {
 				return fail(
 					`${busy} worker(s) already running; at most ${MAX_RUNS} run at once. Wait for a background answer or stop one with /delegate cancel <id>.`,
 				);
+			const callKey = `delegate-call-${++activeCallCount}`;
+			const foregroundId = background ? undefined : `fg${++foregroundCount}`;
+			const preparationId = role === "implement" && background ? `prep${++preparationCount}` : foregroundId;
 			// The session this call belongs to; a shutdown during prepare must not leave a job behind.
 			const ended = shutdown.signal;
 			// implement: the lock and snapshots exist before the call starts, so the start message can state the base.
 			let co: Checkout | undefined;
 			if (role === "implement") {
 				// Holds the worker slot while prepare runs, so parallel calls cannot pass the cap together.
-				const slot = `prepare-${++prepareCount}`;
-				active.set(slot, { role, models, start: Date.now() });
+				const slot = callKey;
+				const preparingAt = Date.now();
+				active.set(slot, {
+					role,
+					models,
+					start: preparingAt,
+					displayId: preparationId,
+					workers: initialActivity(resolved, session, preparingAt),
+					stage: "Workers",
+				});
+				updateActivityWidget(ctx, ended);
 				// Tracked through the shutdown-time finish: session_shutdown snapshots `running` once, so the finish
 				// for a session that ended during prepare must be part of the same promise.
 				const preparing = (async () => {
@@ -1354,6 +1535,7 @@ export default function (pi: ExtensionAPI) {
 				} finally {
 					running.delete(settled);
 					active.delete(slot);
+					updateActivityWidget(ctx, ended);
 				}
 				if (ended.aborted) return fail("stopped: session ended");
 				job.implement = { job: co, trusted: ctx?.isProjectTrusted?.() === true, pids: new Set() };
@@ -1361,16 +1543,35 @@ export default function (pi: ExtensionAPI) {
 			const startFacts = co ? `${co.branch} (${co.id}) from ${co.base.slice(0, 7)}` : "";
 			// implement: an earlier attempt's WIP commit is the worker's first job.
 			const prompt = `Task:\n${task}${co?.wipHead ? "\n\nHEAD is a `WIP(delegate` commit from an earlier attempt: finish that first." : ""}`;
-			const call = async (key: string, signal: AbortSignal, onUpdate: ((u: any) => void) | undefined) => {
+			const call = async (
+				key: string,
+				signal: AbortSignal,
+				onUpdate: ((u: any) => void) | undefined,
+				displayId?: string,
+				jobId?: string,
+			) => {
 				const start = Date.now();
-				active.set(key, { role, models, start, job: background ? key : undefined });
+				active.set(key, {
+					role,
+					models,
+					start,
+					displayId,
+					job: jobId,
+					workers: initialActivity(resolved, session, start),
+					stage: "Workers",
+				});
+				updateActivityWidget(ctx, ended);
 				let facts: Facts | undefined;
 				try {
 					const cwd = ctx?.cwd ?? process.cwd();
-					const round = async (stage: DelegateView["stage"], prompts: string[], runs: typeof resolved) => {
+					const round = async (
+						stage: Exclude<DelegateView["stage"], "Done">,
+						prompts: string[],
+						runs: typeof resolved,
+					) => {
 						const states: (RunResult | undefined)[] = runs.map(() => undefined);
 						const finished = runs.map(() => false);
-						const progress = () => {
+						const progress = (emit = true) => {
 							const view: DelegateView = {
 								stage,
 								web: job.web,
@@ -1381,12 +1582,28 @@ export default function (pi: ExtensionAPI) {
 									),
 								),
 							};
+							const callState = active.get(key);
+							if (callState) {
+								callState.stage = stage;
+								callState.workers = view.runs.map((run, i) => ({
+									index: i + 1,
+									model: run.model,
+									thinking: run.thinking,
+									startedAt: callState.workers?.[i]?.startedAt ?? callState.start,
+									active: !finished[i],
+									lastTool: run.lastTool,
+									fallbacks: run.fallbacks?.length ?? 0,
+								}));
+								updateActivityWidget(ctx, ended);
+							}
+							if (!emit) return;
 							const lines = progressLines(view);
 							onUpdate?.({
 								content: [{ type: "text", text: (startFacts ? [startFacts, ...lines] : lines).join("\n") }],
 								details: { view },
 							});
 						};
+						progress(false);
 						return Promise.all(
 							runs.map(async (r, i) => {
 								const p = runWorker(job, prompts[i], r, cwd, signal, (s) => {
@@ -1454,11 +1671,11 @@ export default function (pi: ExtensionAPI) {
 									ok.filter((o) => o !== r),
 								),
 							);
-							// Resume each rebuttal on its successful round-1 model, then use remaining pool candidates if needed.
+							// Keep each original run's explicit/default selection while resuming at its successful candidate.
 							round2 = await round(
 								"Rebuttal",
 								prompts,
-								ok.map((r) => resolveRun(role, r.requested, set, session, ctx?.thinkingLevel)),
+								ok.map((r) => resumeRun(resolved[round1.indexOf(r)], r)),
 							);
 							shown = round1.map((run) => {
 								const r2 = round2[ok.indexOf(run)];
@@ -1534,6 +1751,7 @@ export default function (pi: ExtensionAPI) {
 					};
 				} finally {
 					active.delete(key);
+					updateActivityWidget(ctx, ended);
 					if (co) writing.delete(co.repoRoot);
 				}
 			};
@@ -1551,7 +1769,7 @@ export default function (pi: ExtensionAPI) {
 			if (!background) {
 				if (co) writing.set(co.repoRoot, co.id);
 				const signal = toolSignal ? AbortSignal.any([toolSignal, ended]) : ended;
-				return tracked(call(_id, signal, onUpdate));
+				return tracked(call(callKey, signal, onUpdate, foregroundId));
 			}
 
 			// The turn's abort does not stop a background job; /delegate cancel and session shutdown do.
@@ -1575,7 +1793,7 @@ export default function (pi: ExtensionAPI) {
 					{ triggerTurn: !controller.signal.aborted, deliverAs: "followUp" },
 				);
 			};
-			tracked(call(id, AbortSignal.any([controller.signal, ended]), undefined))
+			tracked(call(callKey, AbortSignal.any([controller.signal, ended]), undefined, undefined, id))
 				.then((result: any) => {
 					spend.cost += costOf(result.usage ?? {});
 					deliver(result.content.map((c: any) => c.text).join("\n"), result.details, Boolean(result.isError));

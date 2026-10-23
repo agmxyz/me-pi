@@ -68,6 +68,26 @@ const POOL_SET = {
 		thinking: "max",
 	},
 };
+const ONE_OFF = "google/gemini-test";
+const UNAUTHENTICATED = "unauthed/model";
+const REGISTRY_MODELS = [HAIKU, SONNET, OPUS, LUNA, ONE_OFF];
+
+function registryFixture({ catalog = REGISTRY_MODELS, available = catalog, authenticated } = {}) {
+	const model = (id) => {
+		const slash = id.indexOf("/");
+		return slash > 0
+			? { provider: id.slice(0, slash), id: id.slice(slash + 1), name: id.slice(slash + 1) }
+			: undefined;
+	};
+	const models = catalog.map(model).filter(Boolean);
+	const availableModels = available.map(model).filter(Boolean);
+	const authProviders = new Set(authenticated ?? availableModels.map((m) => m.provider));
+	return {
+		find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
+		getAvailable: () => availableModels,
+		hasConfiguredAuth: (candidate) => authProviders.has(candidate.provider),
+	};
+}
 
 // Fake pi: reads the prompt from stdin, echoes how it was invoked; FAKE_PI_MODE drives failures.
 const FAKE_BIN = join(TEST_HOME, "fake-pi.mjs");
@@ -90,6 +110,10 @@ process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
   if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
+  if (mode === "rebuttal-rate-limit-model" && prompt.includes("## Round 2 (rebuttal)") && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: rebuttal unavailable" });
+    process.exit(1);
+  }
   if (mode === "rate-limit-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
     process.exit(1);
@@ -173,6 +197,19 @@ process.stdin.on("end", () => {
   if (mode === "ended-midway") { emit("reading more files", { stopReason: "toolUse" }); process.exit(0); }
   if (mode === "crash") { process.stderr.write("boom: last stderr line\\n"); process.exit(3); }
   if (mode === "hang") { emit("working", { stopReason: "toolUse" }); setInterval(() => {}, 1000); return; }
+  if (mode === "tool-activity") {
+    const selected = (flag("--model") || "").includes("haiku") ? "read" : "grep";
+    const activity = Array.from({ length: 12 }, (_, i) => JSON.stringify({
+      type: "tool_execution_start",
+      toolCallId: "activity-" + i,
+      toolName: i === 10 ? "PRIVATE_REASONING" : i === 11 ? "\\u001b" + selected + "\\n" : selected,
+      args: { path: "PRIVATE_ARGUMENT", command: "PRIVATE_COMMAND", output: "PRIVATE_OUTPUT", reasoning: "PRIVATE_REASONING" },
+    }));
+    process.stdout.write(activity.join("\\n") + "\\n");
+    process.stderr.write("PRIVATE_STDERR\\n");
+    setTimeout(() => { emit("activity answer"); process.exit(0); }, Number(process.env.FAKE_PI_ACTIVITY_DELAY || 250));
+    return;
+  }
   if (mode === "expensive") {
     console.log(JSON.stringify({ type: "tool_execution_start", toolName: "read", args: { path: "src/a.ts" } }));
     emit("still going", { cost: 9, stopReason: "toolUse" });
@@ -218,7 +255,12 @@ process.stdin.on("end", () => {
 	{ mode: 0o755 },
 );
 
-const CTX = { cwd: REPO_ROOT, model: { provider: "anthropic", id: "claude-session" }, thinkingLevel: "high" };
+const CTX = {
+	cwd: REPO_ROOT,
+	model: { provider: "anthropic", id: "claude-session" },
+	thinkingLevel: "high",
+	modelRegistry: registryFixture(),
+};
 const text = (res) => res.content.map((c) => c.text).join("\n");
 
 function applyEnv(vars) {
@@ -567,7 +609,7 @@ test("output with no files written says so; without output there is no write too
 	assert.doesNotMatch(without, /Files in|,write/);
 });
 
-test("model pools resolve per-model thinking, ordered fallbacks, and explicit overrides", () => {
+test("model pools resolve per-model thinking, ordered fallbacks, and independent overrides", () => {
 	assert.deepEqual(resolveRun("scout", {}, POOL_SET), {
 		model: LUNA,
 		candidates: [
@@ -586,16 +628,51 @@ test("model pools resolve per-model thinking, ordered fallbacks, and explicit ov
 	});
 	assert.deepEqual(resolveRun("research", { model: OPUS, thinking: "high" }, POOL_SET), {
 		model: OPUS,
-		candidates: [
-			{ model: OPUS, thinking: "high" },
-			{ model: LUNA, thinking: "high" },
-		],
+		candidates: [{ model: OPUS, thinking: "high" }],
 		thinking: "high",
 	});
 	assert.deepEqual(resolveRun("review", { model: HAIKU }, POOL_SET), {
 		model: HAIKU,
 		candidates: [{ model: HAIKU, thinking: "off" }],
 		thinking: "off",
+	});
+	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, POOL_SET), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "max" }],
+		thinking: "max",
+	});
+	assert.deepEqual(resolveRun("review", { model: ONE_OFF, thinking: "low" }, POOL_SET), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "low" }],
+		thinking: "low",
+	});
+	const perModelSet = {
+		...POOL_SET,
+		worker: {
+			models: [
+				{ model: HAIKU, thinking: "high" },
+				{ model: OPUS, thinking: "low" },
+			],
+			thinking: "medium",
+		},
+	};
+	assert.deepEqual(resolveRun("review", { model: OPUS }, perModelSet), {
+		model: OPUS,
+		candidates: [{ model: OPUS, thinking: "low" }],
+		thinking: "low",
+	});
+	assert.deepEqual(resolveRun("review", { thinking: "medium" }, perModelSet), {
+		model: HAIKU,
+		candidates: [
+			{ model: HAIKU, thinking: "medium" },
+			{ model: OPUS, thinking: "medium" },
+		],
+		thinking: "medium",
+	});
+	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, perModelSet), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "medium" }],
+		thinking: "medium",
 	});
 	assert.deepEqual(resolveRun("scout", { thinking: "high" }, POOL_SET), {
 		model: LUNA,
@@ -605,6 +682,185 @@ test("model pools resolve per-model thinking, ordered fallbacks, and explicit ov
 		],
 		thinking: "low",
 	});
+	assert.deepEqual(resolveRun("scout", { model: ONE_OFF, thinking: "off" }, POOL_SET), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "off" }],
+		thinking: "off",
+	});
+	assert.deepEqual(resolveRun("scout", { model: ONE_OFF, thinking: "high" }, POOL_SET), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "low" }],
+		thinking: "low",
+	});
+});
+
+test("unlisted models use role defaults or independent thinking overrides without changing config", async (t) => {
+	const marker = scratch("one-off-marker");
+	const config = {
+		version: 3,
+		scout: { models: [], thinking: "low" },
+		worker: {
+			models: [
+				{ model: HAIKU, thinking: "high" },
+				{ model: OPUS, thinking: "low" },
+			],
+			thinking: "medium",
+		},
+	};
+	const { tool } = setup(t, { config, env: { FAKE_PI_MARKER: marker } });
+	const path = process.env.ME_PI_DELEGATE_CONFIG;
+	const original = readFileSync(path, "utf8");
+
+	const defaulted = await run(tool, { role: "review", task: "x", runs: [{ model: ONE_OFF }] });
+	assert.equal(defaulted.isError, false, text(defaulted));
+	assert.match(text(defaulted), new RegExp(`DONE model=${ONE_OFF} thinking=medium`));
+
+	const overridden = await run(tool, {
+		role: "review",
+		task: "x",
+		runs: [{ model: ONE_OFF, thinking: "high" }],
+	});
+	assert.equal(overridden.isError, false, text(overridden));
+	assert.match(text(overridden), new RegExp(`DONE model=${ONE_OFF} thinking=high`));
+
+	const listed = await run(tool, { role: "review", task: "x", runs: [{ model: OPUS }] });
+	assert.equal(listed.isError, false, text(listed));
+	assert.match(text(listed), new RegExp(`DONE model=${OPUS} thinking=low`));
+	assert.equal(readFileSync(path, "utf8"), original, "one-off choices do not persist to delegate.json");
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => {
+				const { model, thinking } = JSON.parse(line);
+				return [model, thinking];
+			}),
+		[
+			[ONE_OFF, "medium"],
+			[ONE_OFF, "high"],
+			[OPUS, "low"],
+		],
+	);
+});
+
+test("an explicit thinking override applies to every configured fallback candidate", async (t) => {
+	const marker = scratch("thinking-fallback-marker");
+	const config = {
+		version: 3,
+		scout: { models: [], thinking: "low" },
+		worker: {
+			models: [
+				{ model: HAIKU, thinking: "high" },
+				{ model: SONNET, thinking: "low" },
+			],
+			thinking: "medium",
+		},
+	};
+	const { tool } = setup(t, {
+		config,
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "review", task: "x", runs: [{ thinking: "medium" }] });
+	assert.equal(res.isError, false, text(res));
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => {
+				const { model, thinking } = JSON.parse(line);
+				return [model, thinking];
+			}),
+		[
+			[HAIKU, "medium"],
+			[SONNET, "medium"],
+		],
+	);
+});
+
+test("one-off models must be exact catalog IDs with usable authentication", async (t) => {
+	const marker = scratch("invalid-one-off-marker");
+	const { tool } = setup(t, { config: POOL_SET, env: { FAKE_PI_MARKER: marker } });
+	const registry = registryFixture({
+		catalog: [...REGISTRY_MODELS, UNAUTHENTICATED],
+		available: REGISTRY_MODELS,
+	});
+	const context = { ...CTX, modelRegistry: registry };
+	for (const [model, error] of [
+		["google/not-in-catalog", /unknown model .*no exact provider\/model match/],
+		[UNAUTHENTICATED, /unauthenticated.*no configured authentication/],
+		["Gemini Flash", /must be an exact Pi model ID in provider\/model form/],
+	]) {
+		const res = await run(tool, { role: "review", task: "x", runs: [{ model }] }, undefined, undefined, context);
+		assert.equal(res.isError, true, model);
+		assert.match(text(res), error);
+	}
+	const unsupported = await run(
+		tool,
+		{ role: "review", task: "x", runs: [{ model: ONE_OFF }] },
+		undefined,
+		undefined,
+		{ ...CTX, modelRegistry: {} },
+	);
+	assert.equal(unsupported.isError, true);
+	assert.match(text(unsupported), /model registry lacks catalog\/auth lookup/);
+	assert.equal(existsSync(marker), false, "invalid or unverifiable models never spawn a worker");
+});
+
+test("an unlisted model never falls back to the configured pool", async (t) => {
+	const marker = scratch("one-off-no-fallback-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 3,
+			scout: { models: [], thinking: "low" },
+			worker: {
+				models: [
+					{ model: HAIKU, thinking: "high" },
+					{ model: OPUS, thinking: "low" },
+				],
+				thinking: "medium",
+			},
+		},
+		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: ONE_OFF, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "review", task: "x", runs: [{ model: ONE_OFF }] });
+	assert.equal(res.isError, true);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[ONE_OFF],
+	);
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
+});
+
+test("an explicitly selected configured model never falls back after an availability failure", async (t) => {
+	const marker = scratch("listed-no-fallback-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 3,
+			scout: { models: [], thinking: "low" },
+			worker: {
+				models: [
+					{ model: HAIKU, thinking: "high" },
+					{ model: SONNET, thinking: "low" },
+				],
+				thinking: "medium",
+			},
+		},
+		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "review", task: "x", runs: [{ model: HAIKU }] });
+	assert.equal(res.isError, true);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 });
 
 test("a rate-limited worker falls back through its pool and reports both attempts", async (t) => {
@@ -617,8 +873,21 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 		},
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "review", task: "x" });
+	const progress = [];
+	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
 	assert.equal(res.isError, false, text(res));
+	assert.ok(
+		progress.some(
+			(update) => update.details.view.runs[0].model === HAIKU && update.details.view.runs[0].thinking === "max",
+		),
+	);
+	assert.ok(
+		progress.some(
+			(update) => update.details.view.runs[0].model === SONNET && update.details.view.runs[0].thinking === "max",
+		),
+	);
+	assert.ok(progress.some((update) => update.content[0].text.includes("claude-haiku-5-5 @max")));
+	assert.ok(progress.some((update) => update.content[0].text.includes("claude-sonnet-5-5 @max")));
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
 		calls.map((c) => [c.model, c.thinking]),
@@ -706,8 +975,20 @@ test("per-model thinking follows each ordered candidate during fallback", async 
 		},
 		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "review", task: "x" });
+	const progress = [];
+	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
 	assert.equal(res.isError, false, text(res));
+	assert.ok(
+		progress.some(
+			(update) => update.details.view.runs[0].model === LUNA && update.details.view.runs[0].thinking === "max",
+		),
+	);
+	assert.ok(
+		progress.some(
+			(update) => update.details.view.runs[0].model === OPUS && update.details.view.runs[0].thinking === "low",
+		),
+	);
+	assert.ok(progress.some((update) => update.content[0].text.includes("claude-opus-5-5 @low")));
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
 		calls.map(({ model, thinking }) => [model, thinking]),
@@ -720,7 +1001,7 @@ test("per-model thinking follows each ordered candidate during fallback", async 
 	assert.equal(res.details.round1[0].requested.thinking, "low");
 });
 
-test("model-unavailable errors fall through the same ordered worker pool", async (t) => {
+test("model-unavailable errors fall through the same ordered worker pool when model is omitted", async (t) => {
 	const marker = scratch("unavailable-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -784,11 +1065,7 @@ test("v1 and v2 configs migrate to per-model levels, and empty pools use the ses
 	});
 	assert.deepEqual(resolveRun("review", { model: OPUS, thinking: "medium" }, set), {
 		model: OPUS,
-		candidates: [
-			{ model: OPUS, thinking: "medium" },
-			{ model: SONNET, thinking: "medium" },
-			{ model: HAIKU, thinking: "medium" },
-		],
+		candidates: [{ model: OPUS, thinking: "medium" }],
 		thinking: "medium",
 	});
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [HAIKU, SONNET, OPUS], default: SONNET });
@@ -825,7 +1102,11 @@ test("v1 and v2 configs migrate to per-model levels, and empty pools use the ses
 		],
 		thinking: "max",
 	});
-	assert.throws(() => resolveRun("review", { model: "openai/gpt-x" }, v2), /not in the delegate pools/);
+	assert.deepEqual(resolveRun("review", { model: "openai/gpt-x" }, v2), {
+		model: "openai/gpt-x",
+		candidates: [{ model: "openai/gpt-x", thinking: "max" }],
+		thinking: "max",
+	});
 
 	const empty = loadModelSet(join(TEST_HOME, "nope.json"));
 	assert.deepEqual(resolveRun("scout", {}, empty, "x/session", "off"), {
@@ -1018,11 +1299,80 @@ test("v3 model configs validate per-model thinking", (t) => {
 	});
 });
 
-test("the schema offers only the set's models", (t) => {
+test("the schema allows exact model IDs outside the configured pools", (t) => {
 	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
-	assert.deepEqual(tool.parameters.properties.runs.items.properties.model.enum, [HAIKU, OPUS]);
-	assert.equal(setup(t).tool.parameters.properties.runs.items.properties.model.enum, undefined);
+	const model = tool.parameters.properties.runs.items.properties.model;
+	assert.equal(model.type, "string");
+	assert.equal(model.enum, undefined);
+	assert.match(model.description, /exact Pi model ID/);
+	assert.match(tool.parameters.properties.runs.description, /explicitly named model runs alone and never falls back/i);
 });
+
+test(
+	"tool starts publish bounded sanitized live activity independently before a turn completes",
+	{ timeout: 5000 },
+	async (t) => {
+		const { tool } = setup(t, {
+			config: {
+				version: 3,
+				scout: { models: [], thinking: "low" },
+				worker: {
+					models: [
+						{ model: HAIKU, thinking: "high" },
+						{ model: SONNET, thinking: "low" },
+					],
+				},
+			},
+			env: { FAKE_PI_MODE: "tool-activity" },
+		});
+		let resolveActivity;
+		const updates = [];
+		const firstActivity = new Promise((resolve) => {
+			resolveActivity = resolve;
+		});
+		const pending = run(
+			tool,
+			{ task: "inspect", runs: [{ model: HAIKU }, { model: SONNET }] },
+			undefined,
+			(update) => {
+				updates.push(update);
+				if (update.details.view.runs.every((run) => run.activity?.length)) resolveActivity(update);
+			},
+		);
+		const live = await firstActivity;
+		assert.deepEqual(
+			live.details.view.runs.map(({ model, thinking, done, turns, activity }) => [
+				model,
+				thinking,
+				done,
+				turns,
+				activity,
+			]),
+			[
+				[HAIKU, "high", false, 0, ["read", "read", "read", "read", "read", "read", "tool", "read"]],
+				[SONNET, "low", false, 0, ["grep", "grep", "grep", "grep", "grep", "grep", "tool", "grep"]],
+			],
+		);
+		assert.match(live.content[0].text, /🧑‍🍳 claude-haiku-5-5 @high turn 0/);
+		assert.match(live.content[0].text, /🧑‍🍳 claude-sonnet-5-5 @low turn 0/);
+		assert.doesNotMatch(live.content[0].text, /--\*/);
+		assert.doesNotMatch(JSON.stringify(live), /PRIVATE_(?:ARGUMENT|COMMAND|OUTPUT|REASONING)|\\u001b/);
+		const result = await pending;
+		assert.equal(result.isError, false);
+		assert.deepEqual(
+			result.details.round1.map(({ tools }) => tools),
+			[
+				["read", "read", "read", "read", "read", "read", "tool", "read"],
+				["grep", "grep", "grep", "grep", "grep", "grep", "tool", "grep"],
+			],
+		);
+		assert.ok(updates.length <= 8, `tool-start burst was not coalesced: ${updates.length} updates`);
+		assert.ok(
+			updates.at(-1).details.view.runs.every((run) => run.done),
+			"final progress was flushed",
+		);
+	},
+);
 
 test("a scout runs read-only, one-shot, marked as a worker, with the prompt on stdin", async (t) => {
 	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
@@ -1074,10 +1424,19 @@ test("without a model config, workers use the main session model", async (t) => 
 	const marker = scratch("session-model-marker");
 	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker } });
 	const sessionContext = { ...CTX, thinkingLevel: "medium" };
-	const general = await run(tool, { task: "x" }, undefined, undefined, sessionContext);
+	const generalProgress = [];
+	const general = await run(tool, { task: "x" }, undefined, (update) => generalProgress.push(update), sessionContext);
 	const scout = await run(tool, { role: "scout", task: "x" }, undefined, undefined, sessionContext);
 	assert.equal(general.isError, false, text(general));
 	assert.equal(scout.isError, false, text(scout));
+	assert.ok(
+		generalProgress.some(
+			(update) =>
+				update.details.view.runs[0].model === "anthropic/claude-session" &&
+				update.details.view.runs[0].thinking === "medium",
+		),
+	);
+	assert.ok(generalProgress.some((update) => update.content[0].text.includes("claude-session @medium")));
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -1152,11 +1511,16 @@ test("bad calls are refused before any worker starts", async (t) => {
 		[{ task: "x", answer: "y".repeat(401) }, /answer must be a non-empty string of at most 400 characters/],
 		[{ role: "review", task: "x", runs: [] }, /runs must have 1-4 entries/],
 		[{ role: "review", task: "x", runs: Array(5).fill({}) }, /runs must have 1-4 entries/],
+		[{ role: "review", task: "x", runs: [{ model: "" }] }, /runs\[0\] must be/],
+		[{ role: "review", task: "x", runs: [{ model: "   " }] }, /runs\[0\] must be/],
 		[{ role: "review", task: "x", rebuttal: true }, /rebuttal needs at least 2 runs/],
 		[{ role: "review", task: "x", runs: ["x"] }, /runs\[0\] must be \{ model\?: string, thinking\?: off\|/],
 		[{ role: "review", task: "x", runs: [{}, { thinking: "huge" }] }, /runs\[1\] must be/],
 		[{ role: "review", task: "x", model: OPUS }, /unknown parameter\(s\) model; set model and thinking inside runs/],
-		[{ role: "review", task: "x", runs: [{ model: "openai/gpt-x" }] }, /not in the delegate pools/],
+		[
+			{ role: "review", task: "x", runs: [{ model: "openai/gpt-x" }] },
+			/unknown model .*no exact provider\/model match/,
+		],
 	]) {
 		const res = await run(tool, params);
 		assert.equal(res.isError, true, JSON.stringify(params));
@@ -1183,7 +1547,7 @@ test("details carry a view for the TUI: progress per round, then the reported ru
 	assert.equal(last.content[0].text, progressLines(last.details.view).join("\n"));
 	assert.match(
 		last.content[0].text,
-		/^Rebuttal \[web\]\n\u2713 claude-haiku-5-5 turn 1 \$0\.0020\n\u2717 claude-opus-5-5/,
+		/^Rebuttal \[web\]\n\u2713 claude-haiku-5-5 @max turn 1 \$0\.0020\n\u2717 claude-opus-5-5 @max/,
 	);
 	const view = res.details.view;
 	assert.equal(view.stage, "Done");
@@ -1211,6 +1575,70 @@ test("several runs answer the same task in parallel; usage is summed", async (t)
 	assert.match(out, new RegExp(`model=${OPUS} thinking=medium`));
 	assert.match(out, /Total: 2 runs, \$0\.0040\.$/);
 	assert.equal(res.usage.cost.total, 0.004);
+});
+
+test("default-origin rebuttals keep pool fallback while explicit-origin rebuttals stop", async (t) => {
+	const config = {
+		version: 3,
+		scout: { models: [], thinking: "low" },
+		worker: {
+			models: [
+				{ model: HAIKU, thinking: "high" },
+				{ model: SONNET, thinking: "low" },
+				{ model: OPUS, thinking: "max" },
+			],
+			thinking: "medium",
+		},
+	};
+	const defaultMarker = scratch("default-rebuttal-fallback-marker");
+	const defaultRun = setup(t, {
+		config,
+		env: {
+			FAKE_PI_MODE: "rebuttal-rate-limit-model",
+			FAKE_PI_FAIL_MODEL: HAIKU,
+			FAKE_PI_MARKER: defaultMarker,
+		},
+	});
+	const defaultResult = await run(defaultRun.tool, {
+		role: "review",
+		task: "check fallback across rebuttal rounds",
+		runs: [{}, {}],
+		rebuttal: true,
+	});
+	assert.equal(defaultResult.isError, false, text(defaultResult));
+	assert.deepEqual(
+		defaultResult.details.round2.map((r) => [
+			r.requested.model,
+			r.requested.thinking,
+			r.fallbackAttempts[0]?.nextModel,
+		]),
+		[
+			[SONNET, "low", SONNET],
+			[SONNET, "low", SONNET],
+		],
+	);
+
+	const explicitMarker = scratch("explicit-rebuttal-no-fallback-marker");
+	process.env.FAKE_PI_MARKER = explicitMarker;
+	const explicitResult = await run(defaultRun.tool, {
+		role: "review",
+		task: "explicit model does not fall back in rebuttal",
+		runs: [{ model: HAIKU }, { model: OPUS }],
+		rebuttal: true,
+	});
+	assert.equal(explicitResult.isError, true);
+	assert.equal(explicitResult.details.round2[0].requested.model, HAIKU);
+	assert.deepEqual(explicitResult.details.round2[0].fallbackAttempts, []);
+	assert.deepEqual(
+		readFileSync(explicitMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.filter((call) => call.prompt.includes("## Round 2 (rebuttal)"))
+			.map((call) => call.model)
+			.sort(),
+		[HAIKU, OPUS].sort(),
+	);
 });
 
 test("rebuttal returns only round 2; each worker saw its own and the others' answers", async (t) => {
@@ -1336,7 +1764,7 @@ test("the cost cap stops a continuing worker but keeps a final answer", { timeou
 	const capped = await run(setup(t, { env: { FAKE_PI_MODE: "expensive" } }).tool, { role: "scout", task: "x" });
 	assert.equal(capped.isError, true);
 	assert.match(text(capped), /^✗ stopped: cost cap \$5 reached\nPartial answer:\nstill going/);
-	assert.deepEqual(capped.details.round1[0].tools, ["read src/a.ts"]);
+	assert.deepEqual(capped.details.round1[0].tools, ["read"]);
 	const final = await run(setup(t, { env: { FAKE_PI_MODE: "final-over-cap" } }).tool, { role: "scout", task: "x" });
 	assert.equal(final.isError, false);
 	assert.match(text(final), /^complete answer\n/);
@@ -1529,6 +1957,269 @@ const bgCtx = () => {
 	return { ctx: { ...CTX, ui: { setStatus: (key, value) => statuses.push([key, value]) } }, statuses };
 };
 
+function tuiCtx() {
+	const updates = [];
+	const requests = [];
+	const snapshots = [];
+	let component;
+	const tui = {
+		requestRender: () => {
+			requests.push(Date.now());
+			snapshots.push(component?.render(240) ?? []);
+		},
+	};
+	const ui = {
+		setStatus: () => {},
+		setWidget: (key, content) => {
+			updates.push([key, content]);
+			component =
+				content === undefined
+					? undefined
+					: typeof content === "function"
+						? content(tui, { fg: (_color, value) => value })
+						: { render: () => content };
+		},
+	};
+	return {
+		ctx: { ...CTX, mode: "tui", ui },
+		updates,
+		requests,
+		snapshots,
+		widget: (width = 240) => component?.render(width) ?? [],
+	};
+}
+
+function trackIntervals(t) {
+	const originalSetInterval = globalThis.setInterval;
+	const originalClearInterval = globalThis.clearInterval;
+	const active = new Map();
+	active.started = [];
+	active.cleared = [];
+	let nextId = 0;
+	globalThis.setInterval = (callback, delay) => {
+		const handle = { id: ++nextId, callback, delay, unref() {} };
+		active.set(handle, delay);
+		active.started.push(handle);
+		return handle;
+	};
+	globalThis.clearInterval = (handle) => {
+		if (active.delete(handle)) active.cleared.push(handle);
+	};
+	t.after(() => {
+		globalThis.setInterval = originalSetInterval;
+		globalThis.clearInterval = originalClearInterval;
+	});
+	return active;
+}
+
+test(
+	"the TUI widget shows coalesced foreground and background tool activity by stable ID without payloads",
+	{ timeout: 10000 },
+	async (t) => {
+		const { tool, messages } = setup(t, {
+			config: POOL_SET,
+			env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "1200" },
+		});
+		const intervals = trackIntervals(t);
+		const ui = tuiCtx();
+		const first = await run(
+			tool,
+			{ role: "scout", task: "PRIVATE_TASK_ONE", runs: [{ model: HAIKU }], background: true },
+			undefined,
+			undefined,
+			ui.ctx,
+		);
+		assert.match(text(first), /^Started background job bg1 /);
+		const second = await run(
+			tool,
+			{ role: "research", task: "PRIVATE_TASK_TWO", runs: [{ model: OPUS }], background: true },
+			undefined,
+			undefined,
+			ui.ctx,
+		);
+		assert.match(text(second), /^Started background job bg2 /);
+
+		let foregroundDone = false;
+		const foreground = tool
+			.execute(
+				"call-foreground-9",
+				{ role: "review", task: "PRIVATE_TASK_THREE", runs: [{ model: LUNA, thinking: "low" }] },
+				undefined,
+				undefined,
+				ui.ctx,
+			)
+			.then((result) => {
+				foregroundDone = true;
+				return result;
+			});
+		await waitFor(
+			() => {
+				const panel = ui.widget().join("\n");
+				return (
+					panel.includes("bg1 scout anthropic/claude-haiku-5-5 @off") &&
+					panel.includes("bg2 research anthropic/claude-opus-5-5 @max") &&
+					panel.includes("fg1 review openai-codex/gpt-6-luna @low") &&
+					panel.includes("read") &&
+					panel.includes("grep")
+				);
+			},
+			"widget tool-start updates before turn completion",
+			2000,
+		);
+		assert.equal(foregroundDone, false, "foreground tool call is still waiting on its answer");
+		const live = ui.widget().join("\n");
+		assert.doesNotMatch(
+			live,
+			/PRIVATE_(?:TASK_ONE|TASK_TWO|TASK_THREE|ARGUMENT|COMMAND|OUTPUT|REASONING|STDERR)|activity answer|stderr/i,
+		);
+		assert.equal(ui.widget().length, 4, "one heading and three active worker rows");
+		assert.deepEqual([...intervals.values()], [1000], "one TUI-only elapsed timer for the active panel");
+		const timer = [...intervals.keys()][0];
+		const rendersBeforeTick = ui.requests.length;
+		timer.callback();
+		assert.equal(ui.requests.length, rendersBeforeTick + 1, "each one-second tick refreshes elapsed time");
+
+		assert.equal((await foreground).isError, false);
+		await waitFor(() => messages.length === 2, "both background answers");
+		assert.deepEqual(ui.widget(), [], "the widget hides when every worker is idle");
+		assert.equal(intervals.size, 0, "completion clears the elapsed timer");
+	},
+);
+
+test("the elapsed timer stops between rebuttal rounds and restarts for active rows", async (t) => {
+	const intervals = trackIntervals(t);
+	const { tool } = setup(t, {
+		config: { models: [HAIKU, OPUS] },
+		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
+	});
+	const ui = tuiCtx();
+	const pending = run(
+		tool,
+		{ role: "review", task: "timer lifecycle", runs: [{}, {}], rebuttal: true },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
+	await waitFor(() => intervals.started.length === 2, "the rebuttal timer restart");
+	assert.deepEqual(intervals.cleared, [intervals.started[0]], "the idle round boundary cleared its timer");
+	assert.equal(intervals.size, 1, "the second round owns one live timer");
+	assert.ok(
+		ui.widget().some((line) => line.includes("R2")),
+		"the restarted widget shows rebuttal workers",
+	);
+	assert.equal((await pending).isError, false);
+	assert.equal(intervals.size, 0, "the final idle state clears the restarted timer");
+	assert.deepEqual(intervals.cleared, intervals.started);
+});
+
+test("concurrent foreground calls receive distinct compact widget labels", async (t) => {
+	const { tool } = setup(t, {
+		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
+	});
+	const ui = tuiCtx();
+	const first = tool.execute(
+		"call_01JAZ9M4X2F1D8B3C5E7|fc_01JAZ9M4X2F1D8B3C5E7",
+		{ role: "review", task: "first foreground" },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
+	const second = tool.execute(
+		"call_01JAZ9M4X2F1D8B3C5E8|fc_01JAZ9M4X2F1D8B3C5E8",
+		{ role: "research", task: "second foreground" },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
+	await waitFor(
+		() =>
+			ui.widget().some((line) => line.includes("fg1 review")) &&
+			ui.widget().some((line) => line.includes("fg2 research")),
+		"both foreground labels",
+	);
+	assert.equal((await first).isError, false);
+	assert.equal((await second).isError, false);
+});
+
+test("the TUI widget tracks the current configured fallback candidate", async (t) => {
+	const { tool } = setup(t, {
+		config: {
+			version: 3,
+			scout: { models: [], thinking: "low" },
+			worker: {
+				models: [
+					{ model: HAIKU, thinking: "high" },
+					{ model: SONNET, thinking: "low" },
+				],
+				thinking: "medium",
+			},
+		},
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU },
+	});
+	const ui = tuiCtx();
+	const result = await run(tool, { role: "review", task: "fallback widget" }, undefined, undefined, ui.ctx);
+	assert.equal(result.isError, false);
+	assert.ok(
+		ui.snapshots.some((snapshot) =>
+			snapshot.some((line) => line.includes("claude-sonnet-5-5 @low") && line.includes("↻")),
+		),
+		"the widget switches to the next actual candidate and marks its fallback",
+	);
+	assert.deepEqual(ui.widget(), [], "the final candidate completion hides the widget");
+});
+
+test("the TUI widget shows the rebuttal stage", async (t) => {
+	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const ui = tuiCtx();
+	const result = await run(
+		tool,
+		{ role: "review", task: "PRIVATE_REBUTTAL_TASK", runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
+	assert.equal(result.isError, false);
+	assert.ok(ui.snapshots.some((snapshot) => snapshot.some((line) => line.includes("R2"))));
+	assert.doesNotMatch(ui.snapshots.flat().join("\n"), /PRIVATE_REBUTTAL_TASK|DONE model=/);
+	assert.deepEqual(ui.widget(), [], "the widget hides after the rebuttal finishes");
+});
+
+test("the TUI widget cleans up on cancellation and session replacement", async (t) => {
+	const intervals = trackIntervals(t);
+	const main = setup(t, { env: { FAKE_PI_MODE: "hang" } });
+	const ui = tuiCtx();
+	const { tool, handlers, commands, messages } = main;
+	await run(tool, { role: "scout", task: "cancel me", background: true }, undefined, undefined, ui.ctx);
+	await waitFor(() => ui.widget().some((line) => line.includes("bg1 scout")), "background widget row");
+	assert.equal(intervals.size, 1);
+	await commands.delegate.handler("cancel bg1", commandCtx().ctx);
+	await waitFor(() => messages.length === 1, "cancelled report");
+	assert.deepEqual(ui.widget(), [], "cancellation hides the idle widget");
+	assert.equal(intervals.size, 0, "cancellation clears the elapsed timer");
+
+	await run(tool, { role: "scout", task: "session replacement", background: true }, undefined, undefined, ui.ctx);
+	await waitFor(() => ui.widget().some((line) => line.includes("bg2 scout")), "second background widget row");
+	assert.equal(intervals.size, 1);
+	await handlers.session_shutdown({ reason: "new" });
+	assert.deepEqual(ui.widget(), [], "session replacement removes the widget");
+	assert.equal(intervals.size, 0, "session replacement clears the elapsed timer");
+});
+
+test("non-TUI worker execution creates no widget or elapsed timer", async (t) => {
+	const intervals = trackIntervals(t);
+	let widgetCalls = 0;
+	const { tool } = setup(t, { env: { FAKE_PI_MODE: "tool-activity" } });
+	const printCtx = {
+		...CTX,
+		mode: "print",
+		ui: { setWidget: () => widgetCalls++ },
+	};
+	const printed = await run(tool, { role: "scout", task: "not interactive" }, undefined, undefined, printCtx);
+	assert.equal(printed.isError, false);
+	assert.equal(widgetCalls, 0, "print mode never touches setWidget");
+	assert.equal(intervals.size, 0, "non-TUI calls create no timer");
+});
+
 test("background: returns a job id at once, then delivers the answer as a message that starts a turn", async (t) => {
 	const { tool, messages } = setup(t);
 	const { ctx, statuses } = bgCtx();
@@ -1662,6 +2353,38 @@ const implementEnv = (mode, extra = {}) => ({
 const implement = (extra = {}) => ({ role: "implement", task: "add a feature", check: CHECK, ...extra });
 // Resolves once a hang-mode worker has written the file it writes before it waits.
 const workerStarted = (repo) => waitFor(() => existsSync(join(repo, "left.txt")), "the worker to start");
+
+test(
+	"implement background prepare hands off without a ghost widget row or worker slot",
+	{ timeout: 10000 },
+	async (t) => {
+		const { tool, commands, messages } = setup(t, { env: implementEnv("implement-commit") });
+		const intervals = trackIntervals(t);
+		const ui = tuiCtx();
+		const { repo } = implementRepo();
+		const jobCtx = { ...ui.ctx, cwd: repo, isProjectTrusted: () => false };
+		const started = await run(tool, implement({ background: true }), undefined, undefined, jobCtx);
+		assert.match(text(started), /^Started background job bg1 /);
+		await waitFor(() => messages.length === 1, "the successful implement handback");
+		assert.deepEqual(ui.widget(), [], "completion removes the temporary prepare row");
+		assert.equal(intervals.size, 0, "completion stops the elapsed timer");
+		const { ctx: command, notes } = commandCtx();
+		await commands.delegate.handler("status", command);
+		assert.match(notes.at(-1)[0], /Running: none/);
+
+		process.env.FAKE_PI_MODE = "hang";
+		const fourWorkers = await run(
+			tool,
+			{ role: "scout", task: "fill the worker limit", runs: [{}, {}, {}, {}], background: true },
+			undefined,
+			undefined,
+			jobCtx,
+		);
+		assert.match(text(fourWorkers), /^Started background job bg2 /, "the completed prepare slot is not counted");
+		await commands.delegate.handler("cancel bg2", command);
+		await waitFor(() => messages.length === 2, "the cancelled capacity-check job");
+	},
+);
 
 test("implement commits on the current branch; the result is a 2-line handback and a 0600 details file", async (t) => {
 	const { tool, commands } = setup(t, { env: implementEnv("implement-commit") });
