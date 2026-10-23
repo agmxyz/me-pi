@@ -261,7 +261,7 @@ export async function prepareScratch({ repoRoot = REPO_ROOT, piBin = "pi", scrat
 		sessionDirs: { a: join(root, "sessions/a"), b: join(root, "sessions/b") },
 		delegateConfig: { a: join(root, "agents/a/delegate.json"), b: join(root, "agents/b/delegate.json") },
 		discovery,
-		liveComparison: "UNRUN: requires explicit approval for temporary auth symlinks",
+		liveComparison: "UNRUN: authenticated lifecycle comparison not performed",
 	};
 	writeFileSync(join(root, SCRATCH_MARKER), `${JSON.stringify(result, null, 2)}\n`);
 	writeFileSync(join(root, "artifact-index.json"), `${JSON.stringify(result, null, 2)}\n`);
@@ -278,7 +278,7 @@ async function main() {
 	console.log(`Candidate arm B package: ${prepared.packages.b}`);
 	console.log(`Scratch goals: ${prepared.goals.a} and ${prepared.goals.b}`);
 	console.log(`Pi 1.3.0 discovery: skill package origin=${prepared.discovery.b.skill.origin}; delegate tools=${prepared.discovery.a.delegateTools}/${prepared.discovery.b.delegateTools}; model invoked=no`);
-	console.log("Live comparison: UNRUN; adoption remains blocked pending explicit auth-symlink approval.");
+	console.log("Live comparison: UNRUN; adoption remains blocked until the isolated A/B passes.");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

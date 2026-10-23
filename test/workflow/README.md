@@ -30,9 +30,9 @@ node test/workflow/set-oracle.mjs <SCRATCH_ROOT> a
 
 Use `b` for the other arm. The helper validates the generated scratch marker and fixture path, and refuses to overwrite an existing gate. Check the handback and confirm the worker did not create or alter `.workflow/oracle.ready` before using the helper; any worker manipulation makes that arm inconclusive.
 
-## Live comparison — blocked pending approval
+## Live comparison — approved, not run in T1
 
-Do not start either model session until the user explicitly approves the required temporary auth symlinks. Preparation creates no auth file or symlink; never copy, print, or log auth contents. Once approval exists, create the approved scratch-only auth setup and start each arm separately, using the same model, provider, thinking level, limits, and initial task:
+The user has approved temporary auth symlinks for a later isolated A/B. This T1 preparation intentionally creates no auth file or symlink and starts no model session. In the separate live-validation job, create only the approved scratch-only symlinks; never read, copy, print, or log auth contents. Start each arm separately, using the same model, provider, thinking level, limits, and initial task:
 
 ```sh
 (
@@ -48,4 +48,4 @@ Repeat with `b` for every A path. The empty pool files make delegate workers use
 
 For each arm, keep the transcript and record: skill load timing; every job start and order; each ✓/✗/WIP and check result; oracle-gate timing; recovery before T2; immediate next-ready-job continuation; goal-review count and fix count; any nudges; model/provider/thinking; elapsed time; and available token, context, and usage metrics. The only operator action between T1's failing handback and recovery is enabling that arm's oracle with the command above; provide no workflow reminder. If T1 does not produce a non-cancel WIP/failed handback, the oracle is manipulated, T2 starts before T1 recovery, B misses the known spec gap, or either arm is nudged, mark the pair inconclusive. T2's first pass intentionally omits `mean([]) === null`; keep `SPEC.md` available to the main session and reviewer. The goal review must find the gap and cause at most one fix job. A reviewer miss is inconclusive, not a pass.
 
-Do not configure real remotes, push, close tracker items, or claim remote behavior was tested. The offline package-discovery result is not lifecycle evidence. Run two pairs if available; otherwise report `n=1`. A successful pair is evidence, not proof of reliability. Keep `docs/plans/delegate-workflow-skill-evidence.md` sanitized and separate harness validation from the `UNRUN` live comparison.
+Do not configure real remotes, push, close tracker items, or claim remote behavior was tested. The offline package-discovery result is not lifecycle evidence. Run two pairs if available; otherwise report `n=1`. A successful pair is evidence, not proof of reliability. Keep `docs/plans/delegate-workflow-skill-evidence.md` sanitized and separate harness validation from the `UNRUN` live comparison. The next live command, after preparing the approved symlinks and choosing the shared model values, is the A-arm invocation above; repeat it with B's paths before recording any result.

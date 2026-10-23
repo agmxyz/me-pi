@@ -59,7 +59,10 @@ test("preparation builds isolated A/B scratch artifacts and verifies real Pi pac
 		path: join(prepared.packages.b, "extensions/skills/implement-goal/SKILL.md"),
 	});
 	assert.equal(prepared.discovery.b.modelInvoked, false);
-	assert.equal(JSON.parse(readFileSync(join(root, "artifact-index.json"), "utf8")).liveComparison.startsWith("UNRUN:"), true);
+	assert.equal(
+		JSON.parse(readFileSync(join(root, "artifact-index.json"), "utf8")).liveComparison,
+		"UNRUN: authenticated lifecycle comparison not performed",
+	);
 
 	for (const arm of ["a", "b"]) {
 		const goal = prepared.goals[arm];

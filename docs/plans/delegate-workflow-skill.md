@@ -39,7 +39,7 @@ Authentication for isolated agents requires current user approval before tempora
 
 ## Adoption gate
 
-Do not change live guidelines or advertise the split as validated until the live comparison passes. T1 preparation and offline package-discovery evidence are recorded in `docs/plans/delegate-workflow-skill-evidence.md`; the authenticated A/B is UNRUN because explicit user approval for temporary auth symlinks is pending. T2 remains pending. If B fails or either arm is inconclusive, retain current workflow injection (generic wording may be a later separate change); report evidence and BLOCKED items. Do not add an opt-out flag.
+Do not change live guidelines or advertise the split as validated until the live comparison passes. T1 preparation and offline package-discovery evidence are recorded in `docs/plans/delegate-workflow-skill-evidence.md`; the authenticated A/B is UNRUN. The user approved temporary auth symlinks for a later isolated A/B, but none were created and no live session was run in T1. T2 remains pending. If B fails or either arm is inconclusive, retain current workflow injection (generic wording may be a later separate change); report evidence and BLOCKED items. Do not add an opt-out flag.
 
 ## Tickets
 
@@ -47,7 +47,7 @@ Do not change live guidelines or advertise the split as validated until the live
 
 Status: PREPARED — offline validation passed; adoption blocked, live comparison UNRUN.
 
-The candidate artifacts are in `test/workflow/candidate/`; the scratch-only preparation, package-discovery check, paired goal fixtures, oracle gate, and A/B procedure are in `test/workflow/`. The sanitized evidence report is `docs/plans/delegate-workflow-skill-evidence.md`. Keep live extension source/manifest unchanged. No secrets in evidence. The authenticated comparison is blocked pending explicit user approval for temporary auth symlinks; do not claim live results. T1 closes only as preparation in a passing commit, with T2 still pending.
+The candidate artifacts are in `test/workflow/candidate/`; the scratch-only preparation, package-discovery check, paired goal fixtures, oracle gate, and A/B procedure are in `test/workflow/`. The sanitized evidence report is `docs/plans/delegate-workflow-skill-evidence.md`. Keep live extension source/manifest unchanged. No secrets in evidence. The user approved temporary auth symlinks for a later isolated A/B, but the live comparison is UNRUN and outside this T1 recovery; do not claim live results. T1 closes only as preparation in a passing commit, with T2 still pending.
 
 ### T2 — Adopt validated workflow split
 
