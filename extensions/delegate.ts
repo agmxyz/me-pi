@@ -1067,7 +1067,7 @@ const retryableAvailabilityFailure = (failure: string | undefined): boolean =>
 			),
 	);
 
-async function persistFailedToolCapture(
+function persistFailedToolCapture(
 	job: Checkout,
 	collector: FailedToolArtifactCollector,
 ): Exclude<ArtifactWriteResult, { status: "empty" }> | undefined {
@@ -1075,7 +1075,7 @@ async function persistFailedToolCapture(
 	return result.status === "empty" ? undefined : result;
 }
 
-function runWorker(
+async function runWorker(
 	job: Job,
 	prompt: string,
 	run: ResolvedRun,
