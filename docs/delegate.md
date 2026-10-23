@@ -1,0 +1,47 @@
+# Use and recover delegate workers
+
+The `delegate` tool starts child `pi --mode json -p` workers. A worker sees the task you pass, not the main conversation, so include the relevant paths, context, and acceptance criteria. Ask Pi in ordinary language, for example: “Have a scout trace how this retry path works and return path-and-line evidence.” Read-only workers cannot run shell commands; save command output or a diff to a temporary file and give its path.
+
+## Roles and tools
+
+- `general` is the default for read-only local investigation. `scout` is a short local lookup with path-and-line evidence. `review` returns severity-ranked findings for the supplied material.
+- `research` gathers web sources; `challenge` stress-tests a premise. Both enable web tools by default. They require `pi-web-access`, installed separately (the optional full setup installs `pi-web-access@0.38.0`; to install that extension alone, run `pi install npm:pi-web-access@0.38.0`). Other roles can request web tools with `web: true`; `implement` cannot.
+- `implement` is the only role that edits the checkout. It runs the required `check` command and commits there. It requires a clean Git tree on a branch other than `main` or `master`; worker checks block ordinary `gh` and Git push commands. Give it a single, unchained check command. Use `background: true` for longer work, then wait for its handback before editing or running Git write commands in that repository.
+
+The package's `Skill` extension adds the `Skill` tool for skills Pi already discovered; it does not supply skills. Filtering the package to `extensions/delegate.ts` does not activate the separate `Skill` extension or the main-session `guard` extension. The delegate implementation still imports sibling helper modules from the package. Install the package, not a copied `delegate.ts` file.
+
+All roles except `implement` are read-only. Set `output: true` when a worker needs to draft a document or patch: this grants `write` only in a fresh, private temporary directory, and the result reports its path. The main session must review and copy any draft it wants to keep.
+
+## Configure model pools
+
+Optional model pools live at `~/.pi/agent/delegate.json`. Without a file, workers use the main session's model and thinking level; `scout` thinking is capped at `low` (or remains `off`). For model IDs, use IDs available to your Pi installation.
+
+```json
+{
+  "version": 3,
+  "scout": {
+    "models": [{ "model": "provider/scout-model", "thinking": "low" }]
+  },
+  "worker": {
+    "models": [{ "model": "provider/worker-model", "thinking": "medium" }]
+  }
+}
+```
+
+Replace the example IDs with your provider/model IDs. Each pool's `models` array is tried in order when a model is unavailable; each entry needs a `thinking` value. Scout entries accept `low` or `off`; worker entries accept `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Optional pool-level `thinking` sets the level for an unlisted model; if omitted, the session level is used. Edit the JSON yourself, then `/reload` to reload the extension. Use `/delegate models` to see the config path and `/delegate status` to see pool availability and missing tools.
+
+## Run and stop work
+
+For a long task, ask Pi to use `background: true`. It returns a `bg<n>` job ID; `/delegate status` shows running IDs and recent calls, and `/delegate cancel <id>` requests cancellation. At most four workers can run at once across calls. `/reload`, session replacement, or Pi exit ends background jobs; wait for them before reloading when possible.
+
+A `research` task needs the separately installed web extension; installing me-pi alone does not provide web tools. Web-enabled workers can read project files as well as fetched pages, so enable web only when outside sources are needed and treat fetched content as untrusted data.
+
+## Safety and recovery
+
+This is not a sandbox. Pi extensions run with Pi's operating-system permissions. Read-only workers can read project files; web-enabled ones combine local reads with network access. `guard` asks before matching risky Bash commands (or blocks them when there is no UI), but it is a pattern matcher, not a parser. `implement` runs Bash and writes in the real checkout. Its worker-side checks block selected commands and disable Git remote protocols, but they do not isolate the process; some environment or Git options can bypass those checks. Use a clean feature branch, keep the main session out of the checkout until handback, and review the result.
+
+Workers have hard time limits of 5 minutes for `scout`, 15 minutes for other read-only roles, and 30 minutes for `implement`; each worker run has a $5 cost cap. Tool calls are blocked at 80% of the time or cost limit, or after 30 calls for `scout` and 100 for other roles, to prompt a final answer. A worker that ignores three such blocks is terminated on the next blocked call. These limits do not make execution safe.
+
+Cancellation is not rollback. If an `implement` run stops with uncommitted non-ignored changes, the extension may save them in a `WIP(delegate …)` commit on the job branch. A moved branch can prevent that save. Check the handback's branch, commit range, `check` status, and any `Details:` path; inspect the checkout before continuing. A follow-up `implement` recognizes a WIP commit from an earlier attempt and is asked to finish it first.
+
+A `Tripwire` reports that watched shared state changed; it does not restore anything. Stop and inspect the handback and details file before proceeding. Tripwires cover pre-existing Git refs other than the job branch, local Git config other than upstream-tracking entries, files under Git `hooks/` and `info/`, and Pi package, extension, skill, prompt, and theme settings. Treat a failed check, WIP, or tripwire as incomplete work; do not assume the worker rolled back changes.
