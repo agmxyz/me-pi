@@ -36,6 +36,8 @@ Add a compact panel near the main prompt using Pi's existing setWidget API, list
 
 Status: closed
 
+Verified: `npm run check --prefix extensions`.
+
 Depends on: stop on explicit model failure.
 
 Paths: extensions/delegate.ts, extensions/delegate-render.ts, extensions/delegate-command.ts if active record shape sharing requires it, test/delegate.test.mjs, test/delegate-render.test.mjs, docs/delegate.md. Follow Widget specification above. Confirmed test seams: existing fake worker event streams and UI context mock for both background and foreground execution; add widget rendering assertions and lifecycle tests. Cover foreground plus background updates on tool start before turn completion, multiple simultaneous workers/jobs with stable IDs, model/thinking/role, fallback transitions when allowed, row limits, narrow Unicode widths, sanitized fields/no payload leaks, idle hiding, cancellation and session shutdown cleanup, non-TUI no widget/timer behavior. Ensure no dangling interval keeps tests/process alive; use existing disposal seams. Preserve spend accounting, worker limits, output and custom tool render behavior. Close only in passing commit. Final full-suite check: npm run check --prefix extensions.
