@@ -28,7 +28,7 @@ const {
 	settingsResources,
 	settingsTripwire,
 	snapshotGit,
-} = await import("./delegate-implement.ts");
+} = await import("../extensions/delegate-implement.ts");
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-implement-test-"));
 process.on("exit", () => rmSync(TEST_HOME, { recursive: true, force: true }));
@@ -36,7 +36,7 @@ process.on("exit", () => rmSync(TEST_HOME, { recursive: true, force: true }));
 process.env.TMPDIR = TEST_HOME;
 process.env.PI_CODING_AGENT_DIR = join(TEST_HOME, "agent");
 
-// A temp repo with one commit on main, as bin/install.test.sh sets up its fixture.
+// A temp repo with one commit on main, as test/install.test.sh sets up its fixture.
 function fixture() {
 	const repo = mkdtempSync(join(TEST_HOME, "repo-"));
 	const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
@@ -516,7 +516,7 @@ test("isCheckRun: a cd dir with shell expansion, or a missing dir under &&, does
 
 test("implement ids increment across a reload", async () => {
 	const a = nextImplementId();
-	const reloaded = await import(`./delegate-implement.ts?reload=${Date.now()}`);
+	const reloaded = await import(`../extensions/delegate-implement.ts?reload=${Date.now()}`);
 	const b = reloaded.nextImplementId();
 	assert.equal(Number(b.slice(2)), Number(a.slice(2)) + 1);
 	assert.match(a, /^im\d+$/);

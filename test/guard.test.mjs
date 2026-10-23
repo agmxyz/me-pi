@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { default: registerGuard, classify, workerRisk, gitTreeWrite, PROTECTED_BRANCHES } = await import("./guard.ts");
+const {
+	default: registerGuard,
+	classify,
+	workerRisk,
+	gitTreeWrite,
+	PROTECTED_BRANCHES,
+} = await import("../extensions/guard.ts");
 
 const onMain = () => "main";
 const onFeature = () => "feature/x";
@@ -198,7 +204,7 @@ test("workerRisk blocks commands that move an implement worker off its branch or
 	}
 	for (const command of [
 		"npm run check --prefix extensions",
-		"../bin/install.test.sh",
+		"test/install.test.sh",
 		'git commit -m "mention git push"',
 		"git commit -m 'run ./install.sh'",
 		"grep 'gh ' file",

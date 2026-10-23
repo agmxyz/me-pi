@@ -27,5 +27,5 @@ cache/
 /extensions/rtk.ts
 /extensions/interactive-shell.ts
 
-# node deps for extensions
+# Root development dependencies
 node_modules/
