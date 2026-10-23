@@ -25,12 +25,12 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
-	FailedToolArtifactCollector,
 	type ArtifactWriteResult,
+	FailedToolArtifactCollector,
 	type FailedToolCallInput,
 } from "./delegate-artifacts.ts";
+import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
 	type Checkout,
 	type Facts,
@@ -694,8 +694,16 @@ function failedToolResult(resultValue: unknown, toolName: string | undefined): F
 	const structured = eventRecord(result?.structuredContent);
 	const details = eventRecord(result?.details);
 	const content = toolResultText(result);
-	const structuredOutput = eventText(structured, "output");
-	const exitCode = firstEventField(eventField(structured, "exit_code"), eventField(result, "exit_code"));
+	const structuredOutput =
+		eventText(structured, "output") ?? eventText(result, "output") ?? eventText(details, "output");
+	const exitCode = firstEventField(
+		eventField(structured, "exit_code"),
+		eventField(structured, "exitCode"),
+		eventField(details, "exit_code"),
+		eventField(details, "exitCode"),
+		eventField(result, "exit_code"),
+		eventField(result, "exitCode"),
+	);
 	const structuredContent = eventField(result, "structuredContent");
 	const summary = eventField(structured, "summary");
 	const diagnostic = firstEventField(eventField(result, "childDiagnostics"), eventField(details, "childDiagnostics"));
@@ -705,20 +713,21 @@ function failedToolResult(resultValue: unknown, toolName: string | undefined): F
 	);
 	const fullOutputPath = firstEventField(
 		eventField(structured, "full_output_path"),
+		eventField(structured, "fullOutputPath"),
 		eventField(result, "full_output_path"),
+		eventField(result, "fullOutputPath"),
+		eventField(details, "full_output_path"),
 		eventField(details, "fullOutputPath"),
 	);
-	const error = eventField(result, "error");
-	const summaryValue = summary.present
-		? summary.value
-		: structuredContent.present
-			? structuredContent.value
-			: content;
+	const error = firstEventField(
+		eventField(result, "error"),
+		eventField(structured, "error"),
+		eventField(details, "error"),
+	);
+	const summaryValue = summary.present ? summary.value : structuredContent.present ? structuredContent.value : content;
 	return {
 		...(exitCode.present ? { exitCode: exitCode.value as number } : {}),
-		...(structuredOutput !== undefined || content !== undefined
-			? { outputText: structuredOutput ?? content }
-			: {}),
+		...(structuredOutput !== undefined || content !== undefined ? { outputText: structuredOutput ?? content } : {}),
 		...(error.present ? { error: error.value as string } : {}),
 		...(diagnostic.present ? { childDiagnostics: diagnostic.value as string | readonly string[] } : {}),
 		...(fullOutputPath.present ? { fullOutputPath: fullOutputPath.value as string } : {}),
@@ -855,7 +864,8 @@ function runWorkerAttempt(
 		const captureToolStart = (event: EventRecord) => {
 			const collector = implement?.artifacts;
 			if (!collector) return;
-			const toolCallId = typeof event.toolCallId === "string" && event.toolCallId.length ? event.toolCallId : undefined;
+			const toolCallId =
+				typeof event.toolCallId === "string" && event.toolCallId.length ? event.toolCallId : undefined;
 			const toolName = typeof event.toolName === "string" ? event.toolName : undefined;
 			const args = eventRecord(event.args);
 			const rawCommand = eventField(args, "command");
@@ -989,7 +999,8 @@ function runWorkerAttempt(
 			try {
 				event = JSON.parse(line);
 			} catch {
-				return; // Not an event (pi prints only JSON lines in this mode).
+				implement?.artifacts.noteAnomaly("malformed-event");
+				return; // Not a usable event (pi prints JSON lines in this mode).
 			}
 			if (!event || typeof event !== "object" || Array.isArray(event)) {
 				implement?.artifacts.noteAnomaly("malformed-event");

@@ -36,7 +36,7 @@ Paths: new extensions/delegate-artifacts.ts and test/delegate-artifacts.test.mjs
 
 ### F2: implement-job capture and handback integration
 
-Status: open
+Status: closed
 
 Depends on: F1.
 

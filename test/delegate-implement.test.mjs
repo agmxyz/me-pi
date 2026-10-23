@@ -447,7 +447,7 @@ test("formatHandback: two lines when ✓; BLOCKED capped; control characters quo
 	]);
 	const quoted = formatHandback(facts({ outcome: { answer: `x\u001b[2Jy${"z".repeat(300)}` } })).split("\n");
 	assert.equal(quoted.length, 2);
-	assert.match(quoted[1], /^"x\\u001b\[2Jyz+"\. Details:/);
+	assert.match(quoted[1], /^x\\u001b\[2Jyz+\. Details:/);
 	assert.ok(quoted[1].length < 260);
 	for (const [status, line] of [
 		["stale", "✗ check stale: edited after the last run"],
@@ -458,6 +458,60 @@ test("formatHandback: two lines when ✓; BLOCKED capped; control characters quo
 		assert.match(out, /^✗ im3 /);
 		assert.ok(out.split("\n").includes(line), out);
 	}
+});
+
+test("formatHandback keeps a passing capture warning inline and links artifacts on failed handbacks", () => {
+	const warning = formatHandback(
+		facts({
+			outcome: {
+				answer: "Done.",
+				failedToolCapture: { status: "unavailable", warning: "capture unavailable: EACCES" },
+			},
+		}),
+	);
+	assert.equal(warning.split("\n").length, 2, warning);
+	assert.match(warning.split("\n")[0], /^✓ .*check ✓/);
+	assert.match(warning.split("\n")[1], /⚠ capture unavailable: EACCES/);
+
+	const linked = formatHandback(
+		facts({
+			failed: true,
+			outcome: {
+				failure: "worker failed",
+				failedToolCapture: {
+					status: "written",
+					path: "/tmp/im3-failed-tools.json",
+					bytes: 100,
+					failureCount: 2,
+					truncated: true,
+				},
+			},
+		}),
+	);
+	assert.match(
+		linked,
+		/^Failed-tool diagnostics: \/tmp\/im3-failed-tools\.json \(2 failed tool call\(s\); truncated\)$/m,
+	);
+});
+
+test("details and handback redact worker text and escape control characters", async () => {
+	const { repo } = goalFixture();
+	const job = await prepare(repo, "im98", CHECK);
+	job.check.command = "API_KEY=check-fake-secret npm test";
+	job.check.status = "pass";
+	job.check.runs.push(`pass: ${job.check.command}`);
+	const facts = await finish(job, {
+		answer: "API_KEY=answer-fake-secret \u001b[2J",
+		failedToolCapture: { status: "unavailable", warning: "capture unavailable: TOKEN=warning-fake-secret" },
+	});
+	assert.equal(facts.failed, false);
+	const details = readFileSync(facts.detailsPath, "utf8");
+	assert.doesNotMatch(details, /check-fake-secret|answer-fake-secret|warning-fake-secret/);
+	assert.ok(details.includes("\\u001b[2J"));
+	const handback = formatHandback(facts);
+	assert.equal(handback.split("\n").length, 2);
+	assert.doesNotMatch(handback, /check-fake-secret|answer-fake-secret|warning-fake-secret/);
+	assert.ok(handback.includes("\\u001b[2J"));
 });
 
 test("isCheckRun: exact command, with an optional rtk prefix or 2>&1; no pipes or chains", () => {
