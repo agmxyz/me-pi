@@ -13,6 +13,7 @@ import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, w
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
 import { PROTECTED_BRANCHES } from "./guard.ts";
 
 const run = promisify(execFile);
@@ -205,6 +206,7 @@ export type Outcome = {
 	tools?: string[];
 	fallbacks?: string[];
 	stderr?: string;
+	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
 };
 
 export type Facts = {
@@ -228,8 +230,17 @@ export type Facts = {
 	failed: boolean;
 };
 
-// Git and worker text with control characters quoted, so it cannot add lines to the result (as listOutput does).
-const shown = (text: string) => (/[\x00-\x1f\x7f]/.test(text) ? JSON.stringify(text) : text);
+// Best-effort redaction and control escaping keep worker text from adding lines or terminal controls.
+const shown = (text: string) =>
+	redactSensitiveText(text).replace(
+		/[\x00-\x1f\x7f]/g,
+		(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+const safeDocument = (text: string) =>
+	redactSensitiveText(text).replace(
+		/[\x00-\x09\x0b-\x1f\x7f]/g,
+		(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
 
 const isAlive = (pid: number) => {
 	try {
@@ -616,8 +627,23 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 		...section("Tools", o.tools?.join("\n")),
 		...section("Fallbacks", o.fallbacks?.join("\n")),
 		...section("Stderr (tail)", o.stderr),
+		...section(
+			"Failed tool diagnostics",
+			o.failedToolCapture?.status === "written"
+				? [
+						`Capture: written (${o.failedToolCapture.failureCount} failed tool call(s)${
+							o.failedToolCapture.unmatchedStartCount
+								? `; ${plural(o.failedToolCapture.unmatchedStartCount, "end-not-observed start")}`
+								: ""
+						})`,
+						`Artifact: ${shown(o.failedToolCapture.path)}`,
+						`Truncated: ${o.failedToolCapture.truncated ? "yes" : "no"}`,
+						`Redaction: ${FAILED_TOOL_ARTIFACT_REDACTION}`,
+					].join("\n")
+				: o.failedToolCapture?.warning && shown(o.failedToolCapture.warning),
+		),
 	].join("\n");
-	await writeFile(path, text, { mode: 0o600 });
+	await writeFile(path, safeDocument(text), { mode: 0o600 });
 	return path;
 }
 
@@ -640,6 +666,18 @@ export function formatHandback(f: Facts): string {
 		`${first}${details}`,
 		...blocked.slice(0, MAX_BLOCKED).map((l) => shown(l.slice(0, FIRST_LINE_CAP))),
 	];
+	if (o.failedToolCapture?.status === "written" && f.failed) {
+		const unmatched = o.failedToolCapture.unmatchedStartCount ?? 0;
+		out.push(
+			`Failed-tool diagnostics: ${shown(o.failedToolCapture.path)} (${o.failedToolCapture.failureCount} failed tool call(s)${
+				unmatched ? `, ${plural(unmatched, "end-not-observed start")}` : ""
+			}${o.failedToolCapture.truncated ? "; truncated" : ""})`,
+		);
+	} else if (o.failedToolCapture?.status === "unavailable") {
+		const warning = `⚠ ${shown(o.failedToolCapture.warning)}`;
+		if (f.failed) out.push(warning);
+		else out[1] = `${out[1]} ${warning}`;
+	}
 	if (blocked.length > MAX_BLOCKED) out.push(`+${blocked.length - MAX_BLOCKED} more BLOCKED in details`);
 	const failure = failureLine(o.failure);
 	if (failure) out.push(`✗ ${shown(failure)}`);
@@ -653,5 +691,5 @@ export function formatHandback(f: Facts): string {
 			`✗ check ${{ none: "not run", fail: "failed", stale: "stale: edited after the last run", pass: "" }[f.check.status]}`,
 		);
 	out.push(...f.problems.map((p) => `✗ ${shown(p)}`));
-	return out.join("\n");
+	return safeDocument(out.join("\n"));
 }

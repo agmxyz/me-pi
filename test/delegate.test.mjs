@@ -94,8 +94,9 @@ const FAKE_BIN = join(TEST_HOME, "fake-pi.mjs");
 writeFileSync(
 	FAKE_BIN,
 	`#!/usr/bin/env node
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
+import { join } from "node:path";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
@@ -160,11 +161,80 @@ process.stdin.on("end", () => {
   const git = (...a) => spawnSync("git", a, { encoding: "utf8" });
   // A tool call as Pi's JSON mode reports it: start, then end with isError.
   let toolId = 0;
-  const tool = (toolName, args, isError = false) => {
-    const toolCallId = "t" + ++toolId;
-    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
-    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName, result: {}, isError }));
+  const tool = (toolName, args, isError = false, options = {}) => {
+    const toolCallId = options.missingId ? undefined : (options.toolCallId || "t" + ++toolId);
+    if (!options.omitStart) console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
+    if (!options.omitEnd) console.log(JSON.stringify({
+      type: "tool_execution_end", toolCallId, toolName: options.endToolName || toolName,
+      result: options.result || {}, isError,
+      ...(options.effectiveCommand !== undefined ? { effectiveCommand: options.effectiveCommand } : {}),
+    }));
   };
+  if (mode === "implement-artifacts" || mode === "implement-check-artifact-fail" || mode === "implement-read-artifact-fail") {
+    const target = "export GITHUB_TOKEN='command-fake-secret' AWS_SECRET_ACCESS_KEY='command-aws-secret' npm run targeted-test";
+    if (mode === "implement-artifacts") {
+      tool("bash", { command: target }, true, { effectiveCommand: "GITHUB_TOKEN=effective-fake-secret AWS_SECRET_ACCESS_KEY='effective-aws-secret' rtk npm run targeted-test", result: {
+        content: [{ type: "text", text: "Targeted failed: GITHUB_TOKEN=target-secret AWS_SECRET_ACCESS_KEY='target-aws-secret'" }],
+        error: "AWS_SECRET_ACCESS_KEY='error-fake-secret'",
+        structuredContent: { output: "Targeted failed: GITHUB_TOKEN=target-secret AWS_SECRET_ACCESS_KEY='target-aws-secret'", full_output_path: process.env.FAKE_PI_REF },
+        details: { exitCode: 7, fullOutputPath: process.env.FAKE_PI_REF },
+      } });
+      tool("bash", { command: process.env.FAKE_PI_RAN || "npm test" }, false, { result: {
+        content: [{ type: "text", text: "declared check passed" }],
+        structuredContent: { output: "declared check passed", exit_code: 0 },
+      } });
+      tool("read", { path: "success-only-argument" }, false, { result: { content: [{ type: "text", text: "success-only-result" }] } });
+    } else if (mode === "implement-check-artifact-fail") {
+      tool("bash", { command: process.env.FAKE_PI_RAN || "npm test" }, true, { result: {
+        content: [{ type: "text", text: "declared check failed" }],
+        structuredContent: { output: "declared check failed", exit_code: 1 },
+      } });
+    } else {
+      tool("read", { path: "do-not-capture-input" }, true, { result: {
+        content: [{ type: "text", text: "read result failed" }],
+        structuredContent: { code: "ENOENT", message: "missing fixture" },
+      } });
+    }
+    if (process.env.FAKE_PI_BLOCK_ARTIFACT) {
+      const id = readFileSync(".git/me-pi-implement.lock", "utf8").trim().split(" ")[1];
+      const directory = join(process.env.TMPDIR, "me-pi-delegate-" + process.ppid);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, id + "-failed-tools.json"), "do not overwrite");
+    }
+    emit("Implemented GITHUB_TOKEN=answer-fake-secret.");
+    process.exit(0);
+  }
+  if (mode === "implement-fallback-artifacts") {
+    if ((flag("--model") || "").includes("luna")) {
+      tool("bash", { command: "npm test" }, true, { result: { content: [{ type: "text", text: "first attempt tool failure" }], structuredContent: { exit_code: 3 } } });
+      emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: retry artifacts" });
+      process.exit(1);
+    }
+    tool("read", { path: "not-retained" }, true, { result: { content: [{ type: "text", text: "fallback tool failure" }] } });
+    tool("bash", { command: "npm test" }, false, { result: { structuredContent: { exit_code: 0 } } });
+    emit("Fallback completed.");
+    process.exit(0);
+  }
+  if (mode === "implement-artifact-anomalies") {
+    tool("bash", { command: "first duplicate command" }, true, { toolCallId: "duplicate" , omitEnd: true });
+    tool("bash", { command: "second duplicate command" }, true, { toolCallId: "duplicate", omitEnd: true });
+    // Emit one matching end for the duplicate ID, then a failed end without an ID or start.
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "duplicate", toolName: "bash", result: { structuredContent: { output: "duplicate failure", exit_code: 2 } }, isError: true }));
+    tool("read", {}, true, { missingId: true, omitStart: true, result: { content: [{ type: "text", text: "missing-id failure" }] } });
+    tool("bash", { command: "open call" }, false, { omitEnd: true, toolCallId: "never-ended" });
+    if (process.env.FAKE_PI_BLOCK_ARTIFACT) {
+      const id = readFileSync(".git/me-pi-implement.lock", "utf8").trim().split(" ")[1];
+      const directory = join(process.env.TMPDIR, "me-pi-delegate-" + process.ppid);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, id + "-failed-tools.json"), "do not overwrite");
+    }
+    console.log("{ malformed event");
+    if (process.env.FAKE_PI_READY) writeFileSync(process.env.FAKE_PI_READY, "ready");
+    emit("working", { stopReason: "toolUse" });
+    process.on("SIGTERM", () => process.exit(143));
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (mode === "implement-commit" || mode === "move-ref") {
     writeFileSync("feature.txt", "IMPLEMENT-DIFF-BODY\\n");
     git("add", "-A");
@@ -2424,6 +2494,225 @@ test("implement commits on the current branch; the result is a 2-line handback a
 		notes[0][0],
 		new RegExp(` implement .* goal/x ${head.slice(0, 7)}\\.\\.${tip.slice(0, 7)} check pass$`, "m"),
 	);
+	const id = res.details.implement.id;
+	assert.equal(
+		existsSync(join(TEST_HOME, `me-pi-delegate-${process.pid}`, `${id}-failed-tools.json`)),
+		false,
+		"successful tools do not create an artifact",
+	);
+});
+
+test("implement captures targeted failures while a later declared check passes", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
+	const reference = scratch("referenced-output");
+	writeFileSync(reference, "DO NOT COPY THIS REFERENCED FILE");
+	const { tool } = setup(t, {
+		env: implementEnv("implement-artifacts", {
+			TMPDIR: tmp,
+			FAKE_PI_REF: reference,
+		}),
+	});
+	const { ctx } = implementRepo();
+	const result = await run(tool, implement(), undefined, undefined, ctx);
+	assert.equal(result.isError, false, text(result));
+	assert.equal(result.details.implement.failed, false);
+	assert.equal(result.details.implement.check.status, "pass");
+	assert.deepEqual(result.details.implement.check.runs, ["pass: npm test"]);
+	assert.equal(text(result).split("\n").length, 2, "successful handback keeps its two-line shape");
+
+	const capture = result.details.implement.outcome.failedToolCapture;
+	assert.equal(capture.status, "written");
+	const artifactPath = capture.path;
+	assert.equal(statSync(join(tmp, `me-pi-delegate-${process.pid}`)).mode & 0o777, 0o700);
+	assert.equal(statSync(artifactPath).mode & 0o777, 0o600);
+	const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
+	assert.equal(artifact.capture.failureCount, 1);
+	assert.equal(artifact.entries.length, 1, "successful declared check and read calls are omitted");
+	const [entry] = artifact.entries;
+	assert.equal(entry.attempt.index, 1);
+	assert.equal(entry.toolName.text, "bash");
+	assert.equal(
+		entry.command.rawArgsCommand.value.text,
+		'export GITHUB_TOKEN="[REDACTED]" AWS_SECRET_ACCESS_KEY="[REDACTED]" npm run targeted-test',
+	);
+	assert.equal(
+		entry.command.effectiveCommand.value.text,
+		'GITHUB_TOKEN=[REDACTED] AWS_SECRET_ACCESS_KEY="[REDACTED]" rtk npm run targeted-test',
+	);
+	assert.equal(entry.exitCode.value, 7, "exitCode is extracted from actual result details");
+	assert.match(entry.output.value.text, /GITHUB_TOKEN=\[REDACTED\]/);
+	assert.match(entry.output.value.text, /AWS_SECRET_ACCESS_KEY="\[REDACTED\]"/);
+	assert.equal(entry.error.value.text, 'AWS_SECRET_ACCESS_KEY="[REDACTED]"');
+	assert.equal(entry.references.items[0].value.text, reference);
+	assert.equal(entry.references.items[0].kind, "full-output-path");
+	assert.equal(entry.references.fullOutputPathState, "provided");
+	assert.ok(entry.missingFields.includes("result.childDiagnostics"));
+	assert.ok(entry.missingFields.includes("result.childDiagnosticReferences"));
+	assert.ok(artifact.redaction.includes("not guaranteed complete"));
+	assert.equal(readFileSync(reference, "utf8"), "DO NOT COPY THIS REFERENCED FILE");
+	const serialized = JSON.stringify(artifact);
+	for (const secret of [
+		"command-fake-secret",
+		"command-aws-secret",
+		"effective-fake-secret",
+		"effective-aws-secret",
+		"target-secret",
+		"target-aws-secret",
+		"error-fake-secret",
+		"answer-fake-secret",
+		"DO NOT COPY THIS REFERENCED FILE",
+	])
+		assert.equal(serialized.includes(secret), false, `artifact excludes ${secret}`);
+	const details = readFileSync(result.details.implement.detailsPath, "utf8");
+	assert.ok(details.includes(artifactPath));
+	assert.match(details, /Redaction: explicit-patterns-v1; not guaranteed complete/);
+	assert.doesNotMatch(
+		`${details}\n${text(result)}`,
+		/(?:command|effective|target|error|answer)-fake-secret|(?:command|effective|target)-aws-secret|target-secret/,
+	);
+});
+
+test("implement captures failed declared checks and non-Bash tools with missing metadata", async (t) => {
+	for (const mode of ["implement-check-artifact-fail", "implement-read-artifact-fail"]) {
+		const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
+		const { tool } = setup(t, { env: implementEnv(mode, { TMPDIR: tmp }) });
+		const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+		assert.equal(result.isError, true, text(result));
+		const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+		assert.equal(artifact.entries.length, 1);
+		const [entry] = artifact.entries;
+		if (mode === "implement-check-artifact-fail") {
+			assert.equal(result.details.implement.check.status, "fail");
+			assert.equal(entry.toolName.text, "bash");
+			assert.equal(entry.exitCode.value, 1);
+			assert.match(text(result), /^✗ im\d+ /);
+			assert.match(text(result), /^Failed-tool diagnostics:/m);
+		} else {
+			assert.equal(result.details.implement.check.status, "none");
+			assert.equal(entry.toolName.text, "read");
+			assert.equal(entry.command, null);
+			assert.equal(entry.exitCode.state, "not-provided");
+			assert.ok(entry.missingFields.includes("result.exitCode"));
+			assert.match(entry.resultSummary.value.text, /missing fixture/);
+			assert.equal(JSON.stringify(entry).includes("do-not-capture-input"), false);
+		}
+	}
+});
+
+test("provider failures without tool failures do not create diagnostic artifacts", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
+	const { tool } = setup(t, {
+		config: POOL_SET,
+		env: implementEnv("rate-limit-model", { TMPDIR: tmp, FAKE_PI_FAIL_MODEL: LUNA }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.check.status, "none");
+	assert.equal(result.details.implement.outcome.failedToolCapture, undefined);
+	assert.equal(
+		existsSync(join(tmp, `me-pi-delegate-${process.pid}`, `${result.details.implement.id}-failed-tools.json`)),
+		false,
+	);
+});
+
+test("implement aggregates failures across fallback attempts with distinct provenance", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
+	const { tool } = setup(t, {
+		config: POOL_SET,
+		env: implementEnv("implement-fallback-artifacts", { TMPDIR: tmp }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, false, text(result));
+	assert.equal(result.details.implement.check.status, "pass");
+	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	assert.equal(artifact.entries.length, 2);
+	assert.deepEqual(
+		artifact.entries.map((entry) => [entry.attempt.index, entry.attempt.requestedModel.text]),
+		[
+			[1, LUNA],
+			[2, OPUS],
+		],
+	);
+	assert.equal(artifact.entries[0].exitCode.value, 3);
+	assert.equal(artifact.entries[0].command.effectiveCommand.state, "not-provided");
+	assert.equal(artifact.entries[0].command.effectiveCommand.value, null);
+	assert.equal(artifact.entries[1].exitCode.state, "not-provided");
+	assert.deepEqual(
+		artifact.entries.map((entry) => entry.toolName.text),
+		["bash", "read"],
+	);
+});
+
+test("implement cancellation flushes failures and reports correlation anomalies", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
+	const ready = scratch("artifact-worker-ready");
+	const { tool } = setup(t, {
+		env: implementEnv("implement-artifact-anomalies", { TMPDIR: tmp, FAKE_PI_READY: ready }),
+	});
+	const controller = new AbortController();
+	const pending = run(tool, implement(), controller.signal, undefined, implementRepo().ctx);
+	await waitFor(() => existsSync(ready), "the worker's failed tool events");
+	controller.abort();
+	const result = await pending;
+	assert.equal(result.isError, true);
+	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	assert.equal(artifact.entries.length, 2);
+	assert.equal(artifact.entries[0].command.rawArgsCommand.value.text, "first duplicate command");
+	assert.equal(artifact.entries[1].startedAt, null, "an end without a matching start stays unattributed");
+	assert.ok(artifact.entries[1].missingFields.includes("toolCallId"));
+	assert.ok(artifact.entries[1].missingFields.includes("startedAt"));
+	assert.equal(artifact.capture.failureCount, 2, "only observed failed end events count as failures");
+	assert.equal(artifact.capture.unmatchedStartCount, 2);
+	assert.equal(artifact.capture.recordedUnmatchedStartCount, 2);
+	assert.equal(artifact.unmatchedStarts[0].state, "end-not-observed");
+	assert.equal(artifact.unmatchedStarts[0].attempt.index, 1);
+	assert.ok(artifact.unmatchedStarts[0].attempt.requestedModel.text);
+	assert.ok(Number.isFinite(Date.parse(artifact.unmatchedStarts[0].startedAt)));
+	assert.equal(artifact.unmatchedStarts[0].toolName.text, "bash");
+	assert.equal(artifact.unmatchedStarts[0].toolCallId.text, "duplicate");
+	assert.equal(artifact.unmatchedStarts[0].command.rawArgsCommand.value.text, "second duplicate command");
+	assert.equal(artifact.unmatchedStarts[0].isError, null);
+	assert.equal(artifact.unmatchedStarts[0].exitCode.value, null);
+	assert.equal(artifact.capture.anomalies["duplicate-tool-call-id"], 1);
+	assert.ok(artifact.capture.anomalies["end-without-start"] >= 1);
+	assert.ok(artifact.capture.anomalies["start-without-end"] >= 2);
+	assert.ok(artifact.capture.anomalies["malformed-event"] >= 1);
+});
+
+test("capture storage failure is visible without changing a passing gate or two-line handback", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
+	const { tool } = setup(t, {
+		env: implementEnv("implement-artifacts", { TMPDIR: tmp, FAKE_PI_BLOCK_ARTIFACT: "1" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, false, text(result));
+	assert.equal(result.details.implement.failed, false);
+	assert.equal(result.details.implement.check.status, "pass");
+	assert.equal(text(result).split("\n").length, 2, "the warning stays inline in the successful handback");
+	assert.match(text(result), /⚠ capture unavailable:/);
+	const details = readFileSync(result.details.implement.detailsPath, "utf8");
+	assert.match(details, /capture unavailable:/);
+	const id = result.details.implement.id;
+	assert.equal(
+		readFileSync(join(tmp, `me-pi-delegate-${process.pid}`, `${id}-failed-tools.json`), "utf8"),
+		"do not overwrite",
+	);
+});
+
+test("read-only workers do not create failed-tool artifacts", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
+	const directory = join(tmp, `me-pi-delegate-${process.pid}`);
+	const before = existsSync(directory)
+		? readdirSync(directory).filter((name) => name.endsWith("-failed-tools.json"))
+		: [];
+	const { tool } = setup(t, { env: { FAKE_PI_MODE: "implement-read-artifact-fail", TMPDIR: tmp } });
+	const result = await run(tool, { role: "scout", task: "read a fixture" });
+	assert.equal(result.isError, false, text(result));
+	assert.equal(result.details.round1[0].failedToolCapture, undefined);
+	const after = existsSync(directory)
+		? readdirSync(directory).filter((name) => name.endsWith("-failed-tools.json"))
+		: [];
+	assert.deepEqual(after, before);
 });
 
 test("implement: work left uncommitted becomes a WIP commit on the branch and an error", async (t) => {
