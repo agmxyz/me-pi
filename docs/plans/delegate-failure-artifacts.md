@@ -28,6 +28,18 @@ Suggested caps: at most 100 failed calls/job, 64 KiB per output text, 512 KiB to
 
 ## Implementation tickets
 
+### F3: final review fixes
+
+Status: open
+
+Resolve the final review findings without expanding capture scope:
+- High: assignment redaction must match prefixed underscore-delimited secret names such as GITHUB_TOKEN and AWS_SECRET_ACCESS_KEY, including values persisted in artifact fields, warnings, details, or handbacks. Do not read actual environment or credential values. Add synthetic fixtures for common prefixes and quoting/assignment forms.
+- Medium: retain bounded/redacted metadata for started calls whose end was not observed during cancellation/termination. Explicit state end-not-observed, not a manufactured failure or exit code. Preserve tool/call ID, original observed command and available timestamps/attempt metadata; keep these separate from actual failed-call counts and cap payloads.
+- Low: after aggregate fitting removes output text, bytesRetained must equal actual retained UTF-8 bytes; preserve original-byte/truncation provenance accurately.
+
+Paths: extensions/delegate-artifacts.ts, extensions/delegate.ts, relevant artifact/delegate tests, docs/delegate.md if necessary. Confirmed test seams: synthetic GITHUB_TOKEN/AWS_SECRET_ACCESS_KEY outputs/commands/refs and warning flows never persist raw values; cancellation with unmatched starts preserves identifiable bounded metadata but null exit and end-not-observed status; aggregate cap assertions compare recorded retained bytes against actual stored text including multibyte data. No actual secrets/config/me-team access or reruns. Preserve check/gate/WIP semantics. Close only in passing commit. Full final check npm run check --prefix extensions. This is the one final goal-review fix job; no re-review loop.
+
+
 ### F1: bounded private artifact collector
 
 Status: closed
