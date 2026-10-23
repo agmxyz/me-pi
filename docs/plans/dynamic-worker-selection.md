@@ -2,7 +2,7 @@
 
 ## Ticket: final review and live-test fixes
 
-Status: open
+Status: closed
 
 Resolve final goal review medium findings: background implement preparation must remove/rekey its temporary active slot when handing off to bg<n>, leaving no ghost slot/widget or worker-limit consumption on completion; default-origin rebuttal selection must preserve ordered pool fallback despite passing a requested model internally, while user-explicit model selections still never fall back.
 

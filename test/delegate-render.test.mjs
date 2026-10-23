@@ -78,6 +78,31 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 	assert.doesNotMatch(hostileText, /\u001b/);
 });
 
+test("long native foreground IDs use compact labels so role, model, and thinking fit at 90 columns", () => {
+	const nativeCallId = "call_01JAZ9M4X2F1D8B3C5E7|fc_01JAZ9M4X2F1D8B3C5E7";
+	const component = activityWidget(
+		() => [
+			{
+				id: nativeCallId,
+				displayId: "fg1",
+				worker: 1,
+				workerCount: 1,
+				role: "review",
+				model: "openai-codex/gpt-6-luna",
+				thinking: "low",
+				startedAt: Date.now(),
+				fallbacks: 0,
+				stage: "Workers",
+			},
+		],
+		theme,
+	);
+	const [row] = draw(component, 90).slice(1);
+	assert.match(row, /🧑‍🍳 fg1 review openai-codex\/gpt-6-luna @low/);
+	assert.doesNotMatch(row, /call_|fc_/);
+	assertFits(component, 90);
+});
+
 test("an implement call preview shows its check", () => {
 	const call = renderCall({ role: "implement", task: "Add x", check: "npm test\nmore" }, theme);
 	assert.deepEqual(draw(call, 200), ["delegate implement default check `npm test` Add x"]);

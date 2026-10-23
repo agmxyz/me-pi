@@ -528,6 +528,15 @@ export function resolveRun(
 	return { candidates: withOverrides, model: first.model, thinking: first.thinking };
 }
 
+function resumeRun(base: ResolvedRun, result: RunResult): ResolvedRun {
+	const index = base.candidates.findIndex(
+		(candidate) => candidate.model === result.requested.model && candidate.thinking === result.requested.thinking,
+	);
+	const candidates = base.candidates.slice(index < 0 ? 0 : index);
+	const first = candidates[0];
+	return { candidates, model: first.model, thinking: first.thinking };
+}
+
 function initialActivity(runs: ResolvedRun[], sessionModel: string | undefined, startedAt: number): ActiveWorker[] {
 	return runs.map((run, index) => {
 		const candidate = run.candidates[0];
@@ -1286,6 +1295,9 @@ export default function (pi: ExtensionAPI) {
 	const running = new Set<Promise<unknown>>();
 	// For /delegate status: calls running now, and the last HISTORY_SIZE finished calls.
 	const active = new Map<string, ActiveCall>();
+	let activeCallCount = 0;
+	let foregroundCount = 0;
+	let preparationCount = 0;
 	const ACTIVITY_WIDGET_KEY = "delegate-activity";
 	let activityUi: Pick<ExtensionContext["ui"], "setWidget"> | undefined;
 	let activityTui: { requestRender: () => void } | undefined;
@@ -1295,7 +1307,8 @@ export default function (pi: ExtensionAPI) {
 			(call.workers ?? [])
 				.filter((worker) => worker.active)
 				.map((worker) => ({
-					id: call.job ?? id,
+					id,
+					displayId: call.job ?? call.displayId,
 					worker: worker.index,
 					workerCount: call.workers?.length ?? 0,
 					role: call.role,
@@ -1317,7 +1330,7 @@ export default function (pi: ExtensionAPI) {
 		activityTui = undefined;
 	};
 	const updateActivityWidget = (ctx: ExtensionContext, signal?: AbortSignal) => {
-		if (!active.size) {
+		if (!activityRows().length) {
 			clearActivityWidget();
 			return;
 		}
@@ -1483,18 +1496,22 @@ export default function (pi: ExtensionAPI) {
 				return fail(
 					`${busy} worker(s) already running; at most ${MAX_RUNS} run at once. Wait for a background answer or stop one with /delegate cancel <id>.`,
 				);
+			const callKey = `delegate-call-${++activeCallCount}`;
+			const foregroundId = background ? undefined : `fg${++foregroundCount}`;
+			const preparationId = role === "implement" && background ? `prep${++preparationCount}` : foregroundId;
 			// The session this call belongs to; a shutdown during prepare must not leave a job behind.
 			const ended = shutdown.signal;
 			// implement: the lock and snapshots exist before the call starts, so the start message can state the base.
 			let co: Checkout | undefined;
 			if (role === "implement") {
 				// Holds the worker slot while prepare runs, so parallel calls cannot pass the cap together.
-				const slot = _id;
+				const slot = callKey;
 				const preparingAt = Date.now();
 				active.set(slot, {
 					role,
 					models,
 					start: preparingAt,
+					displayId: preparationId,
 					workers: initialActivity(resolved, session, preparingAt),
 					stage: "Workers",
 				});
@@ -1511,18 +1528,14 @@ export default function (pi: ExtensionAPI) {
 					() => {},
 				);
 				running.add(settled);
-				let prepared = false;
 				try {
 					co = await preparing;
-					prepared = true;
 				} catch (err: any) {
 					return fail(err?.message ?? String(err));
 				} finally {
 					running.delete(settled);
-					if (!prepared || ended.aborted) {
-						active.delete(slot);
-						updateActivityWidget(ctx, ended);
-					}
+					active.delete(slot);
+					updateActivityWidget(ctx, ended);
 				}
 				if (ended.aborted) return fail("stopped: session ended");
 				job.implement = { job: co, trusted: ctx?.isProjectTrusted?.() === true, pids: new Set() };
@@ -1530,13 +1543,20 @@ export default function (pi: ExtensionAPI) {
 			const startFacts = co ? `${co.branch} (${co.id}) from ${co.base.slice(0, 7)}` : "";
 			// implement: an earlier attempt's WIP commit is the worker's first job.
 			const prompt = `Task:\n${task}${co?.wipHead ? "\n\nHEAD is a `WIP(delegate` commit from an earlier attempt: finish that first." : ""}`;
-			const call = async (key: string, signal: AbortSignal, onUpdate: ((u: any) => void) | undefined) => {
+			const call = async (
+				key: string,
+				signal: AbortSignal,
+				onUpdate: ((u: any) => void) | undefined,
+				displayId?: string,
+				jobId?: string,
+			) => {
 				const start = Date.now();
 				active.set(key, {
 					role,
 					models,
 					start,
-					job: background ? key : undefined,
+					displayId,
+					job: jobId,
 					workers: initialActivity(resolved, session, start),
 					stage: "Workers",
 				});
@@ -1651,11 +1671,11 @@ export default function (pi: ExtensionAPI) {
 									ok.filter((o) => o !== r),
 								),
 							);
-							// Resume each rebuttal on its successful round-1 model, then use remaining pool candidates if needed.
+							// Keep each original run's explicit/default selection while resuming at its successful candidate.
 							round2 = await round(
 								"Rebuttal",
 								prompts,
-								ok.map((r) => resolveRun(role, r.requested, set, session, ctx?.thinkingLevel)),
+								ok.map((r) => resumeRun(resolved[round1.indexOf(r)], r)),
 							);
 							shown = round1.map((run) => {
 								const r2 = round2[ok.indexOf(run)];
@@ -1749,7 +1769,7 @@ export default function (pi: ExtensionAPI) {
 			if (!background) {
 				if (co) writing.set(co.repoRoot, co.id);
 				const signal = toolSignal ? AbortSignal.any([toolSignal, ended]) : ended;
-				return tracked(call(_id, signal, onUpdate));
+				return tracked(call(callKey, signal, onUpdate, foregroundId));
 			}
 
 			// The turn's abort does not stop a background job; /delegate cancel and session shutdown do.
@@ -1773,7 +1793,7 @@ export default function (pi: ExtensionAPI) {
 					{ triggerTurn: !controller.signal.aborted, deliverAs: "followUp" },
 				);
 			};
-			tracked(call(id, AbortSignal.any([controller.signal, ended]), undefined))
+			tracked(call(callKey, AbortSignal.any([controller.signal, ended]), undefined, undefined, id))
 				.then((result: any) => {
 					spend.cost += costOf(result.usage ?? {});
 					deliver(result.content.map((c: any) => c.text).join("\n"), result.details, Boolean(result.isError));

@@ -38,6 +38,8 @@ export interface ActiveCall {
 	start: number;
 	/** The background job id, for /delegate cancel. */
 	job?: string;
+	/** Compact foreground/preparation label for the activity widget. */
+	displayId?: string;
 	/** Current per-worker activity, kept on the existing active-call record. */
 	workers?: ActiveWorker[];
 	stage?: "Workers" | "Rebuttal";

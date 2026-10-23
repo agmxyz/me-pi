@@ -40,7 +40,9 @@ export interface DelegateView {
 
 /** Safe, prompt-independent details for one active worker in the main-session widget. */
 export interface ActivityWidgetRow {
+	/** Collision-safe internal call identity; never displayed when a compact label is available. */
 	id: string;
+	displayId?: string;
 	worker: number;
 	workerCount: number;
 	role: string;
@@ -67,7 +69,7 @@ export function activityWidget(rows: () => readonly ActivityWidgetRow[], theme: 
 			if (!current.length) return [];
 			const fg: Fg = theme.fg.bind(theme);
 			const shown = current.slice(0, 4).map((row) => {
-				const id = stripWidgetControls(row.id);
+				const id = stripWidgetControls(row.displayId ?? row.id);
 				const model = stripWidgetControls(row.model);
 				const role = stripWidgetControls(row.role);
 				const thinking = stripWidgetControls(row.thinking);

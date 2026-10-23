@@ -110,6 +110,10 @@ process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
   if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
+  if (mode === "rebuttal-rate-limit-model" && prompt.includes("## Round 2 (rebuttal)") && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: rebuttal unavailable" });
+    process.exit(1);
+  }
   if (mode === "rate-limit-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
     process.exit(1);
@@ -1573,6 +1577,70 @@ test("several runs answer the same task in parallel; usage is summed", async (t)
 	assert.equal(res.usage.cost.total, 0.004);
 });
 
+test("default-origin rebuttals keep pool fallback while explicit-origin rebuttals stop", async (t) => {
+	const config = {
+		version: 3,
+		scout: { models: [], thinking: "low" },
+		worker: {
+			models: [
+				{ model: HAIKU, thinking: "high" },
+				{ model: SONNET, thinking: "low" },
+				{ model: OPUS, thinking: "max" },
+			],
+			thinking: "medium",
+		},
+	};
+	const defaultMarker = scratch("default-rebuttal-fallback-marker");
+	const defaultRun = setup(t, {
+		config,
+		env: {
+			FAKE_PI_MODE: "rebuttal-rate-limit-model",
+			FAKE_PI_FAIL_MODEL: HAIKU,
+			FAKE_PI_MARKER: defaultMarker,
+		},
+	});
+	const defaultResult = await run(defaultRun.tool, {
+		role: "review",
+		task: "check fallback across rebuttal rounds",
+		runs: [{}, {}],
+		rebuttal: true,
+	});
+	assert.equal(defaultResult.isError, false, text(defaultResult));
+	assert.deepEqual(
+		defaultResult.details.round2.map((r) => [
+			r.requested.model,
+			r.requested.thinking,
+			r.fallbackAttempts[0]?.nextModel,
+		]),
+		[
+			[SONNET, "low", SONNET],
+			[SONNET, "low", SONNET],
+		],
+	);
+
+	const explicitMarker = scratch("explicit-rebuttal-no-fallback-marker");
+	process.env.FAKE_PI_MARKER = explicitMarker;
+	const explicitResult = await run(defaultRun.tool, {
+		role: "review",
+		task: "explicit model does not fall back in rebuttal",
+		runs: [{ model: HAIKU }, { model: OPUS }],
+		rebuttal: true,
+	});
+	assert.equal(explicitResult.isError, true);
+	assert.equal(explicitResult.details.round2[0].requested.model, HAIKU);
+	assert.deepEqual(explicitResult.details.round2[0].fallbackAttempts, []);
+	assert.deepEqual(
+		readFileSync(explicitMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.filter((call) => call.prompt.includes("## Round 2 (rebuttal)"))
+			.map((call) => call.model)
+			.sort(),
+		[HAIKU, OPUS].sort(),
+	);
+});
+
 test("rebuttal returns only round 2; each worker saw its own and the others' answers", async (t) => {
 	const marker = scratch("marker");
 	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: { models: [HAIKU, SONNET, OPUS] } });
@@ -1925,13 +1993,18 @@ function trackIntervals(t) {
 	const originalSetInterval = globalThis.setInterval;
 	const originalClearInterval = globalThis.clearInterval;
 	const active = new Map();
+	active.started = [];
+	active.cleared = [];
 	let nextId = 0;
 	globalThis.setInterval = (callback, delay) => {
 		const handle = { id: ++nextId, callback, delay, unref() {} };
 		active.set(handle, delay);
+		active.started.push(handle);
 		return handle;
 	};
-	globalThis.clearInterval = (handle) => active.delete(handle);
+	globalThis.clearInterval = (handle) => {
+		if (active.delete(handle)) active.cleared.push(handle);
+	};
 	t.after(() => {
 		globalThis.setInterval = originalSetInterval;
 		globalThis.clearInterval = originalClearInterval;
@@ -1985,7 +2058,7 @@ test(
 				return (
 					panel.includes("bg1 scout anthropic/claude-haiku-5-5 @off") &&
 					panel.includes("bg2 research anthropic/claude-opus-5-5 @max") &&
-					panel.includes("call-foreground-9 review openai-codex/gpt-6-luna @low") &&
+					panel.includes("fg1 review openai-codex/gpt-6-luna @low") &&
 					panel.includes("read") &&
 					panel.includes("grep")
 				);
@@ -2012,6 +2085,61 @@ test(
 		assert.equal(intervals.size, 0, "completion clears the elapsed timer");
 	},
 );
+
+test("the elapsed timer stops between rebuttal rounds and restarts for active rows", async (t) => {
+	const intervals = trackIntervals(t);
+	const { tool } = setup(t, {
+		config: { models: [HAIKU, OPUS] },
+		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
+	});
+	const ui = tuiCtx();
+	const pending = run(
+		tool,
+		{ role: "review", task: "timer lifecycle", runs: [{}, {}], rebuttal: true },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
+	await waitFor(() => intervals.started.length === 2, "the rebuttal timer restart");
+	assert.deepEqual(intervals.cleared, [intervals.started[0]], "the idle round boundary cleared its timer");
+	assert.equal(intervals.size, 1, "the second round owns one live timer");
+	assert.ok(
+		ui.widget().some((line) => line.includes("R2")),
+		"the restarted widget shows rebuttal workers",
+	);
+	assert.equal((await pending).isError, false);
+	assert.equal(intervals.size, 0, "the final idle state clears the restarted timer");
+	assert.deepEqual(intervals.cleared, intervals.started);
+});
+
+test("concurrent foreground calls receive distinct compact widget labels", async (t) => {
+	const { tool } = setup(t, {
+		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
+	});
+	const ui = tuiCtx();
+	const first = tool.execute(
+		"call_01JAZ9M4X2F1D8B3C5E7|fc_01JAZ9M4X2F1D8B3C5E7",
+		{ role: "review", task: "first foreground" },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
+	const second = tool.execute(
+		"call_01JAZ9M4X2F1D8B3C5E8|fc_01JAZ9M4X2F1D8B3C5E8",
+		{ role: "research", task: "second foreground" },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
+	await waitFor(
+		() =>
+			ui.widget().some((line) => line.includes("fg1 review")) &&
+			ui.widget().some((line) => line.includes("fg2 research")),
+		"both foreground labels",
+	);
+	assert.equal((await first).isError, false);
+	assert.equal((await second).isError, false);
+});
 
 test("the TUI widget tracks the current configured fallback candidate", async (t) => {
 	const { tool } = setup(t, {
@@ -2225,6 +2353,38 @@ const implementEnv = (mode, extra = {}) => ({
 const implement = (extra = {}) => ({ role: "implement", task: "add a feature", check: CHECK, ...extra });
 // Resolves once a hang-mode worker has written the file it writes before it waits.
 const workerStarted = (repo) => waitFor(() => existsSync(join(repo, "left.txt")), "the worker to start");
+
+test(
+	"implement background prepare hands off without a ghost widget row or worker slot",
+	{ timeout: 10000 },
+	async (t) => {
+		const { tool, commands, messages } = setup(t, { env: implementEnv("implement-commit") });
+		const intervals = trackIntervals(t);
+		const ui = tuiCtx();
+		const { repo } = implementRepo();
+		const jobCtx = { ...ui.ctx, cwd: repo, isProjectTrusted: () => false };
+		const started = await run(tool, implement({ background: true }), undefined, undefined, jobCtx);
+		assert.match(text(started), /^Started background job bg1 /);
+		await waitFor(() => messages.length === 1, "the successful implement handback");
+		assert.deepEqual(ui.widget(), [], "completion removes the temporary prepare row");
+		assert.equal(intervals.size, 0, "completion stops the elapsed timer");
+		const { ctx: command, notes } = commandCtx();
+		await commands.delegate.handler("status", command);
+		assert.match(notes.at(-1)[0], /Running: none/);
+
+		process.env.FAKE_PI_MODE = "hang";
+		const fourWorkers = await run(
+			tool,
+			{ role: "scout", task: "fill the worker limit", runs: [{}, {}, {}, {}], background: true },
+			undefined,
+			undefined,
+			jobCtx,
+		);
+		assert.match(text(fourWorkers), /^Started background job bg2 /, "the completed prepare slot is not counted");
+		await commands.delegate.handler("cancel bg2", command);
+		await waitFor(() => messages.length === 2, "the cancelled capacity-check job");
+	},
+);
 
 test("implement commits on the current branch; the result is a 2-line handback and a 0600 details file", async (t) => {
 	const { tool, commands } = setup(t, { env: implementEnv("implement-commit") });
