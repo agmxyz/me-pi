@@ -1446,17 +1446,17 @@ process.exit(existsSync(${JSON.stringify(pidFile)}) ? 0 : 2);
 
 test("guidelines keep delegation proportionate and require reviews and BLOCKED handling", () => {
 	const all = PROMPT_GUIDELINES.join("\n");
-	assert.ok(
-		all.includes(
-			"Meet repo instructions to delegate to subagents by using delegate workers; their review rules are met by your goal-end review.",
-		),
-	);
+	assert.match(all, /Meet repo instructions to delegate to subagents by using delegate workers/);
+	assert.match(all, /Follow the repo's review requirements/);
+	assert.doesNotMatch(all, /their review rules are met by your goal-end review/);
 	assert.match(all, /Delegate any change whose files you have not read or that takes many steps/);
 	assert.match(
 		all,
 		/Delegate reading more than about 3 files you will not edit, research, reviews, and plan challenges\./,
 	);
-	assert.match(all, /You push, open PRs, merge, and delete branches, under the Approval rules\./);
+	assert.match(all, /main session handles pushes, PRs, merges, and branch deletion/);
+	assert.match(all, /subject to the user's authorization requirements/);
+	assert.doesNotMatch(all, /the Approval rules/);
 	assert.match(all, /Before one of your own commits that touches 2\+ files/);
 	assert.match(all, /do not edit those files until the review returns/);
 	assert.match(all, /`rebuttal: true`/);
