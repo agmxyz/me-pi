@@ -623,10 +623,7 @@ test("model pools resolve per-model thinking, ordered fallbacks, and independent
 	});
 	assert.deepEqual(resolveRun("research", { model: OPUS, thinking: "high" }, POOL_SET), {
 		model: OPUS,
-		candidates: [
-			{ model: OPUS, thinking: "high" },
-			{ model: LUNA, thinking: "high" },
-		],
+		candidates: [{ model: OPUS, thinking: "high" }],
 		thinking: "high",
 	});
 	assert.deepEqual(resolveRun("review", { model: HAIKU }, POOL_SET), {
@@ -656,10 +653,7 @@ test("model pools resolve per-model thinking, ordered fallbacks, and independent
 	};
 	assert.deepEqual(resolveRun("review", { model: OPUS }, perModelSet), {
 		model: OPUS,
-		candidates: [
-			{ model: OPUS, thinking: "low" },
-			{ model: HAIKU, thinking: "high" },
-		],
+		candidates: [{ model: OPUS, thinking: "low" }],
 		thinking: "low",
 	});
 	assert.deepEqual(resolveRun("review", { thinking: "medium" }, perModelSet), {
@@ -835,6 +829,35 @@ test("an unlisted model never falls back to the configured pool", async (t) => {
 	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 });
 
+test("an explicitly selected configured model never falls back after an availability failure", async (t) => {
+	const marker = scratch("listed-no-fallback-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 3,
+			scout: { models: [], thinking: "low" },
+			worker: {
+				models: [
+					{ model: HAIKU, thinking: "high" },
+					{ model: SONNET, thinking: "low" },
+				],
+				thinking: "medium",
+			},
+		},
+		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "review", task: "x", runs: [{ model: HAIKU }] });
+	assert.equal(res.isError, true);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
+});
+
 test("a rate-limited worker falls back through its pool and reports both attempts", async (t) => {
 	const marker = scratch("fallback-marker");
 	const { tool } = setup(t, {
@@ -973,7 +996,7 @@ test("per-model thinking follows each ordered candidate during fallback", async 
 	assert.equal(res.details.round1[0].requested.thinking, "low");
 });
 
-test("model-unavailable errors fall through the same ordered worker pool", async (t) => {
+test("model-unavailable errors fall through the same ordered worker pool when model is omitted", async (t) => {
 	const marker = scratch("unavailable-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1037,11 +1060,7 @@ test("v1 and v2 configs migrate to per-model levels, and empty pools use the ses
 	});
 	assert.deepEqual(resolveRun("review", { model: OPUS, thinking: "medium" }, set), {
 		model: OPUS,
-		candidates: [
-			{ model: OPUS, thinking: "medium" },
-			{ model: SONNET, thinking: "medium" },
-			{ model: HAIKU, thinking: "medium" },
-		],
+		candidates: [{ model: OPUS, thinking: "medium" }],
 		thinking: "medium",
 	});
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [HAIKU, SONNET, OPUS], default: SONNET });
@@ -1281,6 +1300,7 @@ test("the schema allows exact model IDs outside the configured pools", (t) => {
 	assert.equal(model.type, "string");
 	assert.equal(model.enum, undefined);
 	assert.match(model.description, /exact Pi model ID/);
+	assert.match(tool.parameters.properties.runs.description, /explicitly named model runs alone and never falls back/i);
 });
 
 test(
@@ -1486,6 +1506,8 @@ test("bad calls are refused before any worker starts", async (t) => {
 		[{ task: "x", answer: "y".repeat(401) }, /answer must be a non-empty string of at most 400 characters/],
 		[{ role: "review", task: "x", runs: [] }, /runs must have 1-4 entries/],
 		[{ role: "review", task: "x", runs: Array(5).fill({}) }, /runs must have 1-4 entries/],
+		[{ role: "review", task: "x", runs: [{ model: "" }] }, /runs\[0\] must be/],
+		[{ role: "review", task: "x", runs: [{ model: "   " }] }, /runs\[0\] must be/],
 		[{ role: "review", task: "x", rebuttal: true }, /rebuttal needs at least 2 runs/],
 		[{ role: "review", task: "x", runs: ["x"] }, /runs\[0\] must be \{ model\?: string, thinking\?: off\|/],
 		[{ role: "review", task: "x", runs: [{}, { thinking: "huge" }] }, /runs\[1\] must be/],

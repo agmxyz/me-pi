@@ -22,7 +22,7 @@ The implementer must not ask questions; decide per this specification and list u
 
 ## Ticket: stop on explicit model failure
 
-Status: open
+Status: closed
 
 Superseding requirement: every explicit runs[].model selection must run only that model, including configured pool members. No availability/execution failure may silently choose another model. When model is omitted, retain existing ordered role pool fallback and independent thinking override semantics.
 

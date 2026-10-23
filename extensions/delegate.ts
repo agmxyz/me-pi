@@ -499,17 +499,15 @@ export function resolveRun(
 	};
 	const configuredEntries = [...set.scout.models, ...set.worker.models];
 	const candidates = run.model
-		? pool.models.some((entry) => entry.model === run.model)
-			? [
-					pool.models.find((entry) => entry.model === run.model)!,
-					...pool.models.filter((entry) => entry.model !== run.model),
-				]
-			: [
-					{
-						model: run.model,
-						thinking: configuredEntries.find((entry) => entry.model === run.model)?.thinking ?? unlisted(),
-					},
-				]
+		? [
+				{
+					model: run.model,
+					thinking:
+						pool.models.find((entry) => entry.model === run.model)?.thinking ??
+						configuredEntries.find((entry) => entry.model === run.model)?.thinking ??
+						unlisted(),
+				},
+			]
 		: pool.models.length
 			? [...pool.models]
 			: [{ model: sessionModel, thinking: unlisted() }];
@@ -1105,6 +1103,7 @@ function validateOneOffModel(modelId: string, registry: unknown): void {
 function buildSchema() {
 	const model = {
 		type: "string",
+		minLength: 1,
 		description: "An exact Pi model ID in provider/model form; omit to use the role's configured model selection.",
 	};
 	return {
@@ -1114,7 +1113,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; availability failures try the next model. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; when model is omitted, availability failures try the next pool model. Explicit models never fall back. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
@@ -1138,7 +1137,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Unlisted exact models are one-off and do not fall back to the pool; models listed in the role's pool retain ordered fallback. For several models on the same task, use one entry per model. Not for implement: it uses the worker pool in delegate.json in order.",
+					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back, even when listed in the role's pool. Only an omitted model uses ordered pool fallback on availability failures. For several models on the same task, use one entry per model. Not for implement: it uses the worker pool in delegate.json in order.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -1385,7 +1384,7 @@ export default function (pi: ExtensionAPI) {
 				(r: any) =>
 					!r ||
 					typeof r !== "object" ||
-					(r.model !== undefined && typeof r.model !== "string") ||
+					(r.model !== undefined && (typeof r.model !== "string" || !r.model.trim())) ||
 					(r.thinking !== undefined && !THINKING_LEVELS.includes(r.thinking)),
 			);
 			if (badRun >= 0)
