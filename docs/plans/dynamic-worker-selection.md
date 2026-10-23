@@ -1,5 +1,18 @@
 # Dynamic delegate worker selection
 
+## Ticket: final review and live-test fixes
+
+Status: open
+
+Resolve final goal review medium findings: background implement preparation must remove/rekey its temporary active slot when handing off to bg<n>, leaving no ghost slot/widget or worker-limit consumption on completion; default-origin rebuttal selection must preserve ordered pool fallback despite passing a requested model internally, while user-explicit model selections still never fall back.
+
+Resolve observed live TUI issue: foreground widget uses long native tool call IDs and truncates the model/thinking. Display stable compact foreground labels (for example fg1, fg2), keep bg<n> labels, and ensure role/model/thinking remain useful at the tested 90-column pane width. Internal identity must remain collision-safe across concurrent calls/rounds. Elapsed refresh should stop when no active worker rows remain, even while post-processing continues, and resume if a subsequent round starts.
+
+Confirmed test seams: test/delegate.test.mjs active registry/UI mock and fake worker streams cover successful background implement prepare/complete with no ghost count/slot/widget, default-origin rebuttal fallback versus explicit-origin stop, timer shutdown/restart with empty/nonempty worker rows; test/delegate-render.test.mjs covers compact labels and model/thinking visible together at 90 columns with realistic native tool call IDs. Live test evidence: a real Pi instance in Herdr pane w3:p10 displayed fg plus bg1/bg2, latest tools, Ctrl + letter o expansion, and idle hiding; the foreground row was crowded out by a long call_<...>|fc_<...> ID.
+
+Paths: extensions/delegate.ts, extensions/delegate-render.ts, relevant tests/fixtures and docs/delegate.md if needed. No unrelated changes. Close only in passing commit after full check npm run check --prefix extensions. No install.sh, push, or gh from workers.
+
+
 ## Specification
 
 Allow the user or coordinator to select a one-off delegate model and/or thinking level using the existing runs fields, without editing delegate.json. Configured pools are defaults, not an allowlist.
