@@ -30,7 +30,7 @@ Suggested caps: at most 100 failed calls/job, 64 KiB per output text, 512 KiB to
 
 ### F1: bounded private artifact collector
 
-Status: open
+Status: closed
 
 Paths: new extensions/delegate-artifacts.ts and test/delegate-artifacts.test.mjs (or equivalent focused tests). Implement the diagnostic schema, failed-call collector, pattern redaction, UTF-8/count/aggregate limits and non-overwriting private writer described above. No runtime integration yet. Keep API narrow and avoid retaining arbitrary non-failure payloads or non-Bash inputs. Confirmed test seams: isolated helper tests for actual recorded fields versus explicitly missing data; failed targeted/declared/non-Bash records; redaction of command/output/path/error/ref; 100-record/64-KiB-output/512-KiB-file limits including JSON overhead; UTF-8 boundaries; file 0600/directory 0700; no overwrites; no artifact for zero failed tools; write errors returned as visible capture state, not thrown into check semantics. The following F2 ticket consumes this API. Close only in passing commit. Check: npm run check --prefix extensions.
 
