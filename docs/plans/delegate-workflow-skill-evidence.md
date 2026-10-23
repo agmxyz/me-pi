@@ -1,6 +1,6 @@
 # Delegate workflow skill — T1 preparation and T2 evidence
 
-Status: T1 preparation complete; authenticated T2 comparison inconclusive and adoption blocked. This report distinguishes offline preparation from lifecycle evidence. It makes no reliability claim.
+Status: T1 preparation complete; the revised T2 comparison is inconclusive and adoption remains blocked. This report distinguishes offline preparation from lifecycle evidence. It makes no reliability claim.
 
 ## Offline preparation
 
@@ -15,7 +15,7 @@ Status: T1 preparation complete; authenticated T2 comparison inconclusive and ad
 
 The generated `artifact-index.json` records exact paths and discovery results. The artifacts are temporary; recreate them with `node test/workflow/prepare.mjs`. No auth or secret paths were read, written, copied, or linked.
 
-## Authenticated lifecycle comparison (T2 outcome)
+## Earlier neutral-prompt comparison (original T2 attempt; n=1)
 
 Status: `INCONCLUSIVE` — one attempted pair (`n=1`), zero completed lifecycle pairs. The candidate was not adopted. This lifecycle outcome is separate from the passing offline discovery/preparation evidence above.
 
@@ -37,10 +37,28 @@ Session-level metrics (not worker usage; B's implement job never started):
 
 The raw A transcript confirms it read both `tickets/T1.md` and `tickets/T2.md`; any contrary summary is incorrect. The observed B failure is an orchestration/task-fixture ambiguity: the main session treated the ticket's partial, uncommitted-work condition as its own instruction, edited before dispatch, then attempted to start a clean-tree worker. Dispatching before that edit could have allowed the worker to start. This run does not show that the fixture is logically incompatible with clean-tree workers, does not establish a runtime regression, and is not evidence that the candidate split works. An unattributed prior local git-config change remains untouched; no new tripwire was added or suppressed.
 
+## Revised authenticated lifecycle comparison (T2 outcome)
+
+Status: `INCONCLUSIVE` — one revised pair (`n=1`); the agreed goal-review gate was not met. The candidate was not adopted. This run supplements, but is not pooled with, the earlier neutral-prompt pair above; neither pair is cross-model evidence.
+
+The user-approved task was identical for both arms: “Implement the goal in SPEC.md by completing the tickets in dependency order. Use implement workers for the implementation work.” Both used Pi 1.3.0 and `openai-codex/gpt-6-luna` at `low`, with the same task, model, and limits. The RPC driver `/tmp/me-pi-workflow-rpc-v2.mjs` passed syntax validation and preserved the real `HOME` so both arms had equal access to user skills. The B arm discovered and loaded the packaged `implement-goal` skill before delegation; A did not have that skill. The scratch artifacts, including compact raw-derived transcripts, original RPC logs, and summaries, are under `/private/var/folders/gg/m4k2c11115j155971lzv7vxh0000gn/T/me-pi-delegate-workflow-APQSHm`. No credential contents were read, copied, or logged.
+
+- **A — inline baseline:** Four implement jobs actually started: `bg1` produced the expected T1 WIP with a failed oracle check and `BLOCKED: oracle unavailable`; `bg2` recovered T1 successfully; `bg3` completed T2 successfully; `bg6` completed one review-fix job successfully. The three background review jobs were `bg4` and `bg5` (both started before the T2 handback) and `bg7` (after the fix). Foreground review calls also occurred, but there was no standards/spec review pair after T2. Checks and reviews were repeated; worker-limit refusals did not start jobs. The WIP was disclosed; no remote action was attempted.
+- **B — packaged skill:** The skill loaded before the first delegate call. Four implement jobs actually started: `bg1` produced the expected T1 WIP with a failed oracle check and `BLOCKED: oracle unavailable`; `bg2` recovered T1; `bg3` completed T2; and `bg4` completed one fix job. Two foreground review calls occurred: the first before T2's handback and the later call was not a standards/spec pair. No post-T2 standards/spec pair was completed. No repeated main-session check is evident in the transcript. The WIP was disclosed; no remote action was attempted.
+
+Both arms therefore fail the agreed goal-review gate: neither completed the required standards/spec review pair after T2, and review work started prematurely. This independently blocks adoption regardless of the uncertain oracle-monitor signal. The transcript shows the harness enabling the oracle after the WIP handback. RPC summaries mark the oracle as manipulated, but that flag is unverified and the transcript does not substantiate an additional manipulation event. Worker bash commands are omitted from transcripts, so this is not forensic proof that no other filesystem manipulation occurred. The task-classifier bug (task text mentions T1 before T2) invalidates automated stage and review totals; the job sequence above is based on the preserved transcripts, not those totals. The pre-existing local git-config tripwire provenance remains unverified and untouched.
+
+No remotes were configured and no remote actions were attempted; remote behavior was not tested. No new live test is authorized or reported here.
+
+### Main-session-reported metrics
+
+These are main-session metrics only, not totals including implement/review workers. They do not establish token or cost savings.
+
+| Arm | Elapsed | Reported tokens | Final context usage | Reported cost |
+|---|---:|---:|---:|---:|
+| A | 366,720 ms | 313,761 | 12,564 / 272,000 (4.619%) | $0.00847074 |
+| B | 354,765 ms | 267,630 | 10,096 / 272,000 (3.712%) | $0.01341316 |
+
 ## Disposition
 
-The offline preparation and package-discovery commands above remain reproducible and distinct from lifecycle evidence. No further live run was performed for this record.
-
-A fresh goal-end review of the complete diff `94f8b71..f74c3af` found no standards or spec issues; the provided check passed on `f74c3af`. The Luna-low pair remains inconclusive, so adoption is still blocked. Earlier WIP commits are preserved; any future merge must squash them.
-
-`BLOCKED: Adoption and rerun decisions need explicit user resolution; T2 remains incomplete.`
+Offline preparation and package-discovery evidence above remain separate from live lifecycle validation. T2 validation remains inconclusive, the current inline workflow stays in place, and the candidate is not adopted. Do not weaken or reinterpret the gate based on these results. Any further live run or adoption decision requires explicit user authorization.
