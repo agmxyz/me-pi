@@ -27,6 +27,11 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
+	FailedToolArtifactCollector,
+	type ArtifactWriteResult,
+	type FailedToolCallInput,
+} from "./delegate-artifacts.ts";
+import {
 	type Checkout,
 	type Facts,
 	finish as finishImplement,
@@ -270,7 +275,12 @@ interface Job extends Role {
 	role: string;
 	output: boolean;
 	// implement: its checkout job, and whether the main session trusts this project (for `--approve`).
-	implement?: { job: Checkout; trusted: boolean; pids: Set<number> };
+	implement?: {
+		job: Checkout;
+		trusted: boolean;
+		pids: Set<number>;
+		artifacts: FailedToolArtifactCollector;
+	};
 }
 
 export const ROLES: Record<string, Role> = {
@@ -622,6 +632,7 @@ export interface RunResult {
 	tools: string[];
 	stderr: string;
 	ms: number;
+	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
 }
 
 /** Adds numeric fields of a Pi usage object (including nested `cost`) into `total`. */
@@ -640,6 +651,82 @@ const costOf = (usage: Record<string, any>): number => usage.cost?.total ?? 0;
 interface AttemptBudget {
 	timeoutMs: number;
 	costCapUsd: number;
+}
+
+type CapturedToolCall = {
+	toolCallId?: string;
+	toolName?: string;
+	startedAt: number;
+	rawArgsCommand?: string;
+};
+
+type EventRecord = Record<string, any>;
+
+function eventRecord(value: unknown): EventRecord | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as EventRecord) : undefined;
+}
+
+function eventText(record: EventRecord | undefined, key: string): string | undefined {
+	const value = record?.[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function eventField(record: EventRecord | undefined, key: string): { present: boolean; value?: unknown } {
+	if (!record || !Object.hasOwn(record, key)) return { present: false };
+	return { present: true, value: record[key] };
+}
+
+function firstEventField(...fields: { present: boolean; value?: unknown }[]): { present: boolean; value?: unknown } {
+	return fields.find((field) => field.present) ?? { present: false };
+}
+
+function toolResultText(result: EventRecord | undefined): string | undefined {
+	if (!Array.isArray(result?.content)) return undefined;
+	const text = result.content.flatMap((part: unknown) => {
+		const item = eventRecord(part);
+		return item?.type === "text" && typeof item.text === "string" ? [item.text] : [];
+	});
+	return text.length ? text.join("\n") : undefined;
+}
+
+function failedToolResult(resultValue: unknown, toolName: string | undefined): FailedToolCallInput["result"] {
+	const result = eventRecord(resultValue);
+	const structured = eventRecord(result?.structuredContent);
+	const details = eventRecord(result?.details);
+	const content = toolResultText(result);
+	const structuredOutput = eventText(structured, "output");
+	const exitCode = firstEventField(eventField(structured, "exit_code"), eventField(result, "exit_code"));
+	const structuredContent = eventField(result, "structuredContent");
+	const summary = eventField(structured, "summary");
+	const diagnostic = firstEventField(eventField(result, "childDiagnostics"), eventField(details, "childDiagnostics"));
+	const diagnosticReferences = firstEventField(
+		eventField(result, "childDiagnosticReferences"),
+		eventField(details, "childDiagnosticReferences"),
+	);
+	const fullOutputPath = firstEventField(
+		eventField(structured, "full_output_path"),
+		eventField(result, "full_output_path"),
+		eventField(details, "fullOutputPath"),
+	);
+	const error = eventField(result, "error");
+	const summaryValue = summary.present
+		? summary.value
+		: structuredContent.present
+			? structuredContent.value
+			: content;
+	return {
+		...(exitCode.present ? { exitCode: exitCode.value as number } : {}),
+		...(structuredOutput !== undefined || content !== undefined
+			? { outputText: structuredOutput ?? content }
+			: {}),
+		...(error.present ? { error: error.value as string } : {}),
+		...(diagnostic.present ? { childDiagnostics: diagnostic.value as string | readonly string[] } : {}),
+		...(fullOutputPath.present ? { fullOutputPath: fullOutputPath.value as string } : {}),
+		...(diagnosticReferences.present
+			? { childDiagnosticReferences: diagnosticReferences.value as readonly string[] }
+			: {}),
+		...(toolName !== "bash" && summaryValue !== undefined ? { summary: summaryValue } : {}),
+	};
 }
 
 /** Updates the check state from a worker's tool_execution_end: the check run alone sets pass|fail; a later edit, stale. */
@@ -676,6 +763,7 @@ function runWorkerAttempt(
 	onProgress: (r: RunResult) => void,
 	outDir: string | undefined,
 	budget: AttemptBudget,
+	attemptIndex: number,
 	approve = false,
 ): Promise<RunResult> {
 	const start = Date.now();
@@ -732,8 +820,10 @@ function runWorkerAttempt(
 		let finished = false;
 		let lastStopReason: string | undefined;
 		let buffer = "";
-		// implement: tool calls by id, so a call's end can be matched to its command.
+		// Check tracking keeps its original call map and semantics; artifact correlation is separate and failure-only.
 		const calls = new Map<string, { tool: string; command: string }>();
+		const captureCalls = new Map<string, CapturedToolCall[]>();
+		const anonymousCaptureCalls: CapturedToolCall[] = [];
 
 		let termTimer: NodeJS.Timeout | undefined;
 		let progressTimer: NodeJS.Timeout | undefined;
@@ -762,6 +852,83 @@ function runWorkerAttempt(
 				onProgress(result);
 			}, PROGRESS_COALESCE_MS);
 		};
+		const captureToolStart = (event: EventRecord) => {
+			const collector = implement?.artifacts;
+			if (!collector) return;
+			const toolCallId = typeof event.toolCallId === "string" && event.toolCallId.length ? event.toolCallId : undefined;
+			const toolName = typeof event.toolName === "string" ? event.toolName : undefined;
+			const args = eventRecord(event.args);
+			const rawCommand = eventField(args, "command");
+			if (toolName === "bash" && rawCommand.present && typeof rawCommand.value !== "string")
+				collector.noteAnomaly("invalid-field");
+			const call: CapturedToolCall = {
+				toolCallId,
+				toolName,
+				startedAt: Date.now(),
+				...(toolName === "bash" && typeof rawCommand.value === "string"
+					? { rawArgsCommand: rawCommand.value }
+					: {}),
+			};
+			if (!toolName) collector.noteAnomaly("malformed-event");
+			if (!toolCallId) {
+				collector.noteAnomaly("missing-tool-call-id");
+				anonymousCaptureCalls.push(call);
+				return;
+			}
+			const callsForId = captureCalls.get(toolCallId) ?? [];
+			if (callsForId.length) collector.noteAnomaly("duplicate-tool-call-id");
+			callsForId.push(call);
+			captureCalls.set(toolCallId, callsForId);
+		};
+		const captureToolEnd = (event: EventRecord) => {
+			const collector = implement?.artifacts;
+			if (!collector) return;
+			const id = typeof event.toolCallId === "string" && event.toolCallId.length ? event.toolCallId : undefined;
+			let call: CapturedToolCall | undefined;
+			if (id) {
+				const callsForId = captureCalls.get(id);
+				call = callsForId?.shift();
+				if (callsForId?.length === 0) captureCalls.delete(id);
+				if (!call) collector.noteAnomaly("end-without-start");
+			} else {
+				collector.noteAnomaly("missing-tool-call-id");
+				call = anonymousCaptureCalls.shift();
+				if (!call) collector.noteAnomaly("end-without-start");
+			}
+			if (typeof event.isError !== "boolean") collector.noteAnomaly("malformed-event");
+			const endedToolName = typeof event.toolName === "string" ? event.toolName : undefined;
+			if (call?.toolName && endedToolName && call.toolName !== endedToolName)
+				collector.noteAnomaly("malformed-event");
+			if (event.isError !== true) return;
+			const endedAt = Date.now();
+			const eventResult = eventRecord(event.result);
+			const effectiveCommand =
+				eventText(event, "effectiveCommand") ??
+				eventText(eventResult, "effectiveCommand") ??
+				eventText(eventRecord(eventResult?.structuredContent), "effectiveCommand");
+			collector.record({
+				attemptIndex,
+				requestedModel: run.model,
+				toolCallId: call?.toolCallId ?? id,
+				toolName: call?.toolName ?? endedToolName,
+				startedAt: call?.startedAt,
+				endedAt,
+				cwd: typeof event.cwd === "string" ? event.cwd : cwd,
+				rawArgsCommand: call?.rawArgsCommand,
+				effectiveCommand,
+				isError: true,
+				result: failedToolResult(event.result, call?.toolName ?? endedToolName),
+			});
+		};
+		const flushUnclosedCalls = () => {
+			const collector = implement?.artifacts;
+			if (!collector) return;
+			for (const callsForId of captureCalls.values())
+				for (const _call of callsForId) collector.noteAnomaly("start-without-end");
+			for (const _call of anonymousCaptureCalls) collector.noteAnomaly("start-without-end");
+			captureCalls.clear();
+			anonymousCaptureCalls.length = 0;
+		};
 		const stop = (reason: string) => {
 			if (finished || stopped || pid === undefined) return;
 			stopped = reason;
@@ -782,6 +949,7 @@ function runWorkerAttempt(
 		const finish = (code: number | null, problem?: string) => {
 			if (finished) return;
 			if (buffer.trim()) processLine(buffer);
+			flushUnclosedCalls();
 			flushProgress();
 			finished = true;
 			clearProgressTimer();
@@ -823,14 +991,24 @@ function runWorkerAttempt(
 			} catch {
 				return; // Not an event (pi prints only JSON lines in this mode).
 			}
-			if (event.type === "tool_execution_start" && typeof event.toolName === "string") {
-				result.tools.push(toolLabel(event.toolName));
-				if (result.tools.length > MAX_TOOL_HISTORY) result.tools.shift();
-				if (implement)
-					calls.set(event.toolCallId, { tool: event.toolName, command: String(event.args?.command ?? "") });
-				scheduleProgress();
+			if (!event || typeof event !== "object" || Array.isArray(event)) {
+				implement?.artifacts.noteAnomaly("malformed-event");
+				return;
 			}
-			if (implement && event.type === "tool_execution_end") trackCheck(implement.job.check, calls, event, cwd);
+			if (event.type === "tool_execution_start") {
+				if (typeof event.toolName === "string") {
+					result.tools.push(toolLabel(event.toolName));
+					if (result.tools.length > MAX_TOOL_HISTORY) result.tools.shift();
+					if (implement)
+						calls.set(event.toolCallId, { tool: event.toolName, command: String(event.args?.command ?? "") });
+					scheduleProgress();
+				}
+				if (implement) captureToolStart(event);
+			}
+			if (implement && event.type === "tool_execution_end") {
+				trackCheck(implement.job.check, calls, event, cwd);
+				captureToolEnd(event);
+			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
 			const msg = event.message;
 			result.turns++;
@@ -889,7 +1067,15 @@ const retryableAvailabilityFailure = (failure: string | undefined): boolean =>
 			),
 	);
 
-async function runWorker(
+async function persistFailedToolCapture(
+	job: Checkout,
+	collector: FailedToolArtifactCollector,
+): Exclude<ArtifactWriteResult, { status: "empty" }> | undefined {
+	const result = collector.write(resolve(job.tmpRoot, `me-pi-delegate-${process.pid}`));
+	return result.status === "empty" ? undefined : result;
+}
+
+function runWorker(
 	job: Job,
 	prompt: string,
 	run: ResolvedRun,
@@ -953,6 +1139,7 @@ async function runWorker(
 				}),
 			outDir,
 			{ timeoutMs: remainingMs, costCapUsd: remainingCost },
+			i + 1,
 			approve,
 		);
 		attempts.push(attempt);
@@ -1538,7 +1725,12 @@ export default function (pi: ExtensionAPI) {
 					updateActivityWidget(ctx, ended);
 				}
 				if (ended.aborted) return fail("stopped: session ended");
-				job.implement = { job: co, trusted: ctx?.isProjectTrusted?.() === true, pids: new Set() };
+				job.implement = {
+					job: co,
+					trusted: ctx?.isProjectTrusted?.() === true,
+					pids: new Set(),
+					artifacts: new FailedToolArtifactCollector(co.id),
+				};
 			}
 			const startFacts = co ? `${co.branch} (${co.id}) from ${co.base.slice(0, 7)}` : "";
 			// implement: an earlier attempt's WIP commit is the worker's first job.
@@ -1634,15 +1826,25 @@ export default function (pi: ExtensionAPI) {
 						if (co) {
 							// A worker still running would keep writing while finish commits; stop its group first.
 							for (const pid of job.implement?.pids ?? []) killGroup(pid);
-							facts = await finishImplement(co, { failure: `delegate error: ${err?.message ?? err}` });
+							const failedToolCapture = job.implement
+								? persistFailedToolCapture(co, job.implement.artifacts)
+								: undefined;
+							facts = await finishImplement(co, {
+								failure: `delegate error: ${err?.message ?? err}`,
+								...(failedToolCapture && { failedToolCapture }),
+							});
 						}
 						throw new Error(`${err?.message ?? err}${facts ? `\n${formatHandback(facts)}` : ""}`);
 					}
 					// implement: the worker's failure or stop reason names the WIP commit.
 					if (co) {
 						const r = round1[0];
+						r.failedToolCapture = job.implement
+							? persistFailedToolCapture(co, job.implement.artifacts)
+							: undefined;
 						facts = await finishImplement(co, {
 							failure: r.failure,
+							...(r.failedToolCapture && { failedToolCapture: r.failedToolCapture }),
 							answer: r.output,
 							label: label(r),
 							tools: r.tools,

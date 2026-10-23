@@ -125,7 +125,7 @@ export type FailedToolArtifact = {
 
 export type ArtifactWriteResult =
 	| { status: "empty" }
-	| { status: "written"; path: string; bytes: number }
+	| { status: "written"; path: string; bytes: number; failureCount: number; truncated: boolean }
 	| { status: "unavailable"; warning: string };
 
 const PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi;
@@ -710,7 +710,13 @@ export class FailedToolArtifactCollector {
 			writeFileSync(fd, contents, { encoding: "utf8" });
 			closeSync(fd);
 			fd = undefined;
-			return { status: "written", path, bytes };
+			return {
+				status: "written",
+				path,
+				bytes,
+				failureCount: artifact.capture.failureCount,
+				truncated: artifact.capture.truncated,
+			};
 		} catch (error) {
 			if (fd !== undefined) {
 				try {

@@ -13,6 +13,7 @@ import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, w
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import type { ArtifactWriteResult } from "./delegate-artifacts.ts";
 import { PROTECTED_BRANCHES } from "./guard.ts";
 
 const run = promisify(execFile);
@@ -205,6 +206,7 @@ export type Outcome = {
 	tools?: string[];
 	fallbacks?: string[];
 	stderr?: string;
+	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
 };
 
 export type Facts = {
@@ -616,6 +618,16 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 		...section("Tools", o.tools?.join("\n")),
 		...section("Fallbacks", o.fallbacks?.join("\n")),
 		...section("Stderr (tail)", o.stderr),
+		...section(
+			"Failed tool diagnostics",
+			o.failedToolCapture?.status === "written"
+				? [
+						`Capture: written (${o.failedToolCapture.failureCount} failed tool call(s))`,
+						`Artifact: ${shown(o.failedToolCapture.path)}`,
+						`Truncated: ${o.failedToolCapture.truncated ? "yes" : "no"}`,
+					].join("\n")
+				: o.failedToolCapture?.warning && shown(o.failedToolCapture.warning),
+		),
 	].join("\n");
 	await writeFile(path, text, { mode: 0o600 });
 	return path;
@@ -640,6 +652,11 @@ export function formatHandback(f: Facts): string {
 		`${first}${details}`,
 		...blocked.slice(0, MAX_BLOCKED).map((l) => shown(l.slice(0, FIRST_LINE_CAP))),
 	];
+	if (o.failedToolCapture?.status === "written" && f.failed)
+		out.push(
+			`Failed-tool diagnostics: ${shown(o.failedToolCapture.path)} (${o.failedToolCapture.failureCount} failed tool call(s)${o.failedToolCapture.truncated ? "; truncated" : ""})`,
+		);
+	else if (o.failedToolCapture?.status === "unavailable") out.push(`⚠ ${shown(o.failedToolCapture.warning)}`);
 	if (blocked.length > MAX_BLOCKED) out.push(`+${blocked.length - MAX_BLOCKED} more BLOCKED in details`);
 	const failure = failureLine(o.failure);
 	if (failure) out.push(`✗ ${shown(failure)}`);

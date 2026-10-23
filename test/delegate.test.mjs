@@ -94,8 +94,9 @@ const FAKE_BIN = join(TEST_HOME, "fake-pi.mjs");
 writeFileSync(
 	FAKE_BIN,
 	`#!/usr/bin/env node
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
+import { join } from "node:path";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
@@ -160,11 +161,78 @@ process.stdin.on("end", () => {
   const git = (...a) => spawnSync("git", a, { encoding: "utf8" });
   // A tool call as Pi's JSON mode reports it: start, then end with isError.
   let toolId = 0;
-  const tool = (toolName, args, isError = false) => {
-    const toolCallId = "t" + ++toolId;
-    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
-    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName, result: {}, isError }));
+  const tool = (toolName, args, isError = false, options = {}) => {
+    const toolCallId = options.missingId ? undefined : (options.toolCallId || "t" + ++toolId);
+    if (!options.omitStart) console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
+    if (!options.omitEnd) console.log(JSON.stringify({
+      type: "tool_execution_end", toolCallId, toolName: options.endToolName || toolName,
+      result: options.result || {}, isError,
+      ...(options.effectiveCommand !== undefined ? { effectiveCommand: options.effectiveCommand } : {}),
+    }));
   };
+  if (mode === "implement-artifacts" || mode === "implement-check-artifact-fail" || mode === "implement-read-artifact-fail") {
+    const target = "npm run targeted-test";
+    if (mode === "implement-artifacts") {
+      tool("bash", { command: target }, true, { effectiveCommand: "rtk npm run targeted-test", result: {
+        content: [{ type: "text", text: "Targeted failed: API_KEY=target-secret" }],
+        structuredContent: { output: "Targeted failed: API_KEY=target-secret", exit_code: 7, full_output_path: process.env.FAKE_PI_REF },
+        details: { fullOutputPath: process.env.FAKE_PI_REF },
+      } });
+      tool("bash", { command: process.env.FAKE_PI_RAN || "npm test" }, false, { result: {
+        content: [{ type: "text", text: "declared check passed" }],
+        structuredContent: { output: "declared check passed", exit_code: 0 },
+      } });
+      tool("read", { path: "success-only-argument" }, false, { result: { content: [{ type: "text", text: "success-only-result" }] } });
+    } else if (mode === "implement-check-artifact-fail") {
+      tool("bash", { command: process.env.FAKE_PI_RAN || "npm test" }, true, { result: {
+        content: [{ type: "text", text: "declared check failed" }],
+        structuredContent: { output: "declared check failed", exit_code: 1 },
+      } });
+    } else {
+      tool("read", { path: "do-not-capture-input" }, true, { result: {
+        content: [{ type: "text", text: "read result failed" }],
+        structuredContent: { code: "ENOENT", message: "missing fixture" },
+      } });
+    }
+    if (process.env.FAKE_PI_BLOCK_ARTIFACT) {
+      const id = readFileSync(".git/me-pi-implement.lock", "utf8").trim().split(" ")[1];
+      const directory = join(process.env.TMPDIR, "me-pi-delegate-" + process.ppid);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, id + "-failed-tools.json"), "do not overwrite");
+    }
+    emit("Implemented diagnostic fixture.");
+    process.exit(0);
+  }
+  if (mode === "implement-fallback-artifacts") {
+    if ((flag("--model") || "").includes("luna")) {
+      tool("bash", { command: "npm test" }, true, { result: { content: [{ type: "text", text: "first attempt tool failure" }], structuredContent: { exit_code: 3 } } });
+      emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: retry artifacts" });
+      process.exit(1);
+    }
+    tool("read", { path: "not-retained" }, true, { result: { content: [{ type: "text", text: "fallback tool failure" }] } });
+    tool("bash", { command: "npm test" }, false, { result: { structuredContent: { exit_code: 0 } } });
+    emit("Fallback completed.");
+    process.exit(0);
+  }
+  if (mode === "implement-artifact-anomalies") {
+    tool("bash", { command: "first duplicate command" }, true, { toolCallId: "duplicate" , omitEnd: true });
+    tool("bash", { command: "second duplicate command" }, true, { toolCallId: "duplicate", omitEnd: true });
+    // Emit one matching end for the duplicate ID, then a failed end without an ID or start.
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "duplicate", toolName: "bash", result: { structuredContent: { output: "duplicate failure", exit_code: 2 } }, isError: true }));
+    tool("read", {}, true, { missingId: true, omitStart: true, result: { content: [{ type: "text", text: "missing-id failure" }] } });
+    tool("bash", { command: "open call" }, false, { omitEnd: true, toolCallId: "never-ended" });
+    if (process.env.FAKE_PI_BLOCK_ARTIFACT) {
+      const id = readFileSync(".git/me-pi-implement.lock", "utf8").trim().split(" ")[1];
+      const directory = join(process.env.TMPDIR, "me-pi-delegate-" + process.ppid);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, id + "-failed-tools.json"), "do not overwrite");
+    }
+    if (process.env.FAKE_PI_READY) writeFileSync(process.env.FAKE_PI_READY, "ready");
+    emit("working", { stopReason: "toolUse" });
+    process.on("SIGTERM", () => process.exit(143));
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (mode === "implement-commit" || mode === "move-ref") {
     writeFileSync("feature.txt", "IMPLEMENT-DIFF-BODY\\n");
     git("add", "-A");
