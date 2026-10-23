@@ -41,4 +41,6 @@ The raw A transcript confirms it read both `tickets/T1.md` and `tickets/T2.md`; 
 
 The offline preparation and package-discovery commands above remain reproducible and distinct from lifecycle evidence. No further live run was performed for this record.
 
+A fresh goal-end review of the complete diff `94f8b71..f74c3af` found no standards or spec issues; the provided check passed on `f74c3af`. The Luna-low pair remains inconclusive, so adoption is still blocked. Earlier WIP commits are preserved; any future merge must squash them.
+
 `BLOCKED: Adoption and rerun decisions need explicit user resolution; T2 remains incomplete.`
