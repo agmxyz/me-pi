@@ -64,23 +64,58 @@ EXAMPLE
 cat > "$FAKE_BIN/pi" <<'PI'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "${1:-}" = install ] && [ "$#" -eq 2 ] || {
-  echo "fake pi only supports: pi install <source>" >&2
-  exit 90
-}
-source="$2"
-printf '%s\n' "$source" >> "$ME_PI_TEST_PI_LOG"
-node - "$HOME/.pi/agent/settings.json" "$source" <<'NODE'
+command="${1:-}"
+settings="$HOME/.pi/agent/settings.json"
+case "$command" in
+  install|remove)
+    [ "$#" -eq 2 ] || {
+      echo "fake pi expects: pi $command <source>" >&2
+      exit 90
+    }
+    source="$2"
+    printf '%s %s\n' "$command" "$source" >> "$ME_PI_TEST_PI_LOG"
+    node - "$settings" "$command" "$source" <<'NODE'
 const fs = require("node:fs");
-const [settingsPath, requestedSource] = process.argv.slice(2);
+const [settingsPath, command, requestedSource] = process.argv.slice(2);
 const settings = fs.existsSync(settingsPath) ? JSON.parse(fs.readFileSync(settingsPath, "utf8")) : {};
 const sourceOf = entry => typeof entry === "string" ? entry : entry?.source;
 settings.packages ??= [];
-if (!settings.packages.some(entry => sourceOf(entry) === requestedSource)) {
-  settings.packages.push(requestedSource);
+if (command === "install") {
+  if (!settings.packages.some(entry => sourceOf(entry) === requestedSource)) {
+    settings.packages.push(requestedSource);
+  }
+} else {
+  const packages = settings.packages.filter(entry => sourceOf(entry) !== requestedSource);
+  if (packages.length === settings.packages.length) process.exit(1);
+  settings.packages = packages;
 }
 fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
+    ;;
+  list)
+    [ "$#" -eq 1 ] || {
+      echo "fake pi expects: pi list" >&2
+      exit 90
+    }
+    printf '%s\n' list >> "$ME_PI_TEST_PI_LOG"
+    node - "$settings" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const settingsPath = process.argv[2];
+const settings = fs.existsSync(settingsPath) ? JSON.parse(fs.readFileSync(settingsPath, "utf8")) : {};
+for (const entry of settings.packages ?? []) {
+  const source = typeof entry === "string" ? entry : entry?.source;
+  if (!source) continue;
+  console.log(`  ${source}${typeof entry === "object" ? " (filtered)" : ""}`);
+  if (path.isAbsolute(source) && fs.existsSync(source)) console.log(`    ${path.resolve(source)}`);
+}
+NODE
+    ;;
+  *)
+    echo "fake pi only supports: pi install|remove <source> and pi list" >&2
+    exit 90
+    ;;
+esac
 PI
 cat > "$FAKE_BIN/rtk" <<'RTK'
 #!/usr/bin/env bash
@@ -138,12 +173,13 @@ expect_installer() { # <description> <expected rc> <temporary HOME> <output file
 assert_packages_registered() {
   node - "$1" "$2" <<'NODE'
 const fs = require("node:fs");
-const [settingsPath, repoExtensions] = process.argv.slice(2);
+const [settingsPath, repoRoot] = process.argv.slice(2);
 const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 const sources = (settings.packages ?? []).map(entry =>
   typeof entry === "string" ? entry : entry?.source,
 );
-if (sources.filter(source => source === repoExtensions).length !== 1) process.exit(1);
+if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
+if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
 if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
 NODE
 }
@@ -151,14 +187,15 @@ NODE
 assert_settings_preserved() {
   node - "$1" "$2" <<'NODE'
 const fs = require("node:fs");
-const [settingsPath, repoExtensions] = process.argv.slice(2);
+const [settingsPath, repoRoot] = process.argv.slice(2);
 const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 const packages = settings.packages ?? [];
 const sources = packages.map(entry => typeof entry === "string" ? entry : entry?.source);
 const externalObject = packages.find(entry => entry?.source === "npm:external-object@4.5.6");
 if (settings.theme !== "light" || settings.machinePreference !== "keep-this") process.exit(1);
 if (settings.lastChangelogVersion !== "test-version") process.exit(1);
-if (sources.filter(source => source === repoExtensions).length !== 1) process.exit(1);
+if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
+if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
 if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
 if (sources.filter(source => source === "npm:external-string@1.2.3").length !== 1) process.exit(1);
 if (!externalObject || externalObject.config?.keep !== true) process.exit(1);
@@ -168,10 +205,12 @@ NODE
 assert_invocation_logs() {
   local expected="$TMP/expected-pi.log" expected_rtk="$TMP/expected-rtk.log"
   printf '%s\n' \
-    "$FIXTURE/extensions" \
-    "npm:pi-web-access@0.38.0" \
-    "$FIXTURE/extensions" \
-    "npm:pi-web-access@0.38.0" > "$expected"
+    "install $FIXTURE" \
+    "list" \
+    "install npm:pi-web-access@0.38.0" \
+    "install $FIXTURE" \
+    "list" \
+    "install npm:pi-web-access@0.38.0" > "$expected"
   printf '%s\n' \
     "init --global --agent pi" \
     "init --global --agent pi" > "$expected_rtk"
@@ -193,7 +232,7 @@ if [ "$INSTALL_RC" -ne 0 ]; then
 fi
 
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
-check "packages registered" assert_packages_registered "$PI_AGENT/settings.json" "$FIXTURE/extensions"
+check "root package registered without the old extensions source" assert_packages_registered "$PI_AGENT/settings.json" "$FIXTURE"
 check "interactive-shell example copied" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
 check "handoff example copied" cmp -s "$PI_AGENT/extensions/handoff.ts" "$FAKE_ROOT/examples/extensions/handoff.ts"
 check "RTK setup invoked with Pi agent" grep -Fxq "init --global --agent pi" "$RTK_LOG"
@@ -219,7 +258,7 @@ mkdir -p "$AGENTS_HOME/skills/external-skill"
 printf '%s\n' 'external skill sentinel' > "$AGENTS_HOME/skills/external-skill/SKILL.md"
 
 expect_installer "repeat install succeeds" 0 "$HOME_FRESH" "$TMP/repeat.out"
-check "repeat preserves machine settings and unrelated packages" assert_settings_preserved "$PI_AGENT/settings.json" "$FIXTURE/extensions"
+check "repeat preserves machine settings and unrelated packages" assert_settings_preserved "$PI_AGENT/settings.json" "$FIXTURE"
 check "repeat preserves credential contents" assert_file_text "$PI_AGENT/auth.json" 'credential sentinel: never overwrite'
 check "repeat preserves external extension" assert_file_text "$PI_AGENT/extensions/external-extension.ts" 'external extension sentinel'
 check "repeat preserves external skill" assert_file_text "$AGENTS_HOME/skills/external-skill/SKILL.md" 'external skill sentinel'
@@ -229,9 +268,47 @@ check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FI
 check "Pi and RTK stubs invoked deterministically" assert_invocation_logs
 check "npm fallback remains unused" test ! -e "$NPM_MARKER"
 
+# Upgrade a previous extensions-directory registration, including a filtered object.
+HOME_UPGRADE="$TMP/home-upgrade"
+UPGRADE_AGENT="$HOME_UPGRADE/.pi/agent"
+mkdir -p "$UPGRADE_AGENT"
+node - "$UPGRADE_AGENT/settings.json" "$FIXTURE/extensions" <<'NODE'
+const fs = require("node:fs");
+const [settingsPath, oldSource] = process.argv.slice(2);
+const settings = {
+  theme: "light",
+  machinePreference: "keep-this",
+  lastChangelogVersion: "test-version",
+  packages: [
+    { source: oldSource, extensions: ["./guard.ts"] },
+    "npm:external-string@1.2.3",
+    { source: "npm:external-object@4.5.6", config: { keep: true } },
+  ],
+};
+fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+NODE
+: > "$PI_LOG"
+printf '%s\n' \
+  "install $FIXTURE" \
+  "list" \
+  "remove $FIXTURE/extensions" \
+  "install npm:pi-web-access@0.38.0" > "$TMP/expected-upgrade-pi.log"
+expect_installer "upgrade from extensions package succeeds" 0 "$HOME_UPGRADE" "$TMP/upgrade.out"
+check "upgrade registers root and removes old filtered source" assert_settings_preserved "$UPGRADE_AGENT/settings.json" "$FIXTURE"
+check "upgrade invokes install, list, remove, and dependency registration" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
+expect_installer "repeat upgrade succeeds" 0 "$HOME_UPGRADE" "$TMP/upgrade-repeat.out"
+check "repeat upgrade remains idempotent and preserves unrelated state" assert_settings_preserved "$UPGRADE_AGENT/settings.json" "$FIXTURE"
+printf '%s\n' \
+  "install $FIXTURE" \
+  "list" \
+  "install npm:pi-web-access@0.38.0" >> "$TMP/expected-upgrade-pi.log"
+check "repeat upgrade leaves the old source removed" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
+check "upgrade never invokes npm fallback" test ! -e "$NPM_MARKER"
+
 # Missing pi must fail before any link is created.
 HOME_NOPI="$TMP/home-no-pi"
 mkdir -p "$HOME_NOPI"
+cp "$PI_LOG" "$TMP/pi-before-no-pi.log"
 NO_PI_BIN="$TMP/no-pi-bin"
 mkdir -p "$NO_PI_BIN"
 for tool in bash git dirname basename mkdir ln cp rm readlink realpath head cat; do
@@ -243,7 +320,7 @@ expect_installer "missing pi refused" 1 "$HOME_NOPI" "$TMP/no-pi.out"
 TEST_PATH="$saved_path"
 check "missing pi explains requirement" grep -Fq 'pi is required' "$TMP/no-pi.out"
 check "missing pi creates no live directories" test ! -e "$HOME_NOPI/.pi"
-check "refusal invokes no package install" assert_invocation_logs
+check "refusal invokes no package install" cmp -s "$TMP/pi-before-no-pi.log" "$PI_LOG"
 check "no network-capable npm invocation" test ! -e "$NPM_MARKER"
 
 # An existing AGENTS.md is preserved; packages still install, but the run fails loudly.
@@ -262,7 +339,7 @@ for kind in file link; do
   expect_installer "global AGENTS $kind collision fails" 1 "$HOME_SHARED" "$TMP/agents-$kind.out"
   check "global AGENTS $kind collision preserves contents" assert_file_text "$destination" "$sentinel"
   check "global AGENTS $kind collision reported at the end" grep -Eq "^✗ Incomplete: .*AGENTS.md.*policy is NOT active" "$TMP/agents-$kind.out"
-  check "global AGENTS $kind collision still registers packages" assert_packages_registered "$HOME_SHARED/.pi/agent/settings.json" "$FIXTURE/extensions"
+  check "global AGENTS $kind collision still registers root packages" assert_packages_registered "$HOME_SHARED/.pi/agent/settings.json" "$FIXTURE"
   if [ "$kind" = file ]; then
     check "global AGENTS file collision remains a regular file" test ! -L "$destination"
   else

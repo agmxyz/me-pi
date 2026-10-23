@@ -34,9 +34,13 @@ Implement root manifest/tooling and test relocation, compatibility check shim, f
 
 ### P2 — Root installer registration and real resource-loading checks
 
-Status: TODO; depends on P1.
+Status: DONE in the passing P2 commit; main-session live installer registration remains pending.
 
-Update installer/upgrade path and isolated smoke checks. Add/run real Pi full and guard-only installs in temp agent dirs without auth/model invocation; record exact evidence and limitations. Update README root install/use instructions. Run full acceptance suite in the final job; close P2 only in a passing commit. Report BLOCKED if discovery cannot be verified rather than asserting success. The main session performs the real live installer registration after the handback, then independent goal review.
+The installer registers the root package, then removes the old `extensions/` source if `pi list` reports that local path. The isolated smoke test covers fresh install, filtered-old-source upgrade, preservation of unrelated settings/packages, idempotency, no-overwrite behavior, and no network-capable npm fallback. README installation instructions now describe the root package.
+
+Evidence: `test/pi-package-resources.test.mjs` uses the root-pinned Pi 1.3.0 `DefaultPackageManager.installAndPersist()` and `DefaultResourceLoader` against two fresh temporary `PI_CODING_AGENT_DIR`s and a local source. Full discovery loaded exactly `extensions/delegate.ts`, `extensions/guard.ts`, and `extensions/skill.ts` once, with no errors/warnings; the filtered config loaded only `extensions/guard.ts`. The `Skill` tool was present in loaded extension metadata. This verifies actual resource discovery, not normal-session `delegate` tool registration: worker `ME_PI_RUN=1` intentionally suppresses that tool. `test/pi-package-resource-harness.mjs` includes an `assert-delegate` probe for the main session and refuses to run that assertion in worker mode. No model runtime/call or auth file access was used. The HTTPS repository URL is declared in the root manifest; GitHub transport/authentication was not tested while the repository is private.
+
+The main session must run the `assert-delegate` probe with a fresh temporary agent directory, then run the live `./install.sh` only there, before independent goal review. These live-checkout actions are intentionally not worker checks.
 
 ## Delivery
 

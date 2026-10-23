@@ -60,8 +60,13 @@ install_pi_example() {
 mkdir -p "$PI_AGENT/extensions"
 link_policy
 
-# `pi install` stores the exact spec and replaces an existing unpinned entry.
-pi install "$REPO/extensions"
+# Register the root Pi package first. The old extensions-directory source has a
+# separate identity, so remove it only after the root registration succeeds.
+pi install "$REPO"
+configured_packages="$(pi list)"
+if printf '%s\n' "$configured_packages" | grep -Fq -- "$REPO/extensions"; then
+  pi remove "$REPO/extensions"
+fi
 pi install npm:pi-web-access@0.38.0
 
 install_pi_example interactive-shell.ts

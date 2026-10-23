@@ -10,8 +10,8 @@ A setup for the [Pi](https://pi.dev) coding agent: one global policy plus three 
 | `AGENTS.md` | Instructions for working on this repo. |
 | `package.json` | Public Pi package manifest and root development commands; explicitly lists the three extension entrypoints. |
 | `package-lock.json`, `tsconfig.json`, `biome.json` | The single root source for pinned development dependencies, type checking, and lint configuration. |
-| `install.sh` | Links the policy, registers the compatibility `extensions/` package and `pi-web-access` with `pi install`, copies Pi's `interactive-shell.ts` and `handoff.ts` examples, runs `rtk init` if present. Idempotent; never overwrites your policy file or copied examples. |
-| `extensions/package.json` | Private compatibility manifest for the existing `extensions/` installation; keeps its three explicit entrypoints and forwards `check` to the root. |
+| `install.sh` | Links the policy, registers this root package and `pi-web-access`, removes a prior `extensions/` package registration, copies Pi's `interactive-shell.ts` and `handoff.ts` examples, and runs `rtk init` if present. Idempotent; never overwrites your policy file or copied examples. |
+| `extensions/package.json` | Private compatibility manifest for prior `extensions/` installations and the prefix check; keeps three explicit entrypoints and forwards `check` to the root. |
 | `test/install.test.sh` | Hermetic test of `install.sh` (all writes under `/tmp`). |
 | `extensions/delegate.ts` | The `delegate` tool: roles, model pools, worker processes, limits, in-worker blocks. |
 | `extensions/delegate-implement.ts` | The `implement` role's checkout lifecycle: `prepare`, `finish`, `formatHandback`. |
@@ -32,7 +32,7 @@ npm run check                  # Biome, tsc, node --test, test/install.test.sh, 
 npm run check --prefix extensions  # compatibility command; forwards to the root check
 ```
 
-The root manifest is the public Pi package declaration. Until the installer is updated, `install.sh` still registers `extensions/`; its compatibility manifest keeps that installed path usable.
+`install.sh` registers this checkout's root directory as a local Pi package and removes a prior registration of its `extensions/` subdirectory so the same extensions cannot load twice. The root `package.json` declares the three public entrypoints and the HTTPS repository URL used by Pi package discovery; local installation does not test GitHub transport. This repository is private, so GitHub access requires authentication. The `extensions/package.json` manifest remains a compatibility shim for existing installs and the prefix check.
 
 Optional model pools live in `~/.pi/agent/delegate.json` (local, hand-edited, `/reload` after). Without it every worker uses the main session's model and thinking. Shape and validation: `validModelSet`, `resolveRun` in `extensions/delegate.ts`.
 
