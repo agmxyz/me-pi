@@ -1,3 +1,4 @@
+// Scratch Pi package resource-discovery fixture: no model calls; not runtime or installer code.
 import { mkdir } from "node:fs/promises";
 import {
 	DefaultPackageManager,

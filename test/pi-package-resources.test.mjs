@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(testDir, "..");
-const harness = join(root, "bin/pi-package-resource-harness.mjs");
+const harness = join(root, "test/fixtures/pi-package-resource-harness.mjs");
 const expectedFull = [
 	join(root, "extensions/delegate.ts"),
 	join(root, "extensions/guard.ts"),
