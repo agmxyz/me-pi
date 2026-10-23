@@ -631,7 +631,11 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 			"Failed tool diagnostics",
 			o.failedToolCapture?.status === "written"
 				? [
-						`Capture: written (${o.failedToolCapture.failureCount} failed tool call(s))`,
+						`Capture: written (${o.failedToolCapture.failureCount} failed tool call(s)${
+							o.failedToolCapture.unmatchedStartCount
+								? `; ${plural(o.failedToolCapture.unmatchedStartCount, "end-not-observed start")}`
+								: ""
+						})`,
 						`Artifact: ${shown(o.failedToolCapture.path)}`,
 						`Truncated: ${o.failedToolCapture.truncated ? "yes" : "no"}`,
 						`Redaction: ${FAILED_TOOL_ARTIFACT_REDACTION}`,
@@ -662,11 +666,14 @@ export function formatHandback(f: Facts): string {
 		`${first}${details}`,
 		...blocked.slice(0, MAX_BLOCKED).map((l) => shown(l.slice(0, FIRST_LINE_CAP))),
 	];
-	if (o.failedToolCapture?.status === "written" && f.failed)
+	if (o.failedToolCapture?.status === "written" && f.failed) {
+		const unmatched = o.failedToolCapture.unmatchedStartCount ?? 0;
 		out.push(
-			`Failed-tool diagnostics: ${shown(o.failedToolCapture.path)} (${o.failedToolCapture.failureCount} failed tool call(s)${o.failedToolCapture.truncated ? "; truncated" : ""})`,
+			`Failed-tool diagnostics: ${shown(o.failedToolCapture.path)} (${o.failedToolCapture.failureCount} failed tool call(s)${
+				unmatched ? `, ${plural(unmatched, "end-not-observed start")}` : ""
+			}${o.failedToolCapture.truncated ? "; truncated" : ""})`,
 		);
-	else if (o.failedToolCapture?.status === "unavailable") {
+	} else if (o.failedToolCapture?.status === "unavailable") {
 		const warning = `⚠ ${shown(o.failedToolCapture.warning)}`;
 		if (f.failed) out.push(warning);
 		else out[1] = `${out[1]} ${warning}`;

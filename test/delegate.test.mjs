@@ -171,12 +171,12 @@ process.stdin.on("end", () => {
     }));
   };
   if (mode === "implement-artifacts" || mode === "implement-check-artifact-fail" || mode === "implement-read-artifact-fail") {
-    const target = "API_KEY=command-fake-secret npm run targeted-test";
+    const target = "export GITHUB_TOKEN='command-fake-secret' AWS_SECRET_ACCESS_KEY='command-aws-secret' npm run targeted-test";
     if (mode === "implement-artifacts") {
-      tool("bash", { command: target }, true, { effectiveCommand: "TOKEN=effective-fake-secret rtk npm run targeted-test", result: {
-        content: [{ type: "text", text: "Targeted failed: API_KEY=target-secret" }],
-        error: "TOKEN=error-fake-secret",
-        structuredContent: { output: "Targeted failed: API_KEY=target-secret", full_output_path: process.env.FAKE_PI_REF },
+      tool("bash", { command: target }, true, { effectiveCommand: "GITHUB_TOKEN=effective-fake-secret AWS_SECRET_ACCESS_KEY='effective-aws-secret' rtk npm run targeted-test", result: {
+        content: [{ type: "text", text: "Targeted failed: GITHUB_TOKEN=target-secret AWS_SECRET_ACCESS_KEY='target-aws-secret'" }],
+        error: "AWS_SECRET_ACCESS_KEY='error-fake-secret'",
+        structuredContent: { output: "Targeted failed: GITHUB_TOKEN=target-secret AWS_SECRET_ACCESS_KEY='target-aws-secret'", full_output_path: process.env.FAKE_PI_REF },
         details: { exitCode: 7, fullOutputPath: process.env.FAKE_PI_REF },
       } });
       tool("bash", { command: process.env.FAKE_PI_RAN || "npm test" }, false, { result: {
@@ -201,7 +201,7 @@ process.stdin.on("end", () => {
       mkdirSync(directory, { recursive: true });
       writeFileSync(join(directory, id + "-failed-tools.json"), "do not overwrite");
     }
-    emit("Implemented API_KEY=answer-fake-secret.");
+    emit("Implemented GITHUB_TOKEN=answer-fake-secret.");
     process.exit(0);
   }
   if (mode === "implement-fallback-artifacts") {
@@ -2531,11 +2531,18 @@ test("implement captures targeted failures while a later declared check passes",
 	const [entry] = artifact.entries;
 	assert.equal(entry.attempt.index, 1);
 	assert.equal(entry.toolName.text, "bash");
-	assert.equal(entry.command.rawArgsCommand.value.text, "API_KEY=[REDACTED] npm run targeted-test");
-	assert.equal(entry.command.effectiveCommand.value.text, "TOKEN=[REDACTED] rtk npm run targeted-test");
+	assert.equal(
+		entry.command.rawArgsCommand.value.text,
+		'export GITHUB_TOKEN="[REDACTED]" AWS_SECRET_ACCESS_KEY="[REDACTED]" npm run targeted-test',
+	);
+	assert.equal(
+		entry.command.effectiveCommand.value.text,
+		'GITHUB_TOKEN=[REDACTED] AWS_SECRET_ACCESS_KEY="[REDACTED]" rtk npm run targeted-test',
+	);
 	assert.equal(entry.exitCode.value, 7, "exitCode is extracted from actual result details");
-	assert.match(entry.output.value.text, /API_KEY=\[REDACTED\]/);
-	assert.equal(entry.error.value.text, "TOKEN=[REDACTED]");
+	assert.match(entry.output.value.text, /GITHUB_TOKEN=\[REDACTED\]/);
+	assert.match(entry.output.value.text, /AWS_SECRET_ACCESS_KEY="\[REDACTED\]"/);
+	assert.equal(entry.error.value.text, 'AWS_SECRET_ACCESS_KEY="[REDACTED]"');
 	assert.equal(entry.references.items[0].value.text, reference);
 	assert.equal(entry.references.items[0].kind, "full-output-path");
 	assert.equal(entry.references.fullOutputPathState, "provided");
@@ -2546,8 +2553,11 @@ test("implement captures targeted failures while a later declared check passes",
 	const serialized = JSON.stringify(artifact);
 	for (const secret of [
 		"command-fake-secret",
+		"command-aws-secret",
 		"effective-fake-secret",
+		"effective-aws-secret",
 		"target-secret",
+		"target-aws-secret",
 		"error-fake-secret",
 		"answer-fake-secret",
 		"DO NOT COPY THIS REFERENCED FILE",
@@ -2558,7 +2568,7 @@ test("implement captures targeted failures while a later declared check passes",
 	assert.match(details, /Redaction: explicit-patterns-v1; not guaranteed complete/);
 	assert.doesNotMatch(
 		`${details}\n${text(result)}`,
-		/(?:command|effective|target|error|answer)-fake-secret|target-secret/,
+		/(?:command|effective|target|error|answer)-fake-secret|(?:command|effective|target)-aws-secret|target-secret/,
 	);
 });
 
@@ -2651,6 +2661,18 @@ test("implement cancellation flushes failures and reports correlation anomalies"
 	assert.equal(artifact.entries[1].startedAt, null, "an end without a matching start stays unattributed");
 	assert.ok(artifact.entries[1].missingFields.includes("toolCallId"));
 	assert.ok(artifact.entries[1].missingFields.includes("startedAt"));
+	assert.equal(artifact.capture.failureCount, 2, "only observed failed end events count as failures");
+	assert.equal(artifact.capture.unmatchedStartCount, 2);
+	assert.equal(artifact.capture.recordedUnmatchedStartCount, 2);
+	assert.equal(artifact.unmatchedStarts[0].state, "end-not-observed");
+	assert.equal(artifact.unmatchedStarts[0].attempt.index, 1);
+	assert.ok(artifact.unmatchedStarts[0].attempt.requestedModel.text);
+	assert.ok(Number.isFinite(Date.parse(artifact.unmatchedStarts[0].startedAt)));
+	assert.equal(artifact.unmatchedStarts[0].toolName.text, "bash");
+	assert.equal(artifact.unmatchedStarts[0].toolCallId.text, "duplicate");
+	assert.equal(artifact.unmatchedStarts[0].command.rawArgsCommand.value.text, "second duplicate command");
+	assert.equal(artifact.unmatchedStarts[0].isError, null);
+	assert.equal(artifact.unmatchedStarts[0].exitCode.value, null);
 	assert.equal(artifact.capture.anomalies["duplicate-tool-call-id"], 1);
 	assert.ok(artifact.capture.anomalies["end-without-start"] >= 1);
 	assert.ok(artifact.capture.anomalies["start-without-end"] >= 2);

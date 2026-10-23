@@ -933,9 +933,18 @@ function runWorkerAttempt(
 		const flushUnclosedCalls = () => {
 			const collector = implement?.artifacts;
 			if (!collector) return;
-			for (const callsForId of captureCalls.values())
-				for (const _call of callsForId) collector.noteAnomaly("start-without-end");
-			for (const _call of anonymousCaptureCalls) collector.noteAnomaly("start-without-end");
+			const retain = (call: CapturedToolCall) =>
+				collector.recordUnmatchedStart({
+					attemptIndex,
+					requestedModel: run.model,
+					...(call.toolCallId && { toolCallId: call.toolCallId }),
+					...(call.toolName && { toolName: call.toolName }),
+					startedAt: call.startedAt,
+					cwd,
+					...(call.rawArgsCommand !== undefined && { rawArgsCommand: call.rawArgsCommand }),
+				});
+			for (const callsForId of captureCalls.values()) for (const call of callsForId) retain(call);
+			for (const call of anonymousCaptureCalls) retain(call);
 			captureCalls.clear();
 			anonymousCaptureCalls.length = 0;
 		};

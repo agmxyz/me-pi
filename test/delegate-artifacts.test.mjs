@@ -96,6 +96,61 @@ test("captures only failed calls and distinguishes observed fields from unavaila
 	assert.equal(missing.snapshot().capture.anomalies["start-without-end"], 1);
 });
 
+test("retains bounded unmatched-start provenance without counting a failure or inventing an exit", () => {
+	const collector = new FailedToolArtifactCollector("im-unmatched");
+	collector.recordUnmatchedStart({
+		attemptIndex: 2,
+		requestedModel: "provider/model",
+		toolCallId: "cancelled-call",
+		toolName: "bash",
+		startedAt: start,
+		cwd: "/workspace/project",
+		rawArgsCommand: "GITHUB_TOKEN='cancelled-command-secret'",
+	});
+	const artifact = collector.snapshot();
+	assert.ok(artifact);
+	assert.equal(artifact.entries.length, 0);
+	assert.equal(artifact.capture.failureCount, 0);
+	assert.equal(artifact.capture.recordedCount, 0);
+	assert.equal(artifact.capture.unmatchedStartCount, 1);
+	assert.equal(artifact.capture.recordedUnmatchedStartCount, 1);
+	assert.equal(artifact.capture.omittedUnmatchedStartCount, 0);
+	assert.equal(artifact.capture.anomalies["start-without-end"], 1);
+	const [call] = artifact.unmatchedStarts;
+	assert.equal(call.state, "end-not-observed");
+	assert.equal(call.attempt.index, 2);
+	assert.equal(call.toolCallId.text, "cancelled-call");
+	assert.equal(call.toolName.text, "bash");
+	assert.equal(call.startedAt, start);
+	assert.equal(call.command.rawArgsCommand.value.text, 'GITHUB_TOKEN="[REDACTED]"');
+	assert.equal(call.isError, null);
+	assert.deepEqual(call.exitCode, { state: "not-provided", value: null });
+	assert.equal(JSON.stringify(artifact).includes("cancelled-command-secret"), false);
+
+	const capped = new FailedToolArtifactCollector("im-unmatched-cap");
+	for (let index = 0; index < LIMITS.maxUnmatchedStarts + 1; index++)
+		capped.recordUnmatchedStart({
+			attemptIndex: 1,
+			requestedModel: "provider/model",
+			toolCallId: `call-${index}`,
+			toolName: "bash",
+			startedAt: start,
+			cwd: "/workspace/project",
+			rawArgsCommand: "x".repeat(LIMITS.maxTextBytes + 1),
+		});
+	const cappedArtifact = capped.snapshot();
+	assert.equal(cappedArtifact.unmatchedStarts.length, LIMITS.maxUnmatchedStarts);
+	assert.equal(cappedArtifact.capture.unmatchedStartCount, LIMITS.maxUnmatchedStarts + 1);
+	assert.equal(cappedArtifact.capture.omittedUnmatchedStartCount, 1);
+	assert.equal(cappedArtifact.capture.failureCount, 0);
+	assert.equal(cappedArtifact.capture.truncated, true);
+	assert.ok(
+		cappedArtifact.unmatchedStarts.every(
+			(entry) => entry.command.rawArgsCommand.value.bytesRetained <= LIMITS.maxTextBytes,
+		),
+	);
+});
+
 test("captures targeted and declared command failures without filtering by check designation", () => {
 	const collector = new FailedToolArtifactCollector("im-checks");
 	collector.record(
@@ -182,6 +237,34 @@ test("redacts credentials and known secret paths across all persisted text field
 	assert.equal(redactSensitiveText("Authorization: Basic basic-auth-secret").includes("basic-auth-secret"), false);
 });
 
+test("redacts prefixed secret assignments across commands, output, errors, and references", () => {
+	const collector = new FailedToolArtifactCollector("im-prefixed-secrets");
+	collector.record(
+		failed({
+			rawArgsCommand: "export GITHUB_TOKEN=plain-command-secret",
+			effectiveCommand: `AWS_SECRET_ACCESS_KEY='quoted-effective-secret'`,
+			result: {
+				outputText: `GITHUB_TOKEN="quoted-output-secret"`,
+				error: "AWS_SECRET_ACCESS_KEY=plain-error-secret",
+				fullOutputPath: "/tmp/GITHUB_TOKEN=plain-reference-secret",
+				childDiagnosticReferences: ["/tmp/AWS_SECRET_ACCESS_KEY='quoted-child-reference-secret'"],
+			},
+		}),
+	);
+	const serialized = JSON.stringify(collector.snapshot());
+	for (const secret of [
+		"plain-command-secret",
+		"quoted-effective-secret",
+		"quoted-output-secret",
+		"plain-error-secret",
+		"plain-reference-secret",
+		"quoted-child-reference-secret",
+	])
+		assert.equal(serialized.includes(secret), false, `did not redact ${secret}`);
+	assert.ok(serialized.includes("GITHUB_TOKEN=[REDACTED]"));
+	assert.ok(serialized.includes("AWS_SECRET_ACCESS_KEY="));
+});
+
 test("marks malformed event-derived fields missing instead of coercing them", () => {
 	const collector = new FailedToolArtifactCollector("im-malformed");
 	assert.equal(collector.record(null), false);
@@ -240,6 +323,34 @@ test("caps failed records and the complete UTF-8 JSON artifact including overhea
 	assert.equal(artifact.capture.truncated, true);
 	assert.ok(Buffer.byteLength(JSON.stringify(artifact), "utf8") <= LIMITS.maxArtifactBytes);
 	assert.ok(artifact.entries.every((entry) => entry.truncated));
+});
+
+test("aggregate fitting keeps retained UTF-8 byte counts equal to stored text", () => {
+	const collector = new FailedToolArtifactCollector("im-aggregate-byte-counts");
+	for (let index = 0; index < LIMITS.maxFailedCalls; index++)
+		collector.record(
+			failed({
+				rawArgsCommand: "x".repeat(LIMITS.maxTextBytes),
+				result: { outputText: "é".repeat(2048) },
+			}),
+		);
+	const artifact = collector.snapshot();
+	assert.ok(artifact.capture.truncated);
+	assert.ok(Buffer.byteLength(JSON.stringify(artifact), "utf8") <= LIMITS.maxArtifactBytes);
+	for (const entry of artifact.entries) {
+		const texts = [
+			entry.cwd.value,
+			entry.command?.rawArgsCommand.value,
+			entry.command?.effectiveCommand.value,
+			entry.error.value,
+			entry.output.value,
+			...entry.childDiagnostics.items,
+			...entry.references.items.map((reference) => reference.value),
+			entry.resultSummary.value,
+		].filter(Boolean);
+		for (const value of texts)
+			assert.equal(value.bytesRetained, Buffer.byteLength(value.text, "utf8"), value.text.slice(0, 40));
+	}
 });
 
 test("bounds references and stores full-output paths only as references", () => {

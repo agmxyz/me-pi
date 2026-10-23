@@ -483,6 +483,7 @@ test("formatHandback keeps a passing capture warning inline and links artifacts 
 					path: "/tmp/im3-failed-tools.json",
 					bytes: 100,
 					failureCount: 2,
+					unmatchedStartCount: 1,
 					truncated: true,
 				},
 			},
@@ -490,27 +491,32 @@ test("formatHandback keeps a passing capture warning inline and links artifacts 
 	);
 	assert.match(
 		linked,
-		/^Failed-tool diagnostics: \/tmp\/im3-failed-tools\.json \(2 failed tool call\(s\); truncated\)$/m,
+		/^Failed-tool diagnostics: \/tmp\/im3-failed-tools\.json \(2 failed tool call\(s\), 1 end-not-observed start; truncated\)$/m,
 	);
 });
 
 test("details and handback redact worker text and escape control characters", async () => {
 	const { repo } = goalFixture();
 	const job = await prepare(repo, "im98", CHECK);
-	job.check.command = "API_KEY=check-fake-secret npm test";
+	job.check.command = "GITHUB_TOKEN=check-fake-secret npm test";
 	job.check.status = "pass";
 	job.check.runs.push(`pass: ${job.check.command}`);
 	const facts = await finish(job, {
-		answer: "API_KEY=answer-fake-secret \u001b[2J",
-		failedToolCapture: { status: "unavailable", warning: "capture unavailable: TOKEN=warning-fake-secret" },
+		answer: `AWS_SECRET_ACCESS_KEY='answer-fake-secret' \u001b[2J`,
+		failedToolCapture: {
+			status: "unavailable",
+			warning: `capture unavailable: GITHUB_TOKEN="warning-fake-secret"`,
+		},
 	});
 	assert.equal(facts.failed, false);
 	const details = readFileSync(facts.detailsPath, "utf8");
 	assert.doesNotMatch(details, /check-fake-secret|answer-fake-secret|warning-fake-secret/);
+	assert.ok(details.includes("[REDACTED]"));
 	assert.ok(details.includes("\\u001b[2J"));
 	const handback = formatHandback(facts);
 	assert.equal(handback.split("\n").length, 2);
 	assert.doesNotMatch(handback, /check-fake-secret|answer-fake-secret|warning-fake-secret/);
+	assert.ok(handback.includes("[REDACTED]"));
 	assert.ok(handback.includes("\\u001b[2J"));
 });
 

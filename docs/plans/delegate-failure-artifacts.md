@@ -30,7 +30,7 @@ Suggested caps: at most 100 failed calls/job, 64 KiB per output text, 512 KiB to
 
 ### F3: final review fixes
 
-Status: open
+Status: closed
 
 Resolve the final review findings without expanding capture scope:
 - High: assignment redaction must match prefixed underscore-delimited secret names such as GITHUB_TOKEN and AWS_SECRET_ACCESS_KEY, including values persisted in artifact fields, warnings, details, or handbacks. Do not read actual environment or credential values. Add synthetic fixtures for common prefixes and quoting/assignment forms.

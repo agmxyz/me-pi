@@ -13,6 +13,7 @@ import { isAbsolute, join } from "node:path";
 
 export const FAILED_TOOL_ARTIFACT_LIMITS = {
 	maxFailedCalls: 100,
+	maxUnmatchedStarts: 100,
 	maxTextBytes: 64 * 1024,
 	maxArtifactBytes: 512 * 1024,
 	maxReferencesPerCall: 20,
@@ -109,15 +110,43 @@ export type FailedToolArtifactEntry = {
 	truncated: boolean;
 };
 
+export type UnmatchedToolStartInput = {
+	attemptIndex?: number;
+	requestedModel?: string;
+	toolCallId?: string;
+	toolName?: string;
+	startedAt?: string | number | Date;
+	cwd?: string;
+	rawArgsCommand?: string;
+};
+
+export type UnmatchedToolStartArtifactEntry = {
+	state: "end-not-observed";
+	attempt: { index: number | null; requestedModel: ArtifactText | null };
+	toolCallId: ArtifactText | null;
+	toolName: ArtifactText | null;
+	startedAt: string | null;
+	cwd: TextField;
+	command: null | { rawArgsCommand: TextField };
+	isError: null;
+	exitCode: { state: "not-provided"; value: null };
+	missingFields: string[];
+	truncated: boolean;
+};
+
 export type FailedToolArtifact = {
 	version: 1;
 	jobId: string;
 	redaction: typeof FAILED_TOOL_ARTIFACT_REDACTION;
 	entries: FailedToolArtifactEntry[];
+	unmatchedStarts: UnmatchedToolStartArtifactEntry[];
 	capture: {
 		failureCount: number;
 		recordedCount: number;
 		omittedCount: number;
+		unmatchedStartCount: number;
+		recordedUnmatchedStartCount: number;
+		omittedUnmatchedStartCount: number;
 		truncated: boolean;
 		anomalies: CaptureAnomalies;
 	};
@@ -125,7 +154,14 @@ export type FailedToolArtifact = {
 
 export type ArtifactWriteResult =
 	| { status: "empty" }
-	| { status: "written"; path: string; bytes: number; failureCount: number; truncated: boolean }
+	| {
+			status: "written";
+			path: string;
+			bytes: number;
+			failureCount: number;
+			unmatchedStartCount: number;
+			truncated: boolean;
+	  }
 	| { status: "unavailable"; warning: string };
 
 const PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi;
@@ -133,7 +169,7 @@ const AUTH_HEADER = /((?:authorization|proxy-authorization)\s*:\s*)(?:Bearer|Bas
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi;
 const CREDENTIAL_URL = /\b((?:https?|ssh):\/\/)[^/\s:@]+:[^@\s/]+@/gi;
 const CREDENTIAL_ASSIGNMENT =
-	/\b((?:api[_-]?key|access[_-]?token|auth(?:orization)?|client[_-]?secret|password|passwd|secret|token|credential|private[_-]?key)\b["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&}]+)/gi;
+	/\b((?:[A-Za-z0-9]+_)*(?:api[_-]?key|access[_-]?token|auth(?:orization)?|client[_-]?secret|password|passwd|secret|token|credential|credentials|private[_-]?key)(?:_[A-Za-z0-9]+)*\b["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&}]+)/gi;
 const TOKEN =
 	/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b/g;
 const SECRET_HOME_PATH =
@@ -296,7 +332,9 @@ function summaryText(value: unknown): { text: string; truncated: boolean } | und
 	}
 }
 
-function textValues(entry: FailedToolArtifactEntry): { value: ArtifactText; group: string }[] {
+function textValues(
+	entry: FailedToolArtifactEntry | UnmatchedToolStartArtifactEntry,
+): { value: ArtifactText; group: string }[] {
 	const values: { value: ArtifactText; group: string }[] = [];
 	if (entry.cwd.value) values.push({ value: entry.cwd.value, group: "command" });
 	const addField = (item: TextField, group: string) => {
@@ -304,13 +342,15 @@ function textValues(entry: FailedToolArtifactEntry): { value: ArtifactText; grou
 	};
 	if (entry.command) {
 		addField(entry.command.rawArgsCommand, "command");
-		addField(entry.command.effectiveCommand, "command");
+		if ("effectiveCommand" in entry.command) addField(entry.command.effectiveCommand, "command");
 	}
-	addField(entry.error, "error");
-	addField(entry.output, "output");
-	for (const item of entry.childDiagnostics.items) values.push({ value: item, group: "diagnostics" });
-	for (const item of entry.references.items) values.push({ value: item.value, group: "references" });
-	addField(entry.resultSummary, "summary");
+	if ("error" in entry) {
+		addField(entry.error, "error");
+		addField(entry.output, "output");
+		for (const item of entry.childDiagnostics.items) values.push({ value: item, group: "diagnostics" });
+		for (const item of entry.references.items) values.push({ value: item.value, group: "references" });
+		addField(entry.resultSummary, "summary");
+	}
 	return values;
 }
 
@@ -333,29 +373,29 @@ function prefixForEncodedBudget(text: string, budget: number): string {
 	return best;
 }
 
-function refreshEntryTruncation(entry: FailedToolArtifactEntry): void {
+function refreshEntryTruncation(entry: FailedToolArtifactEntry | UnmatchedToolStartArtifactEntry): void {
 	entry.truncated ||= textValues(entry).some(({ value }) => value.truncated);
-	entry.truncated ||= entry.childDiagnostics.omitted > 0 || entry.references.omitted > 0;
+	if ("childDiagnostics" in entry)
+		entry.truncated ||= entry.childDiagnostics.omitted > 0 || entry.references.omitted > 0;
 }
 
 function fitArtifact(artifact: FailedToolArtifact): FailedToolArtifact {
 	const encoded = () => JSON.stringify(artifact);
 	if (Buffer.byteLength(encoded(), "utf8") <= FAILED_TOOL_ARTIFACT_LIMITS.maxArtifactBytes) return artifact;
 
-	const candidates = artifact.entries.flatMap((entry) => {
+	const candidates = [...artifact.entries, ...artifact.unmatchedStarts].flatMap((entry) => {
 		const all = textValues(entry);
 		return all.map(({ value, group }) => ({
 			entry,
 			value,
 			group,
 			originalText: value.text,
-			originalRetained: value.bytesRetained,
 			initiallyTruncated: value.truncated,
 		}));
 	});
 	for (const candidate of candidates) {
 		candidate.value.text = "";
-		candidate.value.bytesRetained = candidate.originalRetained;
+		candidate.value.bytesRetained = 0;
 		if (candidate.originalText) {
 			candidate.value.truncated = true;
 			candidate.entry.truncated = true;
@@ -387,9 +427,19 @@ function fitArtifact(artifact: FailedToolArtifact): FailedToolArtifact {
 		artifact.capture.truncated = true;
 		artifact.capture.recordedCount = artifact.entries.length;
 	}
+	while (artifact.unmatchedStarts.length && size() > FAILED_TOOL_ARTIFACT_LIMITS.maxArtifactBytes) {
+		artifact.unmatchedStarts.pop();
+		artifact.capture.omittedUnmatchedStartCount++;
+		artifact.capture.truncated = true;
+		artifact.capture.recordedUnmatchedStartCount = artifact.unmatchedStarts.length;
+	}
 
 	let available = FAILED_TOOL_ARTIFACT_LIMITS.maxArtifactBytes - size();
-	const retainedValues = new Set(artifact.entries.flatMap((entry) => textValues(entry).map(({ value }) => value)));
+	const retainedValues = new Set(
+		[...artifact.entries, ...artifact.unmatchedStarts].flatMap((entry) =>
+			textValues(entry).map(({ value }) => value),
+		),
+	);
 	const priorities = ["command", "error", "references", "output", "diagnostics", "summary"];
 	for (const group of priorities) {
 		let pending = candidates.filter(
@@ -417,7 +467,7 @@ function fitArtifact(artifact: FailedToolArtifact): FailedToolArtifact {
 			pending = remaining;
 		}
 	}
-	for (const entry of artifact.entries) refreshEntryTruncation(entry);
+	for (const entry of [...artifact.entries, ...artifact.unmatchedStarts]) refreshEntryTruncation(entry);
 	if (size() > FAILED_TOOL_ARTIFACT_LIMITS.maxArtifactBytes) {
 		// This can only be reached if bounded metadata changes in a future schema; fail closed rather than write a large file.
 		throw new Error("artifact metadata exceeds the aggregate byte limit");
@@ -611,12 +661,75 @@ function makeEntry(
 	return entry;
 }
 
+function makeUnmatchedStart(
+	input: Record<string, unknown>,
+	onAnomaly: (kind: ArtifactAnomalyKind) => void,
+): UnmatchedToolStartArtifactEntry {
+	const missing = new Set<string>();
+	const invalid = () => onAnomaly("invalid-field");
+	const attemptIndexField = field(input, "attemptIndex");
+	const attemptIndex = safeIndex(attemptIndexField.value);
+	if (!attemptIndexField.present || attemptIndex === null) {
+		missing.add("attempt.index");
+		if (attemptIndexField.present) invalid();
+	}
+	const model = field(input, "requestedModel");
+	const requestedModel = typeof model.value === "string" ? boundedText(model.value, MAX_MODEL_BYTES) : null;
+	if (!requestedModel) {
+		missing.add("attempt.requestedModel");
+		if (model.present) invalid();
+	}
+	const callId = field(input, "toolCallId");
+	const toolCallId =
+		typeof callId.value === "string" && callId.value.length > 0 ? boundedText(callId.value, MAX_CALL_ID_BYTES) : null;
+	if (!toolCallId) missing.add("toolCallId");
+	const tool = field(input, "toolName");
+	const toolName =
+		typeof tool.value === "string" && tool.value.length > 0 ? boundedText(tool.value, MAX_TOOL_NAME_BYTES) : null;
+	if (!toolName) {
+		missing.add("toolName");
+		if (tool.present) invalid();
+	}
+	const started = field(input, "startedAt");
+	const startedAt = started.present ? timestamp(started.value) : { value: null, ms: null };
+	if (!started.present || startedAt.value === null) {
+		missing.add("startedAt");
+		if (started.present) invalid();
+	}
+	const cwd = fieldText(input, "cwd", 4096, missing, "cwd", invalid);
+	let command: UnmatchedToolStartArtifactEntry["command"] = null;
+	if (tool.value === "bash")
+		command = {
+			rawArgsCommand: fieldText(input, "rawArgsCommand", TEXT_CAP, missing, "command.rawArgs.command", invalid),
+		};
+	const entry: UnmatchedToolStartArtifactEntry = {
+		state: "end-not-observed",
+		attempt: { index: attemptIndex, requestedModel },
+		toolCallId,
+		toolName,
+		startedAt: startedAt.value,
+		cwd,
+		command,
+		isError: null,
+		exitCode: { state: "not-provided", value: null },
+		missingFields: [...missing],
+		truncated: false,
+	};
+	entry.truncated =
+		Boolean(requestedModel?.truncated || toolCallId?.truncated || toolName?.truncated) ||
+		textValues(entry).some(({ value }) => value.truncated);
+	return entry;
+}
+
 /** Job-scoped collector. Its input is normalized event-derived data; it never reads tool input beyond a Bash command. */
 export class FailedToolArtifactCollector {
 	readonly jobId: string;
 	private readonly entries: FailedToolArtifactEntry[] = [];
+	private readonly unmatchedStarts: UnmatchedToolStartArtifactEntry[] = [];
 	private failureCount = 0;
 	private omittedCount = 0;
+	private unmatchedStartCount = 0;
+	private omittedUnmatchedStartCount = 0;
 	private truncated = false;
 	private readonly anomalies: CaptureAnomalies = Object.fromEntries(
 		ANOMALY_KINDS.map((kind) => [kind, 0]),
@@ -643,23 +756,48 @@ export class FailedToolArtifactCollector {
 		return true;
 	}
 
+	/** Record a started call whose end event was not observed; it is not counted as a failed tool call. */
+	recordUnmatchedStart(input: UnmatchedToolStartInput): boolean {
+		const record = asRecord(input);
+		if (!record) {
+			this.noteAnomaly("malformed-event");
+			return false;
+		}
+		this.unmatchedStartCount++;
+		this.noteAnomaly("start-without-end");
+		if (this.unmatchedStarts.length >= FAILED_TOOL_ARTIFACT_LIMITS.maxUnmatchedStarts) {
+			this.omittedUnmatchedStartCount++;
+			this.truncated = true;
+			this.noteAnomaly("record-cap");
+			return false;
+		}
+		const entry = makeUnmatchedStart(record, (kind) => this.noteAnomaly(kind));
+		this.unmatchedStarts.push(entry);
+		if (entry.truncated) this.truncated = true;
+		return true;
+	}
+
 	/** Record correlation or lifecycle anomalies without retaining the source event or its payload. */
 	noteAnomaly(kind: ArtifactAnomalyKind): void {
 		this.anomalies[kind]++;
 	}
 
-	/** A detached, redacted, size-bounded schema snapshot; undefined means no failed calls were observed. */
+	/** A detached, redacted, size-bounded schema snapshot; undefined means no failures or unmatched starts were observed. */
 	snapshot(): FailedToolArtifact | undefined {
-		if (!this.failureCount) return undefined;
+		if (!this.failureCount && !this.unmatchedStartCount) return undefined;
 		const artifact: FailedToolArtifact = {
 			version: 1,
 			jobId: this.jobId,
 			redaction: FAILED_TOOL_ARTIFACT_REDACTION,
 			entries: structuredClone(this.entries),
+			unmatchedStarts: structuredClone(this.unmatchedStarts),
 			capture: {
 				failureCount: this.failureCount,
 				recordedCount: this.entries.length,
 				omittedCount: this.omittedCount,
+				unmatchedStartCount: this.unmatchedStartCount,
+				recordedUnmatchedStartCount: this.unmatchedStarts.length,
+				omittedUnmatchedStartCount: this.omittedUnmatchedStartCount,
 				truncated: this.truncated,
 				anomalies: { ...this.anomalies },
 			},
@@ -715,6 +853,7 @@ export class FailedToolArtifactCollector {
 				path,
 				bytes,
 				failureCount: artifact.capture.failureCount,
+				unmatchedStartCount: artifact.capture.unmatchedStartCount,
 				truncated: artifact.capture.truncated,
 			};
 		} catch (error) {
