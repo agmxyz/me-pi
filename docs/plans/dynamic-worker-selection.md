@@ -12,7 +12,7 @@ Allow the user or coordinator to select a one-off delegate model and/or thinking
 
 ## Ticket: implement dynamic worker selection
 
-Status: open
+Status: closed
 
 Paths: extensions/delegate.ts, extensions/delegate-command.ts only if sharing existing availability validation is necessary, test/delegate.test.mjs and relevant fixtures, docs/delegate.md.
 

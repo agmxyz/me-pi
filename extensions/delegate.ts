@@ -498,9 +498,6 @@ export function resolveRun(
 		return thinking;
 	};
 	const configuredEntries = [...set.scout.models, ...set.worker.models];
-	const configured = [...new Set(configuredEntries.map((entry) => entry.model))];
-	if (run.model && configured.length && !configured.includes(run.model))
-		throw new Error(`model ${JSON.stringify(run.model)} is not in the delegate pools: ${configured.join(", ")}`);
 	const candidates = run.model
 		? pool.models.some((entry) => entry.model === run.model)
 			? [
@@ -1067,11 +1064,49 @@ function configuredModels(set: ModelSet): string[] {
 	return [...new Set([...set.scout.models, ...set.worker.models].map((entry) => entry.model))];
 }
 
-function buildSchema(set: ModelSet) {
-	const models = configuredModels(set);
-	const model = models.length
-		? { type: "string", enum: models, description: "A model from the user's scout or worker pool." }
-		: { type: "string", description: "A Pi model id; omit for the session model." };
+interface ModelAvailabilityRegistry {
+	find(provider: string, modelId: string): { provider: string; id: string } | undefined;
+	getAvailable(): readonly { provider: string; id: string }[];
+	hasConfiguredAuth(model: { provider: string; id: string }): boolean;
+}
+
+/** Validate unlisted explicit models without inspecting or returning credential material. */
+function validateOneOffModel(modelId: string, registry: unknown): void {
+	const separator = modelId.indexOf("/");
+	if (separator <= 0 || separator === modelId.length - 1)
+		throw new Error(`model ${JSON.stringify(modelId)} must be an exact Pi model ID in provider/model form`);
+	const provider = modelId.slice(0, separator);
+	const id = modelId.slice(separator + 1);
+	const api = registry as ModelAvailabilityRegistry | undefined;
+	if (
+		!api ||
+		typeof api.find !== "function" ||
+		typeof api.getAvailable !== "function" ||
+		typeof api.hasConfiguredAuth !== "function"
+	)
+		throw new Error(
+			`cannot validate model ${JSON.stringify(modelId)}: Pi's model registry lacks catalog/auth lookup`,
+		);
+	const model = api.find(provider, id);
+	if (!model || model.provider !== provider || model.id !== id)
+		throw new Error(`unknown model ${JSON.stringify(modelId)}: no exact provider/model match in Pi's catalog`);
+	const available = api.getAvailable();
+	if (!Array.isArray(available)) throw new Error("Pi's model registry returned an invalid available-model list");
+	if (available.some((candidate) => candidate.provider === provider && candidate.id === id)) return;
+	if (!api.hasConfiguredAuth(model))
+		throw new Error(
+			`model ${JSON.stringify(modelId)} is unauthenticated: Pi has no configured authentication for provider ${JSON.stringify(provider)}`,
+		);
+	throw new Error(
+		`model ${JSON.stringify(modelId)} is unavailable: Pi does not list it as available; provider authentication may not be usable`,
+	);
+}
+
+function buildSchema() {
+	const model = {
+		type: "string",
+		description: "An exact Pi model ID in provider/model form; omit to use the role's configured model selection.",
+	};
 	return {
 		type: "object",
 		properties: {
@@ -1103,7 +1138,7 @@ function buildSchema(set: ModelSet) {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker on the role's default model. For several models on the same task, one entry per model (run in parallel). Not for implement: it uses the worker pool in delegate.json in order.",
+					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Unlisted exact models are one-off and do not fall back to the pool; models listed in the role's pool retain ordered fallback. For several models on the same task, use one entry per model. Not for implement: it uses the worker pool in delegate.json in order.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -1288,13 +1323,6 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
-	let schemaSet: ModelSet = defaultModelSet();
-	try {
-		schemaSet = loadModelSet();
-	} catch {
-		// Reported when the tool runs, with the reason.
-	}
-
 	pi.registerTool({
 		name: "delegate",
 		label: "Delegate",
@@ -1304,7 +1332,7 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme) => renderCall(args, theme),
 		renderResult: (result, options, theme) => renderResult(result as any, options, theme),
-		parameters: buildSchema(schemaSet) as any,
+		parameters: buildSchema() as any,
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
 			const fail = (text: string) => ({ content: [{ type: "text" as const, text }], details: {}, isError: true });
@@ -1369,6 +1397,9 @@ export default function (pi: ExtensionAPI) {
 			try {
 				set = loadModelSet();
 				session = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+				const configured = new Set(configuredModels(set));
+				for (const spec of specs)
+					if (spec.model && !configured.has(spec.model)) validateOneOffModel(spec.model, ctx?.modelRegistry);
 				resolved = specs.map((r) => resolveRun(role, r, set, session, ctx?.thinkingLevel));
 			} catch (err: any) {
 				return fail(err.message);

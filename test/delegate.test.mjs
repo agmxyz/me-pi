@@ -68,6 +68,26 @@ const POOL_SET = {
 		thinking: "max",
 	},
 };
+const ONE_OFF = "google/gemini-test";
+const UNAUTHENTICATED = "unauthed/model";
+const REGISTRY_MODELS = [HAIKU, SONNET, OPUS, LUNA, ONE_OFF];
+
+function registryFixture({ catalog = REGISTRY_MODELS, available = catalog, authenticated } = {}) {
+	const model = (id) => {
+		const slash = id.indexOf("/");
+		return slash > 0
+			? { provider: id.slice(0, slash), id: id.slice(slash + 1), name: id.slice(slash + 1) }
+			: undefined;
+	};
+	const models = catalog.map(model).filter(Boolean);
+	const availableModels = available.map(model).filter(Boolean);
+	const authProviders = new Set(authenticated ?? availableModels.map((m) => m.provider));
+	return {
+		find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
+		getAvailable: () => availableModels,
+		hasConfiguredAuth: (candidate) => authProviders.has(candidate.provider),
+	};
+}
 
 // Fake pi: reads the prompt from stdin, echoes how it was invoked; FAKE_PI_MODE drives failures.
 const FAKE_BIN = join(TEST_HOME, "fake-pi.mjs");
@@ -230,7 +250,12 @@ process.stdin.on("end", () => {
 	{ mode: 0o755 },
 );
 
-const CTX = { cwd: REPO_ROOT, model: { provider: "anthropic", id: "claude-session" }, thinkingLevel: "high" };
+const CTX = {
+	cwd: REPO_ROOT,
+	model: { provider: "anthropic", id: "claude-session" },
+	thinkingLevel: "high",
+	modelRegistry: registryFixture(),
+};
 const text = (res) => res.content.map((c) => c.text).join("\n");
 
 function applyEnv(vars) {
@@ -579,7 +604,7 @@ test("output with no files written says so; without output there is no write too
 	assert.doesNotMatch(without, /Files in|,write/);
 });
 
-test("model pools resolve per-model thinking, ordered fallbacks, and explicit overrides", () => {
+test("model pools resolve per-model thinking, ordered fallbacks, and independent overrides", () => {
 	assert.deepEqual(resolveRun("scout", {}, POOL_SET), {
 		model: LUNA,
 		candidates: [
@@ -609,6 +634,47 @@ test("model pools resolve per-model thinking, ordered fallbacks, and explicit ov
 		candidates: [{ model: HAIKU, thinking: "off" }],
 		thinking: "off",
 	});
+	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, POOL_SET), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "max" }],
+		thinking: "max",
+	});
+	assert.deepEqual(resolveRun("review", { model: ONE_OFF, thinking: "low" }, POOL_SET), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "low" }],
+		thinking: "low",
+	});
+	const perModelSet = {
+		...POOL_SET,
+		worker: {
+			models: [
+				{ model: HAIKU, thinking: "high" },
+				{ model: OPUS, thinking: "low" },
+			],
+			thinking: "medium",
+		},
+	};
+	assert.deepEqual(resolveRun("review", { model: OPUS }, perModelSet), {
+		model: OPUS,
+		candidates: [
+			{ model: OPUS, thinking: "low" },
+			{ model: HAIKU, thinking: "high" },
+		],
+		thinking: "low",
+	});
+	assert.deepEqual(resolveRun("review", { thinking: "medium" }, perModelSet), {
+		model: HAIKU,
+		candidates: [
+			{ model: HAIKU, thinking: "medium" },
+			{ model: OPUS, thinking: "medium" },
+		],
+		thinking: "medium",
+	});
+	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, perModelSet), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "medium" }],
+		thinking: "medium",
+	});
 	assert.deepEqual(resolveRun("scout", { thinking: "high" }, POOL_SET), {
 		model: LUNA,
 		candidates: [
@@ -617,6 +683,156 @@ test("model pools resolve per-model thinking, ordered fallbacks, and explicit ov
 		],
 		thinking: "low",
 	});
+	assert.deepEqual(resolveRun("scout", { model: ONE_OFF, thinking: "off" }, POOL_SET), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "off" }],
+		thinking: "off",
+	});
+	assert.deepEqual(resolveRun("scout", { model: ONE_OFF, thinking: "high" }, POOL_SET), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "low" }],
+		thinking: "low",
+	});
+});
+
+test("unlisted models use role defaults or independent thinking overrides without changing config", async (t) => {
+	const marker = scratch("one-off-marker");
+	const config = {
+		version: 3,
+		scout: { models: [], thinking: "low" },
+		worker: {
+			models: [
+				{ model: HAIKU, thinking: "high" },
+				{ model: OPUS, thinking: "low" },
+			],
+			thinking: "medium",
+		},
+	};
+	const { tool } = setup(t, { config, env: { FAKE_PI_MARKER: marker } });
+	const path = process.env.ME_PI_DELEGATE_CONFIG;
+	const original = readFileSync(path, "utf8");
+
+	const defaulted = await run(tool, { role: "review", task: "x", runs: [{ model: ONE_OFF }] });
+	assert.equal(defaulted.isError, false, text(defaulted));
+	assert.match(text(defaulted), new RegExp(`DONE model=${ONE_OFF} thinking=medium`));
+
+	const overridden = await run(tool, {
+		role: "review",
+		task: "x",
+		runs: [{ model: ONE_OFF, thinking: "high" }],
+	});
+	assert.equal(overridden.isError, false, text(overridden));
+	assert.match(text(overridden), new RegExp(`DONE model=${ONE_OFF} thinking=high`));
+
+	const listed = await run(tool, { role: "review", task: "x", runs: [{ model: OPUS }] });
+	assert.equal(listed.isError, false, text(listed));
+	assert.match(text(listed), new RegExp(`DONE model=${OPUS} thinking=low`));
+	assert.equal(readFileSync(path, "utf8"), original, "one-off choices do not persist to delegate.json");
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => {
+				const { model, thinking } = JSON.parse(line);
+				return [model, thinking];
+			}),
+		[
+			[ONE_OFF, "medium"],
+			[ONE_OFF, "high"],
+			[OPUS, "low"],
+		],
+	);
+});
+
+test("an explicit thinking override applies to every configured fallback candidate", async (t) => {
+	const marker = scratch("thinking-fallback-marker");
+	const config = {
+		version: 3,
+		scout: { models: [], thinking: "low" },
+		worker: {
+			models: [
+				{ model: HAIKU, thinking: "high" },
+				{ model: SONNET, thinking: "low" },
+			],
+			thinking: "medium",
+		},
+	};
+	const { tool } = setup(t, {
+		config,
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "review", task: "x", runs: [{ thinking: "medium" }] });
+	assert.equal(res.isError, false, text(res));
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => {
+				const { model, thinking } = JSON.parse(line);
+				return [model, thinking];
+			}),
+		[
+			[HAIKU, "medium"],
+			[SONNET, "medium"],
+		],
+	);
+});
+
+test("one-off models must be exact catalog IDs with usable authentication", async (t) => {
+	const marker = scratch("invalid-one-off-marker");
+	const { tool } = setup(t, { config: POOL_SET, env: { FAKE_PI_MARKER: marker } });
+	const registry = registryFixture({
+		catalog: [...REGISTRY_MODELS, UNAUTHENTICATED],
+		available: REGISTRY_MODELS,
+	});
+	const context = { ...CTX, modelRegistry: registry };
+	for (const [model, error] of [
+		["google/not-in-catalog", /unknown model .*no exact provider\/model match/],
+		[UNAUTHENTICATED, /unauthenticated.*no configured authentication/],
+		["Gemini Flash", /must be an exact Pi model ID in provider\/model form/],
+	]) {
+		const res = await run(tool, { role: "review", task: "x", runs: [{ model }] }, undefined, undefined, context);
+		assert.equal(res.isError, true, model);
+		assert.match(text(res), error);
+	}
+	const unsupported = await run(
+		tool,
+		{ role: "review", task: "x", runs: [{ model: ONE_OFF }] },
+		undefined,
+		undefined,
+		{ ...CTX, modelRegistry: {} },
+	);
+	assert.equal(unsupported.isError, true);
+	assert.match(text(unsupported), /model registry lacks catalog\/auth lookup/);
+	assert.equal(existsSync(marker), false, "invalid or unverifiable models never spawn a worker");
+});
+
+test("an unlisted model never falls back to the configured pool", async (t) => {
+	const marker = scratch("one-off-no-fallback-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 3,
+			scout: { models: [], thinking: "low" },
+			worker: {
+				models: [
+					{ model: HAIKU, thinking: "high" },
+					{ model: OPUS, thinking: "low" },
+				],
+				thinking: "medium",
+			},
+		},
+		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: ONE_OFF, FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { role: "review", task: "x", runs: [{ model: ONE_OFF }] });
+	assert.equal(res.isError, true);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[ONE_OFF],
+	);
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 });
 
 test("a rate-limited worker falls back through its pool and reports both attempts", async (t) => {
@@ -862,7 +1078,11 @@ test("v1 and v2 configs migrate to per-model levels, and empty pools use the ses
 		],
 		thinking: "max",
 	});
-	assert.throws(() => resolveRun("review", { model: "openai/gpt-x" }, v2), /not in the delegate pools/);
+	assert.deepEqual(resolveRun("review", { model: "openai/gpt-x" }, v2), {
+		model: "openai/gpt-x",
+		candidates: [{ model: "openai/gpt-x", thinking: "max" }],
+		thinking: "max",
+	});
 
 	const empty = loadModelSet(join(TEST_HOME, "nope.json"));
 	assert.deepEqual(resolveRun("scout", {}, empty, "x/session", "off"), {
@@ -1055,10 +1275,12 @@ test("v3 model configs validate per-model thinking", (t) => {
 	});
 });
 
-test("the schema offers only the set's models", (t) => {
+test("the schema allows exact model IDs outside the configured pools", (t) => {
 	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
-	assert.deepEqual(tool.parameters.properties.runs.items.properties.model.enum, [HAIKU, OPUS]);
-	assert.equal(setup(t).tool.parameters.properties.runs.items.properties.model.enum, undefined);
+	const model = tool.parameters.properties.runs.items.properties.model;
+	assert.equal(model.type, "string");
+	assert.equal(model.enum, undefined);
+	assert.match(model.description, /exact Pi model ID/);
 });
 
 test(
@@ -1268,7 +1490,10 @@ test("bad calls are refused before any worker starts", async (t) => {
 		[{ role: "review", task: "x", runs: ["x"] }, /runs\[0\] must be \{ model\?: string, thinking\?: off\|/],
 		[{ role: "review", task: "x", runs: [{}, { thinking: "huge" }] }, /runs\[1\] must be/],
 		[{ role: "review", task: "x", model: OPUS }, /unknown parameter\(s\) model; set model and thinking inside runs/],
-		[{ role: "review", task: "x", runs: [{ model: "openai/gpt-x" }] }, /not in the delegate pools/],
+		[
+			{ role: "review", task: "x", runs: [{ model: "openai/gpt-x" }] },
+			/unknown model .*no exact provider\/model match/,
+		],
 	]) {
 		const res = await run(tool, params);
 		assert.equal(res.isError, true, JSON.stringify(params));
