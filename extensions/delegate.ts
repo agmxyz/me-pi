@@ -46,6 +46,8 @@ import {
 	type ActivityWidgetRow,
 	activityWidget,
 	type DelegateView,
+	type Persona,
+	pickPersona,
 	progressLines,
 	type RunView,
 	renderCall,
@@ -547,7 +549,12 @@ function resumeRun(base: ResolvedRun, result: RunResult): ResolvedRun {
 	return { candidates, model: first.model, thinking: first.thinking };
 }
 
-function initialActivity(runs: ResolvedRun[], sessionModel: string | undefined, startedAt: number): ActiveWorker[] {
+function initialActivity(
+	runs: ResolvedRun[],
+	personas: Persona[],
+	sessionModel: string | undefined,
+	startedAt: number,
+): ActiveWorker[] {
 	return runs.map((run, index) => {
 		const candidate = run.candidates[0];
 		return {
@@ -557,6 +564,7 @@ function initialActivity(runs: ResolvedRun[], sessionModel: string | undefined, 
 			startedAt,
 			active: true,
 			fallbacks: 0,
+			persona: personas[index],
 		};
 	});
 }
@@ -1247,8 +1255,10 @@ function runView(
 	r: Pick<RunResult, "requested" | "web"> & Partial<RunResult>,
 	done: boolean,
 	round2Failure?: string,
+	persona?: Persona,
 ): RunView {
 	return {
+		persona,
 		model: r.requested.model ?? r.model ?? "session model",
 		thinking: r.requested.thinking,
 		web: r.web,
@@ -1525,6 +1535,7 @@ export default function (pi: ExtensionAPI) {
 					lastTool: worker.lastTool,
 					fallbacks: worker.fallbacks,
 					stage: call.stage ?? "Workers",
+					persona: worker.persona,
 				})),
 		);
 	const clearActivityWidget = () => {
@@ -1698,6 +1709,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const models = resolved.map((r) => r.model ?? "session model");
+			// Picked once per worker: progress, the widget, and the rebuttal round all reuse it.
+			const personas = resolved.map(() => pickPersona(role));
 			const busy = [...active.values()].reduce((sum, a) => sum + a.models.length, 0);
 			if (busy + resolved.length > MAX_RUNS)
 				return fail(
@@ -1719,7 +1732,7 @@ export default function (pi: ExtensionAPI) {
 					models,
 					start: preparingAt,
 					displayId: preparationId,
-					workers: initialActivity(resolved, session, preparingAt),
+					workers: initialActivity(resolved, personas, session, preparingAt),
 					stage: "Workers",
 				});
 				updateActivityWidget(ctx, ended);
@@ -1769,7 +1782,7 @@ export default function (pi: ExtensionAPI) {
 					start,
 					displayId,
 					job: jobId,
-					workers: initialActivity(resolved, session, start),
+					workers: initialActivity(resolved, personas, session, start),
 					stage: "Workers",
 				});
 				updateActivityWidget(ctx, ended);
@@ -1780,6 +1793,7 @@ export default function (pi: ExtensionAPI) {
 						stage: Exclude<DelegateView["stage"], "Done">,
 						prompts: string[],
 						runs: typeof resolved,
+						runPersonas: Persona[],
 					) => {
 						const states: (RunResult | undefined)[] = runs.map(() => undefined);
 						const finished = runs.map(() => false);
@@ -1791,6 +1805,8 @@ export default function (pi: ExtensionAPI) {
 									runView(
 										states[i] ?? { requested: { model: r.model, thinking: r.thinking }, web: job.web },
 										finished[i],
+										undefined,
+										runPersonas[i],
 									),
 								),
 							};
@@ -1805,6 +1821,7 @@ export default function (pi: ExtensionAPI) {
 									active: !finished[i],
 									lastTool: run.lastTool,
 									fallbacks: run.fallbacks?.length ?? 0,
+									persona: runPersonas[i],
 								}));
 								updateActivityWidget(ctx, ended);
 							}
@@ -1841,6 +1858,7 @@ export default function (pi: ExtensionAPI) {
 							"Workers",
 							resolved.map(() => prompt),
 							resolved,
+							personas,
 						);
 					} catch (err: any) {
 						if (co) {
@@ -1898,6 +1916,7 @@ export default function (pi: ExtensionAPI) {
 								"Rebuttal",
 								prompts,
 								ok.map((r) => resumeRun(resolved[round1.indexOf(r)], r)),
+								ok.map((r) => personas[round1.indexOf(r)]),
 							);
 							shown = round1.map((run) => {
 								const r2 = round2[ok.indexOf(run)];

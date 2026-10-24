@@ -5,7 +5,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ModelSet } from "./delegate.ts";
-import { shortModel as short } from "./delegate-render.ts";
+import { type Persona, shortModel as short } from "./delegate-render.ts";
 
 /** One finished delegate call, kept for `/delegate status`. */
 export interface CallRecord {
@@ -30,6 +30,7 @@ export interface ActiveWorker {
 	active: boolean;
 	lastTool?: string;
 	fallbacks: number;
+	persona: Persona;
 }
 
 export interface ActiveCall {

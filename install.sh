@@ -71,10 +71,13 @@ pi install npm:pi-web-access@0.38.0
 
 # Install the replacement first; keep the old extension if installation fails.
 pi install https://github.com/earendil-works/pi-claude-code
+# Remove each registered source exactly as listed, pinned (`@version`) or not.
 configured_packages="$(pi list)"
-if printf '%s\n' "$configured_packages" | grep -Fq -- "npm:@gotgenes/pi-anthropic-auth"; then
-  pi remove "npm:@gotgenes/pi-anthropic-auth"
-fi
+old_auth_sources="$(printf '%s\n' "$configured_packages" | awk -v old="npm:@gotgenes/pi-anthropic-auth" \
+  '$1 == old || index($1, old "@") == 1 { print $1 }')"
+while IFS= read -r source; do
+  [ -n "$source" ] && pi remove "$source"
+done <<< "$old_auth_sources"
 
 install_pi_example interactive-shell.ts
 install_pi_example handoff.ts

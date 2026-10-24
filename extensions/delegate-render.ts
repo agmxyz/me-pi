@@ -8,8 +8,33 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
+/** The emoji and phrase a running worker shows; picked once per worker so rerenders keep it. */
+export interface Persona {
+	emoji: string;
+	phrase: string;
+}
+
+/** The five Fitzpatrick skin-tone modifiers, light to dark. */
+export const SKIN_TONES = ["\u{1F3FB}", "\u{1F3FC}", "\u{1F3FD}", "\u{1F3FE}", "\u{1F3FF}"] as const;
+
+/** Scouts are elves; every other worker is a chef or a farmer. Each gets a random skin tone. */
+export function pickPersona(role: string, random: () => number = Math.random): Persona {
+	const pick = <T>(items: readonly T[]): T => items[Math.min(items.length - 1, Math.floor(random() * items.length))];
+	const tone = pick(SKIN_TONES);
+	if (role === "scout") return { emoji: `\u{1F9DD}${tone}`, phrase: "what do your elf-eyes see?" };
+	return pick([
+		{ emoji: `\u{1F9D1}${tone}\u200D\u{1F373}`, phrase: "letting him cook" },
+		{ emoji: `\u{1F9D1}${tone}\u200D\u{1F33E}`, phrase: "doing honest work" },
+	]);
+}
+
+// Views from older sessions carry no persona.
+const DEFAULT_PERSONA: Persona = { emoji: "🧑‍🍳", phrase: "" };
+
 /** One worker run as the renderer shows it. */
 export interface RunView {
+	/** Shown while the run is active. */
+	persona?: Persona;
 	model: string;
 	thinking: string;
 	web: boolean;
@@ -52,6 +77,7 @@ export interface ActivityWidgetRow {
 	lastTool?: string;
 	fallbacks: number;
 	stage: "Workers" | "Rebuttal";
+	persona: Persona;
 }
 
 const stripWidgetControls = (value: string) =>
@@ -78,8 +104,9 @@ export function activityWidget(rows: () => readonly ActivityWidgetRow[], theme: 
 				const elapsed = Math.max(0, Math.floor((Date.now() - row.startedAt) / 1000));
 				const stage = row.stage === "Rebuttal" ? fg("warning", " R2") : "";
 				const fallback = row.fallbacks > 0 ? fg("warning", " ↻") : "";
-				const tail = `${fg("dim", `@${thinking} ${elapsed}s`)}${fallback}${tool ? ` · ${fg("toolTitle", tool)}` : ""}`;
-				return `${fg("warning", "🧑‍🍳")} ${fg("accent", workerId)} ${fg("muted", role)}${stage} ${fg("accent", model)} ${tail}`;
+				const phrase = row.persona.phrase ? ` · ${fg("dim", row.persona.phrase)}` : "";
+				const tail = `${fg("dim", `@${thinking} ${elapsed}s`)}${fallback}${tool ? ` · ${fg("toolTitle", tool)}` : ""}${phrase}`;
+				return `${fg("warning", row.persona.emoji)} ${fg("accent", workerId)} ${fg("muted", role)}${stage} ${fg("accent", model)} ${tail}`;
 			});
 			const overflow = current.length - shown.length;
 			const lines = [
@@ -126,7 +153,7 @@ const plainPreview = (text: string) =>
 		.replace(/^#+\s*/, "");
 
 function icon(run: RunView, fg: Fg): string {
-	if (!run.done) return fg("warning", "🧑‍🍳");
+	if (!run.done) return fg("warning", (run.persona ?? DEFAULT_PERSONA).emoji);
 	return run.failure || run.round2Failure ? fg("error", "✗") : fg("success", "✓");
 }
 
@@ -152,7 +179,8 @@ function problem(run: RunView): string | undefined {
 export function progressLines(view: DelegateView, fg: Fg = plain, expanded = false): string[] {
 	const header = fg("toolTitle", view.stage) + (view.web ? fg("muted", " [web]") : "");
 	const runs = view.runs.flatMap((r) => {
-		const tail = [r.lastTool, r.fallbackMessage && `↻ ${r.fallbackMessage}`]
+		const phrase = !r.done && r.persona?.phrase ? `· ${r.persona.phrase}` : undefined;
+		const tail = [r.lastTool, r.fallbackMessage && `↻ ${r.fallbackMessage}`, phrase]
 			.filter(Boolean)
 			.map((text) => fg("dim", text as string))
 			.join(" ");

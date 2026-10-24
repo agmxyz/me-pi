@@ -182,7 +182,7 @@ if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
 if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
 if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
 if (sources.filter(source => source === "https://github.com/earendil-works/pi-claude-code").length !== 1) process.exit(1);
-if (sources.includes("npm:@gotgenes/pi-anthropic-auth")) process.exit(1);
+if (sources.some(source => /^npm:@gotgenes\/pi-anthropic-auth(@|$)/.test(source))) process.exit(1);
 NODE
 }
 
@@ -200,7 +200,7 @@ if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
 if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
 if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
 if (sources.filter(source => source === "https://github.com/earendil-works/pi-claude-code").length !== 1) process.exit(1);
-if (sources.includes("npm:@gotgenes/pi-anthropic-auth")) process.exit(1);
+if (sources.some(source => /^npm:@gotgenes\/pi-anthropic-auth(@|$)/.test(source))) process.exit(1);
 if (sources.filter(source => source === "npm:external-string@1.2.3").length !== 1) process.exit(1);
 if (!externalObject || externalObject.config?.keep !== true) process.exit(1);
 NODE
@@ -295,7 +295,7 @@ const settings = {
   lastChangelogVersion: "test-version",
   packages: [
     { source: oldSource, extensions: ["./guard.ts"] },
-    "npm:@gotgenes/pi-anthropic-auth",
+    "npm:@gotgenes/pi-anthropic-auth@1.2.3",
     "npm:external-string@1.2.3",
     { source: "npm:external-object@4.5.6", config: { keep: true } },
   ],
@@ -310,10 +310,10 @@ printf '%s\n' \
   "install npm:pi-web-access@0.38.0" \
   "install https://github.com/earendil-works/pi-claude-code" \
   "list" \
-  "remove npm:@gotgenes/pi-anthropic-auth" > "$TMP/expected-upgrade-pi.log"
+  "remove npm:@gotgenes/pi-anthropic-auth@1.2.3" > "$TMP/expected-upgrade-pi.log"
 expect_installer "upgrade from extensions package succeeds" 0 "$HOME_UPGRADE" "$TMP/upgrade.out"
 check "upgrade registers root and removes old filtered source" assert_settings_preserved "$UPGRADE_AGENT/settings.json" "$FIXTURE"
-check "upgrade invokes install, list, remove, and dependency registration" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
+check "upgrade removes the pinned old Anthropic source exactly as registered" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
 expect_installer "repeat upgrade succeeds" 0 "$HOME_UPGRADE" "$TMP/upgrade-repeat.out"
 check "repeat upgrade remains idempotent and preserves unrelated state" assert_settings_preserved "$UPGRADE_AGENT/settings.json" "$FIXTURE"
 printf '%s\n' \
