@@ -67,7 +67,7 @@ configured_packages="$(pi list)"
 if printf '%s\n' "$configured_packages" | grep -Fq -- "$REPO/extensions"; then
   pi remove "$REPO/extensions"
 fi
-pi install npm:pi-web-access@0.38.0
+pi install npm:pi-web-access
 
 install_pi_example interactive-shell.ts
 install_pi_example handoff.ts
