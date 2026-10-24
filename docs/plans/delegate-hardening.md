@@ -48,6 +48,8 @@ No public visibility changes, publishing, remote operations, real user-profile i
 
 ## T2 — Neutral package-default prompt (user-approved item 2)
 
+**Status:** Review pending (passing WIP commit); main-session review and finalization required.
+
 **Scope:** `extensions/delegate.ts`, `test/delegate.test.mjs`, and `GLOBAL_AGENTS.md` only if applicable personal workflow guidance needs a rig-specific home.
 
 **Acceptance:** Remove personal goal/ticket/issue-tracker, PR/push sequencing, and per-goal review/fix choreography from `PROMPT_GUIDELINES`. Move only guidance appropriate to this rig into `GLOBAL_AGENTS.md`, where it does not duplicate or conflict with the existing approval, coding-standard, secret, or failure policy. Preserve package-default guidance for roles/tools, model runs and rebuttal, web risk, private drafts, background limits, BLOCKED/failure handling, and the single-writer/safety contract.
