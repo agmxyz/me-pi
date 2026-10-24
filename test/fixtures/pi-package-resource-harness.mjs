@@ -18,6 +18,8 @@ const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManage
 await packageManager.installAndPersist(source);
 if (filter === "guard-only") {
 	settingsManager.setPackages([{ source, extensions: ["extensions/guard.ts"] }]);
+} else if (filter === "delegate-only") {
+	settingsManager.setPackages([{ source, extensions: ["extensions/delegate.ts"] }]);
 }
 await settingsManager.flush();
 

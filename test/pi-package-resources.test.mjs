@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -20,11 +20,25 @@ test(
 	{ timeout: 30_000 },
 	async (t) => {
 		for (const scenario of [
-			{ name: "full local source", mode: "full", expected: expectedFull },
+			{
+				name: "full local source",
+				mode: "full",
+				expected: expectedFull,
+				tools: [["delegate"], [], ["Skill"]],
+				assertion: "assert-delegate",
+			},
 			{
 				name: "guard-only package filter",
 				mode: "guard-only",
 				expected: [join(root, "extensions/guard.ts")],
+				tools: [[]],
+			},
+			{
+				name: "delegate-only package filter",
+				mode: "delegate-only",
+				expected: [join(root, "extensions/delegate.ts")],
+				tools: [["delegate"]],
+				assertion: "assert-delegate",
 			},
 		]) {
 			await t.test(scenario.name, async () => {
@@ -35,9 +49,10 @@ test(
 					PATH: process.env.PATH ?? "",
 					PI_CODING_AGENT_DIR: agentDir,
 				};
-				if (process.env.ME_PI_RUN !== undefined) env.ME_PI_RUN = process.env.ME_PI_RUN;
 				try {
-					const stdout = execFileSync(process.execPath, [harness, root, scenario.mode], {
+					const args = [harness, root, scenario.mode];
+					if (scenario.assertion) args.push(scenario.assertion);
+					const stdout = execFileSync(process.execPath, args, {
 						cwd: root,
 						env,
 						encoding: "utf8",
@@ -53,11 +68,14 @@ test(
 						new Set(result.extensions.map((extension) => extension.path)).size,
 						scenario.expected.length,
 					);
+					assert.deepEqual(
+						result.extensions.map((extension) => extension.tools),
+						scenario.tools,
+					);
 					assert.deepEqual(result.errors, []);
 					assert.deepEqual(result.warnings, []);
-					if (scenario.mode === "full") {
-						assert.deepEqual(result.extensions[2].tools, ["Skill"]);
-					}
+					await assert.rejects(lstat(join(agentDir, "AGENTS.md")), { code: "ENOENT" });
+					await assert.rejects(lstat(join(agentDir, "GLOBAL_AGENTS.md")), { code: "ENOENT" });
 				} finally {
 					await rm(temp, { recursive: true, force: true });
 				}
