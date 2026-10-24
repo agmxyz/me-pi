@@ -69,6 +69,13 @@ if printf '%s\n' "$configured_packages" | grep -Fq -- "$REPO/extensions"; then
 fi
 pi install npm:pi-web-access@0.38.0
 
+# Install the replacement first; keep the old extension if installation fails.
+pi install https://github.com/earendil-works/pi-claude-code
+configured_packages="$(pi list)"
+if printf '%s\n' "$configured_packages" | grep -Fq -- "npm:@gotgenes/pi-anthropic-auth"; then
+  pi remove "npm:@gotgenes/pi-anthropic-auth"
+fi
+
 install_pi_example interactive-shell.ts
 install_pi_example handoff.ts
 if command -v rtk >/dev/null 2>&1; then

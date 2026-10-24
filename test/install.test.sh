@@ -181,6 +181,8 @@ const sources = (settings.packages ?? []).map(entry =>
 if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
 if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
 if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
+if (sources.filter(source => source === "https://github.com/earendil-works/pi-claude-code").length !== 1) process.exit(1);
+if (sources.includes("npm:@gotgenes/pi-anthropic-auth")) process.exit(1);
 NODE
 }
 
@@ -197,6 +199,8 @@ if (settings.lastChangelogVersion !== "test-version") process.exit(1);
 if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
 if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
 if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
+if (sources.filter(source => source === "https://github.com/earendil-works/pi-claude-code").length !== 1) process.exit(1);
+if (sources.includes("npm:@gotgenes/pi-anthropic-auth")) process.exit(1);
 if (sources.filter(source => source === "npm:external-string@1.2.3").length !== 1) process.exit(1);
 if (!externalObject || externalObject.config?.keep !== true) process.exit(1);
 NODE
@@ -208,9 +212,14 @@ assert_invocation_logs() {
     "install $FIXTURE" \
     "list" \
     "install npm:pi-web-access@0.38.0" \
+    "install https://github.com/earendil-works/pi-claude-code" \
+    "list" \
+    "remove npm:@gotgenes/pi-anthropic-auth" \
     "install $FIXTURE" \
     "list" \
-    "install npm:pi-web-access@0.38.0" > "$expected"
+    "install npm:pi-web-access@0.38.0" \
+    "install https://github.com/earendil-works/pi-claude-code" \
+    "list" > "$expected"
   printf '%s\n' \
     "init --global --agent pi" \
     "init --global --agent pi" > "$expected_rtk"
@@ -220,9 +229,14 @@ assert_invocation_logs() {
 HOME_FRESH="$TMP/home-fresh"
 PI_AGENT="$HOME_FRESH/.pi/agent"
 AGENTS_HOME="$HOME_FRESH/.agents"
-mkdir -p "$HOME_FRESH"
+mkdir -p "$PI_AGENT"
+node - "$PI_AGENT/settings.json" <<'NODE'
+const fs = require("node:fs");
+const settingsPath = process.argv[2];
+fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: ["npm:@gotgenes/pi-anthropic-auth"] }, null, 2)}\n`);
+NODE
 
-expect_installer "fresh install succeeds" 0 "$HOME_FRESH" "$TMP/fresh.out"
+expect_installer "install replaces the previous Anthropic package" 0 "$HOME_FRESH" "$TMP/fresh.out"
 
 if [ "$INSTALL_RC" -ne 0 ]; then
   echo "--- fresh installer output ---"
@@ -281,6 +295,7 @@ const settings = {
   lastChangelogVersion: "test-version",
   packages: [
     { source: oldSource, extensions: ["./guard.ts"] },
+    "npm:@gotgenes/pi-anthropic-auth",
     "npm:external-string@1.2.3",
     { source: "npm:external-object@4.5.6", config: { keep: true } },
   ],
@@ -292,7 +307,10 @@ printf '%s\n' \
   "install $FIXTURE" \
   "list" \
   "remove $FIXTURE/extensions" \
-  "install npm:pi-web-access@0.38.0" > "$TMP/expected-upgrade-pi.log"
+  "install npm:pi-web-access@0.38.0" \
+  "install https://github.com/earendil-works/pi-claude-code" \
+  "list" \
+  "remove npm:@gotgenes/pi-anthropic-auth" > "$TMP/expected-upgrade-pi.log"
 expect_installer "upgrade from extensions package succeeds" 0 "$HOME_UPGRADE" "$TMP/upgrade.out"
 check "upgrade registers root and removes old filtered source" assert_settings_preserved "$UPGRADE_AGENT/settings.json" "$FIXTURE"
 check "upgrade invokes install, list, remove, and dependency registration" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
@@ -301,7 +319,9 @@ check "repeat upgrade remains idempotent and preserves unrelated state" assert_s
 printf '%s\n' \
   "install $FIXTURE" \
   "list" \
-  "install npm:pi-web-access@0.38.0" >> "$TMP/expected-upgrade-pi.log"
+  "install npm:pi-web-access@0.38.0" \
+  "install https://github.com/earendil-works/pi-claude-code" \
+  "list" >> "$TMP/expected-upgrade-pi.log"
 check "repeat upgrade leaves the old source removed" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
 check "upgrade never invokes npm fallback" test ! -e "$NPM_MARKER"
 
