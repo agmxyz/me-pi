@@ -10,18 +10,21 @@ if ! command -v pi >/dev/null 2>&1; then
   exit 1
 fi
 
-# The global policy link. An existing file or other link is preserved and reported; the run
-# continues (packages still install) but exits non-zero, because the policy is not active.
-POLICY_PROBLEM=""
+# Refuse a policy collision before creating directories or changing Pi/RTK state.
+POLICY_SOURCE="$REPO/GLOBAL_AGENTS.md"
+POLICY_DESTINATION="$PI_AGENT/AGENTS.md"
+if [ -e "$POLICY_DESTINATION" ] || [ -L "$POLICY_DESTINATION" ]; then
+  if [ ! -L "$POLICY_DESTINATION" ] || [ "$(readlink "$POLICY_DESTINATION")" != "$POLICY_SOURCE" ]; then
+    echo "✗ $POLICY_DESTINATION already exists and is not a link to $POLICY_SOURCE; left unchanged. Move it aside (or merge it into GLOBAL_AGENTS.md) and re-run ./install.sh." >&2
+    exit 1
+  fi
+fi
+
 link_policy() {
-  local source="$REPO/GLOBAL_AGENTS.md" destination="$PI_AGENT/AGENTS.md"
-  if [ -L "$destination" ] && [ "$(readlink "$destination")" = "$source" ]; then
+  if [ -L "$POLICY_DESTINATION" ] && [ "$(readlink "$POLICY_DESTINATION")" = "$POLICY_SOURCE" ]; then
     echo "✓ global AGENTS.md"
-  elif [ -e "$destination" ] || [ -L "$destination" ]; then
-    POLICY_PROBLEM="$destination already exists and is not a link to $source; left unchanged, so the me-pi policy is NOT active. Move it aside (or merge it into GLOBAL_AGENTS.md) and re-run ./install.sh."
-    echo "✗ $POLICY_PROBLEM" >&2
   else
-    ln -s "$source" "$destination"
+    ln -s "$POLICY_SOURCE" "$POLICY_DESTINATION"
     echo "✓ global AGENTS.md"
   fi
 }
@@ -82,8 +85,4 @@ else
 fi
 
 echo
-if [ -n "$POLICY_PROBLEM" ]; then
-  echo "✗ Incomplete: $POLICY_PROBLEM" >&2
-  exit 1
-fi
 echo "Done. Restart pi sessions to load the updated rig."

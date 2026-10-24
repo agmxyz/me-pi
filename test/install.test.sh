@@ -249,6 +249,13 @@ assert_invocation_logs() {
   cmp -s "$expected" "$PI_LOG" && cmp -s "$expected_rtk" "$RTK_LOG"
 }
 
+assert_single_install_logs() {
+  local expected="$TMP/expected-single-pi.log" expected_rtk="$TMP/expected-single-rtk.log"
+  printf '%s\n' "install $FIXTURE" "list" "install npm:pi-web-access" > "$expected"
+  printf '%s\n' "init --global --agent pi" > "$expected_rtk"
+  cmp -s "$expected" "$PI_LOG" && cmp -s "$expected_rtk" "$RTK_LOG"
+}
+
 HOME_FRESH="$TMP/home-fresh"
 PI_AGENT="$HOME_FRESH/.pi/agent"
 AGENTS_HOME="$HOME_FRESH/.agents"
@@ -306,6 +313,18 @@ check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FI
 check "repeat preserves existing Anthropic auth package" assert_package_source_registered "$PI_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth"
 check "Pi and RTK stubs invoked without auth extension changes" assert_invocation_logs
 check "npm fallback remains unused" test ! -e "$NPM_MARKER"
+
+# An already-correct policy link is accepted without blocking package setup.
+HOME_PRELINK="$TMP/home-prelink"
+PRELINK_AGENT="$HOME_PRELINK/.pi/agent"
+mkdir -p "$PRELINK_AGENT"
+ln -s "$FIXTURE/GLOBAL_AGENTS.md" "$PRELINK_AGENT/AGENTS.md"
+: > "$PI_LOG"
+: > "$RTK_LOG"
+expect_installer "existing correct global AGENTS link succeeds" 0 "$HOME_PRELINK" "$TMP/prelink.out"
+check "existing correct global AGENTS link remains valid" assert_link "$PRELINK_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
+check "existing correct global AGENTS link registers packages" assert_packages_registered "$PRELINK_AGENT/settings.json" "$FIXTURE"
+check "existing correct global AGENTS link permits normal Pi and RTK setup" assert_single_install_logs
 
 # Upgrade a previous extensions-directory registration, including a filtered object.
 HOME_UPGRADE="$TMP/home-upgrade"
@@ -365,7 +384,9 @@ check "missing pi creates no live directories" test ! -e "$HOME_NOPI/.pi"
 check "refusal invokes no package install" cmp -s "$TMP/pi-before-no-pi.log" "$PI_LOG"
 check "no network-capable npm invocation" test ! -e "$NPM_MARKER"
 
-# An existing AGENTS.md is preserved; packages still install, but the run fails loudly.
+# A policy collision fails before creating extensions/settings or invoking Pi/RTK.
+: > "$PI_LOG"
+: > "$RTK_LOG"
 sentinel='user global AGENTS sentinel'
 for kind in file link; do
   HOME_SHARED="$TMP/home-agents-$kind"
@@ -380,8 +401,10 @@ for kind in file link; do
   fi
   expect_installer "global AGENTS $kind collision fails" 1 "$HOME_SHARED" "$TMP/agents-$kind.out"
   check "global AGENTS $kind collision preserves contents" assert_file_text "$destination" "$sentinel"
-  check "global AGENTS $kind collision reported at the end" grep -Eq "^✗ Incomplete: .*AGENTS.md.*policy is NOT active" "$TMP/agents-$kind.out"
-  check "global AGENTS $kind collision still registers root packages" assert_packages_registered "$HOME_SHARED/.pi/agent/settings.json" "$FIXTURE"
+  check "global AGENTS $kind collision is reported during preflight" grep -Fq "$destination already exists and is not a link to $FIXTURE/GLOBAL_AGENTS.md" "$TMP/agents-$kind.out"
+  check "global AGENTS $kind collision creates no settings file" test ! -e "$HOME_SHARED/.pi/agent/settings.json"
+  check "global AGENTS $kind collision creates no extensions directory" test ! -e "$HOME_SHARED/.pi/agent/extensions"
+  check "global AGENTS $kind collision invokes neither Pi nor RTK" test ! -s "$PI_LOG" -a ! -s "$RTK_LOG"
   if [ "$kind" = file ]; then
     check "global AGENTS file collision remains a regular file" test ! -L "$destination"
   else

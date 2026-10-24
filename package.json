@@ -9,7 +9,8 @@
   "type": "module",
   "scripts": {
     "check": "npm run lint && npm run typecheck && npm test && ./test/install.test.sh && git --no-pager diff --check HEAD",
-    "lint": "biome check --error-on-warnings --write .",
+    "lint": "biome check --error-on-warnings .",
+    "fix": "biome check --error-on-warnings --write .",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.mjs"
   },
