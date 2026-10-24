@@ -34,6 +34,8 @@ No public visibility changes, publishing, remote operations, real user-profile i
 
 ## T1 — Check freshness for Bash content changes (user-approved item 1)
 
+**Status:** Completed; independently reviewed.
+
 **Scope:** `extensions/delegate.ts`; `extensions/delegate-implement.ts` only if required by the owning implementation; `test/delegate.test.mjs` and/or `test/delegate-implement.test.mjs`.
 
 **Acceptance:**
