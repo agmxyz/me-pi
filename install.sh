@@ -69,16 +69,6 @@ if printf '%s\n' "$configured_packages" | grep -Fq -- "$REPO/extensions"; then
 fi
 pi install npm:pi-web-access@0.38.0
 
-# Install the replacement first; keep the old extension if installation fails.
-pi install https://github.com/earendil-works/pi-claude-code
-# Remove each registered source exactly as listed, pinned (`@version`) or not.
-configured_packages="$(pi list)"
-old_auth_sources="$(printf '%s\n' "$configured_packages" | awk -v old="npm:@gotgenes/pi-anthropic-auth" \
-  '$1 == old || index($1, old "@") == 1 { print $1 }')"
-while IFS= read -r source; do
-  [ -n "$source" ] && pi remove "$source"
-done <<< "$old_auth_sources"
-
 install_pi_example interactive-shell.ts
 install_pi_example handoff.ts
 if command -v rtk >/dev/null 2>&1; then

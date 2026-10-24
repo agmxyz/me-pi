@@ -7,7 +7,7 @@ You do not need the repository's installer to use the Pi package. A package inst
 - Links this checkout's `GLOBAL_AGENTS.md` to `~/.pi/agent/AGENTS.md` only when that destination is absent. An existing file or different link is left unchanged and causes the installer to report an error.
 - Registers the checkout's root package in Pi and removes a prior `extensions/` package registration when Pi lists that local source, avoiding duplicate extension loading.
 - Installs `pi-web-access@0.38.0`, which supplies the web tools used by delegate's `research` and `challenge` roles.
-- Registers [pi-claude-code](https://github.com/earendil-works/pi-claude-code), then removes `npm:@gotgenes/pi-anthropic-auth` if Pi lists it. The replacement is installed first, so a failed install leaves the old extension registered. Claude Code must be installed and logged in separately; see the upstream README.
+- Does not install Claude Code auth extensions or modify existing Anthropic auth package registrations.
 - Copies Pi's `interactive-shell.ts` and `handoff.ts` examples into `~/.pi/agent/extensions/` if absent. Existing copies are not overwritten; differing copies are reported.
 - Runs `rtk init --global --agent pi` if `rtk` is available.
 

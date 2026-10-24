@@ -181,8 +181,19 @@ const sources = (settings.packages ?? []).map(entry =>
 if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
 if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
 if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
-if (sources.filter(source => source === "https://github.com/earendil-works/pi-claude-code").length !== 1) process.exit(1);
-if (sources.some(source => /^npm:@gotgenes\/pi-anthropic-auth(@|$)/.test(source))) process.exit(1);
+if (sources.includes("https://github.com/earendil-works/pi-claude-code")) process.exit(1);
+NODE
+}
+
+assert_package_source_registered() {
+  node - "$1" "$2" <<'NODE'
+const fs = require("node:fs");
+const [settingsPath, expectedSource] = process.argv.slice(2);
+const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+const sources = (settings.packages ?? []).map(entry =>
+  typeof entry === "string" ? entry : entry?.source,
+);
+if (sources.filter(source => source === expectedSource).length !== 1) process.exit(1);
 NODE
 }
 
@@ -199,8 +210,7 @@ if (settings.lastChangelogVersion !== "test-version") process.exit(1);
 if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
 if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
 if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
-if (sources.filter(source => source === "https://github.com/earendil-works/pi-claude-code").length !== 1) process.exit(1);
-if (sources.some(source => /^npm:@gotgenes\/pi-anthropic-auth(@|$)/.test(source))) process.exit(1);
+if (sources.includes("https://github.com/earendil-works/pi-claude-code")) process.exit(1);
 if (sources.filter(source => source === "npm:external-string@1.2.3").length !== 1) process.exit(1);
 if (!externalObject || externalObject.config?.keep !== true) process.exit(1);
 NODE
@@ -212,14 +222,9 @@ assert_invocation_logs() {
     "install $FIXTURE" \
     "list" \
     "install npm:pi-web-access@0.38.0" \
-    "install https://github.com/earendil-works/pi-claude-code" \
-    "list" \
-    "remove npm:@gotgenes/pi-anthropic-auth" \
     "install $FIXTURE" \
     "list" \
-    "install npm:pi-web-access@0.38.0" \
-    "install https://github.com/earendil-works/pi-claude-code" \
-    "list" > "$expected"
+    "install npm:pi-web-access@0.38.0" > "$expected"
   printf '%s\n' \
     "init --global --agent pi" \
     "init --global --agent pi" > "$expected_rtk"
@@ -236,7 +241,7 @@ const settingsPath = process.argv[2];
 fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: ["npm:@gotgenes/pi-anthropic-auth"] }, null, 2)}\n`);
 NODE
 
-expect_installer "install replaces the previous Anthropic package" 0 "$HOME_FRESH" "$TMP/fresh.out"
+expect_installer "install leaves existing auth packages alone" 0 "$HOME_FRESH" "$TMP/fresh.out"
 
 if [ "$INSTALL_RC" -ne 0 ]; then
   echo "--- fresh installer output ---"
@@ -246,7 +251,8 @@ if [ "$INSTALL_RC" -ne 0 ]; then
 fi
 
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
-check "root package registered without the old extensions source" assert_packages_registered "$PI_AGENT/settings.json" "$FIXTURE"
+check "root package registered without Claude auth extension" assert_packages_registered "$PI_AGENT/settings.json" "$FIXTURE"
+check "existing Anthropic auth package remains registered" assert_package_source_registered "$PI_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth"
 check "interactive-shell example copied" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
 check "handoff example copied" cmp -s "$PI_AGENT/extensions/handoff.ts" "$FAKE_ROOT/examples/extensions/handoff.ts"
 check "RTK setup invoked with Pi agent" grep -Fxq "init --global --agent pi" "$RTK_LOG"
@@ -279,7 +285,8 @@ check "repeat preserves external skill" assert_file_text "$AGENTS_HOME/skills/ex
 check "repeat retains interactive-shell contents" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
 check "repeat retains handoff contents" cmp -s "$PI_AGENT/extensions/handoff.ts" "$FAKE_ROOT/examples/extensions/handoff.ts"
 check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
-check "Pi and RTK stubs invoked deterministically" assert_invocation_logs
+check "repeat preserves existing Anthropic auth package" assert_package_source_registered "$PI_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth"
+check "Pi and RTK stubs invoked without auth extension changes" assert_invocation_logs
 check "npm fallback remains unused" test ! -e "$NPM_MARKER"
 
 # Upgrade a previous extensions-directory registration, including a filtered object.
@@ -307,22 +314,19 @@ printf '%s\n' \
   "install $FIXTURE" \
   "list" \
   "remove $FIXTURE/extensions" \
-  "install npm:pi-web-access@0.38.0" \
-  "install https://github.com/earendil-works/pi-claude-code" \
-  "list" \
-  "remove npm:@gotgenes/pi-anthropic-auth@1.2.3" > "$TMP/expected-upgrade-pi.log"
+  "install npm:pi-web-access@0.38.0" > "$TMP/expected-upgrade-pi.log"
 expect_installer "upgrade from extensions package succeeds" 0 "$HOME_UPGRADE" "$TMP/upgrade.out"
 check "upgrade registers root and removes old filtered source" assert_settings_preserved "$UPGRADE_AGENT/settings.json" "$FIXTURE"
-check "upgrade removes the pinned old Anthropic source exactly as registered" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
+check "upgrade preserves the pinned Anthropic auth package" assert_package_source_registered "$UPGRADE_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth@1.2.3"
+check "upgrade invokes no auth extension install or removal" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
 expect_installer "repeat upgrade succeeds" 0 "$HOME_UPGRADE" "$TMP/upgrade-repeat.out"
 check "repeat upgrade remains idempotent and preserves unrelated state" assert_settings_preserved "$UPGRADE_AGENT/settings.json" "$FIXTURE"
+check "repeat upgrade preserves the pinned Anthropic auth package" assert_package_source_registered "$UPGRADE_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth@1.2.3"
 printf '%s\n' \
   "install $FIXTURE" \
   "list" \
-  "install npm:pi-web-access@0.38.0" \
-  "install https://github.com/earendil-works/pi-claude-code" \
-  "list" >> "$TMP/expected-upgrade-pi.log"
-check "repeat upgrade leaves the old source removed" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
+  "install npm:pi-web-access@0.38.0" >> "$TMP/expected-upgrade-pi.log"
+check "repeat upgrade invokes no auth extension install or removal" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
 check "upgrade never invokes npm fallback" test ! -e "$NPM_MARKER"
 
 # Missing pi must fail before any link is created.
