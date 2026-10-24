@@ -12,6 +12,11 @@ const { activityWidget, pickPersona, progressLines, renderCall, renderResult, SK
 
 // Colours as real ANSI codes, so width checks measure only visible text.
 const theme = { fg: (_color, text) => `\x1b[31m${text}\x1b[39m`, bold: (text) => `\x1b[1m${text}\x1b[22m` };
+const bgAnsi = { toolPendingBg: "\x1b[44m", toolSuccessBg: "\x1b[42m", toolErrorBg: "\x1b[41m" };
+const toolTheme = {
+	...theme,
+	bg: (color, text) => `${bgAnsi[color]}${text}\x1b[49m`,
+};
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const draw = (component, width) => component.render(width).map(strip);
 function assertFits(component, width) {
@@ -170,6 +175,51 @@ test("the call preview is one line: role, models with thinking, badges, the task
 	// Arguments still streaming in.
 	assert.deepEqual(draw(renderCall({}, theme), 200), ["delegate general default ..."]);
 	for (const width of [10, 40]) assertFits(renderCall({ task: long, runs: [{ model: long }] }, theme), width);
+});
+
+test("truncation ellipses retain the pending, success, and error tool backgrounds", () => {
+	const statuses = [
+		{
+			name: "pending",
+			background: "toolPendingBg",
+			component: () => renderCall({ task: long }, toolTheme, { isPartial: true, isError: false }),
+		},
+		{
+			name: "success",
+			background: "toolSuccessBg",
+			component: () =>
+				renderResult(
+					{ content: [], details: { view: { stage: "Done", web: false, runs: [run({ output: long })] } } },
+					{ expanded: false, isPartial: false },
+					toolTheme,
+					{ isPartial: false, isError: false },
+				),
+		},
+		{
+			name: "error",
+			background: "toolErrorBg",
+			component: () =>
+				renderResult(
+					{ content: [], details: { view: { stage: "Done", web: false, runs: [run({ failure: long })] } } },
+					{ expanded: false, isPartial: false },
+					toolTheme,
+					{ isPartial: false, isError: true },
+				),
+		},
+	];
+
+	for (const { name, background, component: makeComponent } of statuses) {
+		const component = makeComponent();
+		const width = 80;
+		const line = component.render(width)[0];
+		assert.ok(line.includes(`\x1b[0m${bgAnsi[background]}...\x1b[49m\x1b[0m`), `${name}: ${JSON.stringify(line)}`);
+		for (const bound of [1, 8, 40, width]) assertFits(component, bound);
+	}
+
+	const plainTheme = { fg: (_color, text) => text, bold: (text) => text };
+	const plainLine = renderCall({ role: "scout", task: long }, plainTheme).render(40)[0];
+	assert.equal(strip(plainLine), "delegate scout default xxxxxxxxxxxxxx...");
+	assert.doesNotMatch(plainLine, /\x1b\[(?:41|42|44)m/);
 });
 
 test("progress shows the stage and one line per run; the plain text is what non-TUI modes get", () => {

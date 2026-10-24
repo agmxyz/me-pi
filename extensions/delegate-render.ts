@@ -122,16 +122,27 @@ export function activityWidget(rows: () => readonly ActivityWidgetRow[], theme: 
 
 type Fg = (color: any, text: string) => string;
 const plain: Fg = (_color, text) => text;
+type RenderStatus = { isPartial: boolean; isError: boolean };
+
+function truncationEllipsis(theme: Theme, context?: RenderStatus): string | undefined {
+	if (!context) return undefined;
+	const background = context.isPartial ? "toolPendingBg" : context.isError ? "toolErrorBg" : "toolSuccessBg";
+	return theme.bg(background, "...");
+}
 
 /** Lines cut to the width when drawn. */
 class Lines implements Component {
 	private readonly lines: string[];
-	constructor(lines: string[]) {
+	private readonly ellipsis: string | undefined;
+	constructor(lines: string[], ellipsis?: string) {
 		this.lines = lines;
+		this.ellipsis = ellipsis;
 	}
 	render(width: number): string[] {
 		// A line break inside a line has no width but still moves the cursor: flatten it first.
-		return this.lines.map((line) => truncateToWidth(line.replace(/[\r\n\t]/g, " "), Math.max(1, width)));
+		return this.lines.map((line) =>
+			truncateToWidth(line.replace(/[\r\n\t]/g, " "), Math.max(1, width), this.ellipsis ?? "..."),
+		);
 	}
 	invalidate(): void {}
 }
@@ -190,8 +201,9 @@ export function progressLines(view: DelegateView, fg: Fg = plain, expanded = fal
 	return [header, ...runs];
 }
 
-export function renderCall(args: any, theme: Theme): Component {
+export function renderCall(args: any, theme: Theme, context?: RenderStatus): Component {
 	const fg: Fg = theme.fg.bind(theme);
+	const ellipsis = truncationEllipsis(theme, context);
 	const runs: any[] = Array.isArray(args?.runs) && args.runs.length ? args.runs : [{}];
 	const models = runs
 		.map((r) => `${r?.model ? shortModel(String(r.model)) : "default"}${r?.thinking ? `@${r.thinking}` : ""}`)
@@ -205,15 +217,17 @@ export function renderCall(args: any, theme: Theme): Component {
 		(badges.length ? ` ${fg("warning", `[${badges.join(", ")}]`)}` : "") +
 		check +
 		` ${fg("dim", task)}`;
-	return new Lines([line]);
+	return new Lines([line], ellipsis);
 }
 
 export function renderResult(
 	result: { content: { type: string; text?: string }[]; details?: any },
 	options: { expanded: boolean; isPartial: boolean },
 	theme: Theme,
+	context?: RenderStatus,
 ): Component {
 	const fg: Fg = theme.fg.bind(theme);
+	const ellipsis = truncationEllipsis(theme, context);
 	const view: DelegateView | undefined = result.details?.view;
 	if (!view) {
 		// Refused calls and results from older versions carry no view: show the text, wrapped, and
@@ -227,7 +241,8 @@ export function renderResult(
 			options.expanded || more <= 0 ? lines : [...lines.slice(0, FALLBACK_LINES), `\u2026 (${more} more lines)`];
 		return new Text(fg("toolOutput", shown.join("\n")), 0, 0);
 	}
-	if (options.isPartial || view.stage !== "Done") return new Lines(progressLines(view, fg, options.expanded));
+	if (options.isPartial || view.stage !== "Done")
+		return new Lines(progressLines(view, fg, options.expanded), ellipsis);
 
 	const footer = view.footer ? [fg("dim", view.footer)] : [];
 	if (!options.expanded) {
@@ -236,14 +251,14 @@ export function renderResult(
 			const preview = trouble ? fg("error", trouble) : fg("toolOutput", plainPreview(r.output) || "(empty answer)");
 			return `${runHeader(r, fg)} ${preview}`;
 		});
-		return new Lines([...lines, ...footer]);
+		return new Lines([...lines, ...footer], ellipsis);
 	}
 
 	const container = new Container();
 	const markdown = getMarkdownTheme();
 	view.runs.forEach((r, i) => {
 		if (i > 0) container.addChild(new Spacer(1));
-		container.addChild(new Lines([runHeader(r, fg)]));
+		container.addChild(new Lines([runHeader(r, fg)], ellipsis));
 		for (const fallback of r.fallbacks ?? [])
 			container.addChild(new Text(fg("warning", `Fallback: ${fallback}`), 0, 0));
 		const trouble = problem(r);

@@ -1633,8 +1633,8 @@ export default function (pi: ExtensionAPI) {
 			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
-		renderCall: (args, theme) => renderCall(args, theme),
-		renderResult: (result, options, theme) => renderResult(result as any, options, theme),
+		renderCall: (args, theme, context) => renderCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderResult(result as any, options, theme, context),
 		parameters: buildSchema() as any,
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
