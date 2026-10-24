@@ -3,3 +3,4 @@
 - Current guides: [`README.md`](README.md), [`docs/delegate.md`](docs/delegate.md), [`docs/setup.md`](docs/setup.md); `docs/plans/` is historical—use guides and code for current behavior.
 - Run `./install.sh` only from the live checkout's main session, never from a worktree, temp clone, or worker: it registers this checkout's path in `~/.pi/agent/settings.json`. A pointer to a new installed path needs its link in `install.sh` and an `./install.sh` run first.
 - Done means `npm run check --prefix extensions` passes.
+- When changing or reviewing code, follow [`docs/coding-standards.md`](docs/coding-standards.md).
