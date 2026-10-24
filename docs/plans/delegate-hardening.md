@@ -60,6 +60,8 @@ Delete `Trust a ✓ handback: no diff read, no review, no re-check.` from the pa
 
 ## T4 — Isolated full and delegate-only package loading (user-approved item 4)
 
+**Status:** Completed; independently reviewed (bg31 approved, no high/medium findings).
+
 **Scope:** `test/pi-package-resources.test.mjs`, `test/fixtures/pi-package-resource-harness.mjs`, and concise baseline text in `README.md` only if needed.
 
 **Acceptance:** In a fresh isolated profile per scenario, use the pinned Pi 1.3.0 package manager to install the local package, configure the filter where applicable, and reload resources. Retain the full-package case and add a filter selecting only `extensions/delegate.ts`. Verify the delegate tool registers; `guard` and `Skill` are not loaded in the delegate-only case; imported sibling helpers load successfully without becoming extension entrypoints; and package-only installation does not adopt/link `GLOBAL_AGENTS.md` into the profile. Assert the expected extension paths and empty errors/warnings.
@@ -70,4 +72,4 @@ The harness currently rejects its delegate-registration probe when `ME_PI_RUN` i
 
 ## Offline and external verification boundary
 
-The required `npm run check --prefix extensions` is the offline full-suite gate and must pass on each delivered ticket. The isolated Pi test covers local package installation/resource reload, not GitHub transport or the interactive `/reload` command. GitHub installation requires network/access to a private repository and is not part of this work. Do not run the live installer, change public visibility, publish, read secrets, or write to a wiki. Report external checks as unverified, not as offline-suite failures.
+The required `npm run check --prefix extensions` is the offline full-suite gate and must pass on each delivered ticket. The isolated Pi test covers local package installation/resource reload, not external Git transport or the interactive `/reload` command; both remain unverified. GitHub installation requires network/access to a private repository and is not part of this work. Do not run the live installer, change public visibility, publish, read secrets, or write to a wiki. Report external checks as unverified, not as offline-suite failures.
