@@ -20,7 +20,7 @@ No public visibility changes, publishing, remote operations, real user-profile i
 
 ## T3 — Read-only checks and installer preflight (user-approved item 3)
 
-**Status:** Implementation complete; independent review pending.
+**Status:** Completed; independently reviewed.
 
 **Scope:** `package.json`, `test/package.test.mjs`, `install.sh`, `test/install.test.sh`, and `README.md` only as needed.
 
