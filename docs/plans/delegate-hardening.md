@@ -48,7 +48,7 @@ No public visibility changes, publishing, remote operations, real user-profile i
 
 ## T2 — Neutral package-default prompt (user-approved item 2)
 
-**Status:** Review pending (passing WIP commit); main-session review and finalization required.
+**Status:** Completed; independently reviewed.
 
 **Scope:** `extensions/delegate.ts`, `test/delegate.test.mjs`, and `GLOBAL_AGENTS.md` only if applicable personal workflow guidance needs a rig-specific home.
 
