@@ -409,10 +409,16 @@ export function realpathOr(path: string): string {
 	}
 }
 
-/** Hashes checkout file paths, contents, symlink targets, and executable bits without consulting Git metadata. */
+/** Hashes checkout content without Git metadata, length-prefixing every path, kind, mode, and payload field. */
 export function snapshotContent(repoRoot: string): string {
 	const root = resolve(repoRoot);
 	const hash = createHash("sha256");
+	const field = (value: string | Uint8Array) => {
+		const bytes = Buffer.from(value);
+		const length = Buffer.allocUnsafe(8);
+		length.writeBigUInt64BE(BigInt(bytes.length));
+		hash.update(length).update(bytes);
+	};
 	const visit = (dir: string) => {
 		const entries = readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.name !== ".git");
 		entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -423,16 +429,18 @@ export function snapshotContent(repoRoot: string): string {
 				visit(path);
 				continue;
 			}
-			hash.update(relative(root, path).split(sep).join("/")).update("\0");
-			if (stat.isSymbolicLink()) hash.update("link\0").update(readlinkSync(path));
-			else if (stat.isFile())
-				hash
-					.update("file\0")
-					.update(String(stat.mode & 0o111))
-					.update("\0")
-					.update(readFileSync(path));
-			else hash.update("other\0").update(String(stat.mode & 0o170000));
-			hash.update("\0");
+			field(relative(root, path).split(sep).join("/"));
+			if (stat.isSymbolicLink()) {
+				field("link");
+				field(readlinkSync(path));
+			} else if (stat.isFile()) {
+				field("file");
+				field(String(stat.mode & 0o111));
+				field(readFileSync(path));
+			} else {
+				field("other");
+				field(String(stat.mode & 0o170000));
+			}
 		}
 	};
 	visit(root);

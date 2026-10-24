@@ -186,18 +186,26 @@ process.stdin.on("end", () => {
   if (mode === "implement-content-check") {
     const scenario = process.env.FAKE_PI_CONTENT_SCENARIO;
     const check = process.env.FAKE_PI_RAN || "npm test";
-    runBash("printf 'checked\\n' > feature.txt");
-    runBash(check);
-    if (scenario !== "unchanged") {
-      runBash("printf 'mutated\\n' > feature.txt; false");
-      runBash("git add feature.txt");
-      runBash("git commit -m 'feat: mutated content'");
-      if (scenario === "rerun") runBash(check);
+    if (scenario === "binary-collision") {
+      runBash("printf 'x' > a; printf 'y' > b; git add -A; git commit -m 'feat: baseline collision tree'");
+      runBash(check);
+      runBash("printf 'x\\\\0b\\\\0file\\\\0\\\\060\\\\0y' > a; rm b; false");
+      runBash("git add -A");
+      runBash("git commit -m 'feat: binary collision'");
     } else {
-      runBash("git add feature.txt");
-      runBash("git commit -m 'feat: checked content'");
+      runBash("printf 'checked\\n' > feature.txt");
+      runBash(check);
+      if (scenario !== "unchanged") {
+        runBash("printf 'mutated\\n' > feature.txt; false");
+        runBash("git add feature.txt");
+        runBash("git commit -m 'feat: mutated content'");
+        if (scenario === "rerun") runBash(check);
+      } else {
+        runBash("git add feature.txt");
+        runBash("git commit -m 'feat: checked content'");
+      }
     }
-    emit("Checked and committed feature.txt.");
+    emit("Checked and committed content.");
     process.exit(0);
   }
   if (mode === "implement-artifacts" || mode === "implement-check-artifact-fail" || mode === "implement-read-artifact-fail") {
@@ -2853,6 +2861,27 @@ test("implement Bash content freshness ignores Git metadata but stales mutations
 		if (scenario === "rerun")
 			assert.deepEqual(result.details.implement.check.runs, ["pass: npm test", "pass: npm test"]);
 	}
+});
+
+test("implement Bash binary-content collision stales a committed tree through the event path", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-content-check", { FAKE_PI_CONTENT_SCENARIO: "binary-collision" }),
+	});
+	const { repo, git, ctx } = implementRepo();
+	const result = await run(tool, implement(), undefined, undefined, ctx);
+	const handback = text(result);
+
+	assert.equal(result.details.implement.check.status, "stale", handback);
+	assert.equal(result.isError, true, handback);
+	assert.match(handback, /check stale \(checkout content changed after the last check\)/);
+	assert.deepEqual(execFileSync("git", ["-C", repo, "show", "HEAD^:a"]), Buffer.from("x"));
+	assert.deepEqual(execFileSync("git", ["-C", repo, "show", "HEAD^:b"]), Buffer.from("y"));
+	assert.deepEqual(
+		execFileSync("git", ["-C", repo, "show", "HEAD:a"]),
+		Buffer.from("7800620066696c6500300079", "hex"),
+	);
+	assert.deepEqual(git("ls-tree", "-r", "--name-only", "HEAD").split("\n").sort(), ["a", "package.json", "sub/a.txt"]);
+	assert.equal(git("status", "--porcelain"), "");
 });
 
 test("implement check freshness fails closed when a passing check cannot be snapshotted", () => {
