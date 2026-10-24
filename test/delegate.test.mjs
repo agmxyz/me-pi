@@ -35,8 +35,10 @@ const {
 	resolveRun,
 	secretPathIn,
 	writeBlockedIn,
+	trackCheck,
 } = await import("../extensions/delegate.ts");
 const { progressLines } = await import("../extensions/delegate-render.ts");
+const { snapshotContent } = await import("../extensions/delegate-implement.ts");
 
 const DEFAULT_LIMITS = { ...LIMITS };
 // A failing lifecycle test can leave a worker running, which would keep this process alive.
@@ -170,6 +172,34 @@ process.stdin.on("end", () => {
       ...(options.effectiveCommand !== undefined ? { effectiveCommand: options.effectiveCommand } : {}),
     }));
   };
+  const runBash = (command) => {
+    const toolCallId = "t" + ++toolId;
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command } }));
+    const executed = spawnSync("bash", ["-c", command], { encoding: "utf8" });
+    const exitCode = executed.status ?? 1;
+    console.log(JSON.stringify({
+      type: "tool_execution_end", toolCallId, toolName: "bash", isError: exitCode !== 0,
+      result: { structuredContent: { exit_code: exitCode, output: (executed.stdout || "") + (executed.stderr || "") } },
+    }));
+    return exitCode;
+  };
+  if (mode === "implement-content-check") {
+    const scenario = process.env.FAKE_PI_CONTENT_SCENARIO;
+    const check = process.env.FAKE_PI_RAN || "npm test";
+    runBash("printf 'checked\\n' > feature.txt");
+    runBash(check);
+    if (scenario !== "unchanged") {
+      runBash("printf 'mutated\\n' > feature.txt; false");
+      runBash("git add feature.txt");
+      runBash("git commit -m 'feat: mutated content'");
+      if (scenario === "rerun") runBash(check);
+    } else {
+      runBash("git add feature.txt");
+      runBash("git commit -m 'feat: checked content'");
+    }
+    emit("Checked and committed feature.txt.");
+    process.exit(0);
+  }
   if (mode === "implement-artifacts" || mode === "implement-check-artifact-fail" || mode === "implement-read-artifact-fail") {
     const target = "export GITHUB_TOKEN='command-fake-secret' AWS_SECRET_ACCESS_KEY='command-aws-secret' npm run targeted-test";
     if (mode === "implement-artifacts") {
@@ -242,7 +272,7 @@ process.stdin.on("end", () => {
     if (mode === "move-ref") git("update-ref", "refs/heads/other", "HEAD");
     const ran = process.env.FAKE_PI_RAN ?? "npm test";
     if (ran) tool("bash", { command: ran }, Boolean(process.env.FAKE_PI_CHECK_FAIL));
-    if (process.env.FAKE_PI_EDIT_AFTER) tool("edit", { path: "feature.txt" });
+    if (process.env.FAKE_PI_EDIT_AFTER) tool(process.env.FAKE_PI_STALE_TOOL || "edit", { path: "feature.txt" });
     emit("Added feature.txt.\\nIMPLEMENT-DIFF-BODY is in the details only");
     process.exit(0);
   }
@@ -2468,6 +2498,7 @@ function implementRepo() {
 	git("config", "user.name", "Implement Test");
 	mkdirSync(join(repo, "sub"));
 	writeFileSync(join(repo, "sub", "a.txt"), "a\n");
+	writeFileSync(join(repo, "package.json"), `${JSON.stringify({ private: true, scripts: { test: "true" } })}\n`);
 	git("add", "-A");
 	git("commit", "-q", "-m", "initial");
 	git("branch", "other");
@@ -2792,14 +2823,69 @@ test("implement: work left uncommitted becomes a WIP commit on the branch and an
 	assert.equal(git("status", "--porcelain"), "");
 });
 
+test("implement Bash content freshness ignores Git metadata but stales mutations until a passing rerun", async (t) => {
+	for (const [scenario, expectedStatus, expectedContent] of [
+		["unchanged", "pass", "checked\n"],
+		["stale", "stale", "mutated\n"],
+		["rerun", "pass", "mutated\n"],
+	]) {
+		const { tool } = setup(t, {
+			env: implementEnv("implement-content-check", { FAKE_PI_CONTENT_SCENARIO: scenario }),
+		});
+		const { repo, git, ctx } = implementRepo();
+		const result = await run(tool, implement(), undefined, undefined, ctx);
+		const handback = text(result);
+		assert.equal(result.details.implement.check.status, expectedStatus, scenario);
+		assert.equal(
+			execFileSync("git", ["-C", repo, "show", "HEAD:feature.txt"], { encoding: "utf8" }),
+			expectedContent,
+			scenario,
+		);
+		assert.equal(git("status", "--porcelain"), "", scenario);
+		if (expectedStatus === "stale") {
+			assert.equal(result.isError, true, handback);
+			assert.match(handback, /check stale \(checkout content changed after the last check\)/);
+			assert.match(handback, /^✗ check stale: checkout content changed after the last check$/m);
+		} else {
+			assert.equal(result.isError, false, handback);
+			assert.match(handback, /check ✓/);
+		}
+		if (scenario === "rerun")
+			assert.deepEqual(result.details.implement.check.runs, ["pass: npm test", "pass: npm test"]);
+	}
+});
+
+test("implement check freshness fails closed when a passing check cannot be snapshotted", () => {
+	const root = join(TEST_HOME, "missing-checkout");
+	const job = { repoRoot: root, check: { command: CHECK, status: "none", runs: [] } };
+	const calls = new Map([["check", { tool: "bash", command: CHECK }]]);
+	trackCheck(job, calls, { toolCallId: "check", isError: false }, root);
+	assert.equal(job.check.status, "stale");
+	assert.match(job.check.staleReason, /could not be verified/);
+	assert.match(job.check.runs[0], /content snapshot unavailable/);
+	assert.throws(() => snapshotContent(root), /ENOENT/);
+});
+
 test("implement: a failed check, an edit after the check, or no check run is ✗", async (t) => {
 	for (const [extra, line] of [
 		[{ FAKE_PI_CHECK_FAIL: "1" }, "✗ check failed"],
-		[{ FAKE_PI_EDIT_AFTER: "1" }, "✗ check stale: edited after the last run"],
+		[
+			{ FAKE_PI_EDIT_AFTER: "1", FAKE_PI_STALE_TOOL: "edit" },
+			"✗ check stale: successful edit/write after the last check",
+		],
+		[
+			{ FAKE_PI_EDIT_AFTER: "1", FAKE_PI_STALE_TOOL: "write" },
+			"✗ check stale: successful edit/write after the last check",
+		],
 		[{ FAKE_PI_RAN: "" }, "✗ check not run"],
 		[{ FAKE_PI_RAN: "npm test | tail" }, "✗ check not run"],
 	]) {
-		const clean = { FAKE_PI_CHECK_FAIL: undefined, FAKE_PI_EDIT_AFTER: undefined, FAKE_PI_RAN: undefined };
+		const clean = {
+			FAKE_PI_CHECK_FAIL: undefined,
+			FAKE_PI_EDIT_AFTER: undefined,
+			FAKE_PI_STALE_TOOL: undefined,
+			FAKE_PI_RAN: undefined,
+		};
 		const { tool } = setup(t, { env: implementEnv("implement-commit", { ...clean, ...extra }) });
 		const { ctx } = implementRepo();
 		const res = await run(tool, implement(), undefined, undefined, ctx);

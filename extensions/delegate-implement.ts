@@ -8,10 +8,10 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
 import { PROTECTED_BRANCHES } from "./guard.ts";
@@ -171,8 +171,13 @@ export function nextImplementId(): string {
 	return `im${shared[COUNT_KEY]}`;
 }
 
-/** Whether the worker ran `check` after its last edit: none (never ran), pass, fail, or stale (edited after). */
-export type CheckState = { command: string; status: "none" | "pass" | "fail" | "stale"; runs: string[] };
+/** Whether the worker's last declared check covers current checkout content: none, pass, fail, or stale. */
+export type CheckState = {
+	command: string;
+	status: "none" | "pass" | "fail" | "stale";
+	runs: string[];
+	staleReason?: string;
+};
 
 export type Checkout = {
 	id: string;
@@ -187,6 +192,8 @@ export type Checkout = {
 	// HEAD's subject starts with `WIP(delegate`: an earlier attempt left work the worker should finish first.
 	wipHead: boolean;
 	check: CheckState;
+	// The filesystem content checked by the most recent successful declared check; excludes Git metadata.
+	contentBaseline?: string;
 	gitBefore: GitSnapshot;
 	settingsBefore: string;
 	lockPath: string;
@@ -372,6 +379,7 @@ export async function prepare(cwd: string, id: string, check: string): Promise<C
 			startedAt: Date.now(),
 			wipHead: subject.startsWith("WIP(delegate"),
 			check: { command: check, status: "none", runs: [] },
+			contentBaseline: undefined,
 			gitBefore,
 			settingsBefore,
 			lockPath,
@@ -399,6 +407,36 @@ export function realpathOr(path: string): string {
 	} catch {
 		return path; // Missing path: nothing to resolve; the tool reports it.
 	}
+}
+
+/** Hashes checkout file paths, contents, symlink targets, and executable bits without consulting Git metadata. */
+export function snapshotContent(repoRoot: string): string {
+	const root = resolve(repoRoot);
+	const hash = createHash("sha256");
+	const visit = (dir: string) => {
+		const entries = readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.name !== ".git");
+		entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+		for (const entry of entries) {
+			const path = join(dir, entry.name);
+			const stat = lstatSync(path);
+			if (stat.isDirectory()) {
+				visit(path);
+				continue;
+			}
+			hash.update(relative(root, path).split(sep).join("/")).update("\0");
+			if (stat.isSymbolicLink()) hash.update("link\0").update(readlinkSync(path));
+			else if (stat.isFile())
+				hash
+					.update("file\0")
+					.update(String(stat.mode & 0o111))
+					.update("\0")
+					.update(readFileSync(path));
+			else hash.update("other\0").update(String(stat.mode & 0o170000));
+			hash.update("\0");
+		}
+	};
+	visit(root);
+	return hash.digest("hex");
 }
 
 // One leading `cd <dir> &&` or `cd <dir>;`, `<dir>` bare or quoted.
@@ -610,6 +648,12 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 	const o = f.outcome;
 	const section = (title: string, body: string | undefined) =>
 		body?.trim() ? [`## ${title}`, "", body.trim(), ""] : [];
+	const checkHistory = [
+		...f.check.runs,
+		...(f.check.status === "stale"
+			? [`stale reason: ${f.check.staleReason ?? "checkout content changed after the last check"}`]
+			: []),
+	];
 	const text = [
 		`# ${f.id} ${f.branch} ${f.base.slice(0, 7)}..${f.tip?.slice(0, 7) ?? "(missing)"} ${o.label ?? ""}`.trim(),
 		"",
@@ -621,7 +665,7 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 		),
 		...section(`Commits (${f.commitCount}, oldest first)`, f.commits.join("\n")),
 		...section("Diffstat", f.stat),
-		...section(`Check \`${f.check.command}\`: ${f.check.status}`, f.check.runs.join("\n") || "(not run)"),
+		...section(`Check \`${f.check.command}\`: ${f.check.status}`, checkHistory.join("\n") || "(not run)"),
 		...section("Failure", o.failure),
 		...section("Answer", o.answer),
 		...section("Tools", o.tools?.join("\n")),
@@ -647,7 +691,7 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 	return path;
 }
 
-const CHECK_MARKS = { pass: "✓", fail: "✗", stale: "stale (edited after)", none: "not run" };
+const CHECK_MARKS = { pass: "✓", fail: "✗", stale: "stale", none: "not run" };
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** The tool result: a facts line, the worker's first line with the details path, then BLOCKED and ✗ lines. */
@@ -655,7 +699,9 @@ export function formatHandback(f: Facts): string {
 	const o = f.outcome;
 	const range = `${f.base.slice(0, 7)}..${f.tip?.slice(0, 7) ?? "(missing)"}`;
 	const stat = `${plural(f.commitCount, "commit")}, ${plural(f.files, "file")} +${f.insertions} -${f.deletions}`;
-	const check = `check ${CHECK_MARKS[f.check.status]} \`${shown(f.check.command)}\``;
+	const staleReason = f.check.staleReason ?? "checkout content changed after the last check";
+	const checkMark = f.check.status === "stale" ? `stale (${shown(staleReason)})` : CHECK_MARKS[f.check.status];
+	const check = `check ${checkMark} \`${shown(f.check.command)}\``;
 	const head = `${f.failed ? "✗" : "✓"} ${f.id} ${f.branch} ${range}: ${stat}; ${check}${o.label ? ` ${o.label}` : ""}`;
 	const lines = (o.answer ?? "").split("\n").map((l) => l.trim());
 	const first = shown((lines.find((l) => l && !l.startsWith("BLOCKED:")) ?? "(no answer)").slice(0, FIRST_LINE_CAP));
@@ -686,10 +732,13 @@ export function formatHandback(f: Facts): string {
 		// The reason is the failure line above when there is one.
 		out.push(`✗ WIP ${f.wip.sha} on ${f.branch}${failure ? "" : ` (${shown(f.wip.reason)})`}: ${files}`);
 	}
-	if (f.check.status !== "pass")
-		out.push(
-			`✗ check ${{ none: "not run", fail: "failed", stale: "stale: edited after the last run", pass: "" }[f.check.status]}`,
-		);
+	if (f.check.status !== "pass") {
+		const reason =
+			f.check.status === "stale"
+				? `stale: ${shown(staleReason)}`
+				: { none: "not run", fail: "failed", pass: "" }[f.check.status];
+		out.push(`✗ check ${reason}`);
+	}
 	out.push(...f.problems.map((p) => `✗ ${shown(p)}`));
 	return safeDocument(out.join("\n"));
 }

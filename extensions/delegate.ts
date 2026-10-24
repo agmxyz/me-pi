@@ -40,6 +40,7 @@ import {
 	nextImplementId,
 	prepare as prepareImplement,
 	realpathOr,
+	snapshotContent,
 	workerEnv,
 } from "./delegate-implement.ts";
 import {
@@ -746,9 +747,9 @@ function failedToolResult(resultValue: unknown, toolName: string | undefined): F
 	};
 }
 
-/** Updates the check state from a worker's tool_execution_end: the check run alone sets pass|fail; a later edit, stale. */
+/** Updates check freshness from completed worker tool events; only a passing declared check establishes a baseline. */
 export function trackCheck(
-	check: Checkout["check"],
+	job: Checkout,
 	calls: Map<string, { tool: string; command: string }>,
 	event: { toolCallId?: unknown; isError?: unknown },
 	cwd: string,
@@ -756,11 +757,49 @@ export function trackCheck(
 	const call = calls.get(String(event.toolCallId));
 	if (!call) return;
 	calls.delete(String(event.toolCallId));
-	if (call.tool === "bash" && isCheckRun(call.command, check.command, cwd)) {
-		check.status = event.isError ? "fail" : "pass";
-		check.runs.push(`${check.status}: ${call.command}`);
-	} else if ((call.tool === "edit" || call.tool === "write") && !event.isError && check.status !== "none")
+	const { check } = job;
+	const stale = (reason: string, detail?: string) => {
 		check.status = "stale";
+		check.staleReason = reason;
+		job.contentBaseline = undefined;
+		if (detail) check.runs.push(`stale: ${detail}`);
+	};
+	if (call.tool === "bash") {
+		if (isCheckRun(call.command, check.command, cwd)) {
+			job.contentBaseline = undefined;
+			delete check.staleReason;
+			if (event.isError) {
+				check.status = "fail";
+				check.runs.push(`fail: ${call.command}`);
+				return;
+			}
+			try {
+				job.contentBaseline = snapshotContent(job.repoRoot);
+				check.status = "pass";
+				check.runs.push(`pass: ${call.command}`);
+			} catch (err) {
+				const message = (err as Error).message;
+				stale("checkout content could not be verified after the check", `content snapshot unavailable: ${message}`);
+			}
+		} else if (check.status === "pass") {
+			try {
+				if (job.contentBaseline === undefined) {
+					stale("checkout content could not be verified after the last check", "content baseline unavailable");
+					return;
+				}
+				if (snapshotContent(job.repoRoot) !== job.contentBaseline)
+					stale("checkout content changed after the last check");
+			} catch (err) {
+				stale(
+					"checkout content could not be verified after the last check",
+					`content snapshot unavailable: ${(err as Error).message}`,
+				);
+			}
+		}
+		return;
+	}
+	if ((call.tool === "edit" || call.tool === "write") && !event.isError && check.status !== "none")
+		stale("successful edit/write after the last check");
 }
 
 function toolLabel(name: string): string {
@@ -1034,7 +1073,7 @@ function runWorkerAttempt(
 				if (implement) captureToolStart(event);
 			}
 			if (implement && event.type === "tool_execution_end") {
-				trackCheck(implement.job.check, calls, event, cwd);
+				trackCheck(implement.job, calls, event, cwd);
 				captureToolEnd(event);
 			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
