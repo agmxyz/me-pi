@@ -1423,8 +1423,14 @@ test(
 				[SONNET, "low", false, 0, ["grep", "grep", "grep", "grep", "grep", "grep", "tool", "grep"]],
 			],
 		);
-		assert.match(live.content[0].text, /🧑‍🍳 claude-haiku-5-5 @high turn 0/);
-		assert.match(live.content[0].text, /🧑‍🍳 claude-sonnet-5-5 @low turn 0/);
+		assert.match(
+			live.content[0].text,
+			/🧑[🏻-🏿]\u200d[🍳🌾] claude-haiku-5-5 @high turn 0 .*· (letting him cook|doing honest work)$/mu,
+		);
+		assert.match(
+			live.content[0].text,
+			/🧑[🏻-🏿]\u200d[🍳🌾] claude-sonnet-5-5 @low turn 0 .*· (letting him cook|doing honest work)$/mu,
+		);
 		assert.doesNotMatch(live.content[0].text, /--\*/);
 		assert.doesNotMatch(JSON.stringify(live), /PRIVATE_(?:ARGUMENT|COMMAND|OUTPUT|REASONING)|\\u001b/);
 		const result = await pending;
@@ -2155,6 +2161,66 @@ test(
 		assert.equal(intervals.size, 0, "completion clears the elapsed timer");
 	},
 );
+
+test("each worker keeps one persona across progress, widget rerenders, and the rebuttal round", async (t) => {
+	// Math.random is the randomness seam: per worker, one skin tone, then (non-scouts) chef or farmer.
+	const draws = [0, 0, 0.99, 0.9];
+	t.mock.method(Math, "random", () => draws.shift() ?? 0.5);
+	const { tool } = setup(t, {
+		config: { models: [HAIKU, OPUS] },
+		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
+	});
+	const ui = tuiCtx();
+	const updates = [];
+	const result = await run(
+		tool,
+		{ role: "review", task: "personas", runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true },
+		undefined,
+		(update) => updates.push(update),
+		ui.ctx,
+	);
+	assert.equal(result.isError, false);
+	const chef = { emoji: "🧑🏻‍🍳", phrase: "letting him cook" };
+	const farmer = { emoji: "🧑🏿‍🌾", phrase: "doing honest work" };
+	for (const update of updates)
+		assert.deepEqual(
+			update.details.view.runs.map((r) => r.persona),
+			[chef, farmer],
+		);
+	assert.ok(
+		updates.some((u) => u.details.view.stage === "Rebuttal"),
+		"the rebuttal round reported progress",
+	);
+	const rows = ui.snapshots.flat().filter((line) => line.includes("#"));
+	assert.ok(
+		rows.some((line) => line.includes(" R2 ")),
+		"the widget showed the rebuttal round",
+	);
+	for (const line of rows) {
+		if (line.includes("#1 "))
+			assert.match(line, /^🧑🏻‍🍳 fg1#1 review( R2)? anthropic\/claude-haiku-5-5 @\w+ .*· letting him cook$/u);
+		else assert.match(line, /^🧑🏿‍🌾 fg1#2 review( R2)? anthropic\/claude-opus-5-5 @\w+ .*· doing honest work$/u);
+	}
+	assert.deepEqual(
+		result.details.view.runs.map((r) => r.persona),
+		[undefined, undefined],
+		"completed runs show ✓/✗",
+	);
+});
+
+test("a scout worker is an elf in progress and the widget", async (t) => {
+	t.mock.method(Math, "random", () => 0.5);
+	const { tool } = setup(t, { env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" } });
+	const ui = tuiCtx();
+	const updates = [];
+	const result = await run(tool, { role: "scout", task: "look" }, undefined, (u) => updates.push(u), ui.ctx);
+	assert.equal(result.isError, false);
+	const live = updates.find((u) => !u.details.view.runs[0].done);
+	assert.match(live.content[0].text, /^🧝🏽 \S+ @\w+ turn \d+ .*· what do your elf-eyes see\?$/mu);
+	const rows = ui.snapshots.flat().filter((line) => line.startsWith("🧝"));
+	assert.ok(rows.length, "the widget showed the scout");
+	for (const line of rows) assert.match(line, /^🧝🏽 fg1 scout .* @\w+ .*· what do your elf-eyes see\?$/u);
+});
 
 test("the elapsed timer stops between rebuttal rounds and restarts for active rows", async (t) => {
 	const intervals = trackIntervals(t);

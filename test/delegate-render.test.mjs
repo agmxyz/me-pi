@@ -6,10 +6,17 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 // Pi sets up its theme before any tool renders; the Markdown theme needs it.
 initTheme(undefined, false);
 
-const { activityWidget, progressLines, renderCall, renderResult } = await import("../extensions/delegate-render.ts");
+const { activityWidget, pickPersona, progressLines, renderCall, renderResult, SKIN_TONES } = await import(
+	"../extensions/delegate-render.ts"
+);
 
 // Colours as real ANSI codes, so width checks measure only visible text.
 const theme = { fg: (_color, text) => `\x1b[31m${text}\x1b[39m`, bold: (text) => `\x1b[1m${text}\x1b[22m` };
+const bgAnsi = { toolPendingBg: "\x1b[44m", toolSuccessBg: "\x1b[42m", toolErrorBg: "\x1b[41m" };
+const toolTheme = {
+	...theme,
+	bg: (color, text) => `${bgAnsi[color]}${text}\x1b[49m`,
+};
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const draw = (component, width) => component.render(width).map(strip);
 function assertFits(component, width) {
@@ -29,6 +36,37 @@ const run = (over = {}) => ({
 	...over,
 });
 const long = "x".repeat(300);
+// A random source that returns these values in turn.
+const seq =
+	(...values) =>
+	() =>
+		values.shift();
+const CHEF = { emoji: "🧑🏽‍🍳", phrase: "letting him cook" };
+const ELF = { emoji: "🧝🏻", phrase: "what do your elf-eyes see?" };
+
+test("scouts are elves; other workers are chefs or farmers; every skin tone is reachable", () => {
+	assert.deepEqual(
+		SKIN_TONES.map((_, i) => pickPersona("scout", seq(i / 5)).emoji),
+		["🧝🏻", "🧝🏼", "🧝🏽", "🧝🏾", "🧝🏿"],
+	);
+	assert.equal(pickPersona("scout", seq(0)).phrase, "what do your elf-eyes see?");
+	assert.deepEqual(
+		SKIN_TONES.map((_, i) => pickPersona("review", seq(i / 5, 0)).emoji),
+		["🧑🏻‍🍳", "🧑🏼‍🍳", "🧑🏽‍🍳", "🧑🏾‍🍳", "🧑🏿‍🍳"],
+	);
+	assert.deepEqual(
+		SKIN_TONES.map((_, i) => pickPersona("review", seq(i / 5, 0.99)).emoji),
+		["🧑🏻‍🌾", "🧑🏼‍🌾", "🧑🏽‍🌾", "🧑🏾‍🌾", "🧑🏿‍🌾"],
+	);
+	for (const role of ["general", "review", "research", "challenge", "implement"]) {
+		assert.deepEqual(pickPersona(role, seq(0.99, 0)), { emoji: "🧑🏿‍🍳", phrase: "letting him cook" });
+		assert.deepEqual(pickPersona(role, seq(0, 0.5)), { emoji: "🧑🏻‍🌾", phrase: "doing honest work" });
+	}
+	for (let i = 0; i < 50; i++) {
+		const { emoji } = pickPersona("review");
+		assert.match(emoji, /^🧑[🏻🏼🏽🏾🏿]\u200d[🍳🌾]$/u);
+	}
+});
 
 test("the activity widget is compact, bounded, themed, sanitized, and Unicode-width-safe", () => {
 	const colors = [];
@@ -50,12 +88,22 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 		lastTool: index === 0 ? "read" : "grep",
 		fallbacks: index === 0 ? 1 : 0,
 		stage: index === 0 ? "Rebuttal" : "Workers",
+		persona: index === 0 ? ELF : CHEF,
 	}));
 	const component = activityWidget(() => rows, widgetTheme);
 	const lines = draw(component, 200);
 	assert.equal(lines.length, 6, "heading, at most four workers, and overflow count");
-	assert.match(lines[1], /^🧑‍🍳 bg1#1 scout R2 anthropic\/claude-haiku-5-5 @low 2s ↻ · read$/);
-	assert.match(lines[4], /bg1#4 review/);
+	assert.match(
+		lines[1],
+		/^🧝🏻 bg1#1 scout R2 anthropic\/claude-haiku-5-5 @low 2s ↻ · read · what do your elf-eyes see\?$/,
+	);
+	assert.match(lines[4], /^🧑🏽‍🍳 bg1#4 review anthropic\/claude-haiku-5-5 @low 2s · grep · letting him cook$/);
+	const withoutElapsed = (line) => line.replace(/@low \d+s/, "@low <elapsed>");
+	assert.deepEqual(
+		draw(component, 200).map(withoutElapsed),
+		lines.map(withoutElapsed),
+		"a rerender keeps each worker's persona",
+	);
 	assert.equal(lines[5], "… 2 more workers");
 	assert.ok(colors.includes("warning") && colors.includes("accent") && colors.includes("muted"));
 	assert.ok(colors.includes("dim") && colors.includes("toolTitle"));
@@ -93,12 +141,13 @@ test("long native foreground IDs use compact labels so role, model, and thinking
 				startedAt: Date.now(),
 				fallbacks: 0,
 				stage: "Workers",
+				persona: { emoji: "🧑🏾‍🌾", phrase: "doing honest work" },
 			},
 		],
 		theme,
 	);
 	const [row] = draw(component, 90).slice(1);
-	assert.match(row, /🧑‍🍳 fg1 review openai-codex\/gpt-6-luna @low/);
+	assert.match(row, /🧑🏾‍🌾 fg1 review openai-codex\/gpt-6-luna @low/);
 	assert.doesNotMatch(row, /call_|fc_/);
 	assertFits(component, 90);
 });
@@ -128,19 +177,66 @@ test("the call preview is one line: role, models with thinking, badges, the task
 	for (const width of [10, 40]) assertFits(renderCall({ task: long, runs: [{ model: long }] }, theme), width);
 });
 
+test("truncation ellipses retain the pending, success, and error tool backgrounds", () => {
+	const statuses = [
+		{
+			name: "pending",
+			background: "toolPendingBg",
+			component: () => renderCall({ task: long }, toolTheme, { isPartial: true, isError: false }),
+		},
+		{
+			name: "success",
+			background: "toolSuccessBg",
+			component: () =>
+				renderResult(
+					{ content: [], details: { view: { stage: "Done", web: false, runs: [run({ output: long })] } } },
+					{ expanded: false, isPartial: false },
+					toolTheme,
+					{ isPartial: false, isError: false },
+				),
+		},
+		{
+			name: "error",
+			background: "toolErrorBg",
+			component: () =>
+				renderResult(
+					{ content: [], details: { view: { stage: "Done", web: false, runs: [run({ failure: long })] } } },
+					{ expanded: false, isPartial: false },
+					toolTheme,
+					{ isPartial: false, isError: true },
+				),
+		},
+	];
+
+	for (const { name, background, component: makeComponent } of statuses) {
+		const component = makeComponent();
+		const width = 80;
+		const line = component.render(width)[0];
+		assert.ok(line.includes(`\x1b[0m${bgAnsi[background]}...\x1b[49m\x1b[0m`), `${name}: ${JSON.stringify(line)}`);
+		for (const bound of [1, 8, 40, width]) assertFits(component, bound);
+	}
+
+	const plainTheme = { fg: (_color, text) => text, bold: (text) => text };
+	const plainLine = renderCall({ role: "scout", task: long }, plainTheme).render(40)[0];
+	assert.equal(strip(plainLine), "delegate scout default xxxxxxxxxxxxxx...");
+	assert.doesNotMatch(plainLine, /\x1b\[(?:41|42|44)m/);
+});
+
 test("progress shows the stage and one line per run; the plain text is what non-TUI modes get", () => {
 	const view = {
 		stage: "Rebuttal",
 		web: true,
 		runs: [
-			run({ done: false, lastTool: "read src/a.ts", fallbackMessage: "429; trying Sonnet" }),
-			run({ failure: "exit 1" }),
-			run(),
+			run({ done: false, lastTool: "read src/a.ts", fallbackMessage: "429; trying Sonnet", persona: CHEF }),
+			run({ done: false, model: "anthropic/claude-sonnet-5-5", thinking: "off", persona: ELF }),
+			run({ failure: "exit 1", persona: CHEF }),
+			run({ persona: CHEF }),
 		],
 	};
 	assert.deepEqual(progressLines(view), [
 		"Rebuttal [web]",
-		"🧑‍🍳 claude-haiku-5-5 @low turn 2 $0.0017 read src/a.ts ↻ 429; trying Sonnet",
+		"🧑🏽‍🍳 claude-haiku-5-5 @low turn 2 $0.0017 read src/a.ts ↻ 429; trying Sonnet · letting him cook",
+		"🧝🏻 claude-sonnet-5-5 @off turn 2 $0.0017 · what do your elf-eyes see?",
 		"✗ claude-haiku-5-5 @low turn 2 $0.0017",
 		"✓ claude-haiku-5-5 @low turn 2 $0.0017",
 	]);

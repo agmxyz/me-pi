@@ -8,8 +8,33 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
+/** The emoji and phrase a running worker shows; picked once per worker so rerenders keep it. */
+export interface Persona {
+	emoji: string;
+	phrase: string;
+}
+
+/** The five Fitzpatrick skin-tone modifiers, light to dark. */
+export const SKIN_TONES = ["\u{1F3FB}", "\u{1F3FC}", "\u{1F3FD}", "\u{1F3FE}", "\u{1F3FF}"] as const;
+
+/** Scouts are elves; every other worker is a chef or a farmer. Each gets a random skin tone. */
+export function pickPersona(role: string, random: () => number = Math.random): Persona {
+	const pick = <T>(items: readonly T[]): T => items[Math.min(items.length - 1, Math.floor(random() * items.length))];
+	const tone = pick(SKIN_TONES);
+	if (role === "scout") return { emoji: `\u{1F9DD}${tone}`, phrase: "what do your elf-eyes see?" };
+	return pick([
+		{ emoji: `\u{1F9D1}${tone}\u200D\u{1F373}`, phrase: "letting him cook" },
+		{ emoji: `\u{1F9D1}${tone}\u200D\u{1F33E}`, phrase: "doing honest work" },
+	]);
+}
+
+// Views from older sessions carry no persona.
+const DEFAULT_PERSONA: Persona = { emoji: "🧑‍🍳", phrase: "" };
+
 /** One worker run as the renderer shows it. */
 export interface RunView {
+	/** Shown while the run is active. */
+	persona?: Persona;
 	model: string;
 	thinking: string;
 	web: boolean;
@@ -52,6 +77,7 @@ export interface ActivityWidgetRow {
 	lastTool?: string;
 	fallbacks: number;
 	stage: "Workers" | "Rebuttal";
+	persona: Persona;
 }
 
 const stripWidgetControls = (value: string) =>
@@ -78,8 +104,9 @@ export function activityWidget(rows: () => readonly ActivityWidgetRow[], theme: 
 				const elapsed = Math.max(0, Math.floor((Date.now() - row.startedAt) / 1000));
 				const stage = row.stage === "Rebuttal" ? fg("warning", " R2") : "";
 				const fallback = row.fallbacks > 0 ? fg("warning", " ↻") : "";
-				const tail = `${fg("dim", `@${thinking} ${elapsed}s`)}${fallback}${tool ? ` · ${fg("toolTitle", tool)}` : ""}`;
-				return `${fg("warning", "🧑‍🍳")} ${fg("accent", workerId)} ${fg("muted", role)}${stage} ${fg("accent", model)} ${tail}`;
+				const phrase = row.persona.phrase ? ` · ${fg("dim", row.persona.phrase)}` : "";
+				const tail = `${fg("dim", `@${thinking} ${elapsed}s`)}${fallback}${tool ? ` · ${fg("toolTitle", tool)}` : ""}${phrase}`;
+				return `${fg("warning", row.persona.emoji)} ${fg("accent", workerId)} ${fg("muted", role)}${stage} ${fg("accent", model)} ${tail}`;
 			});
 			const overflow = current.length - shown.length;
 			const lines = [
@@ -95,16 +122,27 @@ export function activityWidget(rows: () => readonly ActivityWidgetRow[], theme: 
 
 type Fg = (color: any, text: string) => string;
 const plain: Fg = (_color, text) => text;
+type RenderStatus = { isPartial: boolean; isError: boolean };
+
+function truncationEllipsis(theme: Theme, context?: RenderStatus): string | undefined {
+	if (!context) return undefined;
+	const background = context.isPartial ? "toolPendingBg" : context.isError ? "toolErrorBg" : "toolSuccessBg";
+	return theme.bg(background, "...");
+}
 
 /** Lines cut to the width when drawn. */
 class Lines implements Component {
 	private readonly lines: string[];
-	constructor(lines: string[]) {
+	private readonly ellipsis: string | undefined;
+	constructor(lines: string[], ellipsis?: string) {
 		this.lines = lines;
+		this.ellipsis = ellipsis;
 	}
 	render(width: number): string[] {
 		// A line break inside a line has no width but still moves the cursor: flatten it first.
-		return this.lines.map((line) => truncateToWidth(line.replace(/[\r\n\t]/g, " "), Math.max(1, width)));
+		return this.lines.map((line) =>
+			truncateToWidth(line.replace(/[\r\n\t]/g, " "), Math.max(1, width), this.ellipsis ?? "..."),
+		);
 	}
 	invalidate(): void {}
 }
@@ -126,7 +164,7 @@ const plainPreview = (text: string) =>
 		.replace(/^#+\s*/, "");
 
 function icon(run: RunView, fg: Fg): string {
-	if (!run.done) return fg("warning", "🧑‍🍳");
+	if (!run.done) return fg("warning", (run.persona ?? DEFAULT_PERSONA).emoji);
 	return run.failure || run.round2Failure ? fg("error", "✗") : fg("success", "✓");
 }
 
@@ -152,7 +190,8 @@ function problem(run: RunView): string | undefined {
 export function progressLines(view: DelegateView, fg: Fg = plain, expanded = false): string[] {
 	const header = fg("toolTitle", view.stage) + (view.web ? fg("muted", " [web]") : "");
 	const runs = view.runs.flatMap((r) => {
-		const tail = [r.lastTool, r.fallbackMessage && `↻ ${r.fallbackMessage}`]
+		const phrase = !r.done && r.persona?.phrase ? `· ${r.persona.phrase}` : undefined;
+		const tail = [r.lastTool, r.fallbackMessage && `↻ ${r.fallbackMessage}`, phrase]
 			.filter(Boolean)
 			.map((text) => fg("dim", text as string))
 			.join(" ");
@@ -162,8 +201,9 @@ export function progressLines(view: DelegateView, fg: Fg = plain, expanded = fal
 	return [header, ...runs];
 }
 
-export function renderCall(args: any, theme: Theme): Component {
+export function renderCall(args: any, theme: Theme, context?: RenderStatus): Component {
 	const fg: Fg = theme.fg.bind(theme);
+	const ellipsis = truncationEllipsis(theme, context);
 	const runs: any[] = Array.isArray(args?.runs) && args.runs.length ? args.runs : [{}];
 	const models = runs
 		.map((r) => `${r?.model ? shortModel(String(r.model)) : "default"}${r?.thinking ? `@${r.thinking}` : ""}`)
@@ -177,15 +217,17 @@ export function renderCall(args: any, theme: Theme): Component {
 		(badges.length ? ` ${fg("warning", `[${badges.join(", ")}]`)}` : "") +
 		check +
 		` ${fg("dim", task)}`;
-	return new Lines([line]);
+	return new Lines([line], ellipsis);
 }
 
 export function renderResult(
 	result: { content: { type: string; text?: string }[]; details?: any },
 	options: { expanded: boolean; isPartial: boolean },
 	theme: Theme,
+	context?: RenderStatus,
 ): Component {
 	const fg: Fg = theme.fg.bind(theme);
+	const ellipsis = truncationEllipsis(theme, context);
 	const view: DelegateView | undefined = result.details?.view;
 	if (!view) {
 		// Refused calls and results from older versions carry no view: show the text, wrapped, and
@@ -199,7 +241,8 @@ export function renderResult(
 			options.expanded || more <= 0 ? lines : [...lines.slice(0, FALLBACK_LINES), `\u2026 (${more} more lines)`];
 		return new Text(fg("toolOutput", shown.join("\n")), 0, 0);
 	}
-	if (options.isPartial || view.stage !== "Done") return new Lines(progressLines(view, fg, options.expanded));
+	if (options.isPartial || view.stage !== "Done")
+		return new Lines(progressLines(view, fg, options.expanded), ellipsis);
 
 	const footer = view.footer ? [fg("dim", view.footer)] : [];
 	if (!options.expanded) {
@@ -208,14 +251,14 @@ export function renderResult(
 			const preview = trouble ? fg("error", trouble) : fg("toolOutput", plainPreview(r.output) || "(empty answer)");
 			return `${runHeader(r, fg)} ${preview}`;
 		});
-		return new Lines([...lines, ...footer]);
+		return new Lines([...lines, ...footer], ellipsis);
 	}
 
 	const container = new Container();
 	const markdown = getMarkdownTheme();
 	view.runs.forEach((r, i) => {
 		if (i > 0) container.addChild(new Spacer(1));
-		container.addChild(new Lines([runHeader(r, fg)]));
+		container.addChild(new Lines([runHeader(r, fg)], ellipsis));
 		for (const fallback of r.fallbacks ?? [])
 			container.addChild(new Text(fg("warning", `Fallback: ${fallback}`), 0, 0));
 		const trouble = problem(r);
