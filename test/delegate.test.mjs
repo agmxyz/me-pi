@@ -1284,7 +1284,18 @@ test("/delegate status shows the stage and only active worker progress", async (
 				job: "bg7",
 				stage: "Rebuttal",
 				workers: [
-					{ index: 1, model: HAIKU, thinking: "low", startedAt: Date.now(), active: true, lastTool: "grep" },
+					{
+						index: 1,
+						model: HAIKU,
+						thinking: "low",
+						startedAt: Date.now(),
+						active: true,
+						lastTool: "grep",
+						task: "PRIVATE_TASK_MARKER",
+						toolArguments: "PRIVATE_TOOL_ARGS_MARKER",
+						result: "PRIVATE_RESULT_MARKER",
+						reasoning: "PRIVATE_REASONING_MARKER",
+					},
 					{
 						index: 2,
 						model: OPUS,
@@ -1300,7 +1311,7 @@ test("/delegate status shows the stage and only active worker progress", async (
 	const output = await statusFor(active)();
 	assert.match(output, /\nRunning \(1\):\n {2}bg7 review: claude-haiku-5-5, claude-opus-5-5 \d+s\n/);
 	assert.match(output, /\n {4}Stage: Rebuttal\n {4}Worker 1: claude-haiku-5-5 @low \d+s · grep\n/);
-	assert.doesNotMatch(output, /Worker 2:|completed-only-marker/);
+	assert.doesNotMatch(output, /Worker 2:|completed-only-marker|PRIVATE_(?:TASK|TOOL_ARGS|RESULT|REASONING)_MARKER/);
 	assert.match(output, /\nLast calls: none$/);
 });
 
