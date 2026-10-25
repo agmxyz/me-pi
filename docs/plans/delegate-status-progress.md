@@ -28,3 +28,9 @@ Run the full required check exactly as `npm run check --prefix extensions`.
 Main session first creates a clean, unique `goal/...` branch on the shared checkout; do not start work on `main`/`master`. Then use foreground Scout for a narrow check of the existing command/test seams, background `implement` for this two-file change, a foreground read-only Review of the committed diff, and the full check on the resulting tree. Keep the implement worker the sole checkout writer until handback. Wait for the background result; no installer, settings edits, remote actions, PR, or publishing.
 
 **Lifecycle constraint:** the repository's `implement` contract requires the worker to run its declared check and commit passing changes before handback. Therefore Review and a post-review full check occur after that commit; the requested strict `Scout → implement → Review → full suite → commit` order is not available through one implement job. Treat a failed check, WIP, tripwire, or review finding as incomplete and stop for coordinator review before further work.
+
+## Completion evidence
+
+Completed in implementation commit `29903b8`. The compatibility finding was fixed; final Standards and Spec reviews found no remaining issues. `npm run check --prefix extensions` passed (179 tests, 56 smoke checks).
+
+An earlier `593685ms` shutdown delay did not recur (isolated run: `1.47s`; full suite: about `22s`). It was not fixed, and its root cause is unknown.
