@@ -79,10 +79,26 @@ const fs = require("node:fs");
 const [settingsPath, command, requestedSource] = process.argv.slice(2);
 const settings = fs.existsSync(settingsPath) ? JSON.parse(fs.readFileSync(settingsPath, "utf8")) : {};
 const sourceOf = entry => typeof entry === "string" ? entry : entry?.source;
+const sourceIdentity = source => {
+  if (typeof source !== "string" || !source.startsWith("npm:")) return source;
+  const packageName = source.slice("npm:".length);
+  const versionSeparator = packageName.startsWith("@")
+    ? packageName.indexOf("@", packageName.indexOf("/") + 1)
+    : packageName.indexOf("@");
+  return `npm:${versionSeparator < 0 ? packageName : packageName.slice(0, versionSeparator)}`;
+};
 settings.packages ??= [];
 if (command === "install") {
-  if (!settings.packages.some(entry => sourceOf(entry) === requestedSource)) {
+  const existingIndex = settings.packages.findIndex(entry =>
+    sourceIdentity(sourceOf(entry)) === sourceIdentity(requestedSource),
+  );
+  if (existingIndex < 0) {
     settings.packages.push(requestedSource);
+  } else if (sourceOf(settings.packages[existingIndex]) !== requestedSource) {
+    const existing = settings.packages[existingIndex];
+    settings.packages[existingIndex] = typeof existing === "string"
+      ? requestedSource
+      : { ...existing, source: requestedSource };
   }
 } else {
   const packages = settings.packages.filter(entry => sourceOf(entry) !== requestedSource);
@@ -180,9 +196,21 @@ const sources = (settings.packages ?? []).map(entry =>
 );
 if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
 if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
-if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
-if (sources.filter(source => source === "https://github.com/earendil-works/pi-claude-code").length !== 1) process.exit(1);
-if (sources.some(source => /^npm:@gotgenes\/pi-anthropic-auth(@|$)/.test(source))) process.exit(1);
+if (sources.filter(source => source === "npm:pi-web-access").length !== 1) process.exit(1);
+if (sources.some(source => source?.startsWith("npm:pi-web-access@"))) process.exit(1);
+if (sources.includes("https://github.com/earendil-works/pi-claude-code")) process.exit(1);
+NODE
+}
+
+assert_package_source_registered() {
+  node - "$1" "$2" <<'NODE'
+const fs = require("node:fs");
+const [settingsPath, expectedSource] = process.argv.slice(2);
+const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+const sources = (settings.packages ?? []).map(entry =>
+  typeof entry === "string" ? entry : entry?.source,
+);
+if (sources.filter(source => source === expectedSource).length !== 1) process.exit(1);
 NODE
 }
 
@@ -198,9 +226,9 @@ if (settings.theme !== "light" || settings.machinePreference !== "keep-this") pr
 if (settings.lastChangelogVersion !== "test-version") process.exit(1);
 if (sources.filter(source => source === repoRoot).length !== 1) process.exit(1);
 if (sources.includes(`${repoRoot}/extensions`)) process.exit(1);
-if (sources.filter(source => source === "npm:pi-web-access@0.38.0").length !== 1) process.exit(1);
-if (sources.filter(source => source === "https://github.com/earendil-works/pi-claude-code").length !== 1) process.exit(1);
-if (sources.some(source => /^npm:@gotgenes\/pi-anthropic-auth(@|$)/.test(source))) process.exit(1);
+if (sources.filter(source => source === "npm:pi-web-access").length !== 1) process.exit(1);
+if (sources.some(source => source?.startsWith("npm:pi-web-access@"))) process.exit(1);
+if (sources.includes("https://github.com/earendil-works/pi-claude-code")) process.exit(1);
 if (sources.filter(source => source === "npm:external-string@1.2.3").length !== 1) process.exit(1);
 if (!externalObject || externalObject.config?.keep !== true) process.exit(1);
 NODE
@@ -211,18 +239,20 @@ assert_invocation_logs() {
   printf '%s\n' \
     "install $FIXTURE" \
     "list" \
-    "install npm:pi-web-access@0.38.0" \
-    "install https://github.com/earendil-works/pi-claude-code" \
-    "list" \
-    "remove npm:@gotgenes/pi-anthropic-auth" \
+    "install npm:pi-web-access" \
     "install $FIXTURE" \
     "list" \
-    "install npm:pi-web-access@0.38.0" \
-    "install https://github.com/earendil-works/pi-claude-code" \
-    "list" > "$expected"
+    "install npm:pi-web-access" > "$expected"
   printf '%s\n' \
     "init --global --agent pi" \
     "init --global --agent pi" > "$expected_rtk"
+  cmp -s "$expected" "$PI_LOG" && cmp -s "$expected_rtk" "$RTK_LOG"
+}
+
+assert_single_install_logs() {
+  local expected="$TMP/expected-single-pi.log" expected_rtk="$TMP/expected-single-rtk.log"
+  printf '%s\n' "install $FIXTURE" "list" "install npm:pi-web-access" > "$expected"
+  printf '%s\n' "init --global --agent pi" > "$expected_rtk"
   cmp -s "$expected" "$PI_LOG" && cmp -s "$expected_rtk" "$RTK_LOG"
 }
 
@@ -233,10 +263,10 @@ mkdir -p "$PI_AGENT"
 node - "$PI_AGENT/settings.json" <<'NODE'
 const fs = require("node:fs");
 const settingsPath = process.argv[2];
-fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: ["npm:@gotgenes/pi-anthropic-auth"] }, null, 2)}\n`);
+fs.writeFileSync(settingsPath, `${JSON.stringify({ packages: ["npm:@gotgenes/pi-anthropic-auth", "npm:pi-web-access@0.38.0"] }, null, 2)}\n`);
 NODE
 
-expect_installer "install replaces the previous Anthropic package" 0 "$HOME_FRESH" "$TMP/fresh.out"
+expect_installer "install leaves existing auth packages alone" 0 "$HOME_FRESH" "$TMP/fresh.out"
 
 if [ "$INSTALL_RC" -ne 0 ]; then
   echo "--- fresh installer output ---"
@@ -246,7 +276,8 @@ if [ "$INSTALL_RC" -ne 0 ]; then
 fi
 
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
-check "root package registered without the old extensions source" assert_packages_registered "$PI_AGENT/settings.json" "$FIXTURE"
+check "root package registered and pinned web-access source migrated" assert_packages_registered "$PI_AGENT/settings.json" "$FIXTURE"
+check "existing Anthropic auth package remains registered" assert_package_source_registered "$PI_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth"
 check "interactive-shell example copied" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
 check "handoff example copied" cmp -s "$PI_AGENT/extensions/handoff.ts" "$FAKE_ROOT/examples/extensions/handoff.ts"
 check "RTK setup invoked with Pi agent" grep -Fxq "init --global --agent pi" "$RTK_LOG"
@@ -272,15 +303,28 @@ mkdir -p "$AGENTS_HOME/skills/external-skill"
 printf '%s\n' 'external skill sentinel' > "$AGENTS_HOME/skills/external-skill/SKILL.md"
 
 expect_installer "repeat install succeeds" 0 "$HOME_FRESH" "$TMP/repeat.out"
-check "repeat preserves machine settings and unrelated packages" assert_settings_preserved "$PI_AGENT/settings.json" "$FIXTURE"
+check "repeat preserves machine settings, package identity, and unrelated packages" assert_settings_preserved "$PI_AGENT/settings.json" "$FIXTURE"
 check "repeat preserves credential contents" assert_file_text "$PI_AGENT/auth.json" 'credential sentinel: never overwrite'
 check "repeat preserves external extension" assert_file_text "$PI_AGENT/extensions/external-extension.ts" 'external extension sentinel'
 check "repeat preserves external skill" assert_file_text "$AGENTS_HOME/skills/external-skill/SKILL.md" 'external skill sentinel'
 check "repeat retains interactive-shell contents" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
 check "repeat retains handoff contents" cmp -s "$PI_AGENT/extensions/handoff.ts" "$FAKE_ROOT/examples/extensions/handoff.ts"
 check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
-check "Pi and RTK stubs invoked deterministically" assert_invocation_logs
+check "repeat preserves existing Anthropic auth package" assert_package_source_registered "$PI_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth"
+check "Pi and RTK stubs invoked without auth extension changes" assert_invocation_logs
 check "npm fallback remains unused" test ! -e "$NPM_MARKER"
+
+# An already-correct policy link is accepted without blocking package setup.
+HOME_PRELINK="$TMP/home-prelink"
+PRELINK_AGENT="$HOME_PRELINK/.pi/agent"
+mkdir -p "$PRELINK_AGENT"
+ln -s "$FIXTURE/GLOBAL_AGENTS.md" "$PRELINK_AGENT/AGENTS.md"
+: > "$PI_LOG"
+: > "$RTK_LOG"
+expect_installer "existing correct global AGENTS link succeeds" 0 "$HOME_PRELINK" "$TMP/prelink.out"
+check "existing correct global AGENTS link remains valid" assert_link "$PRELINK_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
+check "existing correct global AGENTS link registers packages" assert_packages_registered "$PRELINK_AGENT/settings.json" "$FIXTURE"
+check "existing correct global AGENTS link permits normal Pi and RTK setup" assert_single_install_logs
 
 # Upgrade a previous extensions-directory registration, including a filtered object.
 HOME_UPGRADE="$TMP/home-upgrade"
@@ -307,22 +351,19 @@ printf '%s\n' \
   "install $FIXTURE" \
   "list" \
   "remove $FIXTURE/extensions" \
-  "install npm:pi-web-access@0.38.0" \
-  "install https://github.com/earendil-works/pi-claude-code" \
-  "list" \
-  "remove npm:@gotgenes/pi-anthropic-auth@1.2.3" > "$TMP/expected-upgrade-pi.log"
+  "install npm:pi-web-access" > "$TMP/expected-upgrade-pi.log"
 expect_installer "upgrade from extensions package succeeds" 0 "$HOME_UPGRADE" "$TMP/upgrade.out"
 check "upgrade registers root and removes old filtered source" assert_settings_preserved "$UPGRADE_AGENT/settings.json" "$FIXTURE"
-check "upgrade removes the pinned old Anthropic source exactly as registered" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
+check "upgrade preserves the pinned Anthropic auth package" assert_package_source_registered "$UPGRADE_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth@1.2.3"
+check "upgrade invokes no auth extension install or removal" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
 expect_installer "repeat upgrade succeeds" 0 "$HOME_UPGRADE" "$TMP/upgrade-repeat.out"
 check "repeat upgrade remains idempotent and preserves unrelated state" assert_settings_preserved "$UPGRADE_AGENT/settings.json" "$FIXTURE"
+check "repeat upgrade preserves the pinned Anthropic auth package" assert_package_source_registered "$UPGRADE_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth@1.2.3"
 printf '%s\n' \
   "install $FIXTURE" \
   "list" \
-  "install npm:pi-web-access@0.38.0" \
-  "install https://github.com/earendil-works/pi-claude-code" \
-  "list" >> "$TMP/expected-upgrade-pi.log"
-check "repeat upgrade leaves the old source removed" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
+  "install npm:pi-web-access" >> "$TMP/expected-upgrade-pi.log"
+check "repeat upgrade invokes no auth extension install or removal" cmp -s "$TMP/expected-upgrade-pi.log" "$PI_LOG"
 check "upgrade never invokes npm fallback" test ! -e "$NPM_MARKER"
 
 # Missing pi must fail before any link is created.
@@ -343,7 +384,9 @@ check "missing pi creates no live directories" test ! -e "$HOME_NOPI/.pi"
 check "refusal invokes no package install" cmp -s "$TMP/pi-before-no-pi.log" "$PI_LOG"
 check "no network-capable npm invocation" test ! -e "$NPM_MARKER"
 
-# An existing AGENTS.md is preserved; packages still install, but the run fails loudly.
+# A policy collision fails before creating extensions/settings or invoking Pi/RTK.
+: > "$PI_LOG"
+: > "$RTK_LOG"
 sentinel='user global AGENTS sentinel'
 for kind in file link; do
   HOME_SHARED="$TMP/home-agents-$kind"
@@ -358,8 +401,10 @@ for kind in file link; do
   fi
   expect_installer "global AGENTS $kind collision fails" 1 "$HOME_SHARED" "$TMP/agents-$kind.out"
   check "global AGENTS $kind collision preserves contents" assert_file_text "$destination" "$sentinel"
-  check "global AGENTS $kind collision reported at the end" grep -Eq "^✗ Incomplete: .*AGENTS.md.*policy is NOT active" "$TMP/agents-$kind.out"
-  check "global AGENTS $kind collision still registers root packages" assert_packages_registered "$HOME_SHARED/.pi/agent/settings.json" "$FIXTURE"
+  check "global AGENTS $kind collision is reported during preflight" grep -Fq "$destination already exists and is not a link to $FIXTURE/GLOBAL_AGENTS.md" "$TMP/agents-$kind.out"
+  check "global AGENTS $kind collision creates no settings file" test ! -e "$HOME_SHARED/.pi/agent/settings.json"
+  check "global AGENTS $kind collision creates no extensions directory" test ! -e "$HOME_SHARED/.pi/agent/extensions"
+  check "global AGENTS $kind collision invokes neither Pi nor RTK" test ! -s "$PI_LOG" -a ! -s "$RTK_LOG"
   if [ "$kind" = file ]; then
     check "global AGENTS file collision remains a regular file" test ! -L "$destination"
   else

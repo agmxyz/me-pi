@@ -10,18 +10,21 @@ if ! command -v pi >/dev/null 2>&1; then
   exit 1
 fi
 
-# The global policy link. An existing file or other link is preserved and reported; the run
-# continues (packages still install) but exits non-zero, because the policy is not active.
-POLICY_PROBLEM=""
+# Refuse a policy collision before creating directories or changing Pi/RTK state.
+POLICY_SOURCE="$REPO/GLOBAL_AGENTS.md"
+POLICY_DESTINATION="$PI_AGENT/AGENTS.md"
+if [ -e "$POLICY_DESTINATION" ] || [ -L "$POLICY_DESTINATION" ]; then
+  if [ ! -L "$POLICY_DESTINATION" ] || [ "$(readlink "$POLICY_DESTINATION")" != "$POLICY_SOURCE" ]; then
+    echo "✗ $POLICY_DESTINATION already exists and is not a link to $POLICY_SOURCE; left unchanged. Move it aside (or merge it into GLOBAL_AGENTS.md) and re-run ./install.sh." >&2
+    exit 1
+  fi
+fi
+
 link_policy() {
-  local source="$REPO/GLOBAL_AGENTS.md" destination="$PI_AGENT/AGENTS.md"
-  if [ -L "$destination" ] && [ "$(readlink "$destination")" = "$source" ]; then
+  if [ -L "$POLICY_DESTINATION" ] && [ "$(readlink "$POLICY_DESTINATION")" = "$POLICY_SOURCE" ]; then
     echo "✓ global AGENTS.md"
-  elif [ -e "$destination" ] || [ -L "$destination" ]; then
-    POLICY_PROBLEM="$destination already exists and is not a link to $source; left unchanged, so the me-pi policy is NOT active. Move it aside (or merge it into GLOBAL_AGENTS.md) and re-run ./install.sh."
-    echo "✗ $POLICY_PROBLEM" >&2
   else
-    ln -s "$source" "$destination"
+    ln -s "$POLICY_SOURCE" "$POLICY_DESTINATION"
     echo "✓ global AGENTS.md"
   fi
 }
@@ -67,17 +70,7 @@ configured_packages="$(pi list)"
 if printf '%s\n' "$configured_packages" | grep -Fq -- "$REPO/extensions"; then
   pi remove "$REPO/extensions"
 fi
-pi install npm:pi-web-access@0.38.0
-
-# Install the replacement first; keep the old extension if installation fails.
-pi install https://github.com/earendil-works/pi-claude-code
-# Remove each registered source exactly as listed, pinned (`@version`) or not.
-configured_packages="$(pi list)"
-old_auth_sources="$(printf '%s\n' "$configured_packages" | awk -v old="npm:@gotgenes/pi-anthropic-auth" \
-  '$1 == old || index($1, old "@") == 1 { print $1 }')"
-while IFS= read -r source; do
-  [ -n "$source" ] && pi remove "$source"
-done <<< "$old_auth_sources"
+pi install npm:pi-web-access
 
 install_pi_example interactive-shell.ts
 install_pi_example handoff.ts
@@ -92,8 +85,4 @@ else
 fi
 
 echo
-if [ -n "$POLICY_PROBLEM" ]; then
-  echo "✗ Incomplete: $POLICY_PROBLEM" >&2
-  exit 1
-fi
 echo "Done. Restart pi sessions to load the updated rig."

@@ -450,7 +450,7 @@ test("formatHandback: two lines when ✓; BLOCKED capped; control characters quo
 	assert.match(quoted[1], /^x\\u001b\[2Jyz+\. Details:/);
 	assert.ok(quoted[1].length < 260);
 	for (const [status, line] of [
-		["stale", "✗ check stale: edited after the last run"],
+		["stale", "✗ check stale: checkout content changed after the last check"],
 		["fail", "✗ check failed"],
 		["none", "✗ check not run"],
 	]) {

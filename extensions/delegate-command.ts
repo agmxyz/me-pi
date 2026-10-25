@@ -102,8 +102,17 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 	const now = Date.now();
 	const active = [...deps.active.values()];
 	lines.push(active.length ? `Running (${active.length}):` : "Running: none");
-	for (const a of active)
+	for (const a of active) {
 		lines.push(`  ${a.job ? `${a.job} ` : ""}${a.role}: ${a.models.map(short).join(", ")} ${seconds(now - a.start)}`);
+		const workers = a.workers ?? [];
+		if (workers.length === 0) continue;
+		lines.push(`    Stage: ${a.stage ?? "Workers"}`);
+		for (const worker of workers.filter((entry) => entry.active)) {
+			const index = workers.length > 1 ? ` ${worker.index}` : "";
+			const progress = `    Worker${index}: ${short(worker.model)} @${worker.thinking} ${seconds(now - worker.startedAt)}`;
+			lines.push(worker.lastTool ? `${progress} · ${worker.lastTool}` : progress);
+		}
+	}
 
 	const total = deps.history.reduce((sum, r) => sum + r.cost, 0);
 	lines.push(deps.history.length ? `Last ${deps.history.length} calls, $${total.toFixed(4)}:` : "Last calls: none");

@@ -47,9 +47,10 @@ Pi extensions run with Pi's operating-system permissions. Delegated workers are 
 Pi is required to install and use the extensions; package behavior is verified against Pi 1.3.0. Development requires Node.js ≥22.19.
 
 ```sh
-npm ci                         # once, and after package-lock.json changes
-npm run check                  # lint, typecheck, tests, installer smoke test, diff check
-npm run check --prefix extensions  # compatibility/acceptance command; forwards to the root check
+npm ci                            # once, and after package-lock.json changes
+npm run check                     # read-only lint, typecheck, tests, installer smoke test, diff check
+npm run check --prefix extensions # compatibility/acceptance command; forwards to the root check
+npm run fix                       # apply available Biome formatting/lint fixes
 ```
 
 See [delegate configuration and operation](docs/delegate.md) and [optional full rig setup](docs/setup.md). Pi's [package docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) describe package sources, filters, and settings scope.

@@ -40,6 +40,7 @@ import {
 	nextImplementId,
 	prepare as prepareImplement,
 	realpathOr,
+	snapshotContent,
 	workerEnv,
 } from "./delegate-implement.ts";
 import {
@@ -746,9 +747,9 @@ function failedToolResult(resultValue: unknown, toolName: string | undefined): F
 	};
 }
 
-/** Updates the check state from a worker's tool_execution_end: the check run alone sets pass|fail; a later edit, stale. */
+/** Updates check freshness from completed worker tool events; only a passing declared check establishes a baseline. */
 export function trackCheck(
-	check: Checkout["check"],
+	job: Checkout,
 	calls: Map<string, { tool: string; command: string }>,
 	event: { toolCallId?: unknown; isError?: unknown },
 	cwd: string,
@@ -756,11 +757,49 @@ export function trackCheck(
 	const call = calls.get(String(event.toolCallId));
 	if (!call) return;
 	calls.delete(String(event.toolCallId));
-	if (call.tool === "bash" && isCheckRun(call.command, check.command, cwd)) {
-		check.status = event.isError ? "fail" : "pass";
-		check.runs.push(`${check.status}: ${call.command}`);
-	} else if ((call.tool === "edit" || call.tool === "write") && !event.isError && check.status !== "none")
+	const { check } = job;
+	const stale = (reason: string, detail?: string) => {
 		check.status = "stale";
+		check.staleReason = reason;
+		job.contentBaseline = undefined;
+		if (detail) check.runs.push(`stale: ${detail}`);
+	};
+	if (call.tool === "bash") {
+		if (isCheckRun(call.command, check.command, cwd)) {
+			job.contentBaseline = undefined;
+			delete check.staleReason;
+			if (event.isError) {
+				check.status = "fail";
+				check.runs.push(`fail: ${call.command}`);
+				return;
+			}
+			try {
+				job.contentBaseline = snapshotContent(job.repoRoot);
+				check.status = "pass";
+				check.runs.push(`pass: ${call.command}`);
+			} catch (err) {
+				const message = (err as Error).message;
+				stale("checkout content could not be verified after the check", `content snapshot unavailable: ${message}`);
+			}
+		} else if (check.status === "pass") {
+			try {
+				if (job.contentBaseline === undefined) {
+					stale("checkout content could not be verified after the last check", "content baseline unavailable");
+					return;
+				}
+				if (snapshotContent(job.repoRoot) !== job.contentBaseline)
+					stale("checkout content changed after the last check");
+			} catch (err) {
+				stale(
+					"checkout content could not be verified after the last check",
+					`content snapshot unavailable: ${(err as Error).message}`,
+				);
+			}
+		}
+		return;
+	}
+	if ((call.tool === "edit" || call.tool === "write") && !event.isError && check.status !== "none")
+		stale("successful edit/write after the last check");
 }
 
 function toolLabel(name: string): string {
@@ -1034,7 +1073,7 @@ function runWorkerAttempt(
 				if (implement) captureToolStart(event);
 			}
 			if (implement && event.type === "tool_execution_end") {
-				trackCheck(implement.job.check, calls, event, cwd);
+				trackCheck(implement.job, calls, event, cwd);
 				captureToolEnd(event);
 			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
@@ -1425,16 +1464,11 @@ export const PROMPT_SNIPPET =
 
 export const PROMPT_GUIDELINES = [
 	"Delegate reading more than about 3 files you will not edit, research, reviews, and plan challenges. The main session handles pushes, PRs, merges, and branch deletion, subject to the user's authorization requirements. Delegate any change whose files you have not read or that takes many steps; edit yourself only 1-3 files you already have in context.",
-	"Before one of your own commits that touches 2+ files or adds behaviour, get a fresh review: write `git diff HEAD` to a temp file (`git add -N` new files first) and pass its path with the acceptance criteria, say you ran the checks, keep your self-assessment out, and do not edit those files until the review returns.",
 	"When the user names several models for one question, send one call with one `runs` entry per model (with its thinking) and `rebuttal: true` if they should check each other; then report agreements, disagreements with their evidence, and your verdict.",
 	"Omit `role` for a general worker, or pick the preset that fits; `answer` (at most 400 characters) sets the answer format. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
 	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory and the result lists the files; copy what you keep and check the diff yourself.",
 	"Pass on only what matters from worker answers, and resolve or report every BLOCKED line. Meet repo instructions to delegate to subagents by using delegate workers. Follow the repo's review requirements.",
-	"Before a goal's first implement: commit your work, `git switch -c goal/<slug>` if on main/master, note the goal base SHA. Use `background: true`. Give goal, repo-relative paths, acceptance criteria, and `check`. Until the handback, do not edit, commit, or switch branches in that repo.",
-	"Trust a ✓ handback: no diff read, no review, no re-check. ✗ WIP: follow-up implement or `git revert`. Tripwire ✗: stop and tell the user. Resolve BLOCKED lines.",
-	"Pi overlay for Claude Code skills: implementer subagents or worktrees mean one background `implement` per ticket, in dependency order, on the goal branch (it is the integration branch); worktree, reset, merger, and cleanup steps are no-ops. An exploration subagent is `scout` or general with `output: true`; pass its directory to later tasks. code-review is two `review` calls in one turn, one for standards and one for the spec.",
-	"Tickets: commit the spec and tickets before the first job. One ticket per job; batch only tiny tickets. The task names the ticket file and the spec section, and says the worker must not ask questions: decide per the spec, and list open questions as BLOCKED. A ticket is done only on a ✓ handback; the worker closes a local ticket only in its passing commit. Before a ticket's job, agree its test seams with the user (or take them from the ticket/spec) and list them in the task as confirmed. For a GitHub tracker, write `gh issue view` output to temp files and pass the paths; close nothing per job; after the goal review, put `Closes #N` in the PR body, or close issues only with the user's approval. If the user asked for a PR or the tracker closes work through PRs: after the first ✓, push the goal branch and open a draft PR with `Closes #N` (push again only after a ✓); mark it ready at goal end. On each ✓ handback, start the next ready ticket in the same turn; never say you are waiting without a running job.",
-	"At goal end: the last job's `check` is the full suite. Then one `review` (two calls, standards and spec, when following code-review; pass the path to the code-review skill's SKILL.md) of `git diff <base>..HEAD` written to a temp file; tell the reviewer each `check` that passed on the final commit (from the handbacks) so it does not report the check as BLOCKED. At most one fix job, for high/medium findings; report spec ambiguities and the rest to the user (this overrides a skill's fix-all step), no re-review loop. Push a goal branch only when the user asked for a PR or the tracker needs one, and only when its last implement handback is ✓ (or its WIP was reverted). If its range contains `WIP(delegate` commits, say so in the PR body and ask the user to squash-merge it (merging needs their approval); never merge WIP commits unsquashed.",
+	"An implement worker is the only writer to the checkout while its job is active; until its handback, do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user.",
 	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile; the answer arrives as a later `delegate` message that starts a turn. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
 ];
 
