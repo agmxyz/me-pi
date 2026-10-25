@@ -457,6 +457,8 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.deepEqual(required, ["task"]);
 	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge", "implement"]);
 	assert.equal(properties.check.type, "string");
+	assert.match(properties.check.description, /one unchained command/);
+	assert.match(properties.check.description, /runs it alone, exactly as given, after its final edit/);
 	assert.equal(properties.branch, undefined);
 	assert.equal(properties.web.type, "boolean");
 	assert.equal(properties.answer.maxLength, 400);
@@ -2111,6 +2113,12 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(all, /only into its own temp directory/);
 	assert.match(all, /resolve or report every BLOCKED line/);
 	assert.match(all, /Follow the repo's review requirements/);
+	assert.match(
+		all,
+		/When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires/,
+	);
+	assert.match(all, /Workers cannot delegate; a handback completes only the assigned step/);
+	assert.match(all, /Declare `check` as one unchained command to run alone/);
 	assert.match(all, /only writer to the checkout while its job is active/);
 	assert.match(all, /until its handback, do not edit, commit, or switch branches in that repo/);
 	assert.match(all, /Surface failed handbacks/);
