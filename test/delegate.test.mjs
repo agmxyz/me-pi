@@ -1328,6 +1328,19 @@ test("/delegate status keeps the existing running summary without worker metadat
 	assert.doesNotMatch(output, /\n {4}(?:Stage:|Worker(?: \d+)?:)/);
 });
 
+test("/delegate status keeps the existing running summary for stage-only calls", async () => {
+	const active = new Map([["bg10", { role: "review", models: [OPUS], start: 1_000, job: "bg10", stage: "Rebuttal" }]]);
+	const originalNow = Date.now;
+	Date.now = () => 4_000;
+	try {
+		const output = await statusFor(active)();
+		assert.match(output, /\nRunning \(1\):\n {2}bg10 review: claude-opus-5-5 3s\n/);
+		assert.doesNotMatch(output, /\n {4}(?:Stage:|Worker(?: \d+)?:)/);
+	} finally {
+		Date.now = originalNow;
+	}
+});
+
 test("/delegate status: the set with availability, missing tools, running and recent calls", async (t) => {
 	assert.deepEqual(setup(t, { env: { ME_PI_RUN: "1" } }).commands, {}, "workers get no command");
 	const main = setup(t, {

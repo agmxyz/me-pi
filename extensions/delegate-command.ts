@@ -105,7 +105,7 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 	for (const a of active) {
 		lines.push(`  ${a.job ? `${a.job} ` : ""}${a.role}: ${a.models.map(short).join(", ")} ${seconds(now - a.start)}`);
 		const workers = a.workers ?? [];
-		if (!a.stage && workers.length === 0) continue;
+		if (workers.length === 0) continue;
 		lines.push(`    Stage: ${a.stage ?? "Workers"}`);
 		for (const worker of workers.filter((entry) => entry.active)) {
 			const index = workers.length > 1 ? ` ${worker.index}` : "";
