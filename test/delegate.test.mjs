@@ -39,6 +39,7 @@ const {
 	trackCheck,
 } = await import("../extensions/delegate.ts");
 const { progressLines } = await import("../extensions/delegate-render.ts");
+const { registerDelegateCommand } = await import("../extensions/delegate-command.ts");
 const { snapshotContent } = await import("../extensions/delegate-implement.ts");
 
 const DEFAULT_LIMITS = { ...LIMITS };
@@ -1247,6 +1248,85 @@ function commandCtx({ available = [HAIKU, SONNET, OPUS] } = {}) {
 	};
 	return { ctx, notes };
 }
+
+function statusFor(active) {
+	const commands = {};
+	registerDelegateCommand(
+		{
+			registerCommand: (name, options) => {
+				commands[name] = options;
+			},
+			getAllTools: () => [],
+		},
+		{
+			configPath: () => "/delegate.json",
+			loadModelSet: () => POOL_SET,
+			history: [],
+			active,
+			cancel: (id) => `cancel ${id}`,
+		},
+	);
+	return async () => {
+		const { ctx, notes } = commandCtx();
+		await commands.delegate.handler("status", ctx);
+		return notes[0][0];
+	};
+}
+
+test("/delegate status shows the stage and only active worker progress", async () => {
+	const active = new Map([
+		[
+			"bg7",
+			{
+				role: "review",
+				models: [HAIKU, OPUS],
+				start: Date.now(),
+				job: "bg7",
+				stage: "Rebuttal",
+				workers: [
+					{ index: 1, model: HAIKU, thinking: "low", startedAt: Date.now(), active: true, lastTool: "grep" },
+					{
+						index: 2,
+						model: OPUS,
+						thinking: "max",
+						startedAt: Date.now(),
+						active: false,
+						lastTool: "completed-only-marker",
+					},
+				],
+			},
+		],
+	]);
+	const output = await statusFor(active)();
+	assert.match(output, /\nRunning \(1\):\n {2}bg7 review: claude-haiku-5-5, claude-opus-5-5 \d+s\n/);
+	assert.match(output, /\n {4}Stage: Rebuttal\n {4}Worker 1: claude-haiku-5-5 @low \d+s · grep\n/);
+	assert.doesNotMatch(output, /Worker 2:|completed-only-marker/);
+	assert.match(output, /\nLast calls: none$/);
+});
+
+test("/delegate status omits a worker's latest tool when none is available", async () => {
+	const active = new Map([
+		[
+			"bg8",
+			{
+				role: "general",
+				models: [OPUS],
+				start: Date.now(),
+				stage: "Workers",
+				workers: [{ index: 1, model: OPUS, thinking: "medium", startedAt: Date.now(), active: true }],
+			},
+		],
+	]);
+	const output = await statusFor(active)();
+	assert.match(output, /\n {4}Worker: claude-opus-5-5 @medium \d+s\n/);
+});
+
+test("/delegate status keeps the existing running summary without worker metadata", async () => {
+	const active = new Map([["bg9", { role: "scout", models: [HAIKU], start: Date.now(), job: "bg9" }]]);
+	const output = await statusFor(active)();
+	assert.match(output, /\nRunning \(1\):\n {2}bg9 scout: claude-haiku-5-5 \d+s\n/);
+	assert.doesNotMatch(output, /\n {4}(?:Stage:|Worker(?: \d+)?:)/);
+});
 
 test("/delegate status: the set with availability, missing tools, running and recent calls", async (t) => {
 	assert.deepEqual(setup(t, { env: { ME_PI_RUN: "1" } }).commands, {}, "workers get no command");
