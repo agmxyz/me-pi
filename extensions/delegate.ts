@@ -218,23 +218,24 @@ function relativeHint(path: string, target: string, outDir: string, given: strin
 
 // --- Wrap-up budget (enforced inside workers) ------------------------------------------------------
 
-/** Tool calls allowed, the epoch ms after which tools are blocked, and the cost (USD) after which they are. */
+/** Tool-call, epoch-ms deadline, and USD cost gates; null tools means no attempt-count gate. */
 export interface Budget {
-	tools: number;
+	tools: number | null;
 	deadline: number;
 	cost: number;
 }
 
 /** Parses ME_PI_BUDGET; undefined when unset. A malformed value throws: the worker must not run unbounded. */
 export function parseBudget(raw: string | undefined): Budget | undefined {
-	if (!raw) return undefined;
+	if (raw === undefined) return undefined;
 	let b: any;
 	try {
 		b = JSON.parse(raw);
 	} catch {
 		b = undefined;
 	}
-	if (![b?.tools, b?.deadline, b?.cost].every((n) => typeof n === "number" && Number.isFinite(n)))
+	const validTools = b?.tools === null || (typeof b?.tools === "number" && Number.isFinite(b.tools));
+	if (!validTools || ![b?.deadline, b?.cost].every((n) => typeof n === "number" && Number.isFinite(n)))
 		throw new Error(`delegate: invalid ME_PI_BUDGET ${JSON.stringify(raw)}`);
 	return b;
 }
@@ -244,7 +245,8 @@ const MAX_BLOCKED_OVER_BUDGET = 3;
 
 /** Which budget a worker has used up before its next tool call, if any. */
 export function budgetSpent(budget: Budget, calls: number, cost: number, now = Date.now()): string | undefined {
-	if (calls > budget.tools) return `${budget.tools} tool call${budget.tools === 1 ? "" : "s"}`;
+	if (budget.tools !== null && calls > budget.tools)
+		return `${budget.tools} tool call${budget.tools === 1 ? "" : "s"}`;
 	if (now >= budget.deadline) return "time";
 	if (cost >= budget.cost) return `$${budget.cost.toFixed(2)} cost`;
 	return undefined;
@@ -862,7 +864,7 @@ function runWorkerAttempt(
 				ME_PI_ROLE: role,
 				ME_PI_OUTPUT_DIR: result.outDir ?? "",
 				ME_PI_BUDGET: JSON.stringify({
-					tools: role === "scout" ? LIMITS.scoutToolCalls : LIMITS.toolCalls,
+					tools: role === "implement" ? null : role === "scout" ? LIMITS.scoutToolCalls : LIMITS.toolCalls,
 					deadline: start + LIMITS.wrapUpShare * timeoutMs,
 					cost: LIMITS.wrapUpShare * costCapUsd,
 				} satisfies Budget),

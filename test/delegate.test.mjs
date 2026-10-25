@@ -166,6 +166,7 @@ process.stdin.on("end", () => {
   // A tool call as Pi's JSON mode reports it: start, then end with isError.
   let toolId = 0;
   const tool = (toolName, args, isError = false, options = {}) => {
+    if (process.env.FAKE_PI_EVENT_MARKER) appendFileSync(process.env.FAKE_PI_EVENT_MARKER, toolName + "\\n");
     const toolCallId = options.missingId ? undefined : (options.toolCallId || "t" + ++toolId);
     if (!options.omitStart) console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
     if (!options.omitEnd) console.log(JSON.stringify({
@@ -276,7 +277,9 @@ process.stdin.on("end", () => {
     return;
   }
   if (mode === "implement-commit" || mode === "move-ref") {
+    for (let i = 0; i < Number(process.env.FAKE_PI_TOOL_EVENTS || 0); i++) tool("read", { path: "sub/a.txt" });
     writeFileSync("feature.txt", "IMPLEMENT-DIFF-BODY\\n");
+    if (process.env.FAKE_PI_TOOL_EVENTS !== undefined) tool("write", { path: "feature.txt" });
     git("add", "-A");
     git("commit", "-q", "-m", "feat: add feature");
     if (mode === "move-ref") git("update-ref", "refs/heads/other", "HEAD");
@@ -388,6 +391,8 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		ME_PI_OUTPUT_DIR: undefined,
 		ME_PI_BUDGET: undefined,
 		ME_PI_ROLE: undefined,
+		FAKE_PI_EVENT_MARKER: undefined,
+		FAKE_PI_TOOL_EVENTS: undefined,
 		TMPDIR: TEST_HOME,
 		...env,
 	};
@@ -541,7 +546,8 @@ test("workers get a wrap-up budget: tool calls, 80% of the time limit, 80% of th
 
 test("past the wrap-up budget, a worker's tool calls are blocked with an answer-now reason", async (t) => {
 	const far = Date.now() + 60_000;
-	const worker = (budget) => setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: JSON.stringify(budget) } }).handlers;
+	const worker = (budget, role) =>
+		setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: role, ME_PI_BUDGET: JSON.stringify(budget) } }).handlers;
 	const call = (h) => h.tool_call({ toolName: "read", input: { path: "README.md" } }, { cwd: REPO_ROOT });
 
 	const counted = worker({ tools: 2, deadline: far, cost: 1 });
@@ -578,9 +584,37 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	const late = worker({ tools: 100, deadline: Date.now() - 1, cost: 1 });
 	assert.match((await call(late)).reason, /budget reached \(time\)/);
 
+	const denied = worker({ tools: 1, deadline: far, cost: 1 }, "implement");
+	const risky = await denied.tool_call(
+		{ toolName: "bash", input: { command: "git push origin x" } },
+		{ cwd: REPO_ROOT },
+	);
+	assert.match(risky.reason, /git push is main-session only/);
+	assert.match((await call(denied)).reason, /budget reached \(1 tool call\)/);
+
+	for (const [role, limit] of [
+		["scout", 30],
+		["review", 100],
+	]) {
+		const capped = worker({ tools: limit, deadline: far, cost: 1 }, role);
+		for (let i = 0; i < limit; i++) assert.equal(await call(capped), undefined);
+		assert.match((await call(capped)).reason, new RegExp(`budget reached \\(${limit} tool calls\\)`));
+	}
+
+	const uncapped = worker({ tools: null, deadline: far, cost: 1 }, "implement");
+	for (let i = 0; i < 150; i++) assert.equal(await call(uncapped), undefined);
+	const lateImplement = worker({ tools: null, deadline: Date.now() - 1, cost: 0.5 }, "implement");
+	await lateImplement.message_end({ message: { role: "assistant", usage: usage(0.5) } });
+	assert.match((await call(lateImplement)).reason, /budget reached \(time\)/);
+	const pricedImplement = worker({ tools: null, deadline: far, cost: 0.5 }, "implement");
+	await pricedImplement.message_end({ message: { role: "assistant", usage: usage(0.2) } });
+	await pricedImplement.message_end({ message: { role: "assistant", usage: usage(0.3) } });
+	assert.match((await call(pricedImplement)).reason, /budget reached \(\$0\.50 cost\)/);
+
 	const unbounded = setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: undefined } }).handlers;
 	for (let i = 0; i < 150; i++) assert.equal(await call(unbounded), undefined);
 	assert.throws(() => setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: '{"tools":1}' } }), /invalid ME_PI_BUDGET/);
+	assert.throws(() => setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: "" } }), /invalid ME_PI_BUDGET/);
 });
 
 test("workers write only inside their own output directory", async (t) => {
@@ -2683,6 +2717,31 @@ test("implement commits on the current branch; the result is a 2-line handback a
 	);
 });
 
+test("implement event tracking keeps a fresh final check after over 100 calls and a mutation", async (t) => {
+	const marker = scratch("implement-events");
+	const { tool } = setup(t, {
+		env: implementEnv("implement-commit", {
+			FAKE_PI_TOOL_EVENTS: "101",
+			FAKE_PI_EVENT_MARKER: marker,
+		}),
+	});
+	const { git, ctx } = implementRepo();
+	const result = await run(tool, implement(), undefined, undefined, ctx);
+	const handback = text(result);
+
+	assert.equal(result.isError, false, handback);
+	assert.equal(result.details.implement.failed, false);
+	assert.equal(result.details.implement.check.status, "pass");
+	assert.deepEqual(result.details.implement.check.runs, ["pass: npm test"]);
+	assert.match(handback, /check ✓/);
+	assert.equal(git("show", "HEAD:feature.txt"), "IMPLEMENT-DIFF-BODY");
+	assert.equal(git("log", "-1", "--format=%s"), "feat: add feature");
+	assert.equal(git("status", "--porcelain"), "");
+
+	const events = readFileSync(marker, "utf8").trim().split("\n");
+	assert.deepEqual(events, [...Array(101).fill("read"), "write", "bash"]);
+});
+
 test("implement captures targeted failures while a later declared check passes", async (t) => {
 	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
 	const reference = scratch("referenced-output");
@@ -3224,6 +3283,11 @@ test("implement gets its own time limit; the wrap-up deadline is 80% of it", asy
 	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
 	const budget = JSON.parse(details.match(/^\{"tools".*\}$/m)[0]);
 	assert.equal(LIMITS.implementTimeoutSecs, 1800);
+	assert.equal(LIMITS.costCapUsd, 5);
+	assert.equal(budget.tools, null);
+	assert.ok(Number.isFinite(budget.deadline));
+	assert.ok(Number.isFinite(budget.cost));
+	assert.equal(budget.cost, 4);
 	assert.ok(budget.deadline >= before + 1800 * 800 && budget.deadline <= Date.now() + 1800 * 800);
 });
 
