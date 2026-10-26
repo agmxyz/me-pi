@@ -68,7 +68,6 @@ export const LIMITS = {
 	// Wrap-up budget, enforced inside the worker: past it, tool calls are blocked so the model answers
 	// before a hard limit kills it without one.
 	scoutToolCalls: 30,
-	toolCalls: 100,
 	wrapUpShare: 0.8,
 };
 const MAX_RUNS = 4;
@@ -864,7 +863,7 @@ function runWorkerAttempt(
 				ME_PI_ROLE: role,
 				ME_PI_OUTPUT_DIR: result.outDir ?? "",
 				ME_PI_BUDGET: JSON.stringify({
-					tools: role === "implement" ? null : role === "scout" ? LIMITS.scoutToolCalls : LIMITS.toolCalls,
+					tools: role === "scout" ? LIMITS.scoutToolCalls : null,
 					deadline: start + LIMITS.wrapUpShare * timeoutMs,
 					cost: LIMITS.wrapUpShare * costCapUsd,
 				} satisfies Budget),
@@ -1465,11 +1464,11 @@ export const PROMPT_SNIPPET =
 	"Run read-only workers (general, or the presets scout, research, review, challenge), alone or as a multi-model panel with rebuttal, and get back only their answers (drafts only with `output: true`); one `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); you get a 2-line handback";
 
 export const PROMPT_GUIDELINES = [
-	"Delegate reading more than about 3 files you will not edit, research, reviews, and plan challenges. The main session handles pushes, PRs, merges, and branch deletion, subject to the user's authorization requirements. Delegate any change whose files you have not read or that takes many steps; edit yourself only 1-3 files you already have in context.",
+	"Honor explicit user-required delegation and any repo- or skill-required independent review first. Otherwise delegate bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs; keep coupled decisions with the coordinator. Pushes, PRs, merges, and branch deletion are main-session only and require user authorization.",
 	"When the user names several models for one question, send one call with one `runs` entry per model (with its thinking) and `rebuttal: true` if they should check each other; then report agreements, disagreements with their evidence, and your verdict.",
 	"Omit `role` for a general worker, or pick the preset that fits; `answer` (at most 400 characters) sets the answer format. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
 	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory and the result lists the files; copy what you keep and check the diff yourself.",
-	"Pass on only what matters from worker answers, and resolve or report every BLOCKED line. Meet repo instructions to delegate to subagents by using delegate workers. Follow the repo's review requirements.",
+	"Give each worker a compact, self-contained brief: scope, deliverable, context/constraints, acceptance evidence, blocker reporting. Explicitly accept/reject/recover handbacks; proportionately verify decisive claims and inspect implementation diffs/check adequacy without routinely redoing worker work. Resolve/report each BLOCKED line. Use delegate for repo-required subagents; follow repo review requirements.",
 	"When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires. Workers cannot delegate; a handback completes only the assigned step. Declare `check` as one unchained command to run alone.",
 	"An implement worker is the only writer to the checkout while its job is active; until its handback, do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user.",
 	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile; the answer arrives as a later `delegate` message that starts a turn. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",

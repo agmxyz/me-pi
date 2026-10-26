@@ -12,6 +12,12 @@ The package's `Skill` extension adds the `Skill` tool for skills Pi already disc
 
 All roles except `implement` are read-only by default. Set `output: true` for a draft: it adds only the `write` tool, restricted to that non-implement worker's fresh private directory under the OS temp directory; the result reports its path. It does not grant `edit`, Bash, or writes to other temporary paths. The main session must review and copy any draft it wants to keep.
 
+## Choose and close work
+
+First honor explicit user-required delegation and any delegation or independent review required by the repo or an applicable skill. Otherwise, delegate bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs; keep coupled decisions with the coordinator. Give each worker a compact, self-contained brief covering scope, deliverable, relevant context and constraints, acceptance evidence, and how to report blockers.
+
+A multi-model panel (`runs`) repeats the same task for each model; decompose work into separate calls with separate briefs. Treat partial answers as incomplete. Explicitly accept, reject, or recover each handback; verify decisive claims proportionately, inspecting implementation diffs and check adequacy without routinely repeating worker work. Failed checks, timeouts, and WIP commits stay incomplete until recovery. Live UI acceptance requires actual observable evidence from the running interface; static inspection alone does not establish it.
+
 ## Configure model pools
 
 Optional model pools live at `~/.pi/agent/delegate.json`. Without a file, workers use the main session's model and thinking level; `scout` thinking is capped at `low` (or remains `off`). For model IDs, use IDs available to your Pi installation.
@@ -44,7 +50,7 @@ A `research` task needs the separately installed web extension; installing me-pi
 
 This is not a sandbox: Pi extensions and `implement`'s Bash run with Pi's operating-system permissions. Read-only workers can read project files; web-enabled ones combine local reads with network access. `guard` asks before matching risky Bash commands (or blocks them when there is no UI), but it is a pattern matcher, not a parser. `implement` worker-side checks block selected commands and disable Git remote protocols, but they do not isolate the process; some environment or Git options can bypass those checks. Use a clean feature branch, keep the main session out of the checkout until handback, and review the result.
 
-Workers have hard time limits of 5 minutes for `scout`, 15 minutes for other read-only roles, and 30 minutes for `implement`; each run has a nominal $5 cost cap. Pi-reported cost is an estimate; it may be absent or overshoot and is not billing authorization. Tool calls are blocked at 80% of the time or cost limit (for `implement`, 24 minutes and $4) to prompt a final answer. `scout` is also capped at 30 calls and other read-only roles at 100; `implement` has no attempt-count gate but remains subject to time and cost gates. A worker that ignores three such blocks is terminated on the next blocked call. These limits do not make execution safe.
+Workers have hard time limits of 5 minutes for `scout`, 15 minutes for other read-only roles, and 30 minutes for `implement`; each run has a nominal $5 cost cap. Pi-reported cost is an estimate; it may be absent or overshoot and is not billing authorization. Tool calls are blocked at 80% of the time or cost limit (for `implement`, 24 minutes and $4) to prompt a final answer. `scout` alone is capped at 30 tool calls; all other roles have no attempt-count gate and remain subject to the time and cost gates. A worker that ignores three such blocks is terminated on the next blocked call. These limits do not make execution safe.
 
 Cancellation is not rollback. If an `implement` run stops with uncommitted non-ignored changes, the extension may save them in a `WIP(delegate …)` commit on the job branch. A moved branch can prevent that save. Check the handback's branch, commit range, `check` status, and any `Details:` path; inspect the checkout before continuing. A follow-up `implement` recognizes a WIP commit from an earlier attempt and is asked to finish it first.
 
