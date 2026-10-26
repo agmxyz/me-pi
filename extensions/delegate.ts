@@ -218,23 +218,24 @@ function relativeHint(path: string, target: string, outDir: string, given: strin
 
 // --- Wrap-up budget (enforced inside workers) ------------------------------------------------------
 
-/** Tool calls allowed, the epoch ms after which tools are blocked, and the cost (USD) after which they are. */
+/** Tool-call, epoch-ms deadline, and USD cost gates; null tools means no attempt-count gate. */
 export interface Budget {
-	tools: number;
+	tools: number | null;
 	deadline: number;
 	cost: number;
 }
 
 /** Parses ME_PI_BUDGET; undefined when unset. A malformed value throws: the worker must not run unbounded. */
 export function parseBudget(raw: string | undefined): Budget | undefined {
-	if (!raw) return undefined;
+	if (raw === undefined) return undefined;
 	let b: any;
 	try {
 		b = JSON.parse(raw);
 	} catch {
 		b = undefined;
 	}
-	if (![b?.tools, b?.deadline, b?.cost].every((n) => typeof n === "number" && Number.isFinite(n)))
+	const validTools = b?.tools === null || (typeof b?.tools === "number" && Number.isFinite(b.tools));
+	if (!validTools || ![b?.deadline, b?.cost].every((n) => typeof n === "number" && Number.isFinite(n)))
 		throw new Error(`delegate: invalid ME_PI_BUDGET ${JSON.stringify(raw)}`);
 	return b;
 }
@@ -244,7 +245,8 @@ const MAX_BLOCKED_OVER_BUDGET = 3;
 
 /** Which budget a worker has used up before its next tool call, if any. */
 export function budgetSpent(budget: Budget, calls: number, cost: number, now = Date.now()): string | undefined {
-	if (calls > budget.tools) return `${budget.tools} tool call${budget.tools === 1 ? "" : "s"}`;
+	if (budget.tools !== null && calls > budget.tools)
+		return `${budget.tools} tool call${budget.tools === 1 ? "" : "s"}`;
 	if (now >= budget.deadline) return "time";
 	if (cost >= budget.cost) return `$${budget.cost.toFixed(2)} cost`;
 	return undefined;
@@ -862,7 +864,7 @@ function runWorkerAttempt(
 				ME_PI_ROLE: role,
 				ME_PI_OUTPUT_DIR: result.outDir ?? "",
 				ME_PI_BUDGET: JSON.stringify({
-					tools: role === "scout" ? LIMITS.scoutToolCalls : LIMITS.toolCalls,
+					tools: role === "implement" ? null : role === "scout" ? LIMITS.scoutToolCalls : LIMITS.toolCalls,
 					deadline: start + LIMITS.wrapUpShare * timeoutMs,
 					cost: LIMITS.wrapUpShare * costCapUsd,
 				} satisfies Budget),
@@ -1446,7 +1448,7 @@ function buildSchema() {
 				type: "string",
 				minLength: 1,
 				description:
-					"implement only, required: the command, run from your cwd, that proves the change (e.g. `npm run check --prefix extensions`). The worker runs it alone, exactly as given, after its last edit.",
+					"implement only, required: one unchained command, run from your cwd, that proves the change (e.g. `npm run check --prefix extensions`). The worker runs it alone, exactly as given, after its final edit.",
 			},
 			background: {
 				type: "boolean",
@@ -1468,6 +1470,7 @@ export const PROMPT_GUIDELINES = [
 	"Omit `role` for a general worker, or pick the preset that fits; `answer` (at most 400 characters) sets the answer format. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
 	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory and the result lists the files; copy what you keep and check the diff yourself.",
 	"Pass on only what matters from worker answers, and resolve or report every BLOCKED line. Meet repo instructions to delegate to subagents by using delegate workers. Follow the repo's review requirements.",
+	"When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires. Workers cannot delegate; a handback completes only the assigned step. Declare `check` as one unchained command to run alone.",
 	"An implement worker is the only writer to the checkout while its job is active; until its handback, do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user.",
 	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile; the answer arrives as a later `delegate` message that starts a turn. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
 ];
