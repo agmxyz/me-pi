@@ -14,7 +14,7 @@ All roles except `implement` are read-only by default. Set `output: true` for a 
 
 ## Choose and close work
 
-First honor explicit user-required delegation and any delegation or independent review required by the repo or an applicable skill. Otherwise, delegate bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs; keep coupled decisions with the coordinator. Give each worker a self-contained brief covering scope, deliverable, relevant context and constraints, acceptance evidence, and how to report blockers.
+First honor explicit user-required delegation and any delegation or independent review required by the repo or an applicable skill. Otherwise, delegate bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs; keep coupled decisions with the coordinator. Give each worker a compact, self-contained brief covering scope, deliverable, relevant context and constraints, acceptance evidence, and how to report blockers.
 
 A multi-model panel (`runs`) repeats the same task for each model; decompose work into separate calls with separate briefs. Treat partial answers as incomplete. Explicitly accept, reject, or recover each handback; verify decisive claims proportionately, inspecting implementation diffs and check adequacy without routinely repeating worker work. Failed checks, timeouts, and WIP commits stay incomplete until recovery. Live UI acceptance requires actual observable evidence from the running interface; static inspection alone does not establish it.
 

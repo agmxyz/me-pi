@@ -2145,7 +2145,7 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(all, /keep coupled decisions with the coordinator/);
 	assert.match(
 		all,
-		/Give each worker a self-contained brief: scope, deliverable, context\/constraints, acceptance evidence, blocker reporting/,
+		/Give each worker a compact, self-contained brief: scope, deliverable, context\/constraints, acceptance evidence, blocker reporting/,
 	);
 	assert.match(all, /Explicitly accept\/reject\/recover handbacks/);
 	assert.match(all, /proportionately verify decisive claims/);
