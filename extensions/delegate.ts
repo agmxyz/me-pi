@@ -68,7 +68,6 @@ export const LIMITS = {
 	// Wrap-up budget, enforced inside the worker: past it, tool calls are blocked so the model answers
 	// before a hard limit kills it without one.
 	scoutToolCalls: 30,
-	toolCalls: 100,
 	wrapUpShare: 0.8,
 };
 const MAX_RUNS = 4;
@@ -864,7 +863,7 @@ function runWorkerAttempt(
 				ME_PI_ROLE: role,
 				ME_PI_OUTPUT_DIR: result.outDir ?? "",
 				ME_PI_BUDGET: JSON.stringify({
-					tools: role === "implement" ? null : role === "scout" ? LIMITS.scoutToolCalls : LIMITS.toolCalls,
+					tools: role === "scout" ? LIMITS.scoutToolCalls : null,
 					deadline: start + LIMITS.wrapUpShare * timeoutMs,
 					cost: LIMITS.wrapUpShare * costCapUsd,
 				} satisfies Budget),

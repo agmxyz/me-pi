@@ -529,11 +529,14 @@ test("implement workers' bash calls are checked against the worker-only rules", 
 	assert.equal(await other(bash("git push origin x"), { cwd: REPO_ROOT }), undefined);
 });
 
-test("workers get a wrap-up budget: tool calls, 80% of the time limit, 80% of the cost cap", async (t) => {
+test("workers get a wrap-up budget: scout tool calls, 80% of the time limit and cost cap", async (t) => {
 	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-budget" } });
 	for (const [role, tools, secs] of [
 		["scout", 30, 300],
-		["review", 100, 900],
+		["general", null, 900],
+		["research", null, 900],
+		["review", null, 900],
+		["challenge", null, 900],
 	]) {
 		const before = Date.now();
 		const res = await run(tool, { role, task: "x" });
@@ -569,7 +572,7 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	const secret = await spentFirst.tool_call({ toolName: "read", input: { path: ".env" } }, { cwd: REPO_ROOT });
 	assert.match(secret.reason, /budget reached/);
 
-	const priced = worker({ tools: 100, deadline: far, cost: 0.5 });
+	const priced = worker({ tools: null, deadline: far, cost: 0.5 });
 	const usage = (cost) => ({ cost: { total: cost } });
 	await priced.message_end({ message: { role: "user", usage: usage(9) } });
 	await priced.message_end({ message: { role: "assistant", usage: usage(0.3) } });
@@ -581,7 +584,7 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	await call(single);
 	assert.match((await call(single)).reason, /budget reached \(1 tool call\)\./);
 
-	const late = worker({ tools: 100, deadline: Date.now() - 1, cost: 1 });
+	const late = worker({ tools: null, deadline: Date.now() - 1, cost: 1 });
 	assert.match((await call(late)).reason, /budget reached \(time\)/);
 
 	const denied = worker({ tools: 1, deadline: far, cost: 1 }, "implement");
@@ -592,17 +595,14 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	assert.match(risky.reason, /git push is main-session only/);
 	assert.match((await call(denied)).reason, /budget reached \(1 tool call\)/);
 
-	for (const [role, limit] of [
-		["scout", 30],
-		["review", 100],
-	]) {
-		const capped = worker({ tools: limit, deadline: far, cost: 1 }, role);
-		for (let i = 0; i < limit; i++) assert.equal(await call(capped), undefined);
-		assert.match((await call(capped)).reason, new RegExp(`budget reached \\(${limit} tool calls\\)`));
-	}
+	const cappedScout = worker({ tools: 30, deadline: far, cost: 1 }, "scout");
+	for (let i = 0; i < 30; i++) assert.equal(await call(cappedScout), undefined);
+	assert.match((await call(cappedScout)).reason, /budget reached \(30 tool calls\)/);
 
-	const uncapped = worker({ tools: null, deadline: far, cost: 1 }, "implement");
-	for (let i = 0; i < 150; i++) assert.equal(await call(uncapped), undefined);
+	for (const role of ["general", "research", "review", "challenge", "implement"]) {
+		const uncapped = worker({ tools: null, deadline: far, cost: 1 }, role);
+		for (let i = 0; i < 150; i++) assert.equal(await call(uncapped), undefined, role);
+	}
 	const lateImplement = worker({ tools: null, deadline: Date.now() - 1, cost: 0.5 }, "implement");
 	await lateImplement.message_end({ message: { role: "assistant", usage: usage(0.5) } });
 	assert.match((await call(lateImplement)).reason, /budget reached \(time\)/);
