@@ -12,6 +12,12 @@ The package's `Skill` extension adds the `Skill` tool for skills Pi already disc
 
 All roles except `implement` are read-only by default. Set `output: true` for a draft: it adds only the `write` tool, restricted to that non-implement worker's fresh private directory under the OS temp directory; the result reports its path. It does not grant `edit`, Bash, or writes to other temporary paths. The main session must review and copy any draft it wants to keep.
 
+## Choose and close work
+
+First honor explicit user-required delegation and any delegation or independent review required by the repo or an applicable skill. Otherwise, delegate bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs; keep coupled decisions with the coordinator. Give each worker a self-contained brief covering scope, deliverable, relevant context and constraints, acceptance evidence, and how to report blockers.
+
+A multi-model panel (`runs`) repeats the same task for each model; decompose work into separate calls with separate briefs. Treat partial answers as incomplete. Explicitly accept, reject, or recover each handback; verify decisive claims proportionately, inspecting implementation diffs and check adequacy without routinely repeating worker work. Failed checks, timeouts, and WIP commits stay incomplete until recovery. Live UI acceptance requires actual observable evidence from the running interface; static inspection alone does not establish it.
+
 ## Configure model pools
 
 Optional model pools live at `~/.pi/agent/delegate.json`. Without a file, workers use the main session's model and thinking level; `scout` thinking is capped at `low` (or remains `off`). For model IDs, use IDs available to your Pi installation.

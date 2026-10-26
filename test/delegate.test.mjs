@@ -2134,10 +2134,29 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 		prompt,
 		/goal\/<slug>|goal base SHA|tickets?|issue tracker|gh issue|Closes #|draft PR|PR body|push again|first ✓|mark it ready|At goal end|goal[- ](?:end|review)|per-goal|fresh review|own commits|fix job|fix findings|follow-up implement|git revert|two `review` calls|no diff read|Trust a ✓ handback/i,
 	);
-	assert.match(all, /Delegate reading more than about 3 files/);
-	assert.match(all, /Delegate any change whose files you have not read or that takes many steps/);
-	assert.match(all, /main session handles pushes, PRs, merges, and branch deletion/);
-	assert.match(all, /subject to the user's authorization requirements/);
+	assert.match(
+		all,
+		/Honor explicit user-required delegation and any repo- or skill-required independent review first/,
+	);
+	assert.match(
+		all,
+		/bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs/,
+	);
+	assert.match(all, /keep coupled decisions with the coordinator/);
+	assert.match(
+		all,
+		/Give each worker a self-contained brief: scope, deliverable, context\/constraints, acceptance evidence, blocker reporting/,
+	);
+	assert.match(all, /Explicitly accept\/reject\/recover handbacks/);
+	assert.match(all, /proportionately verify decisive claims/);
+	assert.match(all, /inspect implementation diffs\/check adequacy without routinely redoing worker work/);
+	assert.doesNotMatch(
+		all,
+		/\b(?:\d+(?:\s*(?:[-–]|to)\s*\d+)?|one|two|three|few)\s+files?\b|file[- ]count|files you have not read|many steps|edit yourself only/i,
+	);
+	assert.match(all, /Pushes, PRs, merges, and branch deletion are main-session only/);
+	assert.match(all, /require user authorization/);
+	assert.match(all, /several models for one question/);
 	assert.match(all, /`runs` entry per model/);
 	assert.match(all, /`rebuttal: true`/);
 	assert.match(all, /`role` for a general worker/);
@@ -2145,8 +2164,9 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(all, /fetched pages can steer a worker into sending local files out/);
 	assert.match(all, /`output: true`/);
 	assert.match(all, /only into its own temp directory/);
-	assert.match(all, /resolve or report every BLOCKED line/);
-	assert.match(all, /Follow the repo's review requirements/);
+	assert.match(all, /Resolve\/report each BLOCKED line/);
+	assert.match(all, /Use delegate for repo-required subagents/);
+	assert.match(all, /follow repo review requirements/);
 	assert.match(
 		all,
 		/When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires/,
