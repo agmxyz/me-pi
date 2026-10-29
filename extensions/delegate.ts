@@ -583,6 +583,18 @@ export function resolveRun(
 	return { candidates: withOverrides, model: first.model, thinking: first.thinking };
 }
 
+// These Pi transports dispatch to the supplied model.baseUrl. Other APIs may derive or replace
+// the endpoint at request time, so catalog metadata alone cannot pin their destination.
+const MODEL_BASE_URL_TRANSPORTS = new Set([
+	"anthropic-messages",
+	"openai-completions",
+	"openai-responses",
+	"openai-codex-responses",
+	"google-generative-ai",
+	"mistral-conversations",
+	"pi-messages",
+]);
+
 export function providerDestination(model: { baseUrl?: unknown }): string | undefined {
 	if (typeof model.baseUrl !== "string") return undefined;
 	try {
@@ -621,17 +633,24 @@ export function resolveFallbackRestriction(
 				find?: (provider: string, modelId: string) => unknown;
 				getAvailable?: () => unknown;
 				hasConfiguredAuth?: (model: unknown) => boolean;
+				isUsingOAuth?: (model: unknown) => unknown;
+				getRegisteredProviderIds?: () => unknown;
 		  }
 		| undefined;
 	if (
 		!registry ||
 		typeof registry.find !== "function" ||
 		typeof registry.getAvailable !== "function" ||
-		typeof registry.hasConfiguredAuth !== "function"
+		typeof registry.hasConfiguredAuth !== "function" ||
+		typeof registry.isUsingOAuth !== "function" ||
+		typeof registry.getRegisteredProviderIds !== "function"
 	)
-		return invalid("Pi model registry cannot verify provider destinations and authentication");
+		return invalid("Pi model registry cannot prove request endpoint pinning without resolving credentials");
 	const available = registry.getAvailable();
 	if (!Array.isArray(available)) return invalid("Pi returned an invalid available-model list");
+	const registeredProviders = registry.getRegisteredProviderIds();
+	if (!Array.isArray(registeredProviders) || !registeredProviders.every((provider) => typeof provider === "string"))
+		return invalid("Pi returned an invalid registered-provider list");
 	const configured = new Set(
 		runs.flatMap((run) => run.candidates.map((candidate) => candidate.model).filter(Boolean)),
 	);
@@ -663,8 +682,20 @@ export function resolveFallbackRestriction(
 			return invalid("a candidate has no exact match in Pi's model catalog");
 		const destination = providerDestination(model);
 		if (!destination || destination !== item.destination)
-			return invalid("a candidate destination does not match Pi's resolved provider endpoint");
+			return invalid("a candidate destination does not match Pi's catalog base URL");
 		if (!registry.hasConfiguredAuth(model)) return invalid("a candidate has no configured provider authentication");
+		if (registeredProviders.includes(item.provider))
+			return invalid("a registered provider extension may route requests away from the catalog base URL");
+		if (model.provider === "azure")
+			return invalid("Azure may replace the catalog base URL using request-time endpoint settings");
+		if (typeof model.api !== "string" || !MODEL_BASE_URL_TRANSPORTS.has(model.api))
+			return invalid("Pi's transport cannot guarantee that the catalog base URL is the request destination");
+		const usesOAuth = registry.isUsingOAuth(model);
+		if (typeof usesOAuth !== "boolean") return invalid("Pi returned unknown request authentication metadata");
+		if (usesOAuth)
+			return invalid(
+				"request-time OAuth may override the endpoint; Pi exposes no credential-free effective request URL",
+			);
 		if (
 			!available.some(
 				(entry) => eventRecord(entry)?.provider === item.provider && eventRecord(entry)?.id === modelId,

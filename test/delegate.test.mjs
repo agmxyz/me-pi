@@ -61,6 +61,7 @@ const HAIKU = "anthropic/claude-haiku-5-5";
 const SONNET = "anthropic/claude-sonnet-5-5";
 const OPUS = "anthropic/claude-opus-5-5";
 const LUNA = "openai-codex/gpt-6-luna";
+const COPILOT = "github-copilot/claude-sonnet-5-5";
 const POOL_SET = {
 	version: 3,
 	scout: {
@@ -80,9 +81,15 @@ const POOL_SET = {
 };
 const ONE_OFF = "google/gemini-test";
 const UNAUTHENTICATED = "unauthed/model";
-const REGISTRY_MODELS = [HAIKU, SONNET, OPUS, LUNA, ONE_OFF];
+const REGISTRY_MODELS = [HAIKU, SONNET, OPUS, LUNA, ONE_OFF, COPILOT];
 
-function registryFixture({ catalog = REGISTRY_MODELS, available = catalog, authenticated } = {}) {
+function registryFixture({
+	catalog = REGISTRY_MODELS,
+	available = catalog,
+	authenticated,
+	oauthProviders = [],
+	registeredProviders = [],
+} = {}) {
 	const model = (id) => {
 		const slash = id.indexOf("/");
 		return slash > 0
@@ -90,7 +97,9 @@ function registryFixture({ catalog = REGISTRY_MODELS, available = catalog, authe
 					provider: id.slice(0, slash),
 					id: id.slice(slash + 1),
 					name: id.slice(slash + 1),
-					api: id.slice(0, slash) === "anthropic" ? "anthropic-messages" : "openai-responses",
+					api: ["anthropic", "github-copilot"].includes(id.slice(0, slash))
+						? "anthropic-messages"
+						: "openai-responses",
 					baseUrl: `https://${id.slice(0, slash)}.example/v1`,
 				}
 			: undefined;
@@ -102,6 +111,8 @@ function registryFixture({ catalog = REGISTRY_MODELS, available = catalog, authe
 		find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
 		getAvailable: () => availableModels,
 		hasConfiguredAuth: (candidate) => authProviders.has(candidate.provider),
+		isUsingOAuth: (candidate) => oauthProviders.includes(candidate.provider),
+		getRegisteredProviderIds: () => registeredProviders,
 	};
 }
 
@@ -488,7 +499,7 @@ const fallbackAuthorization = (
 	}),
 });
 
-test("fallback authorization is validated and frozen as a dispatch snapshot", () => {
+test("fallback authorization is validated and frozen only for a pinned direct endpoint", () => {
 	const set = {
 		version: 2,
 		scout: { models: [], thinking: "low" },
@@ -511,6 +522,10 @@ test("fallback authorization is validated and frozen as a dispatch snapshot", ()
 	assert.equal(adopted.issue, undefined);
 	assert.equal(adopted.restriction.authority, "adopted-snapshot");
 	assert.equal(resolved.issue, undefined);
+	assert.equal(
+		resolved.restriction.candidates[0].destination,
+		providerDestination(CTX.modelRegistry.find("anthropic", "claude-haiku-5-5")),
+	);
 	assert.equal(Object.isFrozen(resolved.restriction), true);
 	assert.equal(Object.isFrozen(resolved.restriction.candidates), true);
 	assert.equal(Object.isFrozen(resolved.restriction.candidates[0].dataClasses), true);
@@ -540,6 +555,83 @@ test("fallback authorization is validated and frozen as a dispatch snapshot", ()
 		},
 		{ model: SONNET, provider: "anthropic", destination: originalDestination, dataClasses: ["repository-source"] },
 	]);
+});
+
+test("fallback refuses an OAuth endpoint override before dispatching candidate data", async (t) => {
+	const registry = registryFixture({ oauthProviders: ["github-copilot"] });
+	let credentialResolutionCalls = 0;
+	registry.getApiKeyAndHeaders = () => {
+		credentialResolutionCalls++;
+		throw new Error("credential resolution must not be called");
+	};
+	const marker = scratch("fallback-dynamic-endpoint-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, COPILOT], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const result = await run(
+		tool,
+		{
+			role: "review",
+			task: "do not dispatch outside the frozen destination",
+			fallbackAuthorization: fallbackAuthorization([HAIKU, COPILOT], { registry }),
+		},
+		undefined,
+		undefined,
+		{ ...CTX, modelRegistry: registry },
+	);
+	assert.equal(result.isError, true);
+	assert.match(result.details.round1[0].fallbackBlockReason, /Pi exposes no credential-free effective request URL/);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+	assert.equal(credentialResolutionCalls, 0);
+});
+
+test("fallback refuses matching catalog URLs when endpoint-pinning metadata is missing", async (t) => {
+	const source = registryFixture();
+	const registry = {
+		find: source.find,
+		getAvailable: source.getAvailable,
+		hasConfiguredAuth: source.hasConfiguredAuth,
+	};
+	const marker = scratch("fallback-unknown-endpoint-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const result = await run(
+		tool,
+		{
+			role: "review",
+			task: "unknown endpoint metadata must not reach the next candidate",
+			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET], { registry }),
+		},
+		undefined,
+		undefined,
+		{ ...CTX, modelRegistry: registry },
+	);
+	assert.equal(result.isError, true);
+	assert.match(result.details.round1[0].fallbackBlockReason, /cannot prove request endpoint pinning/);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
 });
 
 function applyEnv(vars) {
@@ -1756,7 +1848,7 @@ test("fallback scope rejects ineligible models, data classes, destinations, and 
 				authorization.candidates[1].destination = "https://other.invalid";
 				return authorization;
 			},
-			/destination does not match Pi's resolved provider endpoint/,
+			/destination does not match Pi's catalog base URL/,
 		],
 	];
 	for (const [name, makeAuthorization, reason] of cases) {
