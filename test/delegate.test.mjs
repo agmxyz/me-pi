@@ -555,7 +555,6 @@ test("dispatch stays first-only when a parent snapshot cannot bind a later child
 	assert.equal(result.details.round1[0].requested.model, HAIKU);
 	assert.equal(result.details.round1[0].provenance[0].providerRetry.owner, "pi-runtime");
 	assert.equal(result.details.round1[0].provenance[0].providerRetry.sourceEvent, "auto_retry_start");
-	assert.deepEqual(result.details.round1[0].fallbackAttempts, []);
 	const launches = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.equal(launches.length, 1, "no next Pi child was spawned after the child config drifted");
 	assert.equal(launches[0].model, HAIKU);
@@ -1414,7 +1413,6 @@ test("an unlisted model never falls back to the configured pool", async (t) => {
 			.map((line) => JSON.parse(line).model),
 		[ONE_OFF],
 	);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 });
 
 test("an explicitly selected configured model never falls back after an availability failure", async (t) => {
@@ -1443,7 +1441,6 @@ test("an explicitly selected configured model never falls back after an availabi
 		[HAIKU],
 	);
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 });
 
 test("a rate-limited worker does not fall back through its pool", async (t) => {
@@ -1463,7 +1460,6 @@ test("a rate-limited worker does not fall back through its pool", async (t) => {
 	});
 	assert.equal(res.isError, true, text(res));
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.match(text(res), /Pool fallback not attempted: cross-model fallback deferred/);
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
@@ -1497,7 +1493,6 @@ test("quota and usage-limit failures do not fall through an authorized pool", as
 		});
 		assert.equal(res.isError, true, error);
 		assert.equal(res.details.round1[0].requested.model, HAIKU, error);
-		assert.deepEqual(res.details.round1[0].fallbackAttempts, [], error);
 		assert.match(res.details.round1[0].fallbackBlockReason, /no structured retry classification/);
 	}
 });
@@ -1517,7 +1512,7 @@ test("Pi's retry classifier separates transient availability from quota and bill
 	assert.equal(isRetryableAssistantError({ stopReason: "stop", errorMessage: "429 rate_limit_error" }), false);
 });
 
-test("cross-model fallback does not spend the worker's remaining cost budget", async (t) => {
+test("first-only dispatch reports the first candidate's worker cost", async (t) => {
 	const marker = scratch("fallback-cost-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1539,7 +1534,6 @@ test("cross-model fallback does not spend the worker's remaining cost budget", a
 	});
 	assert.equal(res.isError, true);
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.equal(res.usage.cost.total, 0.002);
 	assert.deepEqual(
@@ -1617,7 +1611,6 @@ test("model-unavailable errors without structured retry evidence fail closed", a
 			.map((line) => JSON.parse(line).model),
 		[HAIKU],
 	);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 	assert.match(text(res), /no structured retry classification/);
 });
 
@@ -1658,7 +1651,6 @@ test("an adopted scope and later config changes cannot enable cross-model fallba
 
 	const res = await pending;
 	assert.equal(res.isError, true, text(res));
-	assert.equal(res.details.round1[0].fallbackAttempts.length, 0);
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
 	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
@@ -1693,7 +1685,6 @@ test("configuration and authorization added after dispatch cannot start another 
 	params.fallbackAuthorization = fallbackAuthorization([HAIKU, SONNET, OPUS]);
 	const res = await pending;
 	assert.equal(res.isError, true, text(res));
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
@@ -1726,7 +1717,6 @@ test("named, adopted, or mismatched scope metadata cannot enable fallback", asyn
 		const res = await run(tool, { role: "review", task: name, fallbackAuthorization: authorization });
 		assert.equal(res.isError, true, name);
 		assert.equal(res.details.round1[0].requested.model, HAIKU, name);
-		assert.deepEqual(res.details.round1[0].fallbackAttempts, [], name);
 		assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/, name);
 	}
 	assert.deepEqual(
@@ -1765,7 +1755,6 @@ test("fallback fails closed on malformed evidence, shell 429s, prior effects, an
 			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 		});
 		assert.equal(res.isError, true, mode);
-		assert.deepEqual(res.details.round1[0].fallbackAttempts, [], mode);
 		assert.match(res.details.round1[0].fallbackBlockReason, reason, mode);
 		assert.deepEqual(
 			readFileSync(marker, "utf8")
@@ -1835,7 +1824,6 @@ test("fallback keeps the original tool deadline and retains a competing guard de
 		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 	});
 	assert.equal(deadline.isError, true, text(deadline));
-	assert.deepEqual(deadline.details.round1[0].fallbackAttempts, []);
 	assert.match(deadline.details.round1[0].fallbackBlockReason, /original tool deadline/);
 	assert.ok(
 		deadline.details.round1[0].provenance[0].stopFacts.some(
@@ -1892,7 +1880,6 @@ test("fallback preserves the cumulative scout tool-call allowance", async (t) =>
 		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 	});
 	assert.equal(res.isError, true, text(res));
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 	assert.match(res.details.round1[0].fallbackBlockReason, /cumulative scout tool-call allowance is spent/);
 	const provenance = res.details.round1[0].provenance[0];
 	assert.equal(res.details.round1[0].toolCallCount, 1);
@@ -1932,7 +1919,6 @@ test("non-availability failures do not trigger pool fallback", async (t) => {
 		calls.map((call) => call.model),
 		[HAIKU],
 	);
-	assert.equal(res.details.round1[0].fallbackAttempts.length, 0);
 });
 
 test("v1 and v2 configs migrate to per-model levels, and empty pools use the session model", () => {
@@ -2412,7 +2398,6 @@ test("review pool selects its first candidate, reports status, and preserves wor
 	process.env.FAKE_PI_MODE = "rate-limit-model";
 	const exactFail = await run(main.tool, { role: "review", task: "exact fail", runs: [{ model: SONNET }] });
 	assert.equal(exactFail.isError, true);
-	assert.deepEqual(exactFail.details.round1[0].fallbackAttempts, []);
 
 	const calls = readFileSync(marker, "utf8")
 		.trim()
@@ -2441,7 +2426,6 @@ test("review pool selects its first candidate, reports status, and preserves wor
 		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS]),
 	});
 	assert.equal(cappedRes.isError, true);
-	assert.deepEqual(cappedRes.details.round1[0].fallbackAttempts, []);
 	const costStops = cappedRes.details.round1[0].provenance[0].stopFacts;
 	assert.ok(costStops.some((fact) => fact.cause === "hard-cost-limit" && fact.resource === "hard-cost"));
 	assert.ok(costStops.some((fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-cost"));
@@ -2772,10 +2756,10 @@ test("default-origin rebuttals retain exact candidates without cross-model fallb
 	});
 	assert.equal(defaultResult.isError, true, text(defaultResult));
 	assert.deepEqual(
-		defaultResult.details.round2.map((r) => [r.requested.model, r.requested.thinking, r.fallbackAttempts.length]),
+		defaultResult.details.round2.map((r) => [r.requested.model, r.requested.thinking]),
 		[
-			[HAIKU, "high", 0],
-			[HAIKU, "high", 0],
+			[HAIKU, "high"],
+			[HAIKU, "high"],
 		],
 	);
 	assert.ok(defaultResult.details.round2.every((r) => /cross-model fallback deferred/.test(r.fallbackBlockReason)));
@@ -2790,7 +2774,6 @@ test("default-origin rebuttals retain exact candidates without cross-model fallb
 	});
 	assert.equal(explicitResult.isError, true);
 	assert.equal(explicitResult.details.round2[0].requested.model, HAIKU);
-	assert.deepEqual(explicitResult.details.round2[0].fallbackAttempts, []);
 	assert.deepEqual(
 		readFileSync(explicitMarker, "utf8")
 			.trim()
@@ -3804,7 +3787,6 @@ test("implement refuses fallback after a failed tool effect and preserves its ev
 	);
 	assert.equal(result.isError, true, text(result));
 	assert.equal(result.details.implement.check.status, "fail");
-	assert.equal(result.details.round1[0].fallbackAttempts.length, 0);
 	assert.match(result.details.round1[0].fallbackBlockReason, /competing safety stop/);
 	const provenance = result.details.round1[0].provenance[0];
 	assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "unknown"));
@@ -4260,7 +4242,6 @@ test("implement dispatches only the first worker pool candidate", async (t) => {
 	const res = await run(tool, implement(), undefined, undefined, ctx);
 	assert.equal(res.isError, true);
 	assert.equal(res.details.round1[0].requested.model, LUNA);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")

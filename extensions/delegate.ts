@@ -630,14 +630,6 @@ function piCommand(args: string[]): { command: string; args: string[] } {
 	return { command: process.execPath, args };
 }
 
-export interface FallbackAttempt {
-	model?: string;
-	thinking: string;
-	failure: string;
-	nextModel?: string;
-	nextThinking: string;
-}
-
 export interface RunResult {
 	/** The model and thinking this run was started with (the model id Pi reports may lack the provider). */
 	requested: { model?: string; thinking: string };
@@ -649,7 +641,6 @@ export interface RunResult {
 	model?: string;
 	output: string;
 	failure?: string;
-	fallbackAttempts?: FallbackAttempt[];
 	fallbackBlockReason?: string;
 	provenance?: AttemptProvenance[];
 	toolCallCount?: number;
@@ -858,7 +849,6 @@ function runWorkerAttempt(
 		output: "",
 		provenance: [provenance],
 		toolCallCount: 0,
-		fallbackAttempts: [],
 		turns: 0,
 		usage: {},
 		tools: [],
