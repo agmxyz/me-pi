@@ -39,8 +39,6 @@ const {
 	secretPathIn,
 	writeBlockedIn,
 	trackCheck,
-	providerDestination,
-	resolveFallbackRestriction,
 } = await import("../extensions/delegate.ts");
 const { default: registerGuard } = await import("../extensions/guard.ts");
 const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../extensions/delegate-provenance.ts");
@@ -127,6 +125,20 @@ import { join } from "node:path";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
+const readConfiguredEndpoint = () => {
+  if (!process.env.FAKE_PI_MODELS_PATH) return undefined;
+  const config = JSON.parse(readFileSync(process.env.FAKE_PI_MODELS_PATH, "utf8"));
+  return config.providers?.anthropic?.baseUrl;
+};
+const driftConfiguredEndpoint = () => {
+  if (!process.env.FAKE_PI_DRIFT_ENDPOINT) return;
+  const path = process.env.FAKE_PI_MODELS_PATH;
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  config.providers ??= {};
+  config.providers.anthropic ??= {};
+  config.providers.anthropic.baseUrl = process.env.FAKE_PI_DRIFT_ENDPOINT;
+  writeFileSync(path, JSON.stringify(config));
+};
 const usage = (cost) => ({ input: 10, output: 5, totalTokens: 15, cost: { input: cost / 2, output: cost / 2, total: cost } });
 const emit = (text, { cost = 0.002, stopReason = "stop", errorMessage } = {}) => {
   const selectedModel = flag("--model") || "anthropic/session-default";
@@ -153,7 +165,7 @@ let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
-  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), prompt }) + "\\n");
+  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), configuredEndpoint: readConfiguredEndpoint(), approve: args.includes("--approve"), prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
   if (mode === "rebuttal-rate-limit-model" && prompt.includes("## Round 2 (rebuttal)") && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     retryable("429 rate_limit_error: rebuttal unavailable");
@@ -161,6 +173,7 @@ process.stdin.on("end", () => {
   }
   if (mode === "rate-limit-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     retryable("429 rate_limit_error: too many requests");
+    driftConfiguredEndpoint();
     process.exit(1);
   }
   if (mode === "rate-limit-models" && process.env.FAKE_PI_FAIL_MODELS?.split(",").includes(flag("--model"))) {
@@ -478,7 +491,7 @@ const CTX = {
 	modelRegistry: registryFixture(),
 };
 const text = (res) => res.content.map((c) => c.text).join("\n");
-// Models the coordinator's recorded run-contract restriction; this fixture does not authenticate approval.
+// Legacy scope-shaped input is used to prove that coordinator metadata cannot enable child fallback.
 const fallbackAuthorization = (
 	models,
 	{ authority = "named", taskDataClass = "repository-source", registry = CTX.modelRegistry } = {},
@@ -489,134 +502,45 @@ const fallbackAuthorization = (
 	candidates: models.map((modelId) => {
 		const slash = modelId.indexOf("/");
 		const provider = modelId.slice(0, slash);
-		const model = registry.find(provider, modelId.slice(slash + 1));
 		return {
 			model: modelId,
 			provider,
-			destination: providerDestination(model),
+			destination: registry.find(provider, modelId.slice(slash + 1)).baseUrl,
 			dataClasses: [taskDataClass],
 		};
 	}),
 });
 
-test("fallback authorization is validated and frozen only for a pinned direct endpoint", () => {
-	const set = {
-		version: 2,
-		scout: { models: [], thinking: "low" },
-		worker: {
-			models: [
-				{ model: HAIKU, thinking: "max" },
-				{ model: SONNET, thinking: "max" },
-			],
-			thinking: "max",
-		},
-	};
-	const run = resolveRun("review", {}, set, undefined, "max");
-	const authorization = fallbackAuthorization([HAIKU, SONNET]);
-	const resolved = resolveFallbackRestriction(authorization, [run], CTX.modelRegistry);
-	const adopted = resolveFallbackRestriction(
-		fallbackAuthorization([HAIKU, SONNET], { authority: "adopted-snapshot" }),
-		[run],
-		CTX.modelRegistry,
-	);
-	assert.equal(adopted.issue, undefined);
-	assert.equal(adopted.restriction.authority, "adopted-snapshot");
-	assert.equal(resolved.issue, undefined);
-	assert.equal(
-		resolved.restriction.candidates[0].destination,
-		providerDestination(CTX.modelRegistry.find("anthropic", "claude-haiku-5-5")),
-	);
-	assert.equal(Object.isFrozen(resolved.restriction), true);
-	assert.equal(Object.isFrozen(resolved.restriction.candidates), true);
-	assert.equal(Object.isFrozen(resolved.restriction.candidates[0].dataClasses), true);
-	assert.equal(Object.isFrozen(resolved.restriction.candidates[0]), true);
-	const frozenCandidate = resolved.restriction.candidates[1];
-	const originalDestination = frozenCandidate.destination;
-	authorization.authorizationRef = "late-ref";
-	authorization.taskDataClass = "public";
-	authorization.candidates[1].model = OPUS;
-	authorization.candidates[1].provider = "other-provider";
-	authorization.candidates[1].destination = "https://other.invalid";
-	authorization.candidates[1].dataClasses[0] = "public";
-	authorization.candidates.push({
-		model: OPUS,
-		provider: "anthropic",
-		destination: "https://other.invalid",
-		dataClasses: ["public"],
-	});
-	assert.equal(resolved.restriction.authorizationRef, "coordinator-recorded-contract:test-run");
-	assert.equal(resolved.restriction.taskDataClass, "repository-source");
-	assert.deepEqual(resolved.restriction.candidates, [
-		{
-			model: HAIKU,
-			provider: "anthropic",
-			destination: providerDestination(CTX.modelRegistry.find("anthropic", "claude-haiku-5-5")),
-			dataClasses: ["repository-source"],
-		},
-		{ model: SONNET, provider: "anthropic", destination: originalDestination, dataClasses: ["repository-source"] },
-	]);
-});
-
-test("fallback refuses an OAuth endpoint override before dispatching candidate data", async (t) => {
-	const registry = registryFixture({ oauthProviders: ["github-copilot"] });
+test("fallback is disabled when a parent catalog snapshot cannot bind the child endpoint", async (t) => {
+	const marker = scratch("fallback-child-endpoint-marker");
+	const modelsPath = join(mkdtempSync(join(TEST_HOME, "child-models-")), "models.json");
+	const registry = registryFixture();
+	const parentDestination = registry.find("anthropic", "claude-sonnet-5-5").baseUrl;
+	writeFileSync(modelsPath, JSON.stringify({ providers: { anthropic: { baseUrl: parentDestination } } }));
 	let credentialResolutionCalls = 0;
 	registry.getApiKeyAndHeaders = () => {
 		credentialResolutionCalls++;
 		throw new Error("credential resolution must not be called");
 	};
-	const marker = scratch("fallback-dynamic-endpoint-marker");
-	const { tool } = setup(t, {
-		config: {
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, COPILOT], thinking: "max" },
-		},
-		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
-	});
-	const result = await run(
-		tool,
-		{
-			role: "review",
-			task: "do not dispatch outside the frozen destination",
-			fallbackAuthorization: fallbackAuthorization([HAIKU, COPILOT], { registry }),
-		},
-		undefined,
-		undefined,
-		{ ...CTX, modelRegistry: registry },
-	);
-	assert.equal(result.isError, true);
-	assert.match(result.details.round1[0].fallbackBlockReason, /Pi exposes no credential-free effective request URL/);
-	assert.deepEqual(
-		readFileSync(marker, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line).model),
-		[HAIKU],
-	);
-	assert.equal(credentialResolutionCalls, 0);
-});
-
-test("fallback refuses matching catalog URLs when endpoint-pinning metadata is missing", async (t) => {
-	const source = registryFixture();
-	const registry = {
-		find: source.find,
-		getAvailable: source.getAvailable,
-		hasConfiguredAuth: source.hasConfiguredAuth,
-	};
-	const marker = scratch("fallback-unknown-endpoint-marker");
 	const { tool } = setup(t, {
 		config: {
 			version: 2,
 			scout: { models: [LUNA], thinking: "low" },
 			worker: { models: [HAIKU, SONNET], thinking: "max" },
 		},
-		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+		env: {
+			FAKE_PI_MODE: "rate-limit-model",
+			FAKE_PI_FAIL_MODEL: HAIKU,
+			FAKE_PI_MARKER: marker,
+			FAKE_PI_MODELS_PATH: modelsPath,
+			FAKE_PI_DRIFT_ENDPOINT: "https://child-config-changed.invalid/v1",
+		},
 	});
 	const result = await run(
 		tool,
 		{
 			role: "review",
-			task: "unknown endpoint metadata must not reach the next candidate",
+			task: "do not send this task to a later child with a changed endpoint",
 			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET], { registry }),
 		},
 		undefined,
@@ -624,14 +548,25 @@ test("fallback refuses matching catalog URLs when endpoint-pinning metadata is m
 		{ ...CTX, modelRegistry: registry },
 	);
 	assert.equal(result.isError, true);
-	assert.match(result.details.round1[0].fallbackBlockReason, /cannot prove request endpoint pinning/);
-	assert.deepEqual(
-		readFileSync(marker, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line).model),
-		[HAIKU],
+	assert.match(
+		result.details.round1[0].fallbackBlockReason,
+		/cross-model fallback disabled:.*cannot bind the effective provider endpoint/,
 	);
+	assert.equal(result.details.round1[0].requested.model, HAIKU);
+	assert.equal(result.details.round1[0].provenance[0].providerRetry.owner, "pi-runtime");
+	assert.equal(result.details.round1[0].provenance[0].providerRetry.sourceEvent, "auto_retry_start");
+	assert.deepEqual(result.details.round1[0].fallbackAttempts, []);
+	const launches = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.equal(launches.length, 1, "no next Pi child was spawned after the child config drifted");
+	assert.equal(launches[0].model, HAIKU);
+	assert.equal(launches[0].configuredEndpoint, parentDestination, "the first child observed the parent snapshot URL");
+	assert.match(launches[0].prompt, /do not send this task to a later child/);
+	assert.equal(
+		JSON.parse(readFileSync(modelsPath, "utf8")).providers.anthropic.baseUrl,
+		"https://child-config-changed.invalid/v1",
+		"the config a later child would load changed after the parent snapshot",
+	);
+	assert.equal(credentialResolutionCalls, 0);
 });
 
 function applyEnv(vars) {
@@ -786,7 +721,7 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge", "implement"]);
 	assert.equal(properties.check.type, "string");
 	assert.match(properties.check.description, /one unchained command/);
-	assert.match(properties.fallbackAuthorization.description, /This object is not consent/);
+	assert.match(properties.fallbackAuthorization.description, /disables cross-model fallback/);
 	assert.match(properties.check.description, /runs it alone, exactly as given, after its final edit/);
 	assert.equal(properties.branch, undefined);
 	assert.equal(properties.web.type, "boolean");
@@ -1202,7 +1137,7 @@ test("output with no files written says so; without output there is no write too
 	assert.doesNotMatch(without, /Files in|,write/);
 });
 
-test("model pools resolve per-model thinking, ordered fallbacks, and independent overrides", () => {
+test("model pools resolve per-model thinking, ordered candidates, and independent overrides", () => {
 	assert.deepEqual(resolveRun("scout", {}, POOL_SET), {
 		model: LUNA,
 		candidates: [
@@ -1386,7 +1321,7 @@ test("unlisted models use role defaults or independent thinking overrides withou
 	);
 });
 
-test("an explicit thinking override applies to every configured fallback candidate", async (t) => {
+test("an explicit thinking override applies to the first selected pool candidate", async (t) => {
 	const marker = scratch("thinking-fallback-marker");
 	const config = {
 		version: 3,
@@ -1409,7 +1344,10 @@ test("an explicit thinking override applies to every configured fallback candida
 		runs: [{ thinking: "medium" }],
 		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 	});
-	assert.equal(res.isError, false, text(res));
+	assert.equal(res.isError, true, text(res));
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.equal(res.details.round1[0].requested.thinking, "medium");
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -1418,10 +1356,7 @@ test("an explicit thinking override applies to every configured fallback candida
 				const { model, thinking } = JSON.parse(line);
 				return [model, thinking];
 			}),
-		[
-			[HAIKU, "medium"],
-			[SONNET, "medium"],
-		],
+		[[HAIKU, "medium"]],
 	);
 });
 
@@ -1511,7 +1446,7 @@ test("an explicitly selected configured model never falls back after an availabi
 	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 });
 
-test("a rate-limited worker falls back through its pool and reports both attempts", async (t) => {
+test("a rate-limited worker does not fall back through its pool", async (t) => {
 	const marker = scratch("fallback-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1521,46 +1456,22 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 		},
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const progress = [];
-	const res = await run(
-		tool,
-		{ role: "review", task: "x", fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]) },
-		undefined,
-		(update) => progress.push(update),
-	);
-	assert.equal(res.isError, false, text(res));
-	assert.ok(
-		progress.some(
-			(update) => update.details.view.runs[0].model === HAIKU && update.details.view.runs[0].thinking === "max",
-		),
-	);
-	assert.ok(
-		progress.some(
-			(update) => update.details.view.runs[0].model === SONNET && update.details.view.runs[0].thinking === "max",
-		),
-	);
-	assert.ok(progress.some((update) => update.content[0].text.includes("claude-haiku-5-5 @max")));
-	assert.ok(progress.some((update) => update.content[0].text.includes("claude-sonnet-5-5 @max")));
+	const res = await run(tool, {
+		role: "review",
+		task: "x",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(res.isError, true, text(res));
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
+	assert.match(text(res), /Pool fallback not attempted: cross-model fallback disabled/);
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
-		calls.map((c) => [c.model, c.thinking]),
-		[
-			[HAIKU, "max"],
-			[SONNET, "max"],
-		],
+		calls.map((call) => [call.model, call.thinking]),
+		[[HAIKU, "max"]],
 	);
-	assert.equal(res.details.round1[0].requested.model, SONNET);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, [
-		{
-			model: HAIKU,
-			thinking: "max",
-			failure: "429 rate_limit_error: too many requests",
-			nextModel: SONNET,
-			nextThinking: "max",
-		},
-	]);
-	assert.match(text(res), /claude-haiku-5-5.*rate_limit_error.*trying anthropic\/claude-sonnet-5-5/s);
-	assert.equal(res.usage.cost.total, 0.004);
+	assert.equal(res.usage.cost.total, 0.002);
 });
 
 test("quota and usage-limit failures do not fall through an authorized pool", async (t) => {
@@ -1606,7 +1517,7 @@ test("Pi's retry classifier separates transient availability from quota and bill
 	assert.equal(isRetryableAssistantError({ stopReason: "stop", errorMessage: "429 rate_limit_error" }), false);
 });
 
-test("fallback attempts share the worker cost cap", async (t) => {
+test("cross-model fallback does not spend the worker's remaining cost budget", async (t) => {
 	const marker = scratch("fallback-cost-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1627,25 +1538,21 @@ test("fallback attempts share the worker cost cap", async (t) => {
 		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET, OPUS], { authority: "adopted-snapshot" }),
 	});
 	assert.equal(res.isError, true);
-	const stopFacts = res.details.round1[0].provenance.at(-1).stopFacts;
-	assert.ok(
-		stopFacts.some((fact) => fact.cause === "hard-cost-limit" && fact.resource === "hard-cost"),
-		JSON.stringify(res.details.round1[0].provenance.at(-1)),
-	);
-	assert.ok(
-		stopFacts.some((fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-cost"),
-		JSON.stringify(res.details.round1[0].provenance.at(-1)),
-	);
-	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
+	assert.equal(res.usage.cost.total, 0.002);
 	assert.deepEqual(
-		calls.map((call) => call.model),
-		[HAIKU, SONNET],
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map(JSON.parse)
+			.map((call) => call.model),
+		[HAIKU],
 	);
-	assert.match(text(res), /stopped: cost cap \$0\.001 reached/);
-	assert.equal(res.usage.cost.total, 0.004);
 });
 
-test("per-model thinking follows each ordered candidate during fallback", async (t) => {
+test("default dispatch keeps the first candidate's configured thinking level", async (t) => {
 	const marker = scratch("per-model-thinking-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1668,28 +1575,23 @@ test("per-model thinking follows each ordered candidate during fallback", async 
 		undefined,
 		(update) => progress.push(update),
 	);
-	assert.equal(res.isError, false, text(res));
+	assert.equal(res.isError, true, text(res));
 	assert.ok(
 		progress.some(
 			(update) => update.details.view.runs[0].model === LUNA && update.details.view.runs[0].thinking === "max",
 		),
 	);
 	assert.ok(
-		progress.some(
-			(update) => update.details.view.runs[0].model === OPUS && update.details.view.runs[0].thinking === "low",
-		),
+		progress.every((update) => update.details.view.runs[0].model !== OPUS || update.details.view.runs[0].done),
 	);
-	assert.ok(progress.some((update) => update.content[0].text.includes("claude-opus-5-5 @low")));
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
 		calls.map(({ model, thinking }) => [model, thinking]),
-		[
-			[LUNA, "max"],
-			[OPUS, "low"],
-		],
+		[[LUNA, "max"]],
 	);
-	assert.equal(res.details.round1[0].requested.model, OPUS);
-	assert.equal(res.details.round1[0].requested.thinking, "low");
+	assert.equal(res.details.round1[0].requested.model, LUNA);
+	assert.equal(res.details.round1[0].requested.thinking, "max");
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
 });
 
 test("model-unavailable errors without structured retry evidence fail closed", async (t) => {
@@ -1719,7 +1621,7 @@ test("model-unavailable errors without structured retry evidence fail closed", a
 	assert.match(text(res), /no structured retry classification/);
 });
 
-test("an adopted recorded pool snapshot stays frozen across later config and input changes", async (t) => {
+test("an adopted scope and later config changes cannot enable cross-model fallback", async (t) => {
 	const marker = scratch("adopted-snapshot-frozen-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1733,7 +1635,7 @@ test("an adopted recorded pool snapshot stays frozen across later config and inp
 			FAKE_PI_MARKER: marker,
 		},
 	});
-	// This models the exact pool snapshot/scope already recorded by the coordinator; it is not proof of approval.
+	// Even a valid-looking adopted scope does not enable fallback at the fresh child boundary.
 	const authorization = fallbackAuthorization([HAIKU, SONNET], { authority: "adopted-snapshot" });
 	const pending = run(tool, {
 		role: "review",
@@ -1756,19 +1658,19 @@ test("an adopted recorded pool snapshot stays frozen across later config and inp
 
 	const res = await pending;
 	assert.equal(res.isError, true, text(res));
-	assert.equal(res.details.round1[0].fallbackAttempts.length, 1);
-	assert.equal(res.details.round1[0].fallbackAttempts[0].nextModel, SONNET);
-	assert.match(res.details.round1[0].fallbackBlockReason, /outside the frozen coordinator scope/);
+	assert.equal(res.details.round1[0].fallbackAttempts.length, 0);
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line).model),
-		[HAIKU, SONNET],
+		[HAIKU],
 	);
 });
 
-test("configuration and authorization added after dispatch cannot authorize fallback", async (t) => {
+test("configuration and authorization added after dispatch cannot start another child", async (t) => {
 	const marker = scratch("late-fallback-authorization-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1792,7 +1694,7 @@ test("configuration and authorization added after dispatch cannot authorize fall
 	const res = await pending;
 	assert.equal(res.isError, true, text(res));
 	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
-	assert.match(res.details.round1[0].fallbackBlockReason, /no coordinator fallback restriction/);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -1802,65 +1704,39 @@ test("configuration and authorization added after dispatch cannot authorize fall
 	);
 });
 
-test("fallback scope rejects ineligible models, data classes, destinations, and out-of-scope candidates", async (t) => {
+test("named, adopted, or mismatched scope metadata cannot enable fallback", async (t) => {
+	const marker = scratch("scope-metadata-no-fallback-marker");
 	const { tool } = setup(t, {
 		config: {
 			version: 2,
 			scout: { models: [LUNA], thinking: "low" },
 			worker: { models: [HAIKU, SONNET], thinking: "max" },
 		},
-		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU },
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const cases = [
-		["outside the frozen scope", () => fallbackAuthorization([HAIKU]), /outside the frozen coordinator scope/],
-		[
-			"unrecognized authority",
-			() => fallbackAuthorization([HAIKU, SONNET], { authority: "not-approval" }),
-			/authority must be named or adopted-snapshot/,
-		],
-		[
-			"unconfigured candidate",
-			() => fallbackAuthorization([HAIKU, SONNET, OPUS]),
-			/not an exact provider\/model in the resolved pool/,
-		],
-		[
-			"wrong data class",
-			() => {
-				const authorization = fallbackAuthorization([HAIKU, SONNET]);
-				authorization.candidates[1].dataClasses = ["public"];
-				return authorization;
-			},
-			/taskDataClass is outside a candidate's permitted data scope/,
-		],
-		[
-			"wrong provider",
-			() => {
-				const authorization = fallbackAuthorization([HAIKU, SONNET]);
-				authorization.candidates[1].provider = "openai";
-				return authorization;
-			},
-			/not an exact provider\/model in the resolved pool/,
-		],
-		[
-			"wrong destination",
-			() => {
-				const authorization = fallbackAuthorization([HAIKU, SONNET]);
-				authorization.candidates[1].destination = "https://other.invalid";
-				return authorization;
-			},
-			/destination does not match Pi's catalog base URL/,
-		],
-	];
-	for (const [name, makeAuthorization, reason] of cases) {
-		const res = await run(tool, {
-			role: "review",
-			task: name,
-			fallbackAuthorization: makeAuthorization(),
-		});
+	const validNamed = fallbackAuthorization([HAIKU, SONNET]);
+	const validAdopted = fallbackAuthorization([HAIKU, SONNET], { authority: "adopted-snapshot" });
+	const mismatched = fallbackAuthorization([HAIKU, SONNET]);
+	mismatched.candidates[1].destination = "https://other.invalid";
+	for (const [name, authorization] of [
+		["named", validNamed],
+		["adopted", validAdopted],
+		["mismatched destination", mismatched],
+	]) {
+		const res = await run(tool, { role: "review", task: name, fallbackAuthorization: authorization });
 		assert.equal(res.isError, true, name);
+		assert.equal(res.details.round1[0].requested.model, HAIKU, name);
 		assert.deepEqual(res.details.round1[0].fallbackAttempts, [], name);
-		assert.match(res.details.round1[0].fallbackBlockReason, reason, name);
+		assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/, name);
 	}
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map(JSON.parse)
+			.map((call) => call.model),
+		[HAIKU, HAIKU, HAIKU],
+	);
 });
 
 test("fallback fails closed on malformed evidence, shell 429s, prior effects, and blocked calls", async (t) => {
@@ -2478,7 +2354,7 @@ test("v3 model configs validate per-model thinking", (t) => {
 	});
 });
 
-test("review pool isolates review selection, fallback, status, and explicit overrides while preserving worker/scout behavior", async (t) => {
+test("review pool selects its first candidate, reports status, and preserves worker/scout behavior", async (t) => {
 	const marker = scratch("review-pool-marker");
 	const config = {
 		version: 3,
@@ -2503,7 +2379,7 @@ test("review pool isolates review selection, fallback, status, and explicit over
 	};
 	const main = setup(t, {
 		config,
-		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: SONNET, FAKE_PI_MARKER: marker },
+		env: { FAKE_PI_MODE: "success", FAKE_PI_FAIL_MODEL: SONNET, FAKE_PI_MARKER: marker },
 		limits: { costCapUsd: 0.005 },
 	});
 	const { ctx: statusCtx, notes } = commandCtx({ available: [HAIKU, OPUS] });
@@ -2520,8 +2396,8 @@ test("review pool isolates review selection, fallback, status, and explicit over
 		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS]),
 	});
 	assert.equal(reviewRes.isError, false, text(reviewRes));
-	assert.equal(reviewRes.details.round1[0].requested.model, OPUS);
-	assert.equal(reviewRes.details.round1[0].requested.thinking, "medium");
+	assert.equal(reviewRes.details.round1[0].requested.model, SONNET);
+	assert.equal(reviewRes.details.round1[0].requested.thinking, "high");
 
 	const generalRes = await run(main.tool, { role: "general", task: "check worker pool" });
 	assert.equal(generalRes.isError, false, text(generalRes));
@@ -2533,6 +2409,7 @@ test("review pool isolates review selection, fallback, status, and explicit over
 	assert.equal(scoutRes.details.round1[0].requested.model, HAIKU);
 	assert.equal(scoutRes.details.round1[0].requested.thinking, "low");
 
+	process.env.FAKE_PI_MODE = "rate-limit-model";
 	const exactFail = await run(main.tool, { role: "review", task: "exact fail", runs: [{ model: SONNET }] });
 	assert.equal(exactFail.isError, true);
 	assert.deepEqual(exactFail.details.round1[0].fallbackAttempts, []);
@@ -2546,7 +2423,6 @@ test("review pool isolates review selection, fallback, status, and explicit over
 		});
 	assert.deepEqual(calls, [
 		[SONNET, "high"],
-		[OPUS, "medium"],
 		[LUNA, "max"],
 		[HAIKU, "low"],
 		[SONNET, "high"],
@@ -2565,8 +2441,10 @@ test("review pool isolates review selection, fallback, status, and explicit over
 		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS]),
 	});
 	assert.equal(cappedRes.isError, true);
-	assert.match(text(cappedRes), /^✗ stopped: cost cap \$0\.002 reached\n/);
 	assert.deepEqual(cappedRes.details.round1[0].fallbackAttempts, []);
+	const costStops = cappedRes.details.round1[0].provenance[0].stopFacts;
+	assert.ok(costStops.some((fact) => fact.cause === "hard-cost-limit" && fact.resource === "hard-cost"));
+	assert.ok(costStops.some((fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-cost"));
 	assert.equal(cappedRes.usage.cost.total, 0.002);
 	assert.deepEqual(
 		readFileSync(costMarker, "utf8")
@@ -2575,58 +2453,6 @@ test("review pool isolates review selection, fallback, status, and explicit over
 			.map(JSON.parse)
 			.map(({ model, thinking }) => [model, thinking]),
 		[[SONNET, "high"]],
-	);
-
-	// After one availability fallback, the second attempt receives only the remaining budget.
-	const sharedMarker = scratch("review-pool-shared-cost-marker");
-	const shared = setup(t, {
-		config: {
-			...config,
-			review: {
-				...config.review,
-				models: [...config.review.models, { model: LUNA, thinking: "max" }],
-			},
-		},
-		env: {
-			FAKE_PI_MODE: "rate-limit-models",
-			FAKE_PI_FAIL_MODELS: `${SONNET},${OPUS}`,
-			FAKE_PI_MARKER: sharedMarker,
-		},
-		limits: { costCapUsd: 0.003 },
-	});
-	const sharedRes = await run(shared.tool, {
-		role: "review",
-		task: "remaining budget shared",
-		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS, LUNA]),
-	});
-	assert.equal(sharedRes.isError, true);
-	assert.deepEqual(sharedRes.details.round1[0].fallbackAttempts, [
-		{
-			model: SONNET,
-			thinking: "high",
-			failure: "429 rate_limit_error: too many requests",
-			nextModel: OPUS,
-			nextThinking: "medium",
-		},
-	]);
-	assert.match(
-		text(sharedRes).split("\n")[0],
-		new RegExp(
-			`^↻ ${SONNET} @high failed \\((?:exit 1: )?429 rate_limit_error: too many requests\\); trying ${OPUS} @medium$`,
-		),
-	);
-	assert.equal(text(sharedRes).split("\n")[1], "✗ stopped: cost cap $0.001 reached");
-	assert.equal(sharedRes.usage.cost.total, 0.004);
-	assert.deepEqual(
-		readFileSync(sharedMarker, "utf8")
-			.trim()
-			.split("\n")
-			.map(JSON.parse)
-			.map(({ model, thinking }) => [model, thinking]),
-		[
-			[SONNET, "high"],
-			[OPUS, "medium"],
-		],
 	);
 });
 
@@ -2637,6 +2463,7 @@ test("the schema allows exact model IDs outside the configured pools", (t) => {
 	assert.equal(model.enum, undefined);
 	assert.match(model.description, /exact Pi model ID/);
 	assert.match(tool.parameters.properties.runs.description, /explicitly named model runs alone and never falls back/i);
+	assert.match(tool.parameters.properties.fallbackAuthorization.description, /does not enable fallback/);
 });
 
 test(
@@ -2914,7 +2741,7 @@ test("several runs answer the same task in parallel; usage is summed", async (t)
 	assert.equal(res.usage.cost.total, 0.004);
 });
 
-test("default-origin rebuttals keep pool fallback while explicit-origin rebuttals stop", async (t) => {
+test("default-origin rebuttals retain exact candidates without cross-model fallback", async (t) => {
 	const config = {
 		version: 3,
 		scout: { models: [], thinking: "low" },
@@ -2943,18 +2770,15 @@ test("default-origin rebuttals keep pool fallback while explicit-origin rebuttal
 		rebuttal: true,
 		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET, OPUS]),
 	});
-	assert.equal(defaultResult.isError, false, text(defaultResult));
+	assert.equal(defaultResult.isError, true, text(defaultResult));
 	assert.deepEqual(
-		defaultResult.details.round2.map((r) => [
-			r.requested.model,
-			r.requested.thinking,
-			r.fallbackAttempts[0]?.nextModel,
-		]),
+		defaultResult.details.round2.map((r) => [r.requested.model, r.requested.thinking, r.fallbackAttempts.length]),
 		[
-			[SONNET, "low", SONNET],
-			[SONNET, "low", SONNET],
+			[HAIKU, "high", 0],
+			[HAIKU, "high", 0],
 		],
 	);
+	assert.ok(defaultResult.details.round2.every((r) => /cross-model fallback disabled/.test(r.fallbackBlockReason)));
 
 	const explicitMarker = scratch("explicit-rebuttal-no-fallback-marker");
 	process.env.FAKE_PI_MARKER = explicitMarker;
@@ -3528,7 +3352,7 @@ test("concurrent foreground calls receive distinct compact widget labels", async
 	assert.equal((await second).isError, false);
 });
 
-test("the TUI widget tracks the current configured fallback candidate", async (t) => {
+test("the TUI widget keeps the first configured candidate after a provider retry", async (t) => {
 	const { tool } = setup(t, {
 		config: {
 			version: 3,
@@ -3551,12 +3375,13 @@ test("the TUI widget tracks the current configured fallback candidate", async (t
 		undefined,
 		ui.ctx,
 	);
-	assert.equal(result.isError, false);
+	assert.equal(result.isError, true);
+	assert.ok(ui.snapshots.some((snapshot) => snapshot.some((line) => line.includes("claude-haiku-5-5 @high"))));
 	assert.ok(
-		ui.snapshots.some((snapshot) =>
-			snapshot.some((line) => line.includes("claude-sonnet-5-5 @low") && line.includes("↻")),
+		ui.snapshots.every((snapshot) =>
+			snapshot.every((line) => !line.includes("claude-sonnet-5-5 @low") && !line.includes("↻")),
 		),
-		"the widget switches to the next actual candidate and marks its fallback",
+		"the disabled fallback never appears as a started worker",
 	);
 	assert.deepEqual(ui.widget(), [], "the final candidate completion hides the widget");
 });
@@ -4425,21 +4250,29 @@ test("implement refuses runs[].model and runs[].thinking: it uses the worker poo
 	assert.ok(!existsSync(lock), "successful run releases the lock");
 });
 
-test("implement follows the worker pool in order, with each entry's thinking", async (t) => {
+test("implement dispatches only the first worker pool candidate", async (t) => {
+	const marker = scratch("implement-first-candidate-marker");
 	const { tool } = setup(t, {
 		config: POOL_SET,
-		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
+		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker }),
 	});
 	const { ctx } = implementRepo();
-	const res = await run(
-		tool,
-		implement({ fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) }),
-		undefined,
-		undefined,
-		ctx,
+	const res = await run(tool, implement(), undefined, undefined, ctx);
+	assert.equal(res.isError, true);
+	assert.equal(res.details.round1[0].requested.model, LUNA);
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map(JSON.parse)
+			.map((call) => call.model),
+		[LUNA],
 	);
 	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
-	assert.match(details, new RegExp(`^${LUNA} @max failed \\((?:exit 1: )?429 .*; next ${OPUS} @max$`, "m"));
+	assert.match(details, /^# im\d+ .* \[gpt-6-luna @max/m);
+	assert.doesNotMatch(details, /claude-opus-5-5/);
 });
 
 test("implement gets its own time limit; the wrap-up deadline is 80% of it", async (t) => {
@@ -4458,22 +4291,23 @@ test("implement gets its own time limit; the wrap-up deadline is 80% of it", asy
 	assert.ok(budget.deadline >= before + 2700 * 800 && budget.deadline <= Date.now() + 2700 * 800);
 });
 
-test("implement: no --approve on a fallback attempt", async (t) => {
+test("implement sends --approve only to its first trusted candidate", async (t) => {
+	const marker = scratch("implement-approved-first-candidate-marker");
 	const { tool } = setup(t, {
 		config: POOL_SET,
-		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
+		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker }),
 	});
 	const { ctx } = implementRepo();
-	const res = await run(
-		tool,
-		implement({ fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) }),
-		undefined,
-		undefined,
-		{ ...ctx, isProjectTrusted: () => true },
+	const res = await run(tool, implement(), undefined, undefined, { ...ctx, isProjectTrusted: () => true });
+	assert.equal(res.isError, true);
+	const launches = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.equal(launches.length, 1);
+	assert.equal(launches[0].model, LUNA);
+	assert.equal(
+		launches[0].approve,
+		true,
+		"the coordinator's trust decision still applies to the selected first candidate",
 	);
-	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
-	assert.match(details, /approve=no/, "the fallback attempt");
-	assert.match(details, /^openai-codex\/gpt-6-luna @max failed \((?:exit 1: )?429 /m);
 });
 
 test("implement workers cannot write inside the git dir and stop when their coordinator is gone", async (t) => {

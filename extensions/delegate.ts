@@ -298,8 +298,6 @@ interface Job extends Role {
 	role: string;
 	output: boolean;
 	jobId: string;
-	fallbackRestriction?: FallbackRestriction;
-	fallbackRestrictionIssue?: string;
 	// implement: its checkout job, and whether the main session trusts this project (for `--approve`).
 	implement?: {
 		job: Checkout;
@@ -375,7 +373,7 @@ export interface ModelEntry {
 }
 
 export interface ModelPool {
-	/** Ordered fallbacks; each model has an independent thinking level. */
+	/** Ordered candidates; only the first is dispatched while child-endpoint pinning is unavailable. */
 	models: ModelEntry[];
 	/** Thinking for models without an entry (the session model when the pool is empty); omitted means the main session's level. */
 	thinking?: string;
@@ -525,21 +523,6 @@ export interface ResolvedRun {
 	thinking: string;
 }
 
-export interface FallbackCandidateScope {
-	model: string;
-	provider: string;
-	destination: string;
-	dataClasses: readonly string[];
-}
-
-/** Coordinator-supplied run restriction; the reference is not itself proof of user approval. */
-export interface FallbackRestriction {
-	authorizationRef: string;
-	authority: "named" | "adopted-snapshot";
-	taskDataClass: string;
-	candidates: readonly FallbackCandidateScope[];
-}
-
 /** Scouts use low/off; all other roles use each candidate's configured thinking level. */
 export function resolveRun(
 	role: string,
@@ -581,143 +564,6 @@ export function resolveRun(
 	});
 	const first = withOverrides[0];
 	return { candidates: withOverrides, model: first.model, thinking: first.thinking };
-}
-
-// These Pi transports dispatch to the supplied model.baseUrl. Other APIs may derive or replace
-// the endpoint at request time, so catalog metadata alone cannot pin their destination.
-const MODEL_BASE_URL_TRANSPORTS = new Set([
-	"anthropic-messages",
-	"openai-completions",
-	"openai-responses",
-	"openai-codex-responses",
-	"google-generative-ai",
-	"mistral-conversations",
-	"pi-messages",
-]);
-
-export function providerDestination(model: { baseUrl?: unknown }): string | undefined {
-	if (typeof model.baseUrl !== "string") return undefined;
-	try {
-		const url = new URL(model.baseUrl);
-		if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.search || url.hash) return undefined;
-		const path = url.pathname.replace(/\/+$/u, "");
-		return `${url.origin}${path || "/"}`;
-	} catch {
-		return undefined;
-	}
-}
-
-export function resolveFallbackRestriction(
-	value: unknown,
-	runs: ResolvedRun[],
-	registryValue: unknown,
-): { restriction?: FallbackRestriction; issue?: string } {
-	if (value === undefined) return {};
-	const invalid = (issue: string) => ({ issue: `fallback disabled: ${issue}` });
-	const input = eventRecord(value);
-	if (
-		!input ||
-		Object.keys(input).some((key) => !["authorizationRef", "authority", "taskDataClass", "candidates"].includes(key))
-	)
-		return invalid("fallbackAuthorization must be an exact coordinator scope object");
-	if (typeof input.authorizationRef !== "string" || !input.authorizationRef.trim())
-		return invalid("authorizationRef is missing");
-	if (input.authority !== "named" && input.authority !== "adopted-snapshot")
-		return invalid("authority must be named or adopted-snapshot");
-	if (typeof input.taskDataClass !== "string" || !input.taskDataClass.trim())
-		return invalid("taskDataClass is missing");
-	if (!Array.isArray(input.candidates) || input.candidates.length === 0)
-		return invalid("no eligible fallback candidates were supplied");
-	const registry = registryValue as
-		| {
-				find?: (provider: string, modelId: string) => unknown;
-				getAvailable?: () => unknown;
-				hasConfiguredAuth?: (model: unknown) => boolean;
-				isUsingOAuth?: (model: unknown) => unknown;
-				getRegisteredProviderIds?: () => unknown;
-		  }
-		| undefined;
-	if (
-		!registry ||
-		typeof registry.find !== "function" ||
-		typeof registry.getAvailable !== "function" ||
-		typeof registry.hasConfiguredAuth !== "function" ||
-		typeof registry.isUsingOAuth !== "function" ||
-		typeof registry.getRegisteredProviderIds !== "function"
-	)
-		return invalid("Pi model registry cannot prove request endpoint pinning without resolving credentials");
-	const available = registry.getAvailable();
-	if (!Array.isArray(available)) return invalid("Pi returned an invalid available-model list");
-	const registeredProviders = registry.getRegisteredProviderIds();
-	if (!Array.isArray(registeredProviders) || !registeredProviders.every((provider) => typeof provider === "string"))
-		return invalid("Pi returned an invalid registered-provider list");
-	const configured = new Set(
-		runs.flatMap((run) => run.candidates.map((candidate) => candidate.model).filter(Boolean)),
-	);
-	const candidates: FallbackCandidateScope[] = [];
-	const seen = new Set<string>();
-	for (const itemValue of input.candidates) {
-		const item = eventRecord(itemValue);
-		if (
-			!item ||
-			Object.keys(item).some((key) => !["model", "provider", "destination", "dataClasses"].includes(key)) ||
-			typeof item.model !== "string" ||
-			typeof item.provider !== "string" ||
-			typeof item.destination !== "string" ||
-			!Array.isArray(item.dataClasses) ||
-			item.dataClasses.length === 0 ||
-			!item.dataClasses.every((dataClass) => typeof dataClass === "string" && dataClass.trim())
-		)
-			return invalid("a candidate scope is incomplete");
-		const slash = item.model.indexOf("/");
-		if (slash <= 0 || item.model.slice(0, slash) !== item.provider || !configured.has(item.model))
-			return invalid("a candidate is not an exact provider/model in the resolved pool");
-		if (!item.dataClasses.includes(input.taskDataClass))
-			return invalid("taskDataClass is outside a candidate's permitted data scope");
-		if (seen.has(item.model)) return invalid("candidate models must be unique");
-		seen.add(item.model);
-		const modelId = item.model.slice(slash + 1);
-		const model = eventRecord(registry.find(item.provider, modelId));
-		if (!model || model.provider !== item.provider || model.id !== modelId)
-			return invalid("a candidate has no exact match in Pi's model catalog");
-		const destination = providerDestination(model);
-		if (!destination || destination !== item.destination)
-			return invalid("a candidate destination does not match Pi's catalog base URL");
-		if (!registry.hasConfiguredAuth(model)) return invalid("a candidate has no configured provider authentication");
-		if (registeredProviders.includes(item.provider))
-			return invalid("a registered provider extension may route requests away from the catalog base URL");
-		if (model.provider === "azure")
-			return invalid("Azure may replace the catalog base URL using request-time endpoint settings");
-		if (typeof model.api !== "string" || !MODEL_BASE_URL_TRANSPORTS.has(model.api))
-			return invalid("Pi's transport cannot guarantee that the catalog base URL is the request destination");
-		const usesOAuth = registry.isUsingOAuth(model);
-		if (typeof usesOAuth !== "boolean") return invalid("Pi returned unknown request authentication metadata");
-		if (usesOAuth)
-			return invalid(
-				"request-time OAuth may override the endpoint; Pi exposes no credential-free effective request URL",
-			);
-		if (
-			!available.some(
-				(entry) => eventRecord(entry)?.provider === item.provider && eventRecord(entry)?.id === modelId,
-			)
-		)
-			return invalid("a candidate is not currently available in Pi's model registry");
-		candidates.push(
-			Object.freeze({
-				model: item.model,
-				provider: item.provider,
-				destination,
-				dataClasses: Object.freeze([...item.dataClasses]),
-			}),
-		);
-	}
-	const restriction = Object.freeze({
-		authorizationRef: input.authorizationRef.trim(),
-		authority: input.authority,
-		taskDataClass: input.taskDataClass.trim(),
-		candidates: Object.freeze(candidates),
-	});
-	return { restriction };
 }
 
 function resumeRun(base: ResolvedRun, result: RunResult): ResolvedRun {
@@ -1551,6 +1397,12 @@ function runWorkerAttempt(
 	});
 }
 
+// The coordinator's ModelRegistry snapshot is not the fresh child's request boundary: `pi --model`
+// loads its own config/extensions and resolves request-time authentication after task data is supplied.
+// Installed Pi exposes no supported endpoint-only child pin, so all cross-model fallback is unavailable.
+const FALLBACK_DISABLED_REASON =
+	"cross-model fallback disabled: Pi's child request boundary cannot bind the effective provider endpoint before task data is sent";
+
 function fallbackDenial(
 	job: Job,
 	next: ResolvedCandidate | undefined,
@@ -1564,13 +1416,8 @@ function fallbackDenial(
 	toolDeadline: number,
 	hardCostCap: number,
 	toolCostCap: number,
-): string | undefined {
+): string {
 	if (!next?.model) return "next candidate has no exact model identity";
-	const restriction = job.fallbackRestriction;
-	if (!restriction) return job.fallbackRestrictionIssue ?? "no coordinator fallback restriction was supplied";
-	const nextProvider = next.model.slice(0, next.model.indexOf("/"));
-	if (!restriction.candidates.some((scope) => scope.model === next.model && scope.provider === nextProvider))
-		return "next model/provider is outside the frozen coordinator scope";
 	if (!candidate.model) return "the failing model has no exact provider/model identity";
 	const slash = candidate.model.indexOf("/");
 	if (
@@ -1618,7 +1465,7 @@ function fallbackDenial(
 		retainLimitStop("wrap-up-limit", "tool-calls");
 		return "the cumulative scout tool-call allowance is spent";
 	}
-	return undefined;
+	return FALLBACK_DISABLED_REASON;
 }
 
 function persistFailedToolCapture(
@@ -1673,6 +1520,15 @@ async function runWorker(
 	const attempts: RunResult[] = [];
 	const fallbackAttempts: FallbackAttempt[] = [];
 	for (let i = 0; i < candidates.length; i++) {
+		if (i > 0) {
+			const previous = attempts.at(-1);
+			if (previous) {
+				previous.fallbackRequested = false;
+				previous.fallbackBlockReason = FALLBACK_DISABLED_REASON;
+				previous.failure = `${previous.failure ?? "provider request failed"}; pool fallback stopped: ${FALLBACK_DISABLED_REASON}`;
+			}
+			break;
+		}
 		const candidate = candidates[i];
 		const { model, thinking } = candidate;
 		const remainingMs = hardDeadline - Date.now();
@@ -1721,8 +1577,7 @@ async function runWorker(
 			toolCostCapUsd: Math.max(0, Math.min(remainingToolCost, remainingCost)),
 			toolCalls: remainingToolCalls,
 		};
-		// `--approve` only on the first attempt: the tree was clean, so .pi equals the trusted HEAD; a fallback may run
-		// the earlier attempt's edits. Such effects are reconciled before a candidate switch is allowed.
+		// `--approve` only on the first candidate: cross-model fallback is disabled at the child request boundary.
 		const approve = job.implement?.trusted === true && i === 0;
 		const nextCandidate = candidates[i + 1];
 		const attempt = await runWorkerAttempt(
@@ -1774,8 +1629,7 @@ async function runWorker(
 				attempt.failure &&
 				!attempt.provenance?.[0]?.providerRetry
 			)
-				attempt.fallbackBlockReason =
-					job.fallbackRestrictionIssue ?? "Pi runtime supplied no structured retry classification";
+				attempt.fallbackBlockReason = "Pi runtime supplied no structured retry classification";
 			break;
 		}
 		const provenance = attempt.provenance?.[0];
@@ -1988,7 +1842,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Candidate fallback requires a coordinator-supplied scope and Pi's structured retry event; explicit models never fall back. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Only the first configured candidate is dispatched; cross-model fallback is disabled because the child cannot bind its effective endpoint. Explicit models remain exact. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
@@ -2012,7 +1866,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. For several models on the same task, use one entry per model. Not for implement: it uses the worker pool in delegate.json in order.",
+					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. For several models on the same task, use one entry per model. Not for implement: it uses only the first candidate in the worker pool in delegate.json.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -2022,7 +1876,7 @@ function buildSchema() {
 			fallbackAuthorization: {
 				type: "object",
 				description:
-					"Optional run-scoped fallback restriction referencing the coordinator's separately recorded user approval. This object is not consent: the coordinator must establish approval before sending it. Missing, stale, or incompatible scope disables candidate fallback.",
+					"Coordinator scope intent only; this release disables cross-model fallback because the fresh Pi child cannot bind its effective provider endpoint before sending task data. Supplying this object does not enable fallback or authorize a destination.",
 				additionalProperties: false,
 				properties: {
 					authorizationRef: { type: "string", minLength: 1 },
@@ -2041,7 +1895,7 @@ function buildSchema() {
 									type: "string",
 									minLength: 1,
 									description:
-										"Exact credential-free https/http base URL origin and path from Pi's model registry; query, hash, and embedded credentials are not accepted.",
+										"Requested destination in the coordinator's scope contract. The current runtime does not validate or enforce this value at the child's request boundary.",
 								},
 								dataClasses: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
 							},
@@ -2352,7 +2206,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Candidate fallback requires a run-scoped coordinator approval reference and matching model/provider/destination/data scope, plus Pi's structured retry event; unsafe or unknown tool effects block replay. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Cross-model candidate fallback is currently disabled because the fresh Pi child cannot bind its effective provider endpoint before task data is sent; the first selected candidate still runs, and explicit models stay exact. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),
@@ -2365,17 +2219,7 @@ export default function (pi: ExtensionAPI) {
 				details,
 				isError: true,
 			});
-			const {
-				role = "general",
-				task,
-				web,
-				answer,
-				output,
-				rebuttal,
-				background,
-				check,
-				fallbackAuthorization,
-			} = params ?? {};
+			const { role = "general", task, web, answer, output, rebuttal, background, check } = params ?? {};
 			const unknown = Object.keys(params ?? {}).filter(
 				(k) =>
 					![
@@ -2453,9 +2297,6 @@ export default function (pi: ExtensionAPI) {
 				for (const spec of specs)
 					if (spec.model && !configured.has(spec.model)) validateOneOffModel(spec.model, ctx?.modelRegistry);
 				resolved = specs.map((r) => resolveRun(role, r, set, session, ctx?.thinkingLevel));
-				const fallback = resolveFallbackRestriction(fallbackAuthorization, resolved, ctx?.modelRegistry);
-				job.fallbackRestriction = fallback.restriction;
-				job.fallbackRestrictionIssue = fallback.issue;
 			} catch (err: any) {
 				return fail(err.message);
 			}

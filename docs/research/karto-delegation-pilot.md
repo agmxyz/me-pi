@@ -11,7 +11,7 @@ Pilot: `/Users/mmo/fun/agm/karto`, existing integration branch `feat/slice-1-pip
 - Herdr pane `w3:p31`: observer-read status and terminal output at checkpoints, not continuous monitoring.
 - Delivery coordinator's notes: `/tmp/me-pi-karto-pilot-delivery-notes.md` and ledger `/tmp/karto-pilot-delivery-ledger.md`. These are mutable local artifacts; observations below identify the checkpoint, not a permanent transcript snapshot.
 - Worker details: `im1.md` through `im9.md` under `/var/folders/gg/m4k2c11115j155971lzv7vxh0000gn/T/me-pi-delegate-18683/`. Raw failed-tool diagnostic payloads remain private and are not copied into this report.
-- Current model-selection semantics: `docs/delegate.md`, section “Configure model pools.” The worker list is an ordered availability-fallback pool, not a role assignment.
+- Current model-selection semantics: `docs/delegate.md`, section “Configure model pools.” Pool order selects the first default candidate; cross-model fallback is currently disabled because a fresh Pi child cannot bind its effective endpoint at the request boundary. The worker list is not a role assignment.
 
 The observer inspected coordinator notes/output, not every historical diff, worker call, or test execution. Reported checks below are attributed to delivery evidence; they were not rerun by the observer. No causal time/cost savings or model-quality ranking is established.
 
