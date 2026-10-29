@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const singleTask = readFileSync(join(root, "skills/implement-me-pi/SKILL.md"), "utf8");
 const specGraph = readFileSync(join(root, "skills/implement-spec-me-pi/SKILL.md"), "utf8");
+const delegateGuide = readFileSync(join(root, "docs/delegate.md"), "utf8");
 
 function assertUserInvokedReviewContract(source, name) {
 	assert.match(source, new RegExp(`^name: ${name}$`, "m"));
@@ -25,11 +26,28 @@ function assertUserInvokedReviewContract(source, name) {
 		deltaClosure,
 		/carry forward (?:the )?prior full-review coverage that (?:the delta does not invalidate|remains valid)/,
 	);
-	assert.match(source, /guard or worker-limit block means stop and report/);
-	assert.match(source, /This skill grants no recovery authority/);
+	assert.match(
+		source,
+		/Until the full A4 activation gate above is complete, a guard or worker-limit block means stop and report/,
+	);
+	assert.match(source, /This skill grants no recovery authority before the full A4 gate is active/);
+	assert.match(source, /## Future bounded coordinator recovery — INACTIVE/);
+	assert.match(source, /INACTIVE: coordinator policy only, not runtime enforcement/);
+	assert.match(source, /No continuation is permitted until the separate A4 activation gate is complete/);
+	assert.match(source, /one initial attempt plus at most two coordinator-started continuations/);
+	assert.match(source, /original origin\/base and every attempt base/);
+	assert.match(source, /135 hard minutes plus possible termination\/finalization overhead/);
+	assert.match(source, /runtime does not enforce aggregate slice counters or authenticate consent/);
+	assert.match(source, /Unknown or partial effects prohibit replay/);
+	assert.match(source, /repetition of a reason alone is not no progress/);
+	assert.match(source, /predeclared optional and trusted evidence proves non-execution/);
+	assert.match(source, /Required work remains incomplete/);
+	assert.match(source, /Never relay a refused mutation through another executor/);
+	assert.match(source, /accept an unchanged checked commit only while its check evidence remains fresh/);
+	assert.match(source, /ask only for genuinely new authority, consequential choices, or unresolved safety/);
+	assert.doesNotMatch(source, /automatic retry/i);
 	assert.match(source, /load `tdd`/i);
 	assert.match(source, /load `code-review`/i);
-	assert.doesNotMatch(source, /\bA4\b|bounded recovery envelope|automatic retry/i);
 }
 
 test("both user-invoked implementation entrypoints retain full independent review and current stop boundaries", () => {
@@ -43,4 +61,9 @@ test("both user-invoked implementation entrypoints retain full independent revie
 	assert.match(specGraph, /one implement writer per repository/);
 	assert.match(specGraph, /one integration branch/);
 	assert.match(specGraph, /does not call the separate user-only `implement-me-pi` skill through `Skill`/);
+	assert.match(delegateGuide, /### Future bounded coordinator recovery — INACTIVE/);
+	assert.match(delegateGuide, /Normative coordinator walkthroughs—not runtime tests or aggregate enforcement/);
+	assert.match(delegateGuide, /first-attempt success ends the slice/);
+	assert.match(delegateGuide, /two continuations exhaust it/);
+	assert.match(delegateGuide, /timeout requires termination and state\/effect reconciliation/);
 });

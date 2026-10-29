@@ -10,7 +10,7 @@ Temporary cleanup set, only at a later user-approved cleanup point: the existing
 
 ## Tickets and status
 
-Statuses are **PENDING** unless explicitly marked otherwise. IN PROGRESS is not completion; DONE requires reviewed changes, a passing exact repository check, and an identified local commit.
+Statuses are **PENDING** unless explicitly marked otherwise. IN PROGRESS is not completion; DONE requires reviewed changes, a passing exact repository check, and an identified local commit. A4 is source/check complete but remains explicitly inactive pending the final integrated review and separate activation gate.
 
 | ID | Scope | Status |
 |---|---|---|
@@ -18,13 +18,15 @@ Statuses are **PENDING** unless explicitly marked otherwise. IN PROGRESS is not 
 | [A1](A1.md) | Coordinator workflow and artifact-ownership guide | Source/check complete at guide source commit `b6f5815295ed558aff72dcb26aa1dca916ed8a2c` (183 tests; all 56 installer smoke checks); final integrated independent two-axis review pending; recovery not activated; prerequisite for A4 |
 | [A2](A2.md) | Typed stop provenance and safe fallback authorization | Source/check accepted at `be57e36` (focused review `bg76`; supplied `npm run check --prefix extensions`: 194 tests, 56 installer smoke checks): denied/completed/unknown effects handled conservatively; partial output is not side-effect evidence; real consent/reference freshness remain coordinator-owned; final integrated independent two-axis review pending; A4 inactive; prerequisite for A4 |
 | [A3](A3.md) | 45-minute implement hard-time default; separately approved scout cap increase to 60 calls | DONE for original A3 scope (local commit); prerequisite for A4 |
-| [A4](A4.md) | Bounded recovery policy (authored INACTIVE) and later activation | Pending; authoring blocked by A0-source+A1+A2+A3; activation needs A0-live + separate user approval |
+| [A4](A4.md) | Bounded recovery policy (authored INACTIVE) and later activation | SOURCE/CHECK COMPLETE; final integrated independent Standards/Spec review pending. ACTIVATION BLOCKED: A0-live unavailable, separate user approval and the full approved capability/install/reload gate still required; live policy and personal pilot untouched |
 | [A5](A5.md) | Optional review model pool, selection only | Source/check accepted at `c01ed0e` (183 tests; all 56 installer smoke checks); bounded review `bg65` adequate; final integrated independent two-axis review pending; independent of A2/A4 |
 | [A6](A6.md) | Concurrent worktree writers | Pending, deferred design-only; not a current delivery blocker |
 
 **Dependency graph:** A0, A1, A2, A3, and A5 have no ticket dependencies. A4 authoring is blocked by **all of A0-source, A1, A2, and A3**; A4 activation additionally needs **A0-live** and separate user approval (spec, “Approved delivery decisions”). A5 has no A2 dependency; A2 owns its later fallback-safety migration. A6 is independent and deferred.
 
-Approved order (2026-10-29): A3 → A5 → A1 → A2 → A0-source → A4 (inactive) → frozen final two-axis review of the whole result, including inactive A4 → activation (separate user approval). Keep one checkout writer and serialize writes.
+Approved order (2026-10-29): A3 → A5 → A1 → A2 → A0-source → A4 (authored INACTIVE) → frozen final two-axis review of the whole result, including inactive A4 → activation (separate user approval). Keep one checkout writer and serialize writes.
+
+A4 source/check is now complete, but the current phase is not fully activated: final integrated review remains pending; A0-live is unavailable; `GLOBAL_AGENTS.md` and the personal pilot remain untouched; no install, migration, or reload occurred. Activation still requires separate user approval and the full capability, live-policy, install/reload, and affected-delta gate.
 
 ## Shared acceptance and boundaries
 
