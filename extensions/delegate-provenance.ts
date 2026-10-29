@@ -49,6 +49,8 @@ export interface ToolEffectFact {
 	toolName: string;
 	effect: EffectState;
 	replaySafe: boolean;
+	/** Pi observed partial tool output; this does not classify side effects. */
+	partialResultObserved?: true;
 }
 
 /** Pi's structured auto_retry_start is the only available generic transient-provider verdict. */

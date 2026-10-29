@@ -551,6 +551,20 @@ function markIntegrity(facts: Facts, state: DeliveredState["integrity"]): void {
 	if (state === "tripped" || facts.delivered.integrity !== "tripped") facts.delivered.integrity = state;
 }
 
+/** A provider retry alone is harmless after a later successful candidate; other stops or unresolved effects block acceptance. */
+function hasUnresolvedProvenance(outcome: Outcome): boolean {
+	return (
+		!outcome.provenance?.length ||
+		(outcome.stopFacts ?? []).some((fact) => fact.cause !== "provider-retry-classified") ||
+		outcome.provenance.some(
+			(attempt) =>
+				!attempt.complete ||
+				attempt.stopFacts.some((fact) => fact.cause !== "provider-retry-classified") ||
+				attempt.toolEffects.some((fact) => fact.effect !== "completed"),
+		)
+	);
+}
+
 /** Ends a job; never throws. Commits leftovers as WIP on the job's branch, checks the range and tripwires. */
 export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Facts> {
 	const facts: Facts = {
@@ -576,6 +590,8 @@ export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Fact
 		markIntegrity(facts, "unknown");
 		facts.problems.push(`finish failed: ${(err as Error).message}`);
 	}
+	if (hasUnresolvedProvenance(outcome))
+		facts.problems.push("provenance/effect state is incomplete or stopped; acceptance withheld");
 	facts.delivered.check = job.check.status;
 	facts.delivered.wip ||= facts.wip !== undefined;
 	if (facts.delivered.integrity === "tripped") {

@@ -1196,6 +1196,24 @@ function runWorkerAttempt(
 			callsForId.push(fact);
 			activeEffects.set(toolCallId, callsForId);
 		};
+		const observeToolEffectUpdate = (event: EventRecord) => {
+			const toolCallId = typeof event.toolCallId === "string" && event.toolCallId ? event.toolCallId : "";
+			const toolName = typeof event.toolName === "string" ? event.toolName : "unknown";
+			const calls = toolCallId ? activeEffects.get(toolCallId) : undefined;
+			if (
+				!calls ||
+				calls.length !== 1 ||
+				calls[0].toolName !== toolName ||
+				!Object.hasOwn(event, "partialResult") ||
+				!eventRecord(event.partialResult)
+			) {
+				provenance.complete = false;
+				return;
+			}
+			// Pi's update event proves only that a tool reported partial output, not whether its side effects
+			// completed or partially occurred. Keep the effect unknown unless its final owner boundary says otherwise.
+			calls[0].partialResultObserved = true;
+		};
 		const endToolEffect = (event: EventRecord) => {
 			const toolCallId = typeof event.toolCallId === "string" && event.toolCallId ? event.toolCallId : "";
 			const toolName = typeof event.toolName === "string" ? event.toolName : "unknown";
@@ -1369,6 +1387,7 @@ function runWorkerAttempt(
 				return;
 			}
 			if (event.type === "tool_execution_start") startToolEffect(event);
+			if (event.type === "tool_execution_update") observeToolEffectUpdate(event);
 			if (event.type === "tool_execution_end") endToolEffect(event);
 			if (event.type === "tool_execution_start") {
 				if (typeof event.toolName === "string") {

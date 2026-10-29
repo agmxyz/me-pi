@@ -183,6 +183,21 @@ process.stdin.on("end", () => {
     emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
     process.exit(1);
   }
+  if (mode === "partial-result-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    const toolCallId = "partial-result";
+    const args = { command: "printf before-failure" };
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args }));
+    console.log(JSON.stringify({
+      type: "tool_execution_update", toolCallId, toolName: "bash", args,
+      partialResult: { content: [{ type: "text", text: "partial output" }], details: {} },
+    }));
+    console.log(JSON.stringify({
+      type: "tool_execution_end", toolCallId, toolName: "bash", isError: true,
+      result: { content: [{ type: "text", text: "tool failed after partial output" }], details: {} },
+    }));
+    retryable("temporary provider failure");
+    process.exit(1);
+  }
   if (mode === "tool-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     const toolCallId = "prior-effect";
     console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "printf prior-effect" } }));
@@ -452,11 +467,12 @@ const CTX = {
 	modelRegistry: registryFixture(),
 };
 const text = (res) => res.content.map((c) => c.text).join("\n");
+// Models the coordinator's recorded run-contract restriction; this fixture does not authenticate approval.
 const fallbackAuthorization = (
 	models,
 	{ authority = "named", taskDataClass = "repository-source", registry = CTX.modelRegistry } = {},
 ) => ({
-	authorizationRef: "coordinator-approval:test-run",
+	authorizationRef: "coordinator-recorded-contract:test-run",
 	authority,
 	taskDataClass,
 	candidates: models.map((modelId) => {
@@ -487,12 +503,43 @@ test("fallback authorization is validated and frozen as a dispatch snapshot", ()
 	const run = resolveRun("review", {}, set, undefined, "max");
 	const authorization = fallbackAuthorization([HAIKU, SONNET]);
 	const resolved = resolveFallbackRestriction(authorization, [run], CTX.modelRegistry);
+	const adopted = resolveFallbackRestriction(
+		fallbackAuthorization([HAIKU, SONNET], { authority: "adopted-snapshot" }),
+		[run],
+		CTX.modelRegistry,
+	);
+	assert.equal(adopted.issue, undefined);
+	assert.equal(adopted.restriction.authority, "adopted-snapshot");
 	assert.equal(resolved.issue, undefined);
 	assert.equal(Object.isFrozen(resolved.restriction), true);
 	assert.equal(Object.isFrozen(resolved.restriction.candidates), true);
 	assert.equal(Object.isFrozen(resolved.restriction.candidates[0].dataClasses), true);
+	assert.equal(Object.isFrozen(resolved.restriction.candidates[0]), true);
+	const frozenCandidate = resolved.restriction.candidates[1];
+	const originalDestination = frozenCandidate.destination;
+	authorization.authorizationRef = "late-ref";
+	authorization.taskDataClass = "public";
 	authorization.candidates[1].model = OPUS;
-	assert.equal(resolved.restriction.candidates[1].model, SONNET);
+	authorization.candidates[1].provider = "other-provider";
+	authorization.candidates[1].destination = "https://other.invalid";
+	authorization.candidates[1].dataClasses[0] = "public";
+	authorization.candidates.push({
+		model: OPUS,
+		provider: "anthropic",
+		destination: "https://other.invalid",
+		dataClasses: ["public"],
+	});
+	assert.equal(resolved.restriction.authorizationRef, "coordinator-recorded-contract:test-run");
+	assert.equal(resolved.restriction.taskDataClass, "repository-source");
+	assert.deepEqual(resolved.restriction.candidates, [
+		{
+			model: HAIKU,
+			provider: "anthropic",
+			destination: providerDestination(CTX.modelRegistry.find("anthropic", "claude-haiku-5-5")),
+			dataClasses: ["repository-source"],
+		},
+		{ model: SONNET, provider: "anthropic", destination: originalDestination, dataClasses: ["repository-source"] },
+	]);
 });
 
 function applyEnv(vars) {
@@ -647,6 +694,7 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge", "implement"]);
 	assert.equal(properties.check.type, "string");
 	assert.match(properties.check.description, /one unchained command/);
+	assert.match(properties.fallbackAuthorization.description, /This object is not consent/);
 	assert.match(properties.check.description, /runs it alone, exactly as given, after its final edit/);
 	assert.equal(properties.branch, undefined);
 	assert.equal(properties.web.type, "boolean");
@@ -1571,6 +1619,55 @@ test("model-unavailable errors without structured retry evidence fail closed", a
 	assert.match(text(res), /no structured retry classification/);
 });
 
+test("an adopted recorded pool snapshot stays frozen across later config and input changes", async (t) => {
+	const marker = scratch("adopted-snapshot-frozen-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET, OPUS], thinking: "max" },
+		},
+		env: {
+			FAKE_PI_MODE: "rate-limit-models",
+			FAKE_PI_FAIL_MODELS: `${HAIKU},${SONNET}`,
+			FAKE_PI_MARKER: marker,
+		},
+	});
+	// This models the exact pool snapshot/scope already recorded by the coordinator; it is not proof of approval.
+	const authorization = fallbackAuthorization([HAIKU, SONNET], { authority: "adopted-snapshot" });
+	const pending = run(tool, {
+		role: "review",
+		task: "use the adopted recorded snapshot, not later config",
+		fallbackAuthorization: authorization,
+	});
+	const opusScope = fallbackAuthorization([OPUS]).candidates[0];
+	authorization.candidates.push(opusScope);
+	authorization.candidates[1].provider = "changed-provider";
+	authorization.candidates[1].destination = "https://changed.invalid";
+	authorization.candidates[1].dataClasses[0] = "public";
+	writeFileSync(
+		process.env.ME_PI_DELEGATE_CONFIG,
+		JSON.stringify({
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, OPUS, ONE_OFF], thinking: "max" },
+		}),
+	);
+
+	const res = await pending;
+	assert.equal(res.isError, true, text(res));
+	assert.equal(res.details.round1[0].fallbackAttempts.length, 1);
+	assert.equal(res.details.round1[0].fallbackAttempts[0].nextModel, SONNET);
+	assert.match(res.details.round1[0].fallbackBlockReason, /outside the frozen coordinator scope/);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU, SONNET],
+	);
+});
+
 test("configuration and authorization added after dispatch cannot authorize fallback", async (t) => {
 	const marker = scratch("late-fallback-authorization-marker");
 	const { tool } = setup(t, {
@@ -1636,6 +1733,15 @@ test("fallback scope rejects ineligible models, data classes, destinations, and 
 			/taskDataClass is outside a candidate's permitted data scope/,
 		],
 		[
+			"wrong provider",
+			() => {
+				const authorization = fallbackAuthorization([HAIKU, SONNET]);
+				authorization.candidates[1].provider = "openai";
+				return authorization;
+			},
+			/not an exact provider\/model in the resolved pool/,
+		],
+		[
 			"wrong destination",
 			() => {
 				const authorization = fallbackAuthorization([HAIKU, SONNET]);
@@ -1666,6 +1772,7 @@ test("fallback fails closed on malformed evidence, shell 429s, prior effects, an
 	const cases = [
 		["malformed-retry", /no structured retry classification/, "no-retry"],
 		["shell-429", /no structured retry classification/, "tool-failure"],
+		["partial-result-then-retry", /competing safety stop/, "partial-result-unknown"],
 		["tool-then-retry", /tool effects are unknown or unsafe/, "completed-unsafe"],
 		["start-then-retry", /tool effects are unknown or unsafe/, "unmatched-unknown"],
 		["blocked-owner-event", /no structured retry classification/, "guard-denial"],
@@ -1693,11 +1800,20 @@ test("fallback fails closed on malformed evidence, shell 429s, prior effects, an
 			mode,
 		);
 		const provenance = res.details.round1[0].provenance[0];
-		if (kind === "tool-failure")
+		if (kind === "tool-failure" || kind === "partial-result-unknown")
 			assert.ok(
 				provenance.stopFacts.some((fact) => fact.cause === "tool-failure"),
 				mode,
 			);
+		if (kind === "tool-failure") {
+			assert.equal(provenance.toolEffects[0].effect, "unknown", mode);
+			assert.equal(provenance.toolEffects[0].partialResultObserved, undefined, mode);
+		}
+		if (kind === "partial-result-unknown") {
+			assert.equal(provenance.toolEffects[0].effect, "unknown", mode);
+			assert.equal(provenance.toolEffects[0].partialResultObserved, true, mode);
+			assert.notEqual(provenance.toolEffects[0].effect, "partial", mode);
+		}
 		if (kind === "completed-unsafe")
 			assert.deepEqual(provenance.toolEffects[0], {
 				owner: "pi-runtime",
@@ -3647,11 +3763,11 @@ test("implement captures targeted failures while a later declared check passes",
 	});
 	const { ctx } = implementRepo();
 	const result = await run(tool, implement(), undefined, undefined, ctx);
-	assert.equal(result.isError, false, text(result));
-	assert.equal(result.details.implement.failed, false);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.failed, true);
 	assert.equal(result.details.implement.check.status, "pass");
 	assert.deepEqual(result.details.implement.check.runs, ["pass: npm test"]);
-	assert.equal(text(result).split("\n").length, 2, "successful handback keeps its two-line shape");
+	assert.match(text(result), /acceptance withheld/);
 
 	const capture = result.details.implement.outcome.failedToolCapture;
 	assert.equal(capture.status, "written");
@@ -3819,17 +3935,17 @@ test("implement cancellation flushes failures and reports correlation anomalies"
 	assert.ok(artifact.capture.anomalies["malformed-event"] >= 1);
 });
 
-test("capture storage failure is visible without changing a passing gate or two-line handback", async (t) => {
+test("capture storage failure is visible while unknown effects still withhold acceptance", async (t) => {
 	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
 	const { tool } = setup(t, {
 		env: implementEnv("implement-artifacts", { TMPDIR: tmp, FAKE_PI_BLOCK_ARTIFACT: "1" }),
 	});
 	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
-	assert.equal(result.isError, false, text(result));
-	assert.equal(result.details.implement.failed, false);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.failed, true);
 	assert.equal(result.details.implement.check.status, "pass");
-	assert.equal(text(result).split("\n").length, 2, "the warning stays inline in the successful handback");
 	assert.match(text(result), /⚠ capture unavailable:/);
+	assert.match(text(result), /acceptance withheld/);
 	const details = readFileSync(result.details.implement.detailsPath, "utf8");
 	assert.match(details, /capture unavailable:/);
 	const id = result.details.implement.id;
@@ -3896,6 +4012,10 @@ test("implement Bash content freshness ignores Git metadata but stales mutations
 			assert.equal(result.isError, true, handback);
 			assert.match(handback, /check stale \(checkout content changed after the last check\)/);
 			assert.match(handback, /^✗ check stale: checkout content changed after the last check$/m);
+		} else if (scenario === "rerun") {
+			assert.equal(result.isError, true, handback);
+			assert.match(handback, /check ✓/);
+			assert.match(handback, /acceptance withheld/, "a fresh check cannot resolve the earlier unknown tool effect");
 		} else {
 			assert.equal(result.isError, false, handback);
 			assert.match(handback, /check ✓/);
