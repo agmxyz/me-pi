@@ -12,6 +12,18 @@
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+export const GUARD_STOP_EVENT = "me-pi:guard-stop";
+
+export interface GuardStopEvent {
+	owner: "guard";
+	jobId: string;
+	attempt: number;
+	toolCallId: string;
+	cause: "guard-denial";
+	resource: "guard";
+	effect: "denied";
+}
+
 // A command position: start of line/command, after `;`, `&`, `|`, `(`, `{`, `` ` ``, `$(`, a shell keyword
 // (`then`, `do`, `else`), a wrapper with its options (`env -i`, `xargs -0`, `sudo`, `nohup`, `time`, `exec`,
 // `rtk [proxy]`, `command`), `eval`, `find -exec`, or a shell's `-c` (`bash -lc`, `zsh -c`), plus optional
@@ -302,12 +314,27 @@ export default function (pi: ExtensionAPI) {
 		const command = String((event.input as { command?: unknown }).command ?? "");
 		const risk = classify(command, () => branchIn(ctx.cwd));
 		if (!risk) return undefined;
-		if (!ctx.hasUI)
-			return {
-				block: true,
-				reason: `Blocked (${risk}): needs explicit user approval; no UI to confirm.`,
-			};
+		const block = (reason: string) => {
+			if (process.env.ME_PI_RUN === "1") {
+				const jobId = process.env.ME_PI_DELEGATE_JOB_ID;
+				const attempt = Number(process.env.ME_PI_DELEGATE_ATTEMPT);
+				if (jobId && Number.isSafeInteger(attempt) && attempt > 0 && event.toolCallId) {
+					const fact: GuardStopEvent = {
+						owner: "guard",
+						jobId,
+						attempt,
+						toolCallId: event.toolCallId,
+						cause: "guard-denial",
+						resource: "guard",
+						effect: "denied",
+					};
+					pi.events.emit(GUARD_STOP_EVENT, fact);
+				}
+			}
+			return { block: true, reason };
+		};
+		if (!ctx.hasUI) return block(`Blocked (${risk}): needs explicit user approval; no UI to confirm.`);
 		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command);
-		return ok ? undefined : { block: true, reason: `Blocked by user (${risk}).` };
+		return ok ? undefined : block(`Blocked by user (${risk}).`);
 	});
 }

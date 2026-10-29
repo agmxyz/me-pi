@@ -37,6 +37,7 @@ const {
 	secretPathIn,
 	writeBlockedIn,
 	trackCheck,
+	providerDestination,
 } = await import("../extensions/delegate.ts");
 const { progressLines } = await import("../extensions/delegate-render.ts");
 const { registerDelegateCommand } = await import("../extensions/delegate-command.ts");
@@ -80,7 +81,13 @@ function registryFixture({ catalog = REGISTRY_MODELS, available = catalog, authe
 	const model = (id) => {
 		const slash = id.indexOf("/");
 		return slash > 0
-			? { provider: id.slice(0, slash), id: id.slice(slash + 1), name: id.slice(slash + 1) }
+			? {
+					provider: id.slice(0, slash),
+					id: id.slice(slash + 1),
+					name: id.slice(slash + 1),
+					api: id.slice(0, slash) === "anthropic" ? "anthropic-messages" : "openai-responses",
+					baseUrl: `https://${id.slice(0, slash)}.example/v1`,
+				}
 			: undefined;
 	};
 	const models = catalog.map(model).filter(Boolean);
@@ -105,10 +112,27 @@ const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
 const usage = (cost) => ({ input: 10, output: 5, totalTokens: 15, cost: { input: cost / 2, output: cost / 2, total: cost } });
-const emit = (text, { cost = 0.002, stopReason = "stop", errorMessage } = {}) => console.log(JSON.stringify({
-  type: "message_end",
-  message: { role: "assistant", model: (flag("--model") || "session-default").split("/").pop(), usage: usage(cost), stopReason, errorMessage, content: [{ type: "text", text }] },
-}));
+const emit = (text, { cost = 0.002, stopReason = "stop", errorMessage } = {}) => {
+  const selectedModel = flag("--model") || "anthropic/session-default";
+  const slash = selectedModel.indexOf("/");
+  console.log(JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      provider: slash > 0 ? selectedModel.slice(0, slash) : "",
+      model: slash > 0 ? selectedModel.slice(slash + 1) : selectedModel,
+      api: "fake-api",
+      usage: usage(cost),
+      stopReason,
+      errorMessage,
+      content: [{ type: "text", text }],
+    },
+  }));
+};
+const retryable = (errorMessage) => {
+  emit("", { stopReason: "error", errorMessage });
+  console.log(JSON.stringify({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 1, errorMessage }));
+};
 let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
@@ -116,15 +140,15 @@ process.stdin.on("end", () => {
   if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
   if (mode === "rebuttal-rate-limit-model" && prompt.includes("## Round 2 (rebuttal)") && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
-    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: rebuttal unavailable" });
+    retryable("429 rate_limit_error: rebuttal unavailable");
     process.exit(1);
   }
   if (mode === "rate-limit-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
-    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
+    retryable("429 rate_limit_error: too many requests");
     process.exit(1);
   }
   if (mode === "rate-limit-models" && process.env.FAKE_PI_FAIL_MODELS?.split(",").includes(flag("--model"))) {
-    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
+    retryable("429 rate_limit_error: too many requests");
     process.exit(1);
   }
   if (mode === "quota-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
@@ -375,6 +399,21 @@ const CTX = {
 	modelRegistry: registryFixture(),
 };
 const text = (res) => res.content.map((c) => c.text).join("\n");
+const fallbackAuthorization = (models, taskDataClass = "repository-source", registry = CTX.modelRegistry) => ({
+	authorizationRef: "coordinator-approval:test-run",
+	taskDataClass,
+	candidates: models.map((modelId) => {
+		const slash = modelId.indexOf("/");
+		const provider = modelId.slice(0, slash);
+		const model = registry.find(provider, modelId.slice(slash + 1));
+		return {
+			model: modelId,
+			provider,
+			destination: providerDestination(model),
+			dataClasses: [taskDataClass],
+		};
+	}),
+});
 
 function applyEnv(vars) {
 	for (const [k, v] of Object.entries(vars)) {
@@ -394,6 +433,8 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		ME_PI_OUTPUT_DIR: undefined,
 		ME_PI_BUDGET: undefined,
 		ME_PI_ROLE: undefined,
+		ME_PI_DELEGATE_JOB_ID: undefined,
+		ME_PI_DELEGATE_ATTEMPT: undefined,
 		FAKE_PI_EVENT_MARKER: undefined,
 		FAKE_PI_TOOL_EVENTS: undefined,
 		TMPDIR: TEST_HOME,
@@ -421,9 +462,21 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	Object.assign(LIMITS, limits);
 	const tools = {};
 	const handlers = {};
+	const eventHandlers = new Map();
+	const events = {
+		on: (name, handler) => {
+			const listeners = eventHandlers.get(name) ?? [];
+			listeners.push(handler);
+			eventHandlers.set(name, listeners);
+		},
+		emit: (name, value) => {
+			for (const handler of eventHandlers.get(name) ?? []) handler(value);
+		},
+	};
 	const commands = {};
 	const messages = [];
 	const pi = {
+		events,
 		sendMessage: (message, options) => messages.push({ message, options }),
 		registerTool: (d) => {
 			tools[d.name] = d;
@@ -443,7 +496,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		globalThis[Symbol.for("me-pi.delegate.job-count")] = 0;
 	}
 	registerExtension(pi);
-	return { tool: tools.delegate, handlers, commands, pi, messages };
+	return { tool: tools.delegate, handlers, commands, pi, events, messages };
 }
 
 const run = (tool, params, signal, onUpdate, ctx = CTX) => tool.execute("call", params, signal, onUpdate, ctx);
@@ -510,7 +563,7 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.equal(typeof main.tool.renderResult, "function");
 	const worker = setup(t, { env: { ME_PI_RUN: "1" } });
 	assert.equal(worker.tool, undefined, "no nested delegation");
-	assert.deepEqual(Object.keys(worker.handlers).sort(), ["message_end", "tool_call"]);
+	assert.deepEqual(Object.keys(worker.handlers).sort(), ["message_end", "tool_call", "tool_result"]);
 });
 
 test("workers cannot name secret paths in read, grep, find, or ls", async (t) => {

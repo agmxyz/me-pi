@@ -14,6 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
+import type { AttemptProvenance, StopFact } from "./delegate-provenance.ts";
 import { PROTECTED_BRANCHES } from "./guard.ts";
 
 const run = promisify(execFile);
@@ -214,6 +215,15 @@ export type Outcome = {
 	fallbacks?: string[];
 	stderr?: string;
 	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
+	provenance?: AttemptProvenance[];
+	stopFacts?: StopFact[];
+};
+
+export type DeliveredState = {
+	check: CheckState["status"];
+	commit: "normal" | "none" | "unknown";
+	wip: boolean;
+	integrity: "clear" | "tripped" | "unknown";
 };
 
 export type Facts = {
@@ -232,6 +242,8 @@ export type Facts = {
 	// ✗ lines other than WIP and the check, without the ✗.
 	problems: string[];
 	check: CheckState;
+	delivered: DeliveredState;
+	stopFacts: StopFact[];
 	outcome: Outcome;
 	detailsPath?: string;
 	failed: boolean;
@@ -275,9 +287,27 @@ async function linkLock(lockPath: string, id: string): Promise<void> {
 	}
 }
 
+export class ImplementLockRefusal extends Error {
+	readonly stopFact: StopFact;
+
+	constructor(message: string, jobId: string, toolCallId?: string) {
+		super(message);
+		this.name = "ImplementLockRefusal";
+		this.stopFact = {
+			owner: "implement",
+			jobId,
+			attempt: 1,
+			...(toolCallId ? { toolCallId } : {}),
+			cause: "lock-refusal",
+			resource: "checkout-lock",
+			effect: "denied",
+		};
+	}
+}
+
 // Takes the per-repo lock; a lock whose pid is dead is taken over, a live or unreadable one refuses. A takeover
 // renames the stale lock aside and re-checks it, so two takeovers cannot both win.
-async function takeLock(lockPath: string, id: string, repoRoot: string): Promise<void> {
+async function takeLock(lockPath: string, id: string, repoRoot: string, toolCallId?: string): Promise<void> {
 	for (let attempt = 0; attempt < 3; attempt++) {
 		try {
 			return await linkLock(lockPath, id);
@@ -288,10 +318,12 @@ async function takeLock(lockPath: string, id: string, repoRoot: string): Promise
 		if (content === undefined) continue; // Released meanwhile.
 		const holder = lockHolder(content);
 		if (!holder || isAlive(holder.pid))
-			throw new Error(
+			throw new ImplementLockRefusal(
 				holder
 					? `implement job ${holder.id} (pid ${holder.pid}) is already writing in ${repoRoot}; wait for its handback`
 					: `${lockPath} is unreadable; another implement job may be starting in ${repoRoot}. Remove it only if none runs.`,
+				id,
+				toolCallId,
 			);
 		const aside = `${lockPath}.${process.pid}.${id}.stale`;
 		try {
@@ -305,11 +337,11 @@ async function takeLock(lockPath: string, id: string, repoRoot: string): Promise
 			// Another takeover won between the read and the rename: put its lock back.
 			await link(aside, lockPath).catch(() => {});
 			await rm(aside, { force: true });
-			throw new Error(`another implement job just took the lock in ${repoRoot}; wait for its handback`);
+			throw new ImplementLockRefusal(`another implement job just took the lock in ${repoRoot}; wait for its handback`, id, toolCallId);
 		}
 		await rm(aside, { force: true });
 	}
-	throw new Error(`could not take ${lockPath}`);
+	throw new ImplementLockRefusal(`could not take ${lockPath}`, id, toolCallId);
 }
 
 async function releaseLock(lockPath: string, id: string): Promise<void> {
@@ -331,7 +363,7 @@ const IN_PROGRESS = [
 ];
 
 /** Refuses, leaving nothing behind, unless `cwd` is a clean checkout on a non-main branch with no job writing in it. */
-export async function prepare(cwd: string, id: string, check: string): Promise<Checkout> {
+export async function prepare(cwd: string, id: string, check: string, toolCallId?: string): Promise<Checkout> {
 	const dirs = await git(cwd, [
 		"rev-parse",
 		"--path-format=absolute",
@@ -353,7 +385,7 @@ export async function prepare(cwd: string, id: string, check: string): Promise<C
 		throw new Error(`implement does not commit on ${branch}; \`git switch -c goal/<slug>\` first`);
 	// The lock first, so a job already writing here is named rather than reported as a dirty tree.
 	const lockPath = join(commonDir, LOCK_NAME);
-	await takeLock(lockPath, id, repoRoot);
+	await takeLock(lockPath, id, repoRoot, toolCallId);
 	try {
 		const busy = IN_PROGRESS.find(([path]) => existsSync(join(gitDir, path)));
 		if (busy) throw new Error(`${busy[1]} is in progress in ${repoRoot}; finish or abort it first`);
@@ -511,6 +543,27 @@ function capped(text: string, max: number): [string[], number] {
 
 const num = (text: string, word: string) => Number(text.match(new RegExp(`(\\d+) ${word}`))?.[1] ?? 0);
 
+function deliveredState(facts: Facts): DeliveredState {
+	const integrityTrip = facts.problems.some(
+		(problem) =>
+			problem.startsWith("HEAD moved:") ||
+			problem.startsWith("branch ") && problem.includes(" is gone:") ||
+			problem.includes("no longer descends from the base") ||
+			problem.startsWith("merge commit(s) in the range:") ||
+			problem.startsWith("commit(s) older than the job") ||
+			problem.startsWith("Tripwire:") && !/unavailable|failed:/i.test(problem),
+	);
+	const integrity: DeliveredState["integrity"] = integrityTrip
+		? "tripped"
+		: facts.problems.length > 0
+			? "unknown"
+			: "clear";
+	const normalCommits = facts.commitCount - (facts.wip ? 1 : 0);
+	const commit: DeliveredState["commit"] =
+		!facts.tip ? "unknown" : normalCommits > 0 ? "normal" : facts.tip === facts.base ? "none" : "unknown";
+	return { check: facts.check.status, commit, wip: facts.wip !== undefined, integrity };
+}
+
 /** Ends a job; never throws. Commits leftovers as WIP on the job's branch, checks the range and tripwires. */
 export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Facts> {
 	const facts: Facts = {
@@ -525,6 +578,8 @@ export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Fact
 		stat: "",
 		problems: [],
 		check: job.check,
+		delivered: { check: job.check.status, commit: "unknown", wip: false, integrity: "unknown" },
+		stopFacts: [...(outcome.stopFacts ?? [])],
 		outcome,
 		failed: true,
 	};
@@ -532,6 +587,18 @@ export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Fact
 		await finishSteps(job, facts);
 	} catch (err) {
 		facts.problems.push(`finish failed: ${(err as Error).message}`);
+	}
+	facts.delivered = deliveredState(facts);
+	if (facts.delivered.integrity === "tripped") {
+		const attempt = outcome.provenance?.at(-1)?.attempt ?? 1;
+		facts.stopFacts.push({
+			owner: "implement",
+			jobId: job.id,
+			attempt,
+			cause: "integrity-tripwire",
+			resource: "integrity",
+			effect: "unknown",
+		});
 	}
 	try {
 		facts.detailsPath = await writeDetails(facts, job.tmpRoot);
@@ -665,6 +732,30 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 	const text = [
 		`# ${f.id} ${f.branch} ${f.base.slice(0, 7)}..${f.tip?.slice(0, 7) ?? "(missing)"} ${o.label ?? ""}`.trim(),
 		"",
+		...section(
+			"Delivered state",
+			[
+				`check: ${f.delivered.check}`,
+				`normal commits: ${f.delivered.commit}`,
+				`WIP: ${f.delivered.wip ? "present" : "none"}`,
+				`integrity: ${f.delivered.integrity}`,
+			].join("\n"),
+		),
+		...section(
+			"Stop provenance",
+			[
+				...f.stopFacts.map(
+					(fact) =>
+						`${fact.owner} job=${fact.jobId} attempt=${fact.attempt}${fact.toolCallId ? ` tool=${fact.toolCallId}` : ""} cause=${fact.cause} resource=${fact.resource} effect=${fact.effect}`,
+				),
+				...(f.outcome.provenance ?? []).flatMap((attempt) =>
+					attempt.stopFacts.map(
+						(fact) =>
+							`${fact.owner} job=${fact.jobId} attempt=${fact.attempt}${fact.toolCallId ? ` tool=${fact.toolCallId}` : ""} cause=${fact.cause} resource=${fact.resource} effect=${fact.effect}`,
+					),
+				),
+			].join("\n"),
+		),
 		...section(
 			"Problems",
 			[...(f.wip ? [`WIP ${f.wip.sha} (${f.wip.reason}): ${f.wip.files.join(", ")}`] : []), ...f.problems].join(
