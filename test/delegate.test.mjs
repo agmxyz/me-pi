@@ -383,6 +383,9 @@ function applyEnv(vars) {
 	}
 }
 
+// Multiple setups in one test share one original environment snapshot.
+const setupEnvironments = new WeakMap();
+
 // Sets env vars and limits for one test and restores them afterwards.
 function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	const vars = {
@@ -401,13 +404,21 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		writeFileSync(path, typeof config === "string" ? config : JSON.stringify(config));
 		vars.ME_PI_DELEGATE_CONFIG = path;
 	} else vars.ME_PI_DELEGATE_CONFIG = join(TEST_HOME, "missing.json");
-	const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+	let saved = setupEnvironments.get(t);
+	if (!saved) {
+		saved = {};
+		setupEnvironments.set(t, saved);
+		t.after(() => {
+			applyEnv(saved);
+			Object.assign(LIMITS, DEFAULT_LIMITS);
+			setupEnvironments.delete(t);
+		});
+	}
+	for (const k of Object.keys(vars)) {
+		if (!Object.hasOwn(saved, k)) saved[k] = process.env[k];
+	}
 	applyEnv(vars);
 	Object.assign(LIMITS, limits);
-	t.after(() => {
-		applyEnv(saved);
-		Object.assign(LIMITS, DEFAULT_LIMITS);
-	});
 	const tools = {};
 	const handlers = {};
 	const commands = {};
@@ -453,6 +464,33 @@ async function waitFor(check, what, ms = 10000) {
 }
 const waitDead = (pid) => waitFor(() => !isAlive(pid), `pid ${pid} to die`, 5000).then(() => true);
 const scratch = (name) => join(mkdtempSync(join(TEST_HOME, `${name}-`)), name);
+
+test("multiple setups restore the original environment after child cleanup, including later keys", async (t) => {
+	const existing = "ME_PI_TEST_SETUP_EXISTING";
+	const later = "ME_PI_TEST_SETUP_LATER";
+	const original = { [existing]: process.env[existing], [later]: process.env[later] };
+	t.after(() => applyEnv(original));
+	applyEnv({ [existing]: "original", [later]: undefined });
+	const before = {
+		PI_BIN: process.env.PI_BIN,
+		TMPDIR: process.env.TMPDIR,
+		ME_PI_DELEGATE_CONFIG: process.env.ME_PI_DELEGATE_CONFIG,
+		[existing]: process.env[existing],
+		[later]: process.env[later],
+	};
+	await t.test("two setups complete successfully", (child) => {
+		setup(child, { env: { [existing]: "first" } });
+		assert.equal(process.env[existing], "first");
+		assert.equal(process.env[later], undefined);
+		setup(child, { env: { [existing]: "second", [later]: "introduced" } });
+		assert.equal(process.env[existing], "second");
+		assert.equal(process.env[later], "introduced");
+	});
+	for (const [key, value] of Object.entries(before)) {
+		assert.equal(process.env[key], value, `${key} restored after child cleanup`);
+	}
+	assert.equal(Object.hasOwn(process.env, later), false, "later key is deleted, not stringified");
+});
 
 test("registers delegate in the main session; workers get only the secret-path block", (t) => {
 	const main = setup(t);
@@ -837,6 +875,56 @@ test("model pools resolve per-model thinking, ordered fallbacks, and independent
 		model: ONE_OFF,
 		candidates: [{ model: ONE_OFF, thinking: "low" }],
 		thinking: "low",
+	});
+	const withReviewPool = {
+		...POOL_SET,
+		review: {
+			models: [
+				{ model: OPUS, thinking: "high" },
+				{ model: SONNET, thinking: "medium" },
+			],
+			thinking: "low",
+		},
+	};
+	assert.deepEqual(resolveRun("review", {}, withReviewPool), {
+		model: OPUS,
+		candidates: [
+			{ model: OPUS, thinking: "high" },
+			{ model: SONNET, thinking: "medium" },
+		],
+		thinking: "high",
+	});
+	assert.deepEqual(resolveRun("general", {}, withReviewPool), {
+		model: LUNA,
+		candidates: [
+			{ model: LUNA, thinking: "max" },
+			{ model: OPUS, thinking: "max" },
+		],
+		thinking: "max",
+	});
+	assert.deepEqual(resolveRun("research", {}, withReviewPool), {
+		model: LUNA,
+		candidates: [
+			{ model: LUNA, thinking: "max" },
+			{ model: OPUS, thinking: "max" },
+		],
+		thinking: "max",
+	});
+	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, withReviewPool), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "low" }],
+		thinking: "low",
+	});
+	// An exact model absent from review keeps existing cross-pool precedence (scout before worker).
+	assert.deepEqual(resolveRun("review", { model: LUNA }, withReviewPool), {
+		model: LUNA,
+		candidates: [{ model: LUNA, thinking: "off" }],
+		thinking: "off",
+	});
+	assert.deepEqual(resolveRun("review", { model: LUNA, thinking: "max" }, withReviewPool), {
+		model: LUNA,
+		candidates: [{ model: LUNA, thinking: "max" }],
+		thinking: "max",
 	});
 });
 
@@ -1266,6 +1354,10 @@ test("v1 and v2 configs migrate to per-model levels, and empty pools use the ses
 		thinking: "medium",
 	});
 	assert.throws(() => resolveRun("review", {}, empty, "x/session"), /main session's thinking level is unknown/);
+	assert.throws(
+		() => resolveRun("review", {}, { ...empty, review: { models: [] } }, "x/session"),
+		/set review\.thinking/,
+	);
 });
 
 function commandCtx({ available = [HAIKU, SONNET, OPUS] } = {}) {
@@ -1427,6 +1519,7 @@ test("/delegate status: the set with availability, missing tools, running and re
 	assert.ok(
 		before.includes(`Worker pool: 1. ${OPUS} (max) ✗ not available (no login or unknown id); 2. ${HAIKU} (low) ✓`),
 	);
+	assert.equal(before.includes("Review pool:"), false);
 	assert.match(before, /\nTools: missing Skill \(this repo's extensions\/skill\.ts\), web_search \(pi-web-access\)/);
 	assert.match(before, /\nRunning: none\nLast calls: none$/);
 
@@ -1506,6 +1599,25 @@ test("v3 model configs validate per-model thinking", (t) => {
 		{ version: 3, scout: { models: [] }, worker: { models: [] } },
 		"pool-level thinking is optional",
 	);
+	assert.deepEqual(
+		loadModelSet(
+			write(
+				JSON.stringify({
+					version: 3,
+					scout: { models: [] },
+					worker: { models: [{ model: LUNA, thinking: "max" }] },
+					review: { models: [{ model: OPUS, thinking: "high" }], thinking: "medium" },
+				}),
+			),
+		),
+		{
+			version: 3,
+			scout: { models: [] },
+			worker: { models: [{ model: LUNA, thinking: "max" }] },
+			review: { models: [{ model: OPUS, thinking: "high" }], thinking: "medium" },
+		},
+		"review pool is optional and validated in v3",
+	);
 	assert.deepEqual(loadModelSet(write(JSON.stringify(POOL_SET))), POOL_SET);
 	assert.equal(loadModelSet(write(JSON.stringify(POOL_SET))).worker.models[1].thinking, "max");
 	for (const [content, error] of [
@@ -1518,11 +1630,52 @@ test("v3 model configs validate per-model thinking", (t) => {
 		[JSON.stringify({ version: 4 }), /unsupported version 4 \(expected 2 or 3\)/],
 		[
 			JSON.stringify({
+				version: 2,
+				scout: { models: [HAIKU], thinking: "low" },
+				worker: { models: [OPUS], thinking: "max" },
+				review: { models: [SONNET], thinking: "high" },
+			}),
+			/unknown key\(s\) review \(allowed: version, scout, worker\)/,
+		],
+		[
+			JSON.stringify({
 				version: 3,
 				scout: { models: [{ model: HAIKU, thinking: "high" }], thinking: "low" },
 				worker: { models: [], thinking: "max" },
 			}),
 			/scout.models\[0\].thinking must be one of low, off/,
+		],
+		[
+			JSON.stringify({
+				version: 3,
+				scout: { models: [], thinking: "low" },
+				worker: { models: [] },
+				review: "invalid",
+			}),
+			/review: expected an object/,
+		],
+		[
+			JSON.stringify({
+				version: 3,
+				scout: { models: [], thinking: "low" },
+				worker: { models: [] },
+				review: { models: [{ model: HAIKU, thinking: "nope" }] },
+			}),
+			/review\.models\[0\]\.thinking must be one of off, minimal, low, medium, high, xhigh, max/,
+		],
+		[
+			JSON.stringify({
+				version: 3,
+				scout: { models: [], thinking: "low" },
+				worker: { models: [] },
+				review: {
+					models: [
+						{ model: HAIKU, thinking: "high" },
+						{ model: HAIKU, thinking: "low" },
+					],
+				},
+			}),
+			/review\.models lists model .* twice/,
 		],
 		[
 			JSON.stringify({
@@ -1546,6 +1699,143 @@ test("v3 model configs validate per-model thinking", (t) => {
 		assert.equal(res.isError, true);
 		assert.match(text(res), /models.*must be an array/);
 	});
+});
+
+test("review pool isolates review selection, fallback, status, and explicit overrides while preserving worker/scout behavior", async (t) => {
+	const marker = scratch("review-pool-marker");
+	const config = {
+		version: 3,
+		scout: {
+			models: [{ model: HAIKU, thinking: "low" }],
+			thinking: "low",
+		},
+		worker: {
+			models: [
+				{ model: LUNA, thinking: "max" },
+				{ model: OPUS, thinking: "high" },
+			],
+			thinking: "max",
+		},
+		review: {
+			models: [
+				{ model: SONNET, thinking: "high" },
+				{ model: OPUS, thinking: "medium" },
+			],
+			thinking: "low",
+		},
+	};
+	const main = setup(t, {
+		config,
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: SONNET, FAKE_PI_MARKER: marker },
+		limits: { costCapUsd: 0.005 },
+	});
+	const { ctx: statusCtx, notes } = commandCtx({ available: [HAIKU, OPUS] });
+	await main.commands.delegate.handler("status", statusCtx);
+	assert.ok(
+		notes[0][0].includes(
+			`Review pool: 1. ${SONNET} (high) ✗ not available (no login or unknown id); 2. ${OPUS} (medium) ✓`,
+		),
+	);
+
+	const reviewRes = await run(main.tool, { role: "review", task: "check review pool" });
+	assert.equal(reviewRes.isError, false, text(reviewRes));
+	assert.equal(reviewRes.details.round1[0].requested.model, OPUS);
+	assert.equal(reviewRes.details.round1[0].requested.thinking, "medium");
+
+	const generalRes = await run(main.tool, { role: "general", task: "check worker pool" });
+	assert.equal(generalRes.isError, false, text(generalRes));
+	assert.equal(generalRes.details.round1[0].requested.model, LUNA);
+	assert.equal(generalRes.details.round1[0].requested.thinking, "max");
+
+	const scoutRes = await run(main.tool, { role: "scout", task: "check scout pool" });
+	assert.equal(scoutRes.isError, false, text(scoutRes));
+	assert.equal(scoutRes.details.round1[0].requested.model, HAIKU);
+	assert.equal(scoutRes.details.round1[0].requested.thinking, "low");
+
+	const exactFail = await run(main.tool, { role: "review", task: "exact fail", runs: [{ model: SONNET }] });
+	assert.equal(exactFail.isError, true);
+	assert.deepEqual(exactFail.details.round1[0].fallbackAttempts, []);
+
+	const calls = readFileSync(marker, "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => {
+			const { model, thinking } = JSON.parse(line);
+			return [model, thinking];
+		});
+	assert.deepEqual(calls, [
+		[SONNET, "high"],
+		[OPUS, "medium"],
+		[LUNA, "max"],
+		[HAIKU, "low"],
+		[SONNET, "high"],
+	]);
+
+	// Exhausting the cap on the first attempt must prevent any review fallback.
+	const costMarker = scratch("review-pool-cost-marker");
+	const capped = setup(t, {
+		config,
+		env: { FAKE_PI_MODE: "rate-limit-models", FAKE_PI_FAIL_MODELS: `${SONNET},${OPUS}`, FAKE_PI_MARKER: costMarker },
+		limits: { costCapUsd: 0.002 },
+	});
+	const cappedRes = await run(capped.tool, { role: "review", task: "budget shared" });
+	assert.equal(cappedRes.isError, true);
+	assert.match(text(cappedRes), /^✗ stopped: cost cap \$0\.002 reached\n/);
+	assert.deepEqual(cappedRes.details.round1[0].fallbackAttempts, []);
+	assert.equal(cappedRes.usage.cost.total, 0.002);
+	assert.deepEqual(
+		readFileSync(costMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map(JSON.parse)
+			.map(({ model, thinking }) => [model, thinking]),
+		[[SONNET, "high"]],
+	);
+
+	// After one availability fallback, the second attempt receives only the remaining budget.
+	const sharedMarker = scratch("review-pool-shared-cost-marker");
+	const shared = setup(t, {
+		config: {
+			...config,
+			review: {
+				...config.review,
+				models: [...config.review.models, { model: LUNA, thinking: "max" }],
+			},
+		},
+		env: {
+			FAKE_PI_MODE: "rate-limit-models",
+			FAKE_PI_FAIL_MODELS: `${SONNET},${OPUS}`,
+			FAKE_PI_MARKER: sharedMarker,
+		},
+		limits: { costCapUsd: 0.003 },
+	});
+	const sharedRes = await run(shared.tool, { role: "review", task: "remaining budget shared" });
+	assert.equal(sharedRes.isError, true);
+	assert.deepEqual(sharedRes.details.round1[0].fallbackAttempts, [
+		{
+			model: SONNET,
+			thinking: "high",
+			failure: "exit 1: 429 rate_limit_error: too many requests",
+			nextModel: OPUS,
+			nextThinking: "medium",
+		},
+	]);
+	assert.deepEqual(text(sharedRes).split("\n").slice(0, 2), [
+		`↻ ${SONNET} @high failed (exit 1: 429 rate_limit_error: too many requests); trying ${OPUS} @medium`,
+		"✗ stopped: cost cap $0.001 reached",
+	]);
+	assert.equal(sharedRes.usage.cost.total, 0.004);
+	assert.deepEqual(
+		readFileSync(sharedMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map(JSON.parse)
+			.map(({ model, thinking }) => [model, thinking]),
+		[
+			[SONNET, "high"],
+			[OPUS, "medium"],
+		],
+	);
 });
 
 test("the schema allows exact model IDs outside the configured pools", (t) => {
@@ -3273,15 +3563,31 @@ test("implement worker env: fences, parent, remote and gh cut-offs, tools, appro
 
 test("implement refuses runs[].model and runs[].thinking: it uses the worker pool", async (t) => {
 	const { tool } = setup(t, { config: POOL_SET, env: implementEnv("implement-commit") });
-	const { ctx, lock } = implementRepo();
+	const { ctx, lock, git } = implementRepo();
 	for (const r of [{ model: OPUS }, { thinking: "low" }, { model: LUNA, thinking: "max" }]) {
 		const res = await run(tool, implement({ runs: [r] }), undefined, undefined, ctx);
 		assert.equal(res.isError, true);
 		assert.equal(text(res), "implement uses the worker pool in delegate.json; set models there");
 		assert.ok(!existsSync(lock), "refused before prepare");
 	}
+	const head = git("rev-parse", "HEAD");
 	const plain = await run(tool, implement({ runs: [{}] }), undefined, undefined, ctx);
-	assert.match(text(plain), /^✗ im\d+ goal\/x .*\[gpt-6-luna @max /, "an empty run entry still runs on the pool");
+	assert.equal(plain.isError, false, text(plain));
+	assert.match(text(plain), /^✓ im\d+ goal\/x .*; check ✓ `npm test` \[gpt-6-luna @max /);
+	assert.equal(plain.details.round1.length, 1);
+	assert.deepEqual(plain.details.round1[0].requested, { model: LUNA, thinking: "max" });
+	const facts = plain.details.implement;
+	assert.equal(facts.failed, false);
+	assert.deepEqual(facts.problems, []);
+	assert.equal(facts.outcome.failure, undefined);
+	assert.equal(facts.wip, undefined);
+	assert.equal(facts.base, head);
+	assert.equal(facts.tip, git("rev-parse", "HEAD"));
+	assert.notEqual(facts.tip, head);
+	assert.equal(facts.commitCount, 1);
+	assert.equal(facts.check.status, "pass");
+	assert.deepEqual(facts.check.runs, ["pass: npm test"]);
+	assert.ok(!existsSync(lock), "successful run releases the lock");
 });
 
 test("implement follows the worker pool in order, with each entry's thinking", async (t) => {

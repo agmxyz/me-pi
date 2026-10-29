@@ -30,11 +30,14 @@ Optional model pools live at `~/.pi/agent/delegate.json`. Without a file, worker
   },
   "worker": {
     "models": [{ "model": "provider/worker-model", "thinking": "medium" }]
+  },
+  "review": {
+    "models": [{ "model": "provider/review-model", "thinking": "high" }]
   }
 }
 ```
 
-Replace the example IDs with your provider/model IDs. Pools are role defaults, not allowlists. When the model is omitted, each pool's `models` array is tried in order when a configured candidate is unavailable; each entry needs a `thinking` value. Scout entries accept `low` or `off`; worker entries accept `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Optional pool-level `thinking` sets the level for models without a per-model entry; if omitted, the session level is used.
+Replace the example IDs with your provider/model IDs. `review` is optional: when omitted, `review` calls use the `worker` pool; when configured, it is the default pool for `review` only (`general`, `research`, `challenge`, and `implement` keep using `worker`). Pools are role defaults, not allowlists, and `worker` entry order has no role-specific meaning. When the model is omitted, each pool's `models` array is tried in order when a configured candidate is unavailable; each entry needs a `thinking` value. Scout entries accept `low` or `off`; worker and review entries accept `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Optional pool-level `thinking` sets the level for models without a per-model entry; if omitted, the session level is used.
 
 For a one-off choice, the coordinator can set either or both fields in a run, for example `runs: [{ model: "provider/model", thinking: "high" }]`. An omitted model keeps the role's configured model selection; an omitted thinking level keeps the configured per-model default, then the pool-level default, then the session level. Any explicitly named model runs alone and never falls back to another model, even if it is listed in the role's pool. An explicit thinking level applies to each default-pool fallback candidate when model is omitted. An unlisted model must be an exact Pi catalog ID in `provider/model` form: Pi's model registry must report it as available with usable authentication. Human-friendly names are not resolved by the tool; the coordinator must provide the exact ID. Scouts remain capped at `low`, or `off` when requested. One-off choices never modify `delegate.json`.
 

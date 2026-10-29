@@ -4,7 +4,7 @@
  *
  * Workers are `pi --mode json -p` child processes with read, search, and `Skill` tools (plus web tools for
  * research, challenge, or `web: true`); the main session does every edit, check, and commit. The models
- * come from ordered scout and worker pools in ~/.pi/agent/delegate.json. In workers this extension only blocks
+ * come from ordered scout, worker, and optional review pools in ~/.pi/agent/delegate.json. In workers this extension only blocks
  * reads of likely secret paths (see secretPathIn) and, with `output: true`, writes outside the worker's own
  * temp directory (see writeBlockedIn), and blocks tools once the wrap-up budget is spent (see budgetSpent).
  */
@@ -363,6 +363,7 @@ export interface ModelSet {
 	version: 3;
 	scout: ModelPool;
 	worker: ModelPool;
+	review?: ModelPool;
 }
 
 const defaultModelSet = (): ModelSet => ({
@@ -466,9 +467,10 @@ function validModelSet(raw: any, where: string): ModelSet {
 	if (raw.version === undefined) return legacyModelSet(raw, where);
 	if (raw.version !== 2 && raw.version !== 3)
 		throw new Error(`${where}: unsupported version ${JSON.stringify(raw.version)} (expected 2 or 3)`);
-	const unknown = Object.keys(raw).filter((k) => !["version", "scout", "worker"].includes(k));
+	const allowed = raw.version === 2 ? ["version", "scout", "worker"] : ["version", "scout", "worker", "review"];
+	const unknown = Object.keys(raw).filter((k) => !allowed.includes(k));
 	if (unknown.length)
-		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: version, scout, worker)`);
+		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: ${allowed.join(", ")})`);
 	if (raw.version === 2) {
 		return {
 			version: 3,
@@ -480,6 +482,7 @@ function validModelSet(raw: any, where: string): ModelSet {
 		version: 3,
 		scout: validV3Pool(raw.scout, `${where}.scout`, true),
 		worker: validV3Pool(raw.worker, `${where}.worker`, false),
+		...(raw.review !== undefined ? { review: validV3Pool(raw.review, `${where}.review`, false) } : {}),
 	};
 }
 
@@ -509,17 +512,18 @@ export function resolveRun(
 	sessionThinking?: string,
 ): ResolvedRun {
 	const scout = role === "scout";
-	const pool = scout ? set.scout : set.worker;
+	const poolName = scout ? "scout" : role === "review" && set.review ? "review" : "worker";
+	const pool = set[poolName] ?? set.worker;
 	// Models without an entry: the pool's level, else the main session's.
 	const unlisted = () => {
 		const thinking = run.thinking ?? pool.thinking ?? sessionThinking;
 		if (!thinking)
 			throw new Error(
-				`the main session's thinking level is unknown; set ${scout ? "scout" : "worker"}.thinking in ${configPath()} or pass runs[].thinking`,
+				`the main session's thinking level is unknown; set ${poolName}.thinking in ${configPath()} or pass runs[].thinking`,
 			);
 		return thinking;
 	};
-	const configuredEntries = [...set.scout.models, ...set.worker.models];
+	const configuredEntries = [...set.scout.models, ...set.worker.models, ...(set.review?.models ?? [])];
 	const candidates = run.model
 		? [
 				{
@@ -1348,7 +1352,11 @@ function rebuttalPrompt(task: string, own: RunResult, others: RunResult[]): stri
 // --- Tool -----------------------------------------------------------------------------------------
 
 function configuredModels(set: ModelSet): string[] {
-	return [...new Set([...set.scout.models, ...set.worker.models].map((entry) => entry.model))];
+	return [
+		...new Set(
+			[...set.scout.models, ...set.worker.models, ...(set.review?.models ?? [])].map((entry) => entry.model),
+		),
+	];
 }
 
 interface ModelAvailabilityRegistry {
@@ -1402,7 +1410,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; when model is omitted, availability failures try the next pool model. Explicit models never fall back. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level; when model is omitted, availability failures try the next pool model. Explicit models never fall back. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
