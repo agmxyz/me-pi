@@ -18,6 +18,26 @@ First honor explicit user-required delegation and any delegation or independent 
 
 A multi-model panel (`runs`) repeats the same task for each model; decompose work into separate calls with separate briefs. Treat partial answers as incomplete. Explicitly accept, reject, or recover each handback; verify decisive claims proportionately, inspecting implementation diffs and check adequacy without routinely repeating worker work. Failed checks, timeouts, and WIP commits stay incomplete until recovery. Live UI acceptance requires actual observable evidence from the running interface; static inspection alone does not establish it.
 
+### Coordinator artifacts and verification
+
+The coordinator owns the task ledger and reports outside the checkout. Give workers read-only paths to those artifacts and ask for handbacks, not ledger/report writes; do not relax the implement write fence to accommodate coordinator artifacts. The coordinator records scope, acceptance evidence, the exact declared check, review coverage, and handback/finding dispositions.
+
+Before dispatch, estimate the check/build cost from previous runs or the task's likely verification work and reserve time for verification and a usable handback inside the worker's tool window (36 minutes for the current implement default). There is no universal minute cutoff. Stop starting new behavior when the remaining window is needed for verification and handback. An ordinary failed check does not prohibit repair: within the approved scope and remaining budget, fix the cause and rerun. Any relevant edit after a passing check, including formatter or hook writes, makes the affected evidence stale until rerun; passing results must describe the delivered source.
+
+### One writer and frozen review
+
+Keep one checkout writer, including coordinator writes. Use remaining capacity for independent readers within the existing four-worker limit; do not add concurrent worktree writers or session/clone workarounds. Review a frozen source snapshot: identify its commit or captured diff and baseline, and keep the source stable while reviewers inspect it. The coordinator runs shared checks or Compose only against stable source, never while a writer is changing it. Wait for the existing writer's handback before changing the checkout or starting shared verification.
+
+### Review coverage and closure
+
+Map critical requirements to end-to-end acceptance evidence at the first usable integration point. Request focused independent review when risk warrants it, not after every worker, and do not add a mandatory panel. At final integration, independently review the whole delivered result with separate **Standards** (repository coding standards) and **Spec** (the originating requirements) axes; honor any applicable skill's full review requirements.
+
+The coordinator dispositions routine findings without asking for approval one finding at a time: record required fixes and verify them, reject findings with evidence, or record justified maintenance deferrals that do not waive required acceptance work. Ask when ambiguity changes implementation or a decision requires new authority; required missing work stays incomplete. For a recurring defect class, inspect analogous sites only within the affected owner/scope.
+
+After local fixes, affected-delta closure names the changed source, affected requirements and checks, and the prior Standards/Spec coverage explicitly carried forward. It is not a full-skill review. Reopen broad review for semantic changes, migrations or cross-owner effects, uncertain impact, regressions in previously covered behavior, or an explicit user request. Every invocation of the full review skill still covers both axes. Stop review rounds when current source is fresh-green, required findings are verified, both axes cover delivered behavior, and maintenance judgments have recorded dispositions; do not require endless clean rounds.
+
+**Current authority boundary:** these workflow rules do not authorize recovery past a guard or worker-limit block. Under `GLOBAL_AGENTS.md`, stop and report any such block; never route around it through another tool, worker, provider, path, session, or the coordinator. Failed checks, timeouts, WIP, and tripwires remain incomplete. A4's proposed bounded continuations and optional-denial dispositions are not active: they require its full approved capability, passing tests, guide/policy, applicable installed-skill, installation and live-session reload gate. Reading a plan or newer policy text alone does not activate recovery. This guide change does not edit installed skills or grant new authority.
+
 ## Configure model pools
 
 Optional model pools live at `~/.pi/agent/delegate.json`. Without a file, workers use the main session's model and thinking level; `scout` thinking is capped at `low` (or remains `off`). For model IDs, use IDs available to your Pi installation.

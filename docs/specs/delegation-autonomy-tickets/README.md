@@ -19,7 +19,7 @@ Statuses are **PENDING** unless explicitly marked otherwise. IN PROGRESS is not 
 | [A2](A2.md) | Typed stop provenance and safe fallback authorization | Pending; prerequisite for A4 |
 | [A3](A3.md) | 45-minute implement hard-time default | DONE (local commit); prerequisite for A4 |
 | [A4](A4.md) | Bounded recovery policy (authored INACTIVE) and later activation | Pending; authoring blocked by A0-source+A1+A2+A3; activation needs A0-live + separate user approval |
-| [A5](A5.md) | Optional review model pool, selection only | In progress; recovery verification and local commit pending; independent of A2/A4 |
+| [A5](A5.md) | Optional review model pool, selection only | Source/check accepted at `c01ed0e` (183 tests; all 56 installer smoke checks); bounded review `bg65` adequate; final integrated independent two-axis review pending; independent of A2/A4 |
 | [A6](A6.md) | Concurrent worktree writers | Pending, deferred design-only; not a current delivery blocker |
 
 **Dependency graph:** A0, A1, A2, A3, and A5 have no ticket dependencies. A4 authoring is blocked by **all of A0-source, A1, A2, and A3**; A4 activation additionally needs **A0-live** and separate user approval (spec, “Approved delivery decisions”). A5 has no A2 dependency; A2 owns its later fallback-safety migration. A6 is independent and deferred.
