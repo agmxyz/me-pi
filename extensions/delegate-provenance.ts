@@ -72,7 +72,7 @@ export interface AttemptProvenance {
 	providerRetry?: ProviderRetryFact;
 }
 
-/** Stored in Pi's non-model-facing tool-result details by the owning worker extension. */
+/** Stored in tool-execution-end result details by the owning worker extension. */
 export const TOOL_PROVENANCE_DETAIL_KEY = "__mePiDelegateProvenance";
 
 export function isStopFact(value: unknown): value is StopFact {

@@ -260,6 +260,7 @@ test("finish: worker commits give the range, a clean tree, no lock, and a 0600 d
 	const facts = await finish(job, ok);
 	const out = formatHandback(facts);
 	assert.equal(facts.failed, false, out);
+	assert.deepEqual(facts.delivered, { check: "pass", commit: "normal", wip: false, integrity: "clear" });
 	const tip = git("rev-parse", "HEAD");
 	const lines = out.split("\n");
 	assert.equal(lines.length, 2, out);
@@ -279,14 +280,15 @@ test("finish: worker commits give the range, a clean tree, no lock, and a 0600 d
 
 test("finish commits leftovers as WIP on the branch with hooks off; odd reasons stay on one line", async () => {
 	const { repo, git } = goalFixture();
-	const job = await prepare(repo, "im93", CHECK);
 	// A hook that would fail the commit: the WIP commit skips it.
 	git("config", "core.hooksPath", join(repo, "hooks"));
+	const job = await prepare(repo, "im93", CHECK);
 	mkdirSync(join(repo, "hooks"));
 	writeFileSync(join(repo, "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 	writeFileSync(join(repo, "a.txt"), "changed\n");
 	const facts = await finish(job, { failure: "stopped:\nline two" });
 	assert.ok(facts.wip, formatHandback(facts));
+	assert.deepEqual(facts.delivered, { check: "none", commit: "none", wip: true, integrity: "clear" });
 	assert.equal(git("log", "-1", "--format=%s"), "WIP(delegate im93): stopped:");
 	assert.equal(git("rev-parse", "--abbrev-ref", "HEAD"), "goal/x");
 	assert.equal(git("status", "--porcelain"), "");
@@ -306,6 +308,8 @@ test("finish: a switched branch is ✗ with no WIP", async () => {
 	passed(job);
 	const facts = await finish(job, ok);
 	assert.equal(facts.wip, undefined);
+	assert.deepEqual(facts.delivered, { check: "pass", commit: "none", wip: false, integrity: "tripped" });
+	assert.ok(facts.stopFacts.some((fact) => fact.owner === "implement" && fact.cause === "integrity-tripwire"));
 	assert.match(formatHandback(facts), /^✗ HEAD moved: now refs\/heads\/main, not goal\/x; no WIP commit$/m);
 	assert.equal(git("status", "--porcelain"), "?? x.txt");
 	assert.ok(!existsSync(lockOf(repo)));
@@ -371,6 +375,8 @@ test("finish flags a reset below the base, a merge commit, an old commit, a move
 		passed(job);
 		const facts = await finish(job, ok);
 		assert.equal(facts.failed, true, name);
+		assert.equal(facts.delivered.integrity, "tripped", name);
+		assert.ok(facts.stopFacts.some((fact) => fact.owner === "implement" && fact.cause === "integrity-tripwire"), name);
 		assert.match(formatHandback(facts), new RegExp(`^✗ .*${error.source}`, "m"), name);
 	}
 	rmSync(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), { force: true });
@@ -387,6 +393,7 @@ test("finish never throws; git timeouts become problems and the lock is released
 	const facts = await finish(job, ok);
 	GIT_LIMITS.timeoutMs = saved;
 	assert.equal(facts.failed, true);
+	assert.equal(facts.delivered.integrity, "unknown");
 	assert.match(formatHandback(facts), /timed out after 1 ms/);
 	assert.ok(!existsSync(lockOf(repo)));
 });

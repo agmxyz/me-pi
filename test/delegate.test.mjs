@@ -16,6 +16,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
+import { isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
+import { runToolCall } from "@earendil-works/pi-agent-core";
 
 // Scratch space for the fake pi binary, configs, and pid files.
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-test-"));
@@ -38,7 +40,10 @@ const {
 	writeBlockedIn,
 	trackCheck,
 	providerDestination,
+	resolveFallbackRestriction,
 } = await import("../extensions/delegate.ts");
+const { default: registerGuard } = await import("../extensions/guard.ts");
+const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../extensions/delegate-provenance.ts");
 const { progressLines } = await import("../extensions/delegate-render.ts");
 const { registerDelegateCommand } = await import("../extensions/delegate-command.ts");
 const { snapshotContent } = await import("../extensions/delegate-implement.ts");
@@ -151,8 +156,56 @@ process.stdin.on("end", () => {
     retryable("429 rate_limit_error: too many requests");
     process.exit(1);
   }
+  if (mode === "rate-limit-delayed" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    setTimeout(() => { retryable("429 rate_limit_error: too many requests"); process.exit(1); }, Number(process.env.FAKE_PI_RETRY_DELAY || 0));
+    return;
+  }
+  if (mode === "read-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    const toolCallId = "safe-read";
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "README.md" } }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: "read completed" }] } }));
+    retryable("temporary provider failure");
+    process.exit(1);
+  }
   if (mode === "quota-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     emit("", { stopReason: "error", errorMessage: process.env.FAKE_PI_ERROR });
+    process.exit(1);
+  }
+  if (mode === "malformed-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    emit("", { stopReason: "error", errorMessage: "temporary provider failure" });
+    console.log(JSON.stringify({ type: "auto_retry_start", attempt: 0, maxAttempts: 3 }));
+    process.exit(1);
+  }
+  if (mode === "shell-429" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    const toolCallId = "shell-429";
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "echo 429 rate_limit_error" } }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "bash", isError: true, result: { content: [{ type: "text", text: "429 rate_limit_error: too many requests" }] } }));
+    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
+    process.exit(1);
+  }
+  if (mode === "tool-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    const toolCallId = "prior-effect";
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "printf prior-effect" } }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "bash", isError: false, result: { content: [{ type: "text", text: "prior effect completed" }] } }));
+    retryable("temporary provider failure");
+    process.exit(1);
+  }
+  if (mode === "start-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "unfinished", toolName: "bash", args: { command: "printf maybe-effect" } }));
+    retryable("temporary provider failure");
+    process.exit(1);
+  }
+  if (mode === "blocked-owner-event" || mode === "blocked-owner-hang") {
+    const toolCallId = "blocked-call";
+    const fact = { owner: "guard", jobId: process.env.ME_PI_DELEGATE_JOB_ID, attempt: Number(process.env.ME_PI_DELEGATE_ATTEMPT), toolCallId, cause: "guard-denial", resource: "guard", effect: "denied" };
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "git push origin main" } }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "bash", isError: true, result: { content: [{ type: "text", text: "Blocked by guard" }], details: { __mePiDelegateProvenance: [fact] } } }));
+    if (mode === "blocked-owner-hang") {
+      emit("still working", { stopReason: "toolUse" });
+      setInterval(() => {}, 1000);
+      return;
+    }
+    emit("", { stopReason: "error", errorMessage: "Blocked by guard" });
     process.exit(1);
   }
   if (mode === "unavailable-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
@@ -272,7 +325,7 @@ process.stdin.on("end", () => {
   if (mode === "implement-fallback-artifacts") {
     if ((flag("--model") || "").includes("luna")) {
       tool("bash", { command: "npm test" }, true, { result: { content: [{ type: "text", text: "first attempt tool failure" }], structuredContent: { exit_code: 3 } } });
-      emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: retry artifacts" });
+      retryable("429 rate_limit_error: retry artifacts");
       process.exit(1);
     }
     tool("read", { path: "not-retained" }, true, { result: { content: [{ type: "text", text: "fallback tool failure" }] } });
@@ -399,8 +452,12 @@ const CTX = {
 	modelRegistry: registryFixture(),
 };
 const text = (res) => res.content.map((c) => c.text).join("\n");
-const fallbackAuthorization = (models, taskDataClass = "repository-source", registry = CTX.modelRegistry) => ({
+const fallbackAuthorization = (
+	models,
+	{ authority = "named", taskDataClass = "repository-source", registry = CTX.modelRegistry } = {},
+) => ({
 	authorizationRef: "coordinator-approval:test-run",
+	authority,
 	taskDataClass,
 	candidates: models.map((modelId) => {
 		const slash = modelId.indexOf("/");
@@ -415,6 +472,23 @@ const fallbackAuthorization = (models, taskDataClass = "repository-source", regi
 	}),
 });
 
+test("fallback authorization is validated and frozen as a dispatch snapshot", () => {
+	const set = {
+		version: 2,
+		scout: { models: [], thinking: "low" },
+		worker: { models: [{ model: HAIKU, thinking: "max" }, { model: SONNET, thinking: "max" }], thinking: "max" },
+	};
+	const run = resolveRun("review", {}, set, undefined, "max");
+	const authorization = fallbackAuthorization([HAIKU, SONNET]);
+	const resolved = resolveFallbackRestriction(authorization, [run], CTX.modelRegistry);
+	assert.equal(resolved.issue, undefined);
+	assert.equal(Object.isFrozen(resolved.restriction), true);
+	assert.equal(Object.isFrozen(resolved.restriction.candidates), true);
+	assert.equal(Object.isFrozen(resolved.restriction.candidates[0].dataClasses), true);
+	authorization.candidates[1].model = OPUS;
+	assert.equal(resolved.restriction.candidates[1].model, SONNET);
+});
+
 function applyEnv(vars) {
 	for (const [k, v] of Object.entries(vars)) {
 		if (v === undefined) delete process.env[k];
@@ -426,7 +500,7 @@ function applyEnv(vars) {
 const setupEnvironments = new WeakMap();
 
 // Sets env vars and limits for one test and restores them afterwards.
-function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
+function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuard = false } = {}) {
 	const vars = {
 		PI_BIN: FAKE_BIN,
 		ME_PI_RUN: undefined,
@@ -462,6 +536,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 	Object.assign(LIMITS, limits);
 	const tools = {};
 	const handlers = {};
+	const registeredHandlers = new Map();
 	const eventHandlers = new Map();
 	const events = {
 		on: (name, handler) => {
@@ -486,7 +561,18 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		},
 		getAllTools: () => Object.values(tools).map((d) => ({ name: d.name })),
 		on: (event, h) => {
-			handlers[event] = h;
+			const listeners = registeredHandlers.get(event) ?? [];
+			listeners.push(h);
+			registeredHandlers.set(event, listeners);
+			handlers[event] = async (...args) => {
+				let result;
+				for (const listener of listeners) {
+					const next = await listener(...args);
+					if (next !== undefined) result = next;
+					if (event === "tool_call" && next?.block) break;
+				}
+				return result;
+			};
 		},
 	};
 	// The call history survives reloads on globalThis; each test starts empty unless it simulates a reload.
@@ -496,6 +582,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		globalThis[Symbol.for("me-pi.delegate.job-count")] = 0;
 	}
 	registerExtension(pi);
+	if (withGuard) registerGuard(pi);
 	return { tool: tools.delegate, handlers, commands, pi, events, messages };
 }
 
@@ -563,7 +650,122 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.equal(typeof main.tool.renderResult, "function");
 	const worker = setup(t, { env: { ME_PI_RUN: "1" } });
 	assert.equal(worker.tool, undefined, "no nested delegation");
-	assert.deepEqual(Object.keys(worker.handlers).sort(), ["message_end", "tool_call", "tool_result"]);
+	assert.deepEqual(Object.keys(worker.handlers).sort(), ["message_end", "tool_call", "tool_execution_end"]);
+});
+
+test("Pi blocked calls are reported on tool_execution_end, not tool_result", async (t) => {
+	const { handlers } = setup(t, {
+		env: {
+			ME_PI_RUN: "1",
+			ME_PI_ROLE: "general",
+			ME_PI_DELEGATE_JOB_ID: "actual-pi-job",
+			ME_PI_DELEGATE_ATTEMPT: "1",
+		},
+		withGuard: true,
+	});
+	let executed = false;
+	let afterCalled = false;
+	const bash = {
+		name: "bash",
+		label: "Bash",
+		description: "Run a shell command",
+		parameters: Type.Object({ command: Type.String() }),
+		execute: async () => {
+			executed = true;
+			return { content: [], details: {} };
+		},
+	};
+	const toolCall = {
+		id: "actual-blocked-call",
+		name: "bash",
+		arguments: { command: "git push origin main" },
+	};
+	const outcome = await runToolCall(toolCall, {
+		tools: [bash],
+		assistantMessage: { role: "assistant", content: [] },
+		context: { messages: [], tools: [bash] },
+		beforeToolCall: ({ toolCall: call, args }) =>
+			handlers.tool_call(
+				{ toolName: call.name, toolCallId: call.id, input: args },
+				{ cwd: REPO_ROOT, hasUI: false },
+			),
+		afterToolCall: () => {
+			afterCalled = true;
+		},
+	});
+	assert.equal(outcome.isError, true);
+	assert.equal(executed, false);
+	assert.equal(afterCalled, false, "Pi skips afterToolCall for an immediate blocked-call result");
+	const event = {
+		type: "tool_execution_end",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		result: outcome.result,
+		isError: outcome.isError,
+	};
+	await handlers.tool_execution_end(event);
+	assert.deepEqual(event.result.details[TOOL_PROVENANCE_DETAIL_KEY], [
+		{
+			owner: "guard",
+			jobId: "actual-pi-job",
+			attempt: 1,
+			toolCallId: toolCall.id,
+			cause: "guard-denial",
+			resource: "guard",
+			effect: "denied",
+		},
+	]);
+	assert.equal(handlers.tool_result, undefined);
+});
+
+test("Pi transports delegate-worker wrap-up denials on tool_execution_end", async (t) => {
+	const { handlers } = setup(t, {
+		env: {
+			ME_PI_RUN: "1",
+			ME_PI_ROLE: "general",
+			ME_PI_DELEGATE_JOB_ID: "budget-pi-job",
+			ME_PI_DELEGATE_ATTEMPT: "1",
+			ME_PI_BUDGET: JSON.stringify({ tools: 0, deadline: Date.now() + 60_000, cost: 1 }),
+		},
+	});
+	const read = {
+		name: "read",
+		label: "Read",
+		description: "Read a file",
+		parameters: Type.Object({ path: Type.String() }),
+		execute: async () => ({ content: [], details: {} }),
+	};
+	const toolCall = { id: "budget-blocked-call", name: "read", arguments: { path: "README.md" } };
+	const outcome = await runToolCall(toolCall, {
+		tools: [read],
+		assistantMessage: { role: "assistant", content: [] },
+		context: { messages: [], tools: [read] },
+		beforeToolCall: ({ toolCall: call, args }) =>
+			handlers.tool_call(
+				{ toolName: call.name, toolCallId: call.id, input: args },
+				{ cwd: REPO_ROOT, hasUI: false },
+			),
+	});
+	assert.equal(outcome.isError, true);
+	const event = {
+		type: "tool_execution_end",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		result: outcome.result,
+		isError: outcome.isError,
+	};
+	await handlers.tool_execution_end(event);
+	assert.deepEqual(event.result.details[TOOL_PROVENANCE_DETAIL_KEY], [
+		{
+			owner: "delegate-worker",
+			jobId: "budget-pi-job",
+			attempt: 1,
+			toolCallId: toolCall.id,
+			cause: "wrap-up-limit",
+			resource: "tool-calls",
+			effect: "denied",
+		},
+	]);
 });
 
 test("workers cannot name secret paths in read, grep, find, or ls", async (t) => {
@@ -1047,7 +1249,12 @@ test("an explicit thinking override applies to every configured fallback candida
 		config,
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "review", task: "x", runs: [{ thinking: "medium" }] });
+	const res = await run(tool, {
+		role: "review",
+		task: "x",
+		runs: [{ thinking: "medium" }],
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
 	assert.equal(res.isError, false, text(res));
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
@@ -1161,7 +1368,12 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
 	const progress = [];
-	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
+	const res = await run(
+		tool,
+		{ role: "review", task: "x", fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]) },
+		undefined,
+		(update) => progress.push(update),
+	);
 	assert.equal(res.isError, false, text(res));
 	assert.ok(
 		progress.some(
@@ -1188,7 +1400,7 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 		{
 			model: HAIKU,
 			thinking: "max",
-			failure: "exit 1: 429 rate_limit_error: too many requests",
+			failure: "429 rate_limit_error: too many requests",
 			nextModel: SONNET,
 			nextThinking: "max",
 		},
@@ -1197,7 +1409,7 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 	assert.equal(res.usage.cost.total, 0.004);
 });
 
-test("usage-limit and quota errors also fall through the worker pool", async (t) => {
+test("quota and usage-limit failures do not fall through an authorized pool", async (t) => {
 	// One setup, so its env restore runs once; each case only swaps the error text.
 	const { tool } = setup(t, {
 		config: {
@@ -1213,11 +1425,31 @@ test("usage-limit and quota errors also fall through the worker pool", async (t)
 		"insufficient_quota: check your plan",
 	]) {
 		process.env.FAKE_PI_ERROR = error;
-		const res = await run(tool, { role: "review", task: "x" });
-		assert.equal(res.isError, false, text(res));
-		assert.equal(res.details.round1[0].requested.model, SONNET, error);
-		assert.equal(res.details.round1[0].fallbackAttempts[0].failure, `exit 1: ${error}`);
+		const res = await run(tool, {
+			role: "review",
+			task: "x",
+			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+		});
+		assert.equal(res.isError, true, error);
+		assert.equal(res.details.round1[0].requested.model, HAIKU, error);
+		assert.deepEqual(res.details.round1[0].fallbackAttempts, [], error);
+		assert.match(res.details.round1[0].fallbackBlockReason, /no structured retry classification/);
 	}
+});
+
+test("Pi's retry classifier separates transient availability from quota and billing exhaustion", () => {
+	assert.equal(
+		isRetryableAssistantError({ stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" }),
+		true,
+	);
+	for (const errorMessage of [
+		"Codex error: The usage limit has been reached",
+		"429 quota exceeded for this project",
+		"insufficient_quota: check your plan",
+		"billing account is disabled",
+	])
+		assert.equal(isRetryableAssistantError({ stopReason: "error", errorMessage }), false, errorMessage);
+	assert.equal(isRetryableAssistantError({ stopReason: "stop", errorMessage: "429 rate_limit_error" }), false);
 });
 
 test("fallback attempts share the worker cost cap", async (t) => {
@@ -1235,8 +1467,18 @@ test("fallback attempts share the worker cost cap", async (t) => {
 		},
 		limits: { costCapUsd: 0.003 },
 	});
-	const res = await run(tool, { role: "review", task: "x" });
+	const res = await run(tool, {
+		role: "review",
+		task: "x",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET, OPUS], { authority: "adopted-snapshot" }),
+	});
 	assert.equal(res.isError, true);
+	assert.ok(
+		res.details.round1[0].provenance.at(-1).stopFacts.some(
+			(fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-cost",
+		),
+		JSON.stringify(res.details.round1[0].provenance.at(-1)),
+	);
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
 		calls.map((call) => call.model),
@@ -1260,10 +1502,15 @@ test("per-model thinking follows each ordered candidate during fallback", async 
 				thinking: "max",
 			},
 		},
-		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker },
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker },
 	});
 	const progress = [];
-	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
+	const res = await run(
+		tool,
+		{ role: "review", task: "x", fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) },
+		undefined,
+		(update) => progress.push(update),
+	);
 	assert.equal(res.isError, false, text(res));
 	assert.ok(
 		progress.some(
@@ -1288,7 +1535,7 @@ test("per-model thinking follows each ordered candidate during fallback", async 
 	assert.equal(res.details.round1[0].requested.thinking, "low");
 });
 
-test("model-unavailable errors fall through the same ordered worker pool when model is omitted", async (t) => {
+test("model-unavailable errors without structured retry evidence fail closed", async (t) => {
 	const marker = scratch("unavailable-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1298,16 +1545,244 @@ test("model-unavailable errors fall through the same ordered worker pool when mo
 		},
 		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "research", task: "x" });
-	assert.equal(res.isError, false, text(res));
+	const res = await run(tool, {
+		role: "research",
+		task: "x",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(res.isError, true, text(res));
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line).model),
-		[HAIKU, SONNET],
+		[HAIKU],
 	);
-	assert.match(text(res), /model not found: unavailable.*trying anthropic\/claude-sonnet-5-5/s);
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
+	assert.match(text(res), /no structured retry classification/);
+});
+
+test("configuration and authorization added after dispatch cannot authorize fallback", async (t) => {
+	const marker = scratch("late-fallback-authorization-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const params = { role: "review", task: "frozen at dispatch" };
+	const pending = run(tool, params);
+	writeFileSync(
+		process.env.ME_PI_DELEGATE_CONFIG,
+		JSON.stringify({
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET, OPUS], thinking: "max" },
+		}),
+	);
+	params.fallbackAuthorization = fallbackAuthorization([HAIKU, SONNET, OPUS]);
+	const res = await pending;
+	assert.equal(res.isError, true, text(res));
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
+	assert.match(res.details.round1[0].fallbackBlockReason, /no coordinator fallback restriction/);
+	assert.deepEqual(
+		readFileSync(marker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+});
+
+test("fallback scope rejects ineligible models, data classes, destinations, and out-of-scope candidates", async (t) => {
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU },
+	});
+	const cases = [
+		["outside the frozen scope", () => fallbackAuthorization([HAIKU]), /outside the frozen coordinator scope/],
+		[
+			"unrecognized authority",
+			() => fallbackAuthorization([HAIKU, SONNET], { authority: "not-approval" }),
+			/authority must be named or adopted-snapshot/,
+		],
+		[
+			"unconfigured candidate",
+			() => fallbackAuthorization([HAIKU, SONNET, OPUS]),
+			/not an exact provider\/model in the resolved pool/,
+		],
+		[
+			"wrong data class",
+			() => {
+				const authorization = fallbackAuthorization([HAIKU, SONNET]);
+				authorization.candidates[1].dataClasses = ["public"];
+				return authorization;
+			},
+			/taskDataClass is outside a candidate's permitted data scope/,
+		],
+		[
+			"wrong destination",
+			() => {
+				const authorization = fallbackAuthorization([HAIKU, SONNET]);
+				authorization.candidates[1].destination = "https://other.invalid";
+				return authorization;
+			},
+			/destination does not match Pi's resolved provider endpoint/,
+		],
+	];
+	for (const [name, makeAuthorization, reason] of cases) {
+		const res = await run(tool, {
+			role: "review",
+			task: name,
+			fallbackAuthorization: makeAuthorization(),
+		});
+		assert.equal(res.isError, true, name);
+		assert.deepEqual(res.details.round1[0].fallbackAttempts, [], name);
+		assert.match(res.details.round1[0].fallbackBlockReason, reason, name);
+	}
+});
+
+test("fallback fails closed on malformed evidence, shell 429s, prior effects, and blocked calls", async (t) => {
+	const config = {
+		version: 2,
+		scout: { models: [LUNA], thinking: "low" },
+		worker: { models: [HAIKU, SONNET], thinking: "max" },
+	};
+	const cases = [
+		["malformed-retry", /no structured retry classification/, "no-retry"],
+		["shell-429", /no structured retry classification/, "tool-failure"],
+		["tool-then-retry", /tool effects are unknown or unsafe/, "completed-unsafe"],
+		["start-then-retry", /tool effects are unknown or unsafe/, "unmatched-unknown"],
+		["blocked-owner-event", /no structured retry classification/, "guard-denial"],
+	];
+	for (const [mode, reason, kind] of cases) {
+		const marker = scratch(`fallback-${mode}-marker`);
+		const { tool } = setup(t, {
+			config,
+			env: { FAKE_PI_MODE: mode, FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+		});
+		const res = await run(tool, {
+			role: "review",
+			task: mode,
+			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+		});
+		assert.equal(res.isError, true, mode);
+		assert.deepEqual(res.details.round1[0].fallbackAttempts, [], mode);
+		assert.match(res.details.round1[0].fallbackBlockReason, reason, mode);
+		assert.deepEqual(
+			readFileSync(marker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+			[HAIKU],
+			mode,
+		);
+		const provenance = res.details.round1[0].provenance[0];
+		if (kind === "tool-failure")
+			assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure"), mode);
+		if (kind === "completed-unsafe")
+			assert.deepEqual(provenance.toolEffects[0], {
+				owner: "pi-runtime",
+				jobId: provenance.jobId,
+				attempt: 1,
+				toolCallId: "prior-effect",
+				toolName: "bash",
+				effect: "completed",
+				replaySafe: false,
+			});
+		if (kind === "unmatched-unknown") {
+			assert.equal(provenance.complete, false, mode);
+			assert.equal(provenance.toolEffects[0].effect, "unknown", mode);
+		}
+		if (kind === "guard-denial")
+			assert.ok(provenance.stopFacts.some((fact) => fact.owner === "guard" && fact.cause === "guard-denial"), mode);
+	}
+});
+
+test("fallback keeps the original tool deadline and retains a competing guard denial", async (t) => {
+	const delayedMarker = scratch("fallback-deadline-marker");
+	const config = {
+		version: 2,
+		scout: { models: [LUNA], thinking: "low" },
+		worker: { models: [HAIKU, SONNET], thinking: "max" },
+	};
+	const delayed = setup(t, {
+		config,
+		env: {
+			FAKE_PI_MODE: "rate-limit-delayed",
+			FAKE_PI_FAIL_MODEL: HAIKU,
+			FAKE_PI_RETRY_DELAY: "850",
+			FAKE_PI_MARKER: delayedMarker,
+		},
+		limits: { timeoutSecs: 1 },
+	});
+	const deadline = await run(delayed.tool, {
+		role: "review",
+		task: "original tool deadline",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(deadline.isError, true, text(deadline));
+	assert.deepEqual(deadline.details.round1[0].fallbackAttempts, []);
+	assert.match(deadline.details.round1[0].fallbackBlockReason, /original tool deadline/);
+	assert.ok(
+		deadline.details.round1[0].provenance[0].stopFacts.some(
+			(fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-time",
+		),
+	);
+	assert.deepEqual(
+		readFileSync(delayedMarker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+
+	const competingMarker = scratch("fallback-competing-stop-marker");
+	const competing = setup(t, {
+		config,
+		env: { FAKE_PI_MODE: "blocked-owner-hang", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: competingMarker },
+		limits: { timeoutSecs: 0.5 },
+	});
+	const stopped = await run(competing.tool, {
+		role: "review",
+		task: "competing safety cause",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(stopped.isError, true, text(stopped));
+	const stopFacts = stopped.details.round1[0].provenance[0].stopFacts;
+	assert.ok(stopFacts.some((fact) => fact.owner === "guard" && fact.cause === "guard-denial"));
+	assert.ok(stopFacts.some((fact) => fact.owner === "delegate-parent" && fact.cause === "hard-timeout"));
+	assert.equal(stopped.details.round1[0].provenance[0].toolEffects[0].effect, "denied");
+	assert.deepEqual(
+		readFileSync(competingMarker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+});
+
+test("fallback preserves the cumulative scout tool-call allowance", async (t) => {
+	const marker = scratch("fallback-scout-call-limit-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [HAIKU, SONNET], thinking: "low" },
+			worker: { models: [LUNA], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "read-then-retry", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+		limits: { scoutToolCalls: 1 },
+	});
+	const res = await run(tool, {
+		role: "scout",
+		task: "shared scout call limit",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(res.isError, true, text(res));
+	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cumulative scout tool-call allowance is spent/);
+	const provenance = res.details.round1[0].provenance[0];
+	assert.equal(res.details.round1[0].toolCallCount, 1);
+	assert.deepEqual(provenance.toolEffects.map(({ effect, replaySafe }) => [effect, replaySafe]), [["completed", true]]);
+	assert.ok(provenance.stopFacts.some((fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-calls"));
+	assert.deepEqual(
+		readFileSync(marker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
 });
 
 test("non-availability failures do not trigger pool fallback", async (t) => {
@@ -1790,7 +2265,11 @@ test("review pool isolates review selection, fallback, status, and explicit over
 		),
 	);
 
-	const reviewRes = await run(main.tool, { role: "review", task: "check review pool" });
+	const reviewRes = await run(main.tool, {
+		role: "review",
+		task: "check review pool",
+		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS]),
+	});
 	assert.equal(reviewRes.isError, false, text(reviewRes));
 	assert.equal(reviewRes.details.round1[0].requested.model, OPUS);
 	assert.equal(reviewRes.details.round1[0].requested.thinking, "medium");
@@ -1831,7 +2310,11 @@ test("review pool isolates review selection, fallback, status, and explicit over
 		env: { FAKE_PI_MODE: "rate-limit-models", FAKE_PI_FAIL_MODELS: `${SONNET},${OPUS}`, FAKE_PI_MARKER: costMarker },
 		limits: { costCapUsd: 0.002 },
 	});
-	const cappedRes = await run(capped.tool, { role: "review", task: "budget shared" });
+	const cappedRes = await run(capped.tool, {
+		role: "review",
+		task: "budget shared",
+		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS]),
+	});
 	assert.equal(cappedRes.isError, true);
 	assert.match(text(cappedRes), /^✗ stopped: cost cap \$0\.002 reached\n/);
 	assert.deepEqual(cappedRes.details.round1[0].fallbackAttempts, []);
@@ -1862,21 +2345,26 @@ test("review pool isolates review selection, fallback, status, and explicit over
 		},
 		limits: { costCapUsd: 0.003 },
 	});
-	const sharedRes = await run(shared.tool, { role: "review", task: "remaining budget shared" });
+	const sharedRes = await run(shared.tool, {
+		role: "review",
+		task: "remaining budget shared",
+		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS, LUNA]),
+	});
 	assert.equal(sharedRes.isError, true);
 	assert.deepEqual(sharedRes.details.round1[0].fallbackAttempts, [
 		{
 			model: SONNET,
 			thinking: "high",
-			failure: "exit 1: 429 rate_limit_error: too many requests",
+			failure: "429 rate_limit_error: too many requests",
 			nextModel: OPUS,
 			nextThinking: "medium",
 		},
 	]);
-	assert.deepEqual(text(sharedRes).split("\n").slice(0, 2), [
-		`↻ ${SONNET} @high failed (exit 1: 429 rate_limit_error: too many requests); trying ${OPUS} @medium`,
-		"✗ stopped: cost cap $0.001 reached",
-	]);
+	assert.match(
+		text(sharedRes).split("\n")[0],
+		new RegExp(`^↻ ${SONNET} @high failed \\((?:exit 1: )?429 rate_limit_error: too many requests\\); trying ${OPUS} @medium$`),
+	);
+	assert.equal(text(sharedRes).split("\n")[1], "✗ stopped: cost cap $0.001 reached");
 	assert.equal(sharedRes.usage.cost.total, 0.004);
 	assert.deepEqual(
 		readFileSync(sharedMarker, "utf8")
@@ -2202,6 +2690,7 @@ test("default-origin rebuttals keep pool fallback while explicit-origin rebuttal
 		task: "check fallback across rebuttal rounds",
 		runs: [{}, {}],
 		rebuttal: true,
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET, OPUS]),
 	});
 	assert.equal(defaultResult.isError, false, text(defaultResult));
 	assert.deepEqual(
@@ -2804,7 +3293,13 @@ test("the TUI widget tracks the current configured fallback candidate", async (t
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU },
 	});
 	const ui = tuiCtx();
-	const result = await run(tool, { role: "review", task: "fallback widget" }, undefined, undefined, ui.ctx);
+	const result = await run(
+		tool,
+		{ role: "review", task: "fallback widget", fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]) },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
 	assert.equal(result.isError, false);
 	assert.ok(
 		ui.snapshots.some((snapshot) =>
@@ -3218,32 +3713,36 @@ test("provider failures without tool failures do not create diagnostic artifacts
 	);
 });
 
-test("implement aggregates failures across fallback attempts with distinct provenance", async (t) => {
+test("implement refuses fallback after a failed tool effect and preserves its evidence", async (t) => {
 	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
 	const { tool } = setup(t, {
 		config: POOL_SET,
 		env: implementEnv("implement-fallback-artifacts", { TMPDIR: tmp }),
 	});
-	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
-	assert.equal(result.isError, false, text(result));
-	assert.equal(result.details.implement.check.status, "pass");
+	const result = await run(
+		tool,
+		implement({ fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) }),
+		undefined,
+		undefined,
+		implementRepo().ctx,
+	);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.check.status, "fail");
+	assert.equal(result.details.round1[0].fallbackAttempts.length, 0);
+	assert.match(result.details.round1[0].fallbackBlockReason, /competing safety stop/);
+	const provenance = result.details.round1[0].provenance[0];
+	assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "unknown"));
+	assert.equal(provenance.providerRetry.owner, "pi-runtime");
 	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
-	assert.equal(artifact.entries.length, 2);
+	assert.equal(artifact.entries.length, 1);
 	assert.deepEqual(
 		artifact.entries.map((entry) => [entry.attempt.index, entry.attempt.requestedModel.text]),
-		[
-			[1, LUNA],
-			[2, OPUS],
-		],
+		[[1, LUNA]],
 	);
 	assert.equal(artifact.entries[0].exitCode.value, 3);
 	assert.equal(artifact.entries[0].command.effectiveCommand.state, "not-provided");
 	assert.equal(artifact.entries[0].command.effectiveCommand.value, null);
-	assert.equal(artifact.entries[1].exitCode.state, "not-provided");
-	assert.deepEqual(
-		artifact.entries.map((entry) => entry.toolName.text),
-		["bash", "read"],
-	);
+	assert.deepEqual(artifact.entries.map((entry) => entry.toolName.text), ["bash"]);
 });
 
 test("implement cancellation flushes failures and reports correlation anomalies", async (t) => {
@@ -3326,6 +3825,12 @@ test("implement: work left uncommitted becomes a WIP commit on the branch and an
 	const id = text(res).match(/^✗ (im\d+) /)[1];
 	assert.equal(git("log", "-1", "--format=%s"), `WIP(delegate ${id}): left uncommitted by the worker`);
 	assert.match(text(res), /^✗ WIP \w+ on goal\/x \(left uncommitted by the worker\): left\.txt$/m);
+	assert.deepEqual(res.details.implement.delivered, {
+		check: "pass",
+		commit: "none",
+		wip: true,
+		integrity: "clear",
+	});
 	assert.equal(git("status", "--porcelain"), "");
 });
 
@@ -3342,6 +3847,7 @@ test("implement Bash content freshness ignores Git metadata but stales mutations
 		const result = await run(tool, implement(), undefined, undefined, ctx);
 		const handback = text(result);
 		assert.equal(result.details.implement.check.status, expectedStatus, scenario);
+		assert.equal(result.details.implement.delivered.check, expectedStatus, scenario);
 		assert.equal(
 			execFileSync("git", ["-C", repo, "show", "HEAD:feature.txt"], { encoding: "utf8" }),
 			expectedContent,
@@ -3370,6 +3876,7 @@ test("implement Bash binary-content collision stales a committed tree through th
 	const handback = text(result);
 
 	assert.equal(result.details.implement.check.status, "stale", handback);
+	assert.equal(result.details.implement.delivered.check, "stale", handback);
 	assert.equal(result.isError, true, handback);
 	assert.match(handback, /check stale \(checkout content changed after the last check\)/);
 	assert.deepEqual(execFileSync("git", ["-C", repo, "show", "HEAD^:a"]), Buffer.from("x"));
@@ -3484,6 +3991,15 @@ test("implement: a second job in the same repo is refused; the main session's wr
 	await workerStarted(repo);
 	const second = await run(tool, implement(), undefined, undefined, ctx);
 	assert.match(text(second), /^implement job im\d+ \(pid \d+\) is already writing in /);
+	assert.deepEqual(second.details.stopFacts[0], {
+		owner: "implement",
+		jobId: second.details.stopFacts[0].jobId,
+		attempt: 1,
+		toolCallId: "call",
+		cause: "lock-refusal",
+		resource: "checkout-lock",
+		effect: "denied",
+	});
 	const hook = handlers.tool_call;
 	const outside = mkdtempSync(join(TEST_HOME, "outside-"));
 	const blocked = await hook({ toolName: "edit", input: { path: join(repo, "sub", "a.txt") } }, { cwd: outside });
@@ -3549,6 +4065,8 @@ test("implement background cancel: SIGTERM first, WIP commit, lock gone, report 
 	const content = messages[0].message.content;
 	assert.match(content, /^Background delegate job bg1 failed:\n\n✗ im\d+ goal\/x /);
 	assert.match(content, /^✗ stopped: cancelled$/m);
+	const details = readFileSync(content.match(/Details: (\S+)/)[1], "utf8");
+	assert.match(details, /delegate-parent job=im\d+ attempt=1 cause=cancelled resource=cancellation effect=unknown/);
 	assert.match(git("log", "-1", "--format=%s"), /^WIP\(delegate im\d+\): stopped: cancelled$/);
 	assert.ok(!existsSync(lock));
 });
@@ -3629,6 +4147,12 @@ test("implement refuses runs[].model and runs[].thinking: it uses the worker poo
 	assert.match(text(plain), /^✓ im\d+ goal\/x .*; check ✓ `npm test` \[gpt-6-luna @max /);
 	assert.equal(plain.details.round1.length, 1);
 	assert.deepEqual(plain.details.round1[0].requested, { model: LUNA, thinking: "max" });
+	assert.deepEqual(plain.details.implement.delivered, {
+		check: "pass",
+		commit: "normal",
+		wip: false,
+		integrity: "clear",
+	});
 	const facts = plain.details.implement;
 	assert.equal(facts.failed, false);
 	assert.deepEqual(facts.problems, []);
@@ -3649,9 +4173,15 @@ test("implement follows the worker pool in order, with each entry's thinking", a
 		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
 	});
 	const { ctx } = implementRepo();
-	const res = await run(tool, implement(), undefined, undefined, ctx);
+	const res = await run(
+		tool,
+		implement({ fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) }),
+		undefined,
+		undefined,
+		ctx,
+	);
 	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
-	assert.match(details, new RegExp(`^${LUNA} @max failed \\(exit 1: 429 .*; next ${OPUS} @max$`, "m"));
+	assert.match(details, new RegExp(`^${LUNA} @max failed \\((?:exit 1: )?429 .*; next ${OPUS} @max$`, "m"));
 });
 
 test("implement gets its own time limit; the wrap-up deadline is 80% of it", async (t) => {
@@ -3676,10 +4206,16 @@ test("implement: no --approve on a fallback attempt", async (t) => {
 		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
 	});
 	const { ctx } = implementRepo();
-	const res = await run(tool, implement(), undefined, undefined, { ...ctx, isProjectTrusted: () => true });
+	const res = await run(
+		tool,
+		implement({ fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) }),
+		undefined,
+		undefined,
+		{ ...ctx, isProjectTrusted: () => true },
+	);
 	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
 	assert.match(details, /approve=no/, "the fallback attempt");
-	assert.match(details, /^openai-codex\/gpt-6-luna @max failed \(exit 1: 429 /m);
+	assert.match(details, /^openai-codex\/gpt-6-luna @max failed \((?:exit 1: )?429 /m);
 });
 
 test("implement workers cannot write inside the git dir and stop when their coordinator is gone", async (t) => {

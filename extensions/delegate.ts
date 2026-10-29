@@ -535,6 +535,7 @@ export interface FallbackCandidateScope {
 /** Coordinator-supplied run restriction; the reference is not itself proof of user approval. */
 export interface FallbackRestriction {
 	authorizationRef: string;
+	authority: "named" | "adopted-snapshot";
 	taskDataClass: string;
 	candidates: readonly FallbackCandidateScope[];
 }
@@ -602,10 +603,15 @@ export function resolveFallbackRestriction(
 	if (value === undefined) return {};
 	const invalid = (issue: string) => ({ issue: `fallback disabled: ${issue}` });
 	const input = eventRecord(value);
-	if (!input || Object.keys(input).some((key) => !["authorizationRef", "taskDataClass", "candidates"].includes(key)))
+	if (
+		!input ||
+		Object.keys(input).some((key) => !["authorizationRef", "authority", "taskDataClass", "candidates"].includes(key))
+	)
 		return invalid("fallbackAuthorization must be an exact coordinator scope object");
 	if (typeof input.authorizationRef !== "string" || !input.authorizationRef.trim())
 		return invalid("authorizationRef is missing");
+	if (input.authority !== "named" && input.authority !== "adopted-snapshot")
+		return invalid("authority must be named or adopted-snapshot");
 	if (typeof input.taskDataClass !== "string" || !input.taskDataClass.trim())
 		return invalid("taskDataClass is missing");
 	if (!Array.isArray(input.candidates) || input.candidates.length === 0)
@@ -668,6 +674,7 @@ export function resolveFallbackRestriction(
 	}
 	const restriction = Object.freeze({
 		authorizationRef: input.authorizationRef.trim(),
+		authority: input.authority,
 		taskDataClass: input.taskDataClass.trim(),
 		candidates: Object.freeze(candidates),
 	});
@@ -1508,11 +1515,39 @@ function fallbackDenial(
 		return "a competing safety stop prevents replay";
 	if (provenance.toolEffects.some((fact) => !fact.replaySafe || fact.effect !== "completed"))
 		return "tool effects are unknown or unsafe to replay";
-	if (Date.now() >= hardDeadline || Date.now() >= toolDeadline) return "the original hard or tool deadline is spent";
-	if (costSpent + currentCost >= hardCostCap) return "the cumulative hard cost allowance is spent";
-	if (costSpent + currentCost >= toolCostCap) return "the cumulative tool cost allowance is spent";
-	if (job.role === "scout" && toolCallsSpent + currentToolCalls >= LIMITS.scoutToolCalls)
+	const retainLimitStop = (cause: StopFact["cause"], resource: StopResource) => {
+		if (
+			!provenance.stopFacts.some(
+				(fact) => fact.owner === "delegate-parent" && fact.cause === cause && fact.resource === resource,
+			)
+		)
+			provenance.stopFacts.push({
+				owner: "delegate-parent",
+				jobId: job.jobId,
+				attempt: provenance.attempt,
+				cause,
+				resource,
+				effect: "unknown",
+			});
+	};
+	const now = Date.now();
+	const hardTimeSpent = now >= hardDeadline;
+	const toolTimeSpent = now >= toolDeadline;
+	if (hardTimeSpent) retainLimitStop("hard-timeout", "hard-time");
+	if (toolTimeSpent) retainLimitStop("wrap-up-limit", "tool-time");
+	if (hardTimeSpent) return "the original hard deadline is spent";
+	if (toolTimeSpent) return "the original tool deadline is spent";
+	const hardCostSpent = costSpent + currentCost >= hardCostCap;
+	const toolCostSpent = costSpent + currentCost >= toolCostCap;
+	if (hardCostSpent) retainLimitStop("hard-cost-limit", "hard-cost");
+	if (toolCostSpent) retainLimitStop("wrap-up-limit", "tool-cost");
+	if (hardCostSpent) return "the cumulative hard cost allowance is spent";
+	if (toolCostSpent) return "the cumulative tool cost allowance is spent";
+	const scoutCallsSpent = job.role === "scout" && toolCallsSpent + currentToolCalls >= LIMITS.scoutToolCalls;
+	if (scoutCallsSpent) {
+		retainLimitStop("wrap-up-limit", "tool-calls");
 		return "the cumulative scout tool-call allowance is spent";
+	}
 	return undefined;
 }
 
@@ -1910,6 +1945,7 @@ function buildSchema() {
 				additionalProperties: false,
 				properties: {
 					authorizationRef: { type: "string", minLength: 1 },
+					authority: { type: "string", enum: ["named", "adopted-snapshot"] },
 					taskDataClass: { type: "string", minLength: 1 },
 					candidates: {
 						type: "array",
@@ -1931,7 +1967,7 @@ function buildSchema() {
 						},
 					},
 				},
-				required: ["authorizationRef", "taskDataClass", "candidates"],
+				required: ["authorizationRef", "authority", "taskDataClass", "candidates"],
 			},
 			output: {
 				type: "boolean",
@@ -2045,16 +2081,18 @@ export default function (pi: ExtensionAPI) {
 			const msg = event.message as any;
 			if (msg?.role === "assistant") cost += costOf(msg.usage ?? {});
 		});
-		pi.on("tool_result", (event) => {
+		// Blocked tool calls are finalized as immediate errors: Pi emits tool_execution_end but skips
+		// afterToolCall/tool_result. Annotate that supported end event so the parent can correlate denial.
+		pi.on("tool_execution_end", (event) => {
 			const facts = pendingStopFacts.get(event.toolCallId);
 			if (!facts?.length) return;
+			const result = eventRecord(event.result);
+			if (!result) return;
 			pendingStopFacts.delete(event.toolCallId);
-			const previous = eventRecord(event.details);
-			const details: EventRecord = previous ? { ...previous } : { __originalDetails: event.details };
-			if (Object.hasOwn(details, TOOL_PROVENANCE_DETAIL_KEY))
-				details.__previousDelegateProvenance = details[TOOL_PROVENANCE_DETAIL_KEY];
-			details[TOOL_PROVENANCE_DETAIL_KEY] = facts;
-			return { details };
+			const details = eventRecord(result.details) ?? {};
+			const marker: unknown[] = [...facts];
+			if (Object.hasOwn(details, TOOL_PROVENANCE_DETAIL_KEY)) marker.unshift(undefined);
+			result.details = { ...details, [TOOL_PROVENANCE_DETAIL_KEY]: marker };
 		});
 		pi.on("tool_call", async (event, ctx) => {
 			const recordBlock = (
@@ -2075,7 +2113,7 @@ export default function (pi: ExtensionAPI) {
 					};
 					rememberStop(event.toolCallId, fact);
 				}
-				return { block: true, reason, ...(terminate ? { terminate: true } : {}) };
+				return { block: true, reason, terminate };
 			};
 			// An implement worker whose coordinator died would keep writing in a checkout nobody watches.
 			const parent = Number(process.env.ME_PI_PARENT);

@@ -543,25 +543,8 @@ function capped(text: string, max: number): [string[], number] {
 
 const num = (text: string, word: string) => Number(text.match(new RegExp(`(\\d+) ${word}`))?.[1] ?? 0);
 
-function deliveredState(facts: Facts): DeliveredState {
-	const integrityTrip = facts.problems.some(
-		(problem) =>
-			problem.startsWith("HEAD moved:") ||
-			problem.startsWith("branch ") && problem.includes(" is gone:") ||
-			problem.includes("no longer descends from the base") ||
-			problem.startsWith("merge commit(s) in the range:") ||
-			problem.startsWith("commit(s) older than the job") ||
-			problem.startsWith("Tripwire:") && !/unavailable|failed:/i.test(problem),
-	);
-	const integrity: DeliveredState["integrity"] = integrityTrip
-		? "tripped"
-		: facts.problems.length > 0
-			? "unknown"
-			: "clear";
-	const normalCommits = facts.commitCount - (facts.wip ? 1 : 0);
-	const commit: DeliveredState["commit"] =
-		!facts.tip ? "unknown" : normalCommits > 0 ? "normal" : facts.tip === facts.base ? "none" : "unknown";
-	return { check: facts.check.status, commit, wip: facts.wip !== undefined, integrity };
+function markIntegrity(facts: Facts, state: DeliveredState["integrity"]): void {
+	if (state === "tripped" || facts.delivered.integrity !== "tripped") facts.delivered.integrity = state;
 }
 
 /** Ends a job; never throws. Commits leftovers as WIP on the job's branch, checks the range and tripwires. */
@@ -586,9 +569,11 @@ export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Fact
 	try {
 		await finishSteps(job, facts);
 	} catch (err) {
+		markIntegrity(facts, "unknown");
 		facts.problems.push(`finish failed: ${(err as Error).message}`);
 	}
-	facts.delivered = deliveredState(facts);
+	facts.delivered.check = job.check.status;
+	facts.delivered.wip ||= facts.wip !== undefined;
 	if (facts.delivered.integrity === "tripped") {
 		const attempt = outcome.provenance?.at(-1)?.attempt ?? 1;
 		facts.stopFacts.push({
@@ -617,25 +602,35 @@ export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Fact
 }
 
 async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
+	facts.delivered.check = job.check.status;
+	facts.delivered.wip = job.wipHead;
+	facts.delivered.integrity = "clear";
 	// 1. HEAD must still be on the job's branch, or a WIP commit would land elsewhere.
 	const head = await git(job.repoRoot, ["symbolic-ref", "-q", "HEAD"]);
-	if (!head.ok)
+	if (!head.ok) {
+		markIntegrity(facts, head.code === 1 ? "tripped" : "unknown");
 		facts.problems.push(
 			head.code === 1
 				? `HEAD moved: detached, not ${job.branch}; no WIP commit`
 				: `HEAD unreadable: ${head.err || "git symbolic-ref failed"}; no WIP commit`,
 		);
-	else if (head.out.trim() !== job.ref)
+	} else if (head.out.trim() !== job.ref) {
+		markIntegrity(facts, "tripped");
 		facts.problems.push(`HEAD moved: now ${head.out.trim()}, not ${job.branch}; no WIP commit`);
+	}
 	else {
 		// 2. Leftovers become one WIP commit; ignored files are not added. Hooks and signing are off: this commit
 		// only saves work, and a worker may have set core.hooksPath.
 		const status = await git(job.repoRoot, ["status", "--porcelain"]);
-		if (!status.ok) facts.problems.push(`git status failed: ${status.err}`);
+		if (!status.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`git status failed: ${status.err}`);
+		}
 		else if (status.out.trim()) {
 			const why = failureLine(facts.outcome.failure) ?? "left uncommitted by the worker";
 			const [files, more] = capped(status.out.replace(/^.{3}/gm, ""), MAX_WIP_FILES);
 			const add = await git(job.repoRoot, ["add", "-A"]);
+			if (!add.ok) markIntegrity(facts, "unknown");
 			const commit = add.ok
 				? await git(job.repoRoot, [
 						"-c",
@@ -649,7 +644,10 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 						`WIP(delegate ${job.id}): ${why}`,
 					])
 				: add;
-			if (!commit.ok) facts.problems.push(`WIP commit failed: ${commit.err}; the tree is left dirty`);
+			if (!commit.ok) {
+				markIntegrity(facts, "unknown");
+				facts.problems.push(`WIP commit failed: ${commit.err}; the tree is left dirty`);
+			}
 			else {
 				const sha = await git(job.repoRoot, ["rev-parse", "--short", "HEAD"]);
 				if (!sha.ok) facts.problems.push(`WIP commit made, but its sha is unreadable: ${sha.err}`);
@@ -659,12 +657,17 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 	}
 	// 3. The range, read from git: it must descend from the base and hold only new, non-merge commits.
 	const tip = await git(job.repoRoot, ["rev-parse", "--verify", "-q", job.ref]);
-	if (!tip.ok) facts.problems.push(`branch ${job.branch} is gone: ${tip.err || "not found"}`);
-	else {
+	if (!tip.ok) {
+		markIntegrity(facts, tip.code === 1 ? "tripped" : "unknown");
+		facts.problems.push(`branch ${job.branch} is gone: ${tip.err || "not found"}`);
+	} else {
 		const sha = tip.out.trim();
 		facts.tip = sha;
-		if (!(await git(job.repoRoot, ["merge-base", "--is-ancestor", job.base, sha])).ok)
+		const ancestry = await git(job.repoRoot, ["merge-base", "--is-ancestor", job.base, sha]);
+		if (!ancestry.ok) {
+			markIntegrity(facts, ancestry.code === 1 ? "tripped" : "unknown");
 			facts.problems.push(`${job.branch} no longer descends from the base ${job.base.slice(0, 7)}`);
+		}
 		// `%h %p %ct %s`, NUL-separated: `%p` is one parent, or several for a merge.
 		const log = await git(job.repoRoot, [
 			"log",
@@ -672,7 +675,10 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 			"--format=%h%x00%p%x00%ct%x00%s",
 			`${job.base}..${sha}`,
 		]);
-		if (!log.ok) facts.problems.push(`git log failed: ${log.err}`);
+		if (!log.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`git log failed: ${log.err}`);
+		}
 		const commits = log.out.split("\n").filter(Boolean);
 		const oldest = (job.startedAt - CLOCK_SKEW_MS) / 1000;
 		const merges: string[] = [];
@@ -683,25 +689,38 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 			if (Number(time) < oldest) old.push(hash);
 			return `${hash} ${subject}`;
 		});
-		if (merges.length) facts.problems.push(`merge commit(s) in the range: ${merges.join(", ")}`);
-		if (old.length)
+		if (merges.length) {
+			markIntegrity(facts, "tripped");
+			facts.problems.push(`merge commit(s) in the range: ${merges.join(", ")}`);
+		}
+		if (old.length) {
+			markIntegrity(facts, "tripped");
 			facts.problems.push(`commit(s) older than the job (fast-forward to existing work?): ${old.join(", ")}`);
+		}
 		facts.commits = listed.slice(0, MAX_COMMITS).map(shown);
 		facts.commitCount = listed.length;
+		if (log.ok) facts.delivered.commit = listed.length > (facts.wip ? 1 : 0) ? "normal" : "none";
 		const short = await git(job.repoRoot, ["diff", "--shortstat", `${job.base}..${sha}`]);
 		const stat = await git(job.repoRoot, ["diff", "--stat", `${job.base}..${sha}`]);
-		if (!short.ok || !stat.ok) facts.problems.push(`git diff --stat failed: ${short.err || stat.err}`);
+		if (!short.ok || !stat.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`git diff --stat failed: ${short.err || stat.err}`);
+		}
 		facts.files = num(short.out, "files? changed");
 		facts.insertions = num(short.out, "insertions?");
 		facts.deletions = num(short.out, "deletions?");
 		facts.stat = stat.out;
 		// 4. Files Pi loads on /reload: the coordinator reviews them before reloading.
 		const trust = await git(job.repoRoot, ["diff", "--name-only", `${job.base}..${sha}`, "--", ".pi", ".agents"]);
-		if (!trust.ok) facts.problems.push(`Tripwire: git diff .pi .agents failed: ${trust.err}`);
-		else if (trust.out.trim())
+		if (!trust.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`Tripwire: git diff .pi .agents failed: ${trust.err}`);
+		} else if (trust.out.trim()) {
+			markIntegrity(facts, "tripped");
 			facts.problems.push(
 				`Tripwire: .pi or .agents changed (${capped(trust.out, 5)[0].map(shown).join(", ")}); review before /reload`,
 			);
+		}
 	}
 	try {
 		const [gitAfter, settingsAfter] = await Promise.all([snapshotGit(job.repoRoot), settingsResources()]);
@@ -710,7 +729,9 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 			...settingsTripwire(job.settingsBefore, settingsAfter),
 		];
 		facts.problems.push(...trips.map((t) => `Tripwire: ${t}`));
+		if (trips.length) markIntegrity(facts, "tripped");
 	} catch (err) {
+		markIntegrity(facts, "unknown");
 		facts.problems.push(`Tripwire: tripwire unavailable: ${(err as Error).message}`);
 	}
 }
