@@ -19,6 +19,7 @@ test("the root manifest declares only the three public Pi extensions", () => {
 	assert.equal(root.devDependencies["@earendil-works/pi-coding-agent"], "1.3.0");
 	assert.deepEqual(root.pi, {
 		extensions: ["extensions/delegate.ts", "extensions/guard.ts", "extensions/skill.ts"],
+		skills: [],
 	});
 	for (const entrypoint of root.pi.extensions) {
 		assert.ok(existsSync(new URL(`../${entrypoint}`, import.meta.url)), `${entrypoint} exists`);

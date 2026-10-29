@@ -26,6 +26,7 @@ await settingsManager.flush();
 const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
 await resourceLoader.reload();
 const result = resourceLoader.getExtensions();
+const skillResult = resourceLoader.getSkills();
 if (assertion === "assert-delegate") {
 	if (process.env.ME_PI_RUN) {
 		throw new Error("delegate tool registration probe must run outside worker mode");
@@ -42,5 +43,7 @@ console.log(
 		})),
 		errors: result.errors,
 		warnings: result.warnings ?? [],
+		skills: skillResult.skills.map((skill) => ({ name: skill.name, path: skill.filePath })),
+		skillDiagnostics: skillResult.diagnostics,
 	}),
 );
