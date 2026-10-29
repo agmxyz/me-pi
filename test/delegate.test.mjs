@@ -871,6 +871,10 @@ test("implement workers' bash calls are checked against the worker-only rules", 
 	const blocked = await hook(bash("git push origin x"), { cwd: REPO_ROOT });
 	assert.equal(blocked?.block, true);
 	assert.match(blocked.reason, /^Blocked: git push is main-session only; list it as BLOCKED\.$/);
+	assert.equal(await hook(bash("bash -n install.sh test/install.test.sh"), { cwd: REPO_ROOT }), undefined);
+	const installerChain = await hook(bash("bash -n install.sh && bash install.sh"), { cwd: REPO_ROOT });
+	assert.equal(installerChain?.block, true);
+	assert.match(installerChain.reason, /install\.sh would change Pi's settings and live links/);
 	assert.equal(await hook(bash("npm test"), { cwd: REPO_ROOT }), undefined);
 	const other = setup(t, { env: { ME_PI_RUN: "1" } }).handlers.tool_call;
 	assert.equal(await other(bash("git push origin x"), { cwd: REPO_ROOT }), undefined);

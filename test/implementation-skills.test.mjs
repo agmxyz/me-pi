@@ -16,7 +16,15 @@ function assertUserInvokedReviewContract(source, name) {
 	assert.match(source, /independent full review/);
 	assert.match(source, /Standards/);
 	assert.match(source, /Spec/);
-	assert.match(source, /carry forward prior full-review coverage/);
+	const deltaClosure = source.slice(source.indexOf("## 5. "), source.indexOf("## 6. "));
+	assert.match(
+		deltaClosure,
+		/review the changed (?:(?:source against the affected )?Standards(?:\/| and )Spec coverage)/,
+	);
+	assert.match(
+		deltaClosure,
+		/carry forward (?:the )?prior full-review coverage that (?:the delta does not invalidate|remains valid)/,
+	);
 	assert.match(source, /guard or worker-limit block means stop and report/);
 	assert.match(source, /This skill grants no recovery authority/);
 	assert.match(source, /load `tdd`/i);
