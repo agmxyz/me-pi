@@ -15,7 +15,7 @@ Statuses are **PENDING** unless explicitly marked otherwise. IN PROGRESS is not 
 | ID | Scope | Status |
 |---|---|---|
 | [A0](A0.md) | Repo-owned single-task and ticket-graph skills; safe user-level discovery | Pending; A0-source prerequisite for A4 authoring, A0-live for A4 activation |
-| [A1](A1.md) | Coordinator workflow and artifact-ownership guide | Pending; prerequisite for A4 |
+| [A1](A1.md) | Coordinator workflow and artifact-ownership guide | Source/check complete at guide source commit `b6f5815295ed558aff72dcb26aa1dca916ed8a2c` (183 tests; all 56 installer smoke checks); final integrated independent two-axis review pending; recovery not activated; prerequisite for A4 |
 | [A2](A2.md) | Typed stop provenance and safe fallback authorization | Pending; prerequisite for A4 |
 | [A3](A3.md) | 45-minute implement hard-time default | DONE (local commit); prerequisite for A4 |
 | [A4](A4.md) | Bounded recovery policy (authored INACTIVE) and later activation | Pending; authoring blocked by A0-source+A1+A2+A3; activation needs A0-live + separate user approval |
