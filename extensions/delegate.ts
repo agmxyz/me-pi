@@ -79,7 +79,7 @@ export const LIMITS = {
 	termGraceMs: 3000,
 	// Wrap-up budget, enforced inside the worker: past it, tool calls are blocked so the model answers
 	// before a hard limit kills it without one.
-	scoutToolCalls: 30,
+	scoutToolCalls: 60,
 	wrapUpShare: 0.8,
 };
 const MAX_RUNS = 4;

@@ -17,7 +17,7 @@ Statuses are **PENDING** unless explicitly marked otherwise. IN PROGRESS is not 
 | [A0](A0.md) | Repo-owned single-task and ticket-graph skills; safe user-level discovery | Preparatory package-discovery gate source/check checkpoint (`pi.skills: []`; `npm run check --prefix extensions`: 197 tests, 56 installer smoke checks); A0-source remains pending, A0-live not started; prerequisite for A4 authoring/activation respectively |
 | [A1](A1.md) | Coordinator workflow and artifact-ownership guide | Source/check complete at guide source commit `b6f5815295ed558aff72dcb26aa1dca916ed8a2c` (183 tests; all 56 installer smoke checks); final integrated independent two-axis review pending; recovery not activated; prerequisite for A4 |
 | [A2](A2.md) | Typed stop provenance and safe fallback authorization | Source/check accepted at `be57e36` (focused review `bg76`; supplied `npm run check --prefix extensions`: 194 tests, 56 installer smoke checks): denied/completed/unknown effects handled conservatively; partial output is not side-effect evidence; real consent/reference freshness remain coordinator-owned; final integrated independent two-axis review pending; A4 inactive; prerequisite for A4 |
-| [A3](A3.md) | 45-minute implement hard-time default | DONE (local commit); prerequisite for A4 |
+| [A3](A3.md) | 45-minute implement hard-time default; separately approved scout cap increase to 60 calls | DONE for original A3 scope (local commit); prerequisite for A4 |
 | [A4](A4.md) | Bounded recovery policy (authored INACTIVE) and later activation | Pending; authoring blocked by A0-source+A1+A2+A3; activation needs A0-live + separate user approval |
 | [A5](A5.md) | Optional review model pool, selection only | Source/check accepted at `c01ed0e` (183 tests; all 56 installer smoke checks); bounded review `bg65` adequate; final integrated independent two-axis review pending; independent of A2/A4 |
 | [A6](A6.md) | Concurrent worktree writers | Pending, deferred design-only; not a current delivery blocker |
@@ -30,6 +30,6 @@ Approved order (2026-10-29): A3 → A5 → A1 → A2 → A0-source → A4 (inact
 
 Every ticket uses the exact repository check **`npm run check --prefix extensions`**. Acceptance targets in the authoritative spec are not claims of passing tests; ticket rows above record source/check evidence and remaining review or activation gates where known.
 
-The spec distinguishes **current** from **future** policy. Current stop-on-any-guard/worker-limit behavior remains binding until A4's approved, tested capability/policy/skill-install-and-reload gate is fully active. A3's 45-minute limit applies only after its changed runtime is loaded. Do not use A4's planned recovery while bootstrapping.
+The spec distinguishes **current** from **future** policy. Current stop-on-any-guard/worker-limit behavior remains binding until A4's approved, tested capability/policy/skill-install-and-reload gate is fully active. A3's 45-minute implement limit and separately approved 60-call scout cap apply only after the changed runtime is loaded; neither activates A4. Do not use A4's planned recovery while bootstrapping.
 
 The LOW delegate-activity readability backlog remains only the pointer in `docs/research/karto-delegation-pilot.md` (“Low-priority backlog: delegate activity readability”); it is not a dependency or ticket here.

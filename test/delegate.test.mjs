@@ -878,8 +878,12 @@ test("implement workers' bash calls are checked against the worker-only rules", 
 
 test("workers get a wrap-up budget: scout tool calls, 80% of the time limit and cost cap", async (t) => {
 	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-budget" } });
+	assert.equal(LIMITS.scoutToolCalls, 60);
+	assert.equal(LIMITS.scoutTimeoutSecs, 300);
+	assert.equal(LIMITS.costCapUsd, 5);
+	assert.equal(LIMITS.wrapUpShare, 0.8);
 	for (const [role, tools, secs] of [
-		["scout", 30, 300],
+		["scout", 60, 300],
 		["general", null, 900],
 		["research", null, 900],
 		["review", null, 900],
@@ -942,9 +946,9 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	assert.match(risky.reason, /git push is main-session only/);
 	assert.match((await call(denied)).reason, /budget reached \(1 tool call\)/);
 
-	const cappedScout = worker({ tools: 30, deadline: far, cost: 1 }, "scout");
-	for (let i = 0; i < 30; i++) assert.equal(await call(cappedScout), undefined);
-	assert.match((await call(cappedScout)).reason, /budget reached \(30 tool calls\)/);
+	const cappedScout = worker({ tools: 60, deadline: far, cost: 1 }, "scout");
+	for (let i = 0; i < 60; i++) assert.equal(await call(cappedScout), undefined);
+	assert.match((await call(cappedScout)).reason, /budget reached \(60 tool calls\)/);
 
 	for (const role of ["general", "research", "review", "challenge", "implement"]) {
 		const uncapped = worker({ tools: null, deadline: far, cost: 1 }, role);

@@ -1,7 +1,7 @@
 # Delegation autonomy improvements
 
-**Status: APPROVED LOCAL PLAN — implementation not started.** This spec and its local ticket/handoff files are temporary planning artifacts; retain them for execution and remove them only during separately requested later cleanup.
-The user chose local-only tickets and will start implementation in a fresh session. No GitHub issues, remote publication, policy activation or installation is authorized merely by reading this file. Begin only under that session's explicit implementation request and preserve current policy until its approved activation gate is satisfied.
+**Status: APPROVED LOCAL PLAN — implementation is underway.** This spec and its local ticket/handoff files are temporary planning artifacts; retain them for execution and remove them only during separately requested later cleanup.
+The user chose local-only tickets. Implementation proceeds only under explicit task approvals; this separately approved scout-cap amendment authorizes no other plan changes. No GitHub issues, remote publication, policy activation or installation is authorized merely by reading this file, and current policy remains binding until its approved activation gate is satisfied.
 
 ## Approved delivery decisions (user, 2026-10-29)
 
@@ -12,6 +12,10 @@ The user chose local-only tickets and will start implementation in a fresh sessi
 5. Reading the spec, tickets or handoff does not authorize implementation or activation.
 6. The final frozen two-axis review covers the whole result, including A4 (inactive).
 
+## Separately approved amendment: scout tool-call cap
+
+The user separately approved raising the scout tool-call cap from 30 to 60. This supersedes the original decision below to retain 30 scout calls, without reopening the rest of the plan. It leaves the scout hard timeout at 300 seconds, `wrapUpShare = 0.8`, the nominal $5 cost cap, other role limits, and four concurrent worker slots unchanged. The source change takes effect only after the updated runtime is loaded; it is not A4 activation or recovery authority. Current stop-on-block policy remains binding, and no provider, account, configuration, or billing changes are authorized.
+
 **Order:** A3 → A5 → A1 → A2 → A0-source → A4 (inactive) → frozen final review → activation (separate user approval: A0-live, pilot rename, `GLOBAL_AGENTS.md` edit, install, reload).
 
 ## Decisions in scope
@@ -19,7 +23,7 @@ The user chose local-only tickets and will start implementation in a fresh sessi
 - Improve coordinator workflow, verification planning, runtime stop/failure provenance, bounded recovery authority, and optional reviewer selection.
 - Use one implement writer per repository; parallelize independent readers within the existing four-worker limit. Concurrent worktree writers are a separate later design-only task.
 - Raise the implement default hard timeout from 30 to 45 minutes. The existing 80% wrap-up gate then gives a 36-minute **tool-time window**, not 36 tool calls. No per-call budget knobs.
-- Keep other role timeouts, scout's 30-call cap, the nominal $5 per-attempt cost cap, and four concurrent worker slots unchanged.
+- Keep other role timeouts, the nominal $5 per-attempt cost cap, and four concurrent worker slots unchanged. The scout cap is 60 calls under the separately approved amendment above (not the original 30-call plan value).
 - Give the coordinator ownership of ledgers and reports outside the checkout; workers receive read-only pointers.
 - Let the coordinator handle routine repairs, review scheduling, required fixes, and justified maintenance deferrals. A worker stopping is not, by itself, a reason to ask the user.
 - Add an optional `review` model pool as a separate compatibility-preserving change. Keep the existing low-priority UI readability backlog for the next rendering refactor.
@@ -27,7 +31,7 @@ The user chose local-only tickets and will start implementation in a fresh sessi
 
 ## Current policy versus proposed policy
 
-Today `GLOBAL_AGENTS.md` and the installed `implement-spec-me-pi` skill require stopping and reporting on guard/worker-limit blocks; failed checks, timeouts, WIP, and tripwires remain incomplete. Current `extensions/delegate.ts` uses a 30-minute implement hard limit, 80% wrap-up, a $5 nominal cap, a 30-call scout cap, and four worker slots. The implement check gate already distinguishes `none`, `pass`, `fail`, and `stale`; a later relevant edit requires a fresh check.
+`GLOBAL_AGENTS.md` and the installed `implement-spec-me-pi` skill require stopping and reporting on guard/worker-limit blocks; failed checks, timeouts, WIP, and tripwires remain incomplete. The checked-in `extensions/delegate.ts` uses a 45-minute implement hard limit, 80% wrap-up, a $5 nominal cap, a 60-call scout cap, and four worker slots. These source defaults take effect only when the updated extension is loaded; an already-running session retains the values from its loaded runtime until reload. The implement check gate already distinguishes `none`, `pass`, `fail`, and `stale`; a later relevant edit requires a fresh check.
 
 This spec proposes future behavior only. The stop-boundary changes become active only after the approved code, tests, guides, live policy, and the applicable installed skill variant are updated, and the live session reloads. Until that complete gate, current stop-on-any-guard/limit policy remains binding. Neither this draft nor a ticket grants permission for external actions, secret access, more spend, or safety bypasses.
 
@@ -136,9 +140,9 @@ IDs below are local tickets, not GitHub issues. Use [`delegation-autonomy-ticket
 
 ### A3 — Implement hard-time default 45 minutes
 
-- **Outcome/scope:** Change only the default implement hard limit to 45 minutes; retain `wrapUpShare = 0.8`, yielding a 36-minute tool window. Keep scout/read-only limits, scout's 30 tool calls, $5 nominal per-attempt cap, other roles, concurrency, and lack of per-call budget knobs unchanged. Update the guide's current-values text.
+- **Outcome/scope:** Change only the default implement hard limit to 45 minutes; retain `wrapUpShare = 0.8`, yielding a 36-minute tool window. Keep scout/read-only limits, $5 nominal per-attempt cap, other roles, concurrency, and lack of per-call budget knobs unchanged. Scout's call cap is now 60 under the separate user-approved amendment above; the original A3 plan had retained 30. Update the guide's current-values text.
 - **Acceptance:** A changed check after a passing check remains stale until rerun; fixing failed checks within remaining scope/budget remains allowed. No count is described as implement tool calls. A candidate change does not move the original wrap-up ceiling; A2 supplies the cross-candidate accounting fix and its consumed-time/cost tests.
-- **Test seams:** Update `test/delegate.test.mjs` implement-limit assertions (currently 1800 seconds and 80%); retain `echo-budget` checks for unaffected roles/scout/cost/call count. Run full repository check.
+- **Test seams:** Update `test/delegate.test.mjs` implement-limit assertions (currently 1800 seconds and 80%); assert the scout's amended 60-call default and unchanged time/cost budget, retain other-role and cumulative fallback call checks, and run the full repository check.
 - **Dependencies:** None. A4 requires A3.
 
 ### A4 — Approved coordinator recovery and policy activation
