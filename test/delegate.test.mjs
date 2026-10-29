@@ -511,7 +511,7 @@ const fallbackAuthorization = (
 	}),
 });
 
-test("fallback is disabled when a parent catalog snapshot cannot bind the child endpoint", async (t) => {
+test("dispatch stays first-only when a parent snapshot cannot bind a later child's endpoint", async (t) => {
 	const marker = scratch("fallback-child-endpoint-marker");
 	const modelsPath = join(mkdtempSync(join(TEST_HOME, "child-models-")), "models.json");
 	const registry = registryFixture();
@@ -550,7 +550,7 @@ test("fallback is disabled when a parent catalog snapshot cannot bind the child 
 	assert.equal(result.isError, true);
 	assert.match(
 		result.details.round1[0].fallbackBlockReason,
-		/cross-model fallback disabled:.*cannot bind the effective provider endpoint/,
+		/cross-model fallback deferred.*child-boundary endpoint enforcement/,
 	);
 	assert.equal(result.details.round1[0].requested.model, HAIKU);
 	assert.equal(result.details.round1[0].provenance[0].providerRetry.owner, "pi-runtime");
@@ -721,7 +721,7 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge", "implement"]);
 	assert.equal(properties.check.type, "string");
 	assert.match(properties.check.description, /one unchained command/);
-	assert.match(properties.fallbackAuthorization.description, /disables cross-model fallback/);
+	assert.match(properties.fallbackAuthorization.description, /cross-model fallback is deferred/);
 	assert.match(properties.check.description, /runs it alone, exactly as given, after its final edit/);
 	assert.equal(properties.branch, undefined);
 	assert.equal(properties.web.type, "boolean");
@@ -1347,7 +1347,7 @@ test("an explicit thinking override applies to the first selected pool candidate
 	assert.equal(res.isError, true, text(res));
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
 	assert.equal(res.details.round1[0].requested.thinking, "medium");
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -1464,8 +1464,8 @@ test("a rate-limited worker does not fall back through its pool", async (t) => {
 	assert.equal(res.isError, true, text(res));
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
 	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
-	assert.match(text(res), /Pool fallback not attempted: cross-model fallback disabled/);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
+	assert.match(text(res), /Pool fallback not attempted: cross-model fallback deferred/);
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
 		calls.map((call) => [call.model, call.thinking]),
@@ -1540,7 +1540,7 @@ test("cross-model fallback does not spend the worker's remaining cost budget", a
 	assert.equal(res.isError, true);
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
 	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.equal(res.usage.cost.total, 0.002);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
@@ -1591,7 +1591,7 @@ test("default dispatch keeps the first candidate's configured thinking level", a
 	);
 	assert.equal(res.details.round1[0].requested.model, LUNA);
 	assert.equal(res.details.round1[0].requested.thinking, "max");
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 });
 
 test("model-unavailable errors without structured retry evidence fail closed", async (t) => {
@@ -1660,7 +1660,7 @@ test("an adopted scope and later config changes cannot enable cross-model fallba
 	assert.equal(res.isError, true, text(res));
 	assert.equal(res.details.round1[0].fallbackAttempts.length, 0);
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -1694,7 +1694,7 @@ test("configuration and authorization added after dispatch cannot start another 
 	const res = await pending;
 	assert.equal(res.isError, true, text(res));
 	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -1727,7 +1727,7 @@ test("named, adopted, or mismatched scope metadata cannot enable fallback", asyn
 		assert.equal(res.isError, true, name);
 		assert.equal(res.details.round1[0].requested.model, HAIKU, name);
 		assert.deepEqual(res.details.round1[0].fallbackAttempts, [], name);
-		assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/, name);
+		assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/, name);
 	}
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
@@ -2778,7 +2778,7 @@ test("default-origin rebuttals retain exact candidates without cross-model fallb
 			[HAIKU, "high", 0],
 		],
 	);
-	assert.ok(defaultResult.details.round2.every((r) => /cross-model fallback disabled/.test(r.fallbackBlockReason)));
+	assert.ok(defaultResult.details.round2.every((r) => /cross-model fallback deferred/.test(r.fallbackBlockReason)));
 
 	const explicitMarker = scratch("explicit-rebuttal-no-fallback-marker");
 	process.env.FAKE_PI_MARKER = explicitMarker;
@@ -4261,7 +4261,7 @@ test("implement dispatches only the first worker pool candidate", async (t) => {
 	assert.equal(res.isError, true);
 	assert.equal(res.details.round1[0].requested.model, LUNA);
 	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback disabled/);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()

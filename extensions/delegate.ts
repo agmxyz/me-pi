@@ -373,7 +373,7 @@ export interface ModelEntry {
 }
 
 export interface ModelPool {
-	/** Ordered candidates; only the first is dispatched while child-endpoint pinning is unavailable. */
+	/** Ordered candidates; dispatch selects only the first, with cross-model fallback deferred. */
 	models: ModelEntry[];
 	/** Thinking for models without an entry (the session model when the pool is empty); omitted means the main session's level. */
 	thinking?: string;
@@ -517,7 +517,7 @@ export interface ResolvedCandidate {
 }
 
 export interface ResolvedRun {
-	/** Candidate models in attempt order; an undefined model means Pi's session model. */
+	/** Role selection snapshot; only its first candidate is dispatched. An undefined model means Pi's session model. */
 	candidates: ResolvedCandidate[];
 	model?: string;
 	thinking: string;
@@ -566,15 +566,6 @@ export function resolveRun(
 	return { candidates: withOverrides, model: first.model, thinking: first.thinking };
 }
 
-function resumeRun(base: ResolvedRun, result: RunResult): ResolvedRun {
-	const index = base.candidates.findIndex(
-		(candidate) => candidate.model === result.requested.model && candidate.thinking === result.requested.thinking,
-	);
-	const candidates = base.candidates.slice(index < 0 ? 0 : index);
-	const first = candidates[0];
-	return { candidates, model: first.model, thinking: first.thinking };
-}
-
 function initialActivity(
 	runs: ResolvedRun[],
 	personas: Persona[],
@@ -589,7 +580,6 @@ function initialActivity(
 			thinking: candidate.thinking,
 			startedAt,
 			active: true,
-			fallbacks: 0,
 			persona: personas[index],
 		};
 	});
@@ -660,11 +650,9 @@ export interface RunResult {
 	output: string;
 	failure?: string;
 	fallbackAttempts?: FallbackAttempt[];
-	fallbackMessage?: string;
 	fallbackBlockReason?: string;
 	provenance?: AttemptProvenance[];
 	toolCallCount?: number;
-	fallbackRequested?: boolean;
 	turns: number;
 	usage: Record<string, any>;
 	tools: string[];
@@ -853,7 +841,6 @@ function runWorkerAttempt(
 	budget: AttemptBudget,
 	attemptIndex: number,
 	approve = false,
-	shouldSwitchCandidate?: (fact: ProviderRetryFact, provenance: AttemptProvenance, result: RunResult) => boolean,
 ): Promise<RunResult> {
 	const start = Date.now();
 	const { role, web } = job;
@@ -871,6 +858,7 @@ function runWorkerAttempt(
 		output: "",
 		provenance: [provenance],
 		toolCallCount: 0,
+		fallbackAttempts: [],
 		turns: 0,
 		usage: {},
 		tools: [],
@@ -1238,12 +1226,9 @@ function runWorkerAttempt(
 				const after = [problem, stopped && `stopped: ${stopped}`, code !== 0 && `exit ${code}`].filter(Boolean);
 				if (after.length) result.stderr += `\ndelegate: after the final answer: ${after.join("; ")}`;
 			} else if (problem) result.failure = problem;
-			else if (stopped && !result.fallbackRequested) result.failure = `stopped: ${stopped}`;
-			else if (stopped && result.fallbackRequested) {
-				if (!result.failure) result.failure = "Pi runtime classified this provider request as retryable";
-				else if (code !== 0 && code !== null) result.failure = `exit ${code}: ${result.failure}`;
-			} else if (code !== 0)
-				result.failure = `exit ${code}: ${result.failure ?? (lastStderr || "no error message")}`;
+			else if (stopped)
+				result.failure = result.failure ? `${result.failure}; stopped: ${stopped}` : `stopped: ${stopped}`;
+			else if (code !== 0) result.failure = `exit ${code}: ${result.failure ?? (lastStderr || "no error message")}`;
 			else if (!result.failure)
 				result.failure = result.output.trim() ? "worker ended without a final answer" : "worker produced no answer";
 			done(result);
@@ -1319,10 +1304,7 @@ function runWorkerAttempt(
 					resource: "provider",
 					effect: "unknown",
 				});
-				if (shouldSwitchCandidate?.(providerRetry, provenance, result)) {
-					result.fallbackRequested = true;
-					stop("switching after Pi runtime retry classification");
-				}
+				result.fallbackBlockReason = retryRefusalReason(job, run.model, provenance, result, budget);
 				return;
 			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
@@ -1397,37 +1379,25 @@ function runWorkerAttempt(
 	});
 }
 
-// The coordinator's ModelRegistry snapshot is not the fresh child's request boundary: `pi --model`
-// loads its own config/extensions and resolves request-time authentication after task data is supplied.
-// Installed Pi exposes no supported endpoint-only child pin, so all cross-model fallback is unavailable.
-const FALLBACK_DISABLED_REASON =
-	"cross-model fallback disabled: Pi's child request boundary cannot bind the effective provider endpoint before task data is sent";
-
-function fallbackDenial(
+// Pi's fresh child cannot bind its effective endpoint before task data is sent, so a
+// structured retry can never authorize dispatch of another pool candidate in this release.
+function retryRefusalReason(
 	job: Job,
-	next: ResolvedCandidate | undefined,
+	model: string | undefined,
 	provenance: AttemptProvenance,
-	candidate: ResolvedCandidate,
-	costSpent: number,
-	currentCost: number,
-	toolCallsSpent: number,
-	currentToolCalls: number,
-	hardDeadline: number,
-	toolDeadline: number,
-	hardCostCap: number,
-	toolCostCap: number,
+	result: RunResult,
+	budget: AttemptBudget,
 ): string {
-	if (!next?.model) return "next candidate has no exact model identity";
-	if (!candidate.model) return "the failing model has no exact provider/model identity";
-	const slash = candidate.model.indexOf("/");
+	if (!model) return "the selected session model has no exact provider/model identity";
+	const slash = model.indexOf("/");
 	if (
 		slash <= 0 ||
 		!provenance.providerRetry ||
-		provenance.providerRetry.provider !== candidate.model.slice(0, slash) ||
-		provenance.providerRetry.model !== candidate.model.slice(slash + 1)
+		provenance.providerRetry.provider !== model.slice(0, slash) ||
+		provenance.providerRetry.model !== model.slice(slash + 1)
 	)
 		return "no correlated Pi runtime retry classification is available";
-	if (!provenance.complete) return "attempt provenance is incomplete";
+	if (!provenance.complete) return "attempt provenance is incomplete; replay is refused";
 	if (provenance.stopFacts.some((fact) => fact.cause !== "provider-retry-classified"))
 		return "a competing safety stop prevents replay";
 	if (provenance.toolEffects.some((fact) => !fact.replaySafe || fact.effect !== "completed"))
@@ -1448,24 +1418,24 @@ function fallbackDenial(
 			});
 	};
 	const now = Date.now();
-	const hardTimeSpent = now >= hardDeadline;
-	const toolTimeSpent = now >= toolDeadline;
+	const hardTimeSpent = now >= budget.hardDeadline;
+	const toolTimeSpent = now >= budget.toolDeadline;
 	if (hardTimeSpent) retainLimitStop("hard-timeout", "hard-time");
 	if (toolTimeSpent) retainLimitStop("wrap-up-limit", "tool-time");
 	if (hardTimeSpent) return "the original hard deadline is spent";
 	if (toolTimeSpent) return "the original tool deadline is spent";
-	const hardCostSpent = costSpent + currentCost >= hardCostCap;
-	const toolCostSpent = costSpent + currentCost >= toolCostCap;
+	const currentCost = costOf(result.usage);
+	const hardCostSpent = currentCost >= budget.hardCostCapUsd;
+	const toolCostSpent = currentCost >= budget.toolCostCapUsd;
 	if (hardCostSpent) retainLimitStop("hard-cost-limit", "hard-cost");
 	if (toolCostSpent) retainLimitStop("wrap-up-limit", "tool-cost");
 	if (hardCostSpent) return "the cumulative hard cost allowance is spent";
 	if (toolCostSpent) return "the cumulative tool cost allowance is spent";
-	const scoutCallsSpent = job.role === "scout" && toolCallsSpent + currentToolCalls >= LIMITS.scoutToolCalls;
-	if (scoutCallsSpent) {
+	if (job.role === "scout" && budget.toolCalls !== null && (result.toolCallCount ?? 0) >= budget.toolCalls) {
 		retainLimitStop("wrap-up-limit", "tool-calls");
 		return "the cumulative scout tool-call allowance is spent";
 	}
-	return FALLBACK_DISABLED_REASON;
+	return "cross-model fallback deferred until child-boundary endpoint enforcement and positive scope/budget tests are available";
 }
 
 function persistFailedToolCapture(
@@ -1491,8 +1461,6 @@ async function runWorker(
 	const toolDeadline = start + LIMITS.wrapUpShare * secs * 1000;
 	const hardCostCap = LIMITS.costCapUsd;
 	const toolCostCap = LIMITS.wrapUpShare * hardCostCap;
-	let costSpent = 0;
-	let toolCallsSpent = 0;
 	const candidates = Object.freeze(
 		(run.candidates.length ? run.candidates : [{ model: undefined, thinking: run.thinking }]).map((candidate) =>
 			Object.freeze({ ...candidate }),
@@ -1517,179 +1485,29 @@ async function runWorker(
 		}
 	}
 
-	const attempts: RunResult[] = [];
-	const fallbackAttempts: FallbackAttempt[] = [];
-	for (let i = 0; i < candidates.length; i++) {
-		if (i > 0) {
-			const previous = attempts.at(-1);
-			if (previous) {
-				previous.fallbackRequested = false;
-				previous.fallbackBlockReason = FALLBACK_DISABLED_REASON;
-				previous.failure = `${previous.failure ?? "provider request failed"}; pool fallback stopped: ${FALLBACK_DISABLED_REASON}`;
-			}
-			break;
-		}
-		const candidate = candidates[i];
-		const { model, thinking } = candidate;
-		const remainingMs = hardDeadline - Date.now();
-		const remainingCost = hardCostCap - costSpent;
-		const remainingToolCost = toolCostCap - costSpent;
-		const remainingToolCalls = job.role === "scout" ? LIMITS.scoutToolCalls - toolCallsSpent : null;
-		if (
-			remainingMs <= 0 ||
-			remainingCost <= 0 ||
-			(i > 0 && remainingToolCost <= 0) ||
-			(remainingToolCalls !== null && remainingToolCalls <= 0)
-		) {
-			const last = attempts.at(-1);
-			const timeSpent = remainingMs <= 0;
-			const hardCostSpent = remainingCost <= 0;
-			const reason = timeSpent
-				? "time limit"
-				: hardCostSpent
-					? `cost cap $${hardCostCap}`
-					: remainingToolCalls !== null && remainingToolCalls <= 0
-						? "tool-call budget"
-						: "tool cost budget";
-			if (last) {
-				last.failure = `stopped: ${reason} reached before trying ${model ?? "session model"}`;
-				last.provenance?.at(-1)?.stopFacts.push({
-					owner: "delegate-parent",
-					jobId: job.jobId,
-					attempt: last.provenance.at(-1)?.attempt ?? 1,
-					cause: timeSpent ? "hard-timeout" : hardCostSpent ? "hard-cost-limit" : "wrap-up-limit",
-					resource: timeSpent
-						? "hard-time"
-						: hardCostSpent
-							? "hard-cost"
-							: remainingToolCalls !== null && remainingToolCalls <= 0
-								? "tool-calls"
-								: "tool-cost",
-					effect: "not-started",
-				});
-			}
-			break;
-		}
-		const budget: AttemptBudget = {
-			hardDeadline,
-			hardCostCapUsd: remainingCost,
-			toolDeadline,
-			toolCostCapUsd: Math.max(0, Math.min(remainingToolCost, remainingCost)),
-			toolCalls: remainingToolCalls,
-		};
-		// `--approve` only on the first candidate: cross-model fallback is disabled at the child request boundary.
-		const approve = job.implement?.trusted === true && i === 0;
-		const nextCandidate = candidates[i + 1];
-		const attempt = await runWorkerAttempt(
-			job,
-			prompt,
-			{ model, thinking },
-			cwd,
-			signal,
-			(r) =>
-				onProgress({
-					...r,
-					tools: [...attempts.flatMap((previous) => previous.tools), ...r.tools].slice(-MAX_TOOL_HISTORY),
-					fallbackAttempts: [...fallbackAttempts],
-				}),
-			outDir,
-			budget,
-			i + 1,
-			approve,
-			(fact, provenance, current) => {
-				const denied = fallbackDenial(
-					job,
-					nextCandidate,
-					provenance,
-					candidate,
-					costSpent,
-					costOf(current.usage),
-					toolCallsSpent,
-					current.toolCallCount ?? 0,
-					hardDeadline,
-					toolDeadline,
-					hardCostCap,
-					toolCostCap,
-				);
-				if (denied) {
-					current.fallbackBlockReason = denied;
-					return false;
-				}
-				return fact.provider === candidate.model?.slice(0, candidate.model.indexOf("/"));
-			},
-		);
-		attempts.push(attempt);
-		const currentCost = costOf(attempt.usage);
-		costSpent += currentCost;
-		toolCallsSpent += attempt.toolCallCount ?? 0;
-		if (i === candidates.length - 1 || !attempt.fallbackRequested) {
-			if (
-				nextCandidate &&
-				!attempt.fallbackBlockReason &&
-				attempt.failure &&
-				!attempt.provenance?.[0]?.providerRetry
-			)
-				attempt.fallbackBlockReason = "Pi runtime supplied no structured retry classification";
-			break;
-		}
-		const provenance = attempt.provenance?.[0];
-		const denied = provenance
-			? fallbackDenial(
-					job,
-					nextCandidate,
-					provenance,
-					candidate,
-					costSpent - currentCost,
-					currentCost,
-					toolCallsSpent - (attempt.toolCallCount ?? 0),
-					attempt.toolCallCount ?? 0,
-					hardDeadline,
-					toolDeadline,
-					hardCostCap,
-					toolCostCap,
-				)
-			: "attempt provenance is missing";
-		if (denied) {
-			attempt.fallbackRequested = false;
-			attempt.fallbackBlockReason = denied;
-			attempt.failure = `${attempt.failure ?? "provider request failed"}; pool fallback stopped: ${denied}`;
-			break;
-		}
-		fallbackAttempts.push({
-			model,
-			thinking,
-			failure: attempt.failure ?? "Pi runtime classified this provider request as retryable",
-			nextModel: nextCandidate.model,
-			nextThinking: nextCandidate.thinking,
-		});
-		const next = `${nextCandidate.model ?? "session model"} @${nextCandidate.thinking}`;
-		onProgress({
-			...attempt,
-			requested: { model: nextCandidate.model, thinking: nextCandidate.thinking },
-			fallbackAttempts: [...fallbackAttempts],
-			fallbackMessage: `${model ?? "session model"} @${thinking} failed (${attempt.failure}); trying ${next}`,
-		});
-	}
-
-	const last = attempts.at(-1);
-	if (!last) throw new Error("delegate worker pool has no candidates");
-	const usage: Record<string, any> = {};
-	for (const attempt of attempts) addUsage(usage, attempt.usage);
-	return {
-		...last,
-		usage,
-		turns: attempts.reduce((sum, attempt) => sum + attempt.turns, 0),
-		tools: attempts.flatMap((attempt) => attempt.tools).slice(-MAX_TOOL_HISTORY),
-		stderr: attempts
-			.map((attempt) => attempt.stderr)
-			.filter(Boolean)
-			.join("\n")
-			.slice(-4096),
-		ms: Date.now() - start,
-		fallbackAttempts,
-		provenance: attempts.flatMap((attempt) => attempt.provenance ?? []),
-		toolCallCount: attempts.reduce((sum, attempt) => sum + (attempt.toolCallCount ?? 0), 0),
+	const candidate = Object.freeze({ ...candidates[0] });
+	const budget: AttemptBudget = {
+		hardDeadline,
+		hardCostCapUsd: hardCostCap,
+		toolDeadline,
+		toolCostCapUsd: toolCostCap,
+		toolCalls: job.role === "scout" ? LIMITS.scoutToolCalls : null,
 	};
+	const attempt = await runWorkerAttempt(
+		job,
+		prompt,
+		candidate,
+		cwd,
+		signal,
+		onProgress,
+		outDir,
+		budget,
+		1,
+		job.implement?.trusted === true,
+	);
+	if (candidates.length > 1 && attempt.failure && !attempt.provenance?.[0]?.providerRetry)
+		attempt.fallbackBlockReason ??= "Pi runtime supplied no structured retry classification";
+	return attempt;
 }
 
 // --- Result formatting ----------------------------------------------------------------------------
@@ -1749,11 +1567,6 @@ function runView(
 		output: r.output ?? "",
 		outDir: r.outDir,
 		files: r.files,
-		fallbacks: r.fallbackAttempts?.map(
-			(a) =>
-				`${a.model ?? "session model"} @${a.thinking} failed (${a.failure}); next ${a.nextModel ?? "session model"} @${a.nextThinking}`,
-		),
-		fallbackMessage: r.fallbackMessage,
 	};
 }
 
@@ -1767,11 +1580,7 @@ function formatRun(r: RunResult): string {
 		const partial = r.output.trim() ? `\nPartial answer:\n${cap(r.output.trim(), FAILED_PARTIAL_CAP)}` : "";
 		body = `✗ ${r.failure}${r.fallbackBlockReason ? `\nPool fallback not attempted: ${r.fallbackBlockReason}.` : ""}${partial}${filesLine(r)}\n${label(r)}`;
 	}
-	const fallbacks = (r.fallbackAttempts ?? []).map(
-		(a) =>
-			`↻ ${a.model ?? "session model"} @${a.thinking} failed (${a.failure}); trying ${a.nextModel ?? "session model"} @${a.nextThinking}`,
-	);
-	return [...fallbacks, body].join("\n");
+	return body;
 }
 
 function rebuttalPrompt(task: string, own: RunResult, others: RunResult[]): string {
@@ -1842,7 +1651,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Only the first configured candidate is dispatched; cross-model fallback is disabled because the child cannot bind its effective endpoint. Explicit models remain exact. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Only the first configured candidate is dispatched; cross-model fallback is deferred pending supported child-boundary endpoint enforcement and positive scope/budget tests. Explicit models remain exact. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
@@ -1876,7 +1685,7 @@ function buildSchema() {
 			fallbackAuthorization: {
 				type: "object",
 				description:
-					"Coordinator scope intent only; this release disables cross-model fallback because the fresh Pi child cannot bind its effective provider endpoint before sending task data. Supplying this object does not enable fallback or authorize a destination.",
+					"Coordinator scope intent only; cross-model fallback is deferred until the fresh Pi child can enforce its effective provider endpoint before task data is sent and positive scope/budget tests pass. Supplying this object does not enable fallback or authorize a destination.",
 				additionalProperties: false,
 				properties: {
 					authorizationRef: { type: "string", minLength: 1 },
@@ -2109,7 +1918,6 @@ export default function (pi: ExtensionAPI) {
 					thinking: worker.thinking,
 					startedAt: worker.startedAt,
 					lastTool: worker.lastTool,
-					fallbacks: worker.fallbacks,
 					stage: call.stage ?? "Workers",
 					persona: worker.persona,
 				})),
@@ -2206,7 +2014,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Cross-model candidate fallback is currently disabled because the fresh Pi child cannot bind its effective provider endpoint before task data is sent; the first selected candidate still runs, and explicit models stay exact. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Only the first selected candidate is dispatched; cross-model fallback is deferred until supported child-boundary endpoint enforcement and positive scope/budget tests are available, and explicit models stay exact. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),
@@ -2423,7 +2231,6 @@ export default function (pi: ExtensionAPI) {
 									startedAt: callState.workers?.[i]?.startedAt ?? callState.start,
 									active: !finished[i],
 									lastTool: run.lastTool,
-									fallbacks: run.fallbacks?.length ?? 0,
 									persona: runPersonas[i],
 								}));
 								updateActivityWidget(ctx, ended);
@@ -2490,10 +2297,6 @@ export default function (pi: ExtensionAPI) {
 							answer: r.output,
 							label: label(r),
 							tools: r.tools,
-							fallbacks: r.fallbackAttempts?.map(
-								(a) =>
-									`${a.model ?? "session model"} @${a.thinking} failed (${a.failure}); next ${a.nextModel ?? "session model"} @${a.nextThinking}`,
-							),
 							stderr: r.stderr,
 						});
 					}
@@ -2515,11 +2318,11 @@ export default function (pi: ExtensionAPI) {
 									ok.filter((o) => o !== r),
 								),
 							);
-							// Keep each original run's explicit/default selection while resuming at its successful candidate.
+							// Each rebuttal remains on the same selected model and thinking level.
 							round2 = await round(
 								"Rebuttal",
 								prompts,
-								ok.map((r) => resumeRun(resolved[round1.indexOf(r)], r)),
+								ok.map((r) => resolved[round1.indexOf(r)]),
 								ok.map((r) => personas[round1.indexOf(r)]),
 							);
 							shown = round1.map((run) => {

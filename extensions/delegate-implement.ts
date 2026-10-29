@@ -212,7 +212,6 @@ export type Outcome = {
 	// `[model @thinking $cost 12s]`.
 	label?: string;
 	tools?: string[];
-	fallbacks?: string[];
 	stderr?: string;
 	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
 	provenance?: AttemptProvenance[];
@@ -806,7 +805,6 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 		...section("Failure", o.failure),
 		...section("Answer", o.answer),
 		...section("Tools", o.tools?.join("\n")),
-		...section("Fallbacks", o.fallbacks?.join("\n")),
 		...section("Stderr (tail)", o.stderr),
 		...section(
 			"Failed tool diagnostics",

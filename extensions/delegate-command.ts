@@ -29,7 +29,6 @@ export interface ActiveWorker {
 	startedAt: number;
 	active: boolean;
 	lastTool?: string;
-	fallbacks: number;
 	persona: Persona;
 }
 
