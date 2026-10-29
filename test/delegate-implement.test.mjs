@@ -376,7 +376,10 @@ test("finish flags a reset below the base, a merge commit, an old commit, a move
 		const facts = await finish(job, ok);
 		assert.equal(facts.failed, true, name);
 		assert.equal(facts.delivered.integrity, "tripped", name);
-		assert.ok(facts.stopFacts.some((fact) => fact.owner === "implement" && fact.cause === "integrity-tripwire"), name);
+		assert.ok(
+			facts.stopFacts.some((fact) => fact.owner === "implement" && fact.cause === "integrity-tripwire"),
+			name,
+		);
 		assert.match(formatHandback(facts), new RegExp(`^✗ .*${error.source}`, "m"), name);
 	}
 	rmSync(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), { force: true });

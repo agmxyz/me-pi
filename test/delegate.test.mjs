@@ -16,8 +16,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
-import { isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
 import { runToolCall } from "@earendil-works/pi-agent-core";
+import { isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
 
 // Scratch space for the fake pi binary, configs, and pid files.
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-test-"));
@@ -476,7 +476,13 @@ test("fallback authorization is validated and frozen as a dispatch snapshot", ()
 	const set = {
 		version: 2,
 		scout: { models: [], thinking: "low" },
-		worker: { models: [{ model: HAIKU, thinking: "max" }, { model: SONNET, thinking: "max" }], thinking: "max" },
+		worker: {
+			models: [
+				{ model: HAIKU, thinking: "max" },
+				{ model: SONNET, thinking: "max" },
+			],
+			thinking: "max",
+		},
 	};
 	const run = resolveRun("review", {}, set, undefined, "max");
 	const authorization = fallbackAuthorization([HAIKU, SONNET]);
@@ -1473,10 +1479,13 @@ test("fallback attempts share the worker cost cap", async (t) => {
 		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET, OPUS], { authority: "adopted-snapshot" }),
 	});
 	assert.equal(res.isError, true);
+	const stopFacts = res.details.round1[0].provenance.at(-1).stopFacts;
 	assert.ok(
-		res.details.round1[0].provenance.at(-1).stopFacts.some(
-			(fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-cost",
-		),
+		stopFacts.some((fact) => fact.cause === "hard-cost-limit" && fact.resource === "hard-cost"),
+		JSON.stringify(res.details.round1[0].provenance.at(-1)),
+	);
+	assert.ok(
+		stopFacts.some((fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-cost"),
 		JSON.stringify(res.details.round1[0].provenance.at(-1)),
 	);
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
@@ -1588,7 +1597,10 @@ test("configuration and authorization added after dispatch cannot authorize fall
 	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 	assert.match(res.details.round1[0].fallbackBlockReason, /no coordinator fallback restriction/);
 	assert.deepEqual(
-		readFileSync(marker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
 		[HAIKU],
 	);
 });
@@ -1673,13 +1685,19 @@ test("fallback fails closed on malformed evidence, shell 429s, prior effects, an
 		assert.deepEqual(res.details.round1[0].fallbackAttempts, [], mode);
 		assert.match(res.details.round1[0].fallbackBlockReason, reason, mode);
 		assert.deepEqual(
-			readFileSync(marker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+			readFileSync(marker, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line).model),
 			[HAIKU],
 			mode,
 		);
 		const provenance = res.details.round1[0].provenance[0];
 		if (kind === "tool-failure")
-			assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure"), mode);
+			assert.ok(
+				provenance.stopFacts.some((fact) => fact.cause === "tool-failure"),
+				mode,
+			);
 		if (kind === "completed-unsafe")
 			assert.deepEqual(provenance.toolEffects[0], {
 				owner: "pi-runtime",
@@ -1695,7 +1713,10 @@ test("fallback fails closed on malformed evidence, shell 429s, prior effects, an
 			assert.equal(provenance.toolEffects[0].effect, "unknown", mode);
 		}
 		if (kind === "guard-denial")
-			assert.ok(provenance.stopFacts.some((fact) => fact.owner === "guard" && fact.cause === "guard-denial"), mode);
+			assert.ok(
+				provenance.stopFacts.some((fact) => fact.owner === "guard" && fact.cause === "guard-denial"),
+				mode,
+			);
 	}
 });
 
@@ -1730,7 +1751,10 @@ test("fallback keeps the original tool deadline and retains a competing guard de
 		),
 	);
 	assert.deepEqual(
-		readFileSync(delayedMarker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+		readFileSync(delayedMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
 		[HAIKU],
 	);
 
@@ -1751,7 +1775,10 @@ test("fallback keeps the original tool deadline and retains a competing guard de
 	assert.ok(stopFacts.some((fact) => fact.owner === "delegate-parent" && fact.cause === "hard-timeout"));
 	assert.equal(stopped.details.round1[0].provenance[0].toolEffects[0].effect, "denied");
 	assert.deepEqual(
-		readFileSync(competingMarker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+		readFileSync(competingMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
 		[HAIKU],
 	);
 });
@@ -1777,10 +1804,16 @@ test("fallback preserves the cumulative scout tool-call allowance", async (t) =>
 	assert.match(res.details.round1[0].fallbackBlockReason, /cumulative scout tool-call allowance is spent/);
 	const provenance = res.details.round1[0].provenance[0];
 	assert.equal(res.details.round1[0].toolCallCount, 1);
-	assert.deepEqual(provenance.toolEffects.map(({ effect, replaySafe }) => [effect, replaySafe]), [["completed", true]]);
+	assert.deepEqual(
+		provenance.toolEffects.map(({ effect, replaySafe }) => [effect, replaySafe]),
+		[["completed", true]],
+	);
 	assert.ok(provenance.stopFacts.some((fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-calls"));
 	assert.deepEqual(
-		readFileSync(marker, "utf8").trim().split("\n").map((line) => JSON.parse(line).model),
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
 		[HAIKU],
 	);
 });
@@ -2362,7 +2395,9 @@ test("review pool isolates review selection, fallback, status, and explicit over
 	]);
 	assert.match(
 		text(sharedRes).split("\n")[0],
-		new RegExp(`^↻ ${SONNET} @high failed \\((?:exit 1: )?429 rate_limit_error: too many requests\\); trying ${OPUS} @medium$`),
+		new RegExp(
+			`^↻ ${SONNET} @high failed \\((?:exit 1: )?429 rate_limit_error: too many requests\\); trying ${OPUS} @medium$`,
+		),
 	);
 	assert.equal(text(sharedRes).split("\n")[1], "✗ stopped: cost cap $0.001 reached");
 	assert.equal(sharedRes.usage.cost.total, 0.004);
@@ -3742,7 +3777,10 @@ test("implement refuses fallback after a failed tool effect and preserves its ev
 	assert.equal(artifact.entries[0].exitCode.value, 3);
 	assert.equal(artifact.entries[0].command.effectiveCommand.state, "not-provided");
 	assert.equal(artifact.entries[0].command.effectiveCommand.value, null);
-	assert.deepEqual(artifact.entries.map((entry) => entry.toolName.text), ["bash"]);
+	assert.deepEqual(
+		artifact.entries.map((entry) => entry.toolName.text),
+		["bash"],
+	);
 });
 
 test("implement cancellation flushes failures and reports correlation anomalies", async (t) => {

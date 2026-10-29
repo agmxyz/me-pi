@@ -46,6 +46,16 @@ import {
 	workerEnv,
 } from "./delegate-implement.ts";
 import {
+	type AttemptProvenance,
+	isProviderRetryFact,
+	isStopFact,
+	type ProviderRetryFact,
+	type StopFact,
+	type StopResource,
+	TOOL_PROVENANCE_DETAIL_KEY,
+	type ToolEffectFact,
+} from "./delegate-provenance.ts";
+import {
 	type ActivityWidgetRow,
 	activityWidget,
 	type DelegateView,
@@ -56,17 +66,7 @@ import {
 	renderCall,
 	renderResult,
 } from "./delegate-render.ts";
-import {
-	isProviderRetryFact,
-	isStopFact,
-	TOOL_PROVENANCE_DETAIL_KEY,
-	type AttemptProvenance,
-	type ProviderRetryFact,
-	type StopFact,
-	type StopResource,
-	type ToolEffectFact,
-} from "./delegate-provenance.ts";
-import { gitTreeWrite, GUARD_STOP_EVENT, workerRisk } from "./guard.ts";
+import { GUARD_STOP_EVENT, gitTreeWrite, workerRisk } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
 export const LIMITS = {
@@ -632,7 +632,9 @@ export function resolveFallbackRestriction(
 		return invalid("Pi model registry cannot verify provider destinations and authentication");
 	const available = registry.getAvailable();
 	if (!Array.isArray(available)) return invalid("Pi returned an invalid available-model list");
-	const configured = new Set(runs.flatMap((run) => run.candidates.map((candidate) => candidate.model).filter(Boolean)));
+	const configured = new Set(
+		runs.flatMap((run) => run.candidates.map((candidate) => candidate.model).filter(Boolean)),
+	);
 	const candidates: FallbackCandidateScope[] = [];
 	const seen = new Set<string>();
 	for (const itemValue of input.candidates) {
@@ -663,14 +665,20 @@ export function resolveFallbackRestriction(
 		if (!destination || destination !== item.destination)
 			return invalid("a candidate destination does not match Pi's resolved provider endpoint");
 		if (!registry.hasConfiguredAuth(model)) return invalid("a candidate has no configured provider authentication");
-		if (!available.some((entry) => eventRecord(entry)?.provider === item.provider && eventRecord(entry)?.id === modelId))
+		if (
+			!available.some(
+				(entry) => eventRecord(entry)?.provider === item.provider && eventRecord(entry)?.id === modelId,
+			)
+		)
 			return invalid("a candidate is not currently available in Pi's model registry");
-		candidates.push(Object.freeze({
-			model: item.model,
-			provider: item.provider,
-			destination,
-			dataClasses: Object.freeze([...item.dataClasses]),
-		}));
+		candidates.push(
+			Object.freeze({
+				model: item.model,
+				provider: item.provider,
+				destination,
+				dataClasses: Object.freeze([...item.dataClasses]),
+			}),
+		);
 	}
 	const restriction = Object.freeze({
 		authorizationRef: input.authorizationRef.trim(),
@@ -968,11 +976,7 @@ function runWorkerAttempt(
 	budget: AttemptBudget,
 	attemptIndex: number,
 	approve = false,
-	shouldSwitchCandidate?: (
-		fact: ProviderRetryFact,
-		provenance: AttemptProvenance,
-		result: RunResult,
-	) => boolean,
+	shouldSwitchCandidate?: (fact: ProviderRetryFact, provenance: AttemptProvenance, result: RunResult) => boolean,
 ): Promise<RunResult> {
 	const start = Date.now();
 	const { role, web } = job;
@@ -1204,17 +1208,17 @@ function runWorkerAttempt(
 			const details = eventRecord(resultRecord?.details);
 			const hasMarker = Boolean(details && Object.hasOwn(details, TOOL_PROVENANCE_DETAIL_KEY));
 			const marker = details?.[TOOL_PROVENANCE_DETAIL_KEY];
-			let ownerFacts: StopFact[] = [];
+			const ownerFacts: StopFact[] = [];
 			if (hasMarker) {
 				if (!Array.isArray(marker)) provenance.complete = false;
 				else {
 					for (const value of marker) {
 						if (
 							!isStopFact(value) ||
-						value.jobId !== job.jobId ||
-						value.attempt !== attemptIndex ||
-						value.toolCallId !== toolCallId ||
-						(value.owner !== "guard" && value.owner !== "delegate-worker")
+							value.jobId !== job.jobId ||
+							value.attempt !== attemptIndex ||
+							value.toolCallId !== toolCallId ||
+							(value.owner !== "guard" && value.owner !== "delegate-worker")
 						) {
 							provenance.complete = false;
 							continue;
@@ -1280,6 +1284,14 @@ function runWorkerAttempt(
 			resource,
 			effect,
 		});
+		const retainParentFact = (cause: StopFact["cause"], resource: StopResource) => {
+			if (
+				!provenance.stopFacts.some(
+					(fact) => fact.owner === "delegate-parent" && fact.cause === cause && fact.resource === resource,
+				)
+			)
+				provenance.stopFacts.push(parentFact(cause, resource));
+		};
 		const stop = (reason: string, fact?: StopFact) => {
 			if (finished || stopped || pid === undefined) return;
 			stopped = reason;
@@ -1335,7 +1347,8 @@ function runWorkerAttempt(
 			else if (stopped && result.fallbackRequested) {
 				if (!result.failure) result.failure = "Pi runtime classified this provider request as retryable";
 				else if (code !== 0 && code !== null) result.failure = `exit ${code}: ${result.failure}`;
-			} else if (code !== 0) result.failure = `exit ${code}: ${result.failure ?? (lastStderr || "no error message")}`;
+			} else if (code !== 0)
+				result.failure = `exit ${code}: ${result.failure ?? (lastStderr || "no error message")}`;
 			else if (!result.failure)
 				result.failure = result.output.trim() ? "worker ended without a final answer" : "worker produced no answer";
 			done(result);
@@ -1434,9 +1447,16 @@ function runWorkerAttempt(
 					: undefined;
 			const bad = ["error", "aborted", "length"].includes(msg.stopReason);
 			result.failure = bad ? msg.errorMessage || `model stopped: ${msg.stopReason}` : undefined;
-			// A final reply ("stop") is kept even when it crosses the cap; only continuing runs are stopped.
-			if (msg.stopReason !== "stop" && costOf(result.usage) >= budget.hardCostCapUsd)
-				stop(`cost cap $${budget.hardCostCapUsd} reached`, parentFact("hard-cost-limit", "hard-cost"));
+			// Keep a final "stop" reply even over cap. For continuing replies, retain every spent dimension before
+			// enforcing hard cost: stopping the child may prevent its later auto_retry_start event.
+			if (msg.stopReason !== "stop") {
+				const currentCost = costOf(result.usage);
+				if (currentCost >= budget.toolCostCapUsd) retainParentFact("wrap-up-limit", "tool-cost");
+				if (currentCost >= budget.hardCostCapUsd) {
+					retainParentFact("hard-cost-limit", "hard-cost");
+					stop(`cost cap $${budget.hardCostCapUsd} reached`);
+				}
+			}
 			cancelPendingProgress();
 			onProgress(result);
 		};
@@ -1609,7 +1629,12 @@ async function runWorker(
 		const remainingCost = hardCostCap - costSpent;
 		const remainingToolCost = toolCostCap - costSpent;
 		const remainingToolCalls = job.role === "scout" ? LIMITS.scoutToolCalls - toolCallsSpent : null;
-		if (remainingMs <= 0 || remainingCost <= 0 || (i > 0 && remainingToolCost <= 0) || (remainingToolCalls !== null && remainingToolCalls <= 0)) {
+		if (
+			remainingMs <= 0 ||
+			remainingCost <= 0 ||
+			(i > 0 && remainingToolCost <= 0) ||
+			(remainingToolCalls !== null && remainingToolCalls <= 0)
+		) {
 			const last = attempts.at(-1);
 			const timeSpent = remainingMs <= 0;
 			const hardCostSpent = remainingCost <= 0;
@@ -1693,8 +1718,14 @@ async function runWorker(
 		costSpent += currentCost;
 		toolCallsSpent += attempt.toolCallCount ?? 0;
 		if (i === candidates.length - 1 || !attempt.fallbackRequested) {
-			if (nextCandidate && !attempt.fallbackBlockReason && attempt.failure && !attempt.provenance?.[0]?.providerRetry)
-				attempt.fallbackBlockReason = job.fallbackRestrictionIssue ?? "Pi runtime supplied no structured retry classification";
+			if (
+				nextCandidate &&
+				!attempt.fallbackBlockReason &&
+				attempt.failure &&
+				!attempt.provenance?.[0]?.providerRetry
+			)
+				attempt.fallbackBlockReason =
+					job.fallbackRestrictionIssue ?? "Pi runtime supplied no structured retry classification";
 			break;
 		}
 		const provenance = attempt.provenance?.[0];
@@ -1953,16 +1984,17 @@ function buildSchema() {
 						items: {
 							type: "object",
 							additionalProperties: false,
-						properties: {
-							model: { type: "string", minLength: 1 },
-							provider: { type: "string", minLength: 1 },
-							destination: {
-								type: "string",
-								minLength: 1,
-								description: "Exact credential-free https/http base URL origin and path from Pi's model registry; query, hash, and embedded credentials are not accepted.",
+							properties: {
+								model: { type: "string", minLength: 1 },
+								provider: { type: "string", minLength: 1 },
+								destination: {
+									type: "string",
+									minLength: 1,
+									description:
+										"Exact credential-free https/http base URL origin and path from Pi's model registry; query, hash, and embedded credentials are not accepted.",
+								},
+								dataClasses: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
 							},
-							dataClasses: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
-						},
 							required: ["model", "provider", "destination", "dataClasses"],
 						},
 					},
@@ -2095,12 +2127,7 @@ export default function (pi: ExtensionAPI) {
 			result.details = { ...details, [TOOL_PROVENANCE_DETAIL_KEY]: marker };
 		});
 		pi.on("tool_call", async (event, ctx) => {
-			const recordBlock = (
-				reason: string,
-				cause: StopFact["cause"],
-				resource: StopResource,
-				terminate = false,
-			) => {
+			const recordBlock = (reason: string, cause: StopFact["cause"], resource: StopResource, terminate = false) => {
 				if (hasIdentity && event.toolCallId) {
 					const fact: StopFact = {
 						owner: "delegate-worker",
@@ -2122,7 +2149,7 @@ export default function (pi: ExtensionAPI) {
 			const nextCall = ++calls;
 			const spent = budget && budgetSpent(budget, nextCall, cost);
 			if (spent) {
-				const resource = budget ? budgetResource(budget, nextCall, cost) ?? "tool-time" : "tool-time";
+				const resource = budget ? (budgetResource(budget, nextCall, cost) ?? "tool-time") : "tool-time";
 				return recordBlock(
 					`Blocked: budget reached (${spent}). Stop using tools; give your final answer now, and list what is unverified.`,
 					"wrap-up-limit",
@@ -2288,8 +2315,17 @@ export default function (pi: ExtensionAPI) {
 				details,
 				isError: true,
 			});
-			const { role = "general", task, web, answer, output, rebuttal, background, check, fallbackAuthorization } =
-				params ?? {};
+			const {
+				role = "general",
+				task,
+				web,
+				answer,
+				output,
+				rebuttal,
+				background,
+				check,
+				fallbackAuthorization,
+			} = params ?? {};
 			const unknown = Object.keys(params ?? {}).filter(
 				(k) =>
 					![
@@ -2406,7 +2442,12 @@ export default function (pi: ExtensionAPI) {
 				// Tracked through the shutdown-time finish: session_shutdown snapshots `running` once, so the finish
 				// for a session that ended during prepare must be part of the same promise.
 				const preparing = (async () => {
-					const prepared = await prepareImplement(ctx?.cwd ?? process.cwd(), implementId!, check.trim(), String(_id));
+					const prepared = await prepareImplement(
+						ctx?.cwd ?? process.cwd(),
+						implementId!,
+						check.trim(),
+						String(_id),
+					);
 					if (ended.aborted) await finishImplement(prepared, { failure: "stopped: session ended" });
 					return prepared;
 				})();
@@ -2418,7 +2459,10 @@ export default function (pi: ExtensionAPI) {
 				try {
 					co = await preparing;
 				} catch (err: any) {
-					return fail(err?.message ?? String(err), err instanceof ImplementLockRefusal ? { stopFacts: [err.stopFact] } : {});
+					return fail(
+						err?.message ?? String(err),
+						err instanceof ImplementLockRefusal ? { stopFacts: [err.stopFact] } : {},
+					);
 				} finally {
 					running.delete(settled);
 					active.delete(slot);

@@ -337,7 +337,11 @@ async function takeLock(lockPath: string, id: string, repoRoot: string, toolCall
 			// Another takeover won between the read and the rename: put its lock back.
 			await link(aside, lockPath).catch(() => {});
 			await rm(aside, { force: true });
-			throw new ImplementLockRefusal(`another implement job just took the lock in ${repoRoot}; wait for its handback`, id, toolCallId);
+			throw new ImplementLockRefusal(
+				`another implement job just took the lock in ${repoRoot}; wait for its handback`,
+				id,
+				toolCallId,
+			);
 		}
 		await rm(aside, { force: true });
 	}
@@ -617,16 +621,14 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 	} else if (head.out.trim() !== job.ref) {
 		markIntegrity(facts, "tripped");
 		facts.problems.push(`HEAD moved: now ${head.out.trim()}, not ${job.branch}; no WIP commit`);
-	}
-	else {
+	} else {
 		// 2. Leftovers become one WIP commit; ignored files are not added. Hooks and signing are off: this commit
 		// only saves work, and a worker may have set core.hooksPath.
 		const status = await git(job.repoRoot, ["status", "--porcelain"]);
 		if (!status.ok) {
 			markIntegrity(facts, "unknown");
 			facts.problems.push(`git status failed: ${status.err}`);
-		}
-		else if (status.out.trim()) {
+		} else if (status.out.trim()) {
 			const why = failureLine(facts.outcome.failure) ?? "left uncommitted by the worker";
 			const [files, more] = capped(status.out.replace(/^.{3}/gm, ""), MAX_WIP_FILES);
 			const add = await git(job.repoRoot, ["add", "-A"]);
@@ -647,8 +649,7 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 			if (!commit.ok) {
 				markIntegrity(facts, "unknown");
 				facts.problems.push(`WIP commit failed: ${commit.err}; the tree is left dirty`);
-			}
-			else {
+			} else {
 				const sha = await git(job.repoRoot, ["rev-parse", "--short", "HEAD"]);
 				if (!sha.ok) facts.problems.push(`WIP commit made, but its sha is unreadable: ${sha.err}`);
 				facts.wip = { sha: sha.ok ? sha.out.trim() : "(unknown)", reason: why, files: files.map(shown), more };
