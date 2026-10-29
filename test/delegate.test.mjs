@@ -3302,13 +3302,13 @@ test("implement gets its own time limit; the wrap-up deadline is 80% of it", asy
 	const res = await run(tool, implement(), undefined, undefined, ctx);
 	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
 	const budget = JSON.parse(details.match(/^\{"tools".*\}$/m)[0]);
-	assert.equal(LIMITS.implementTimeoutSecs, 1800);
+	assert.equal(LIMITS.implementTimeoutSecs, 2700);
 	assert.equal(LIMITS.costCapUsd, 5);
 	assert.equal(budget.tools, null);
 	assert.ok(Number.isFinite(budget.deadline));
 	assert.ok(Number.isFinite(budget.cost));
 	assert.equal(budget.cost, 4);
-	assert.ok(budget.deadline >= before + 1800 * 800 && budget.deadline <= Date.now() + 1800 * 800);
+	assert.ok(budget.deadline >= before + 2700 * 800 && budget.deadline <= Date.now() + 2700 * 800);
 });
 
 test("implement: no --approve on a fallback attempt", async (t) => {

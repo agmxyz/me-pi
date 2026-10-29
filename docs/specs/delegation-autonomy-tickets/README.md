@@ -10,14 +10,14 @@ Temporary cleanup set, only at a later user-approved cleanup point: the existing
 
 ## Tickets and status
 
-All statuses are **PENDING**; these drafts are not implementation evidence.
+Statuses are **PENDING** unless marked DONE; DONE rows point to local commits, which are the implementation evidence.
 
 | ID | Scope | Status |
 |---|---|---|
 | [A0](A0.md) | Repo-owned single-task and ticket-graph skills; safe user-level discovery | Pending; A0-source prerequisite for A4 authoring, A0-live for A4 activation |
 | [A1](A1.md) | Coordinator workflow and artifact-ownership guide | Pending; prerequisite for A4 |
 | [A2](A2.md) | Typed stop provenance and safe fallback authorization | Pending; prerequisite for A4 |
-| [A3](A3.md) | 45-minute implement hard-time default | Pending; prerequisite for A4 |
+| [A3](A3.md) | 45-minute implement hard-time default | DONE (local commit); prerequisite for A4 |
 | [A4](A4.md) | Bounded recovery policy (authored INACTIVE) and later activation | Pending; authoring blocked by A0-source+A1+A2+A3; activation needs A0-live + separate user approval |
 | [A5](A5.md) | Optional review model pool, selection only | Pending; independent of A2/A4 |
 | [A6](A6.md) | Concurrent worktree writers | Pending, deferred design-only; not a current delivery blocker |

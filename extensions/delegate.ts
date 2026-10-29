@@ -60,7 +60,7 @@ import { gitTreeWrite, workerRisk } from "./guard.ts";
 export const LIMITS = {
 	scoutTimeoutSecs: 300,
 	timeoutSecs: 900,
-	implementTimeoutSecs: 1800,
+	implementTimeoutSecs: 2700,
 	costCapUsd: 5,
 	exitGraceMs: 1000,
 	// implement: SIGTERM first, so Pi stops its bash commands before finish commits WIP.
