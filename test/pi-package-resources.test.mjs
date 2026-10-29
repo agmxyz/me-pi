@@ -20,16 +20,11 @@ async function createPackageFixture(parent) {
 	const packageRoot = join(parent, "package");
 	await mkdir(packageRoot);
 	await cp(join(root, "extensions"), join(packageRoot, "extensions"), { recursive: true });
+	await cp(join(root, "skills"), join(packageRoot, "skills"), { recursive: true });
 	await symlink(join(root, "node_modules"), join(packageRoot, "node_modules"), "dir");
 	await writeFile(
 		join(packageRoot, "package.json"),
 		`${JSON.stringify(JSON.parse(readFileSync(join(root, "package.json"), "utf8")), null, 2)}\n`,
-	);
-	const skillDir = join(packageRoot, "skills/implement-spec-me-pi");
-	await mkdir(skillDir, { recursive: true });
-	await writeFile(
-		join(skillDir, "SKILL.md"),
-		"---\nname: implement-spec-me-pi\ndescription: Package fixture that must remain undiscovered.\n---\n\nPackage fixture skill.\n",
 	);
 	return packageRoot;
 }

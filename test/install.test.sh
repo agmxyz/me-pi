@@ -35,6 +35,16 @@ for entry in tracked.split(b"\0"):
     destination = os.path.join(fixture, relative)
     os.makedirs(os.path.dirname(destination), exist_ok=True)
     shutil.copy2(original, destination, follow_symlinks=False)
+for relative in (
+    "skills/implement-me-pi/SKILL.md",
+    "skills/implement-spec-me-pi/SKILL.md",
+):
+    original = os.path.join(source, relative)
+    if not os.path.isfile(original):
+        continue
+    destination = os.path.join(fixture, relative)
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    shutil.copy2(original, destination)
 PY
 git init -q --template= "$FIXTURE"
 git -C "$FIXTURE" config core.hooksPath /dev/null
@@ -164,6 +174,19 @@ check() { # <description> <command...>
 }
 
 assert_link() { [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]; }
+assert_skill_links() {
+  local agent_dir="$1" repo_root="$2"
+  assert_link "$agent_dir/skills/implement-me-pi" "$repo_root/skills/implement-me-pi" &&
+    assert_link "$agent_dir/skills/implement-spec-me-pi" "$repo_root/skills/implement-spec-me-pi"
+}
+assert_skill_discovery() {
+  local home="$1" agent_dir="$2" project
+  shift 2
+  for project in "$@"; do
+    HOME="$home" PI_CODING_AGENT_DIR="$agent_dir" \
+      node "$SOURCE_REPO/test/fixtures/user-skill-discovery-harness.mjs" "$project" || return 1
+  done
+}
 assert_file_text() { printf '%s\n' "$2" | cmp -s - "$1"; }
 
 run_installer() { # <temporary HOME> <output file>
@@ -259,7 +282,27 @@ assert_single_install_logs() {
 HOME_FRESH="$TMP/home-fresh"
 PI_AGENT="$HOME_FRESH/.pi/agent"
 AGENTS_HOME="$HOME_FRESH/.agents"
-mkdir -p "$PI_AGENT"
+ORIGINAL_IMPLEMENT="$AGENTS_HOME/skills/implement/SKILL.md"
+ORIGINAL_IMPLEMENT_SPEC="$AGENTS_HOME/skills/implement-spec/SKILL.md"
+mkdir -p "$PI_AGENT" "$(dirname "$ORIGINAL_IMPLEMENT")" "$(dirname "$ORIGINAL_IMPLEMENT_SPEC")"
+cat > "$ORIGINAL_IMPLEMENT" <<'SKILL'
+---
+name: implement
+description: Isolated fixture for the existing implement skill.
+disable-model-invocation: true
+---
+
+Original implement fixture; preserve this content.
+SKILL
+cat > "$ORIGINAL_IMPLEMENT_SPEC" <<'SKILL'
+---
+name: implement-spec
+description: Isolated fixture for the existing implement-spec skill.
+disable-model-invocation: true
+---
+
+Original implement-spec fixture; preserve this content.
+SKILL
 node - "$PI_AGENT/settings.json" <<'NODE'
 const fs = require("node:fs");
 const settingsPath = process.argv[2];
@@ -276,6 +319,11 @@ if [ "$INSTALL_RC" -ne 0 ]; then
 fi
 
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
+check "both repo skills linked once at user level" assert_skill_links "$PI_AGENT" "$FIXTURE"
+mkdir -p "$TMP/target-project-one" "$TMP/target-project-two"
+check "real Pi discovers repo skills and existing originals from two projects" assert_skill_discovery "$HOME_FRESH" "$PI_AGENT" "$TMP/target-project-one" "$TMP/target-project-two"
+check "existing implement original remains unchanged" assert_file_text "$ORIGINAL_IMPLEMENT" $'---\nname: implement\ndescription: Isolated fixture for the existing implement skill.\ndisable-model-invocation: true\n---\n\nOriginal implement fixture; preserve this content.'
+check "existing implement-spec original remains unchanged" assert_file_text "$ORIGINAL_IMPLEMENT_SPEC" $'---\nname: implement-spec\ndescription: Isolated fixture for the existing implement-spec skill.\ndisable-model-invocation: true\n---\n\nOriginal implement-spec fixture; preserve this content.'
 check "root package registered and pinned web-access source migrated" assert_packages_registered "$PI_AGENT/settings.json" "$FIXTURE"
 check "existing Anthropic auth package remains registered" assert_package_source_registered "$PI_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth"
 check "interactive-shell example copied" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
@@ -307,6 +355,9 @@ check "repeat preserves machine settings, package identity, and unrelated packag
 check "repeat preserves credential contents" assert_file_text "$PI_AGENT/auth.json" 'credential sentinel: never overwrite'
 check "repeat preserves external extension" assert_file_text "$PI_AGENT/extensions/external-extension.ts" 'external extension sentinel'
 check "repeat preserves external skill" assert_file_text "$AGENTS_HOME/skills/external-skill/SKILL.md" 'external skill sentinel'
+check "repeat keeps both repo skill links idempotent" assert_skill_links "$PI_AGENT" "$FIXTURE"
+check "repeat preserves implement original" assert_file_text "$ORIGINAL_IMPLEMENT" $'---\nname: implement\ndescription: Isolated fixture for the existing implement skill.\ndisable-model-invocation: true\n---\n\nOriginal implement fixture; preserve this content.'
+check "repeat preserves implement-spec original" assert_file_text "$ORIGINAL_IMPLEMENT_SPEC" $'---\nname: implement-spec\ndescription: Isolated fixture for the existing implement-spec skill.\ndisable-model-invocation: true\n---\n\nOriginal implement-spec fixture; preserve this content.'
 check "repeat retains interactive-shell contents" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
 check "repeat retains handoff contents" cmp -s "$PI_AGENT/extensions/handoff.ts" "$FAKE_ROOT/examples/extensions/handoff.ts"
 check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
@@ -412,6 +463,58 @@ for kind in file link; do
   fi
 done
 check "shared-document collision checks invoke no network npm" test ! -e "$NPM_MARKER"
+
+# Skill file, link, and name collisions refuse the entire install before mutation.
+for kind in skill-file skill-link pilot-name; do
+  HOME_SKILL_COLLISION="$TMP/home-skill-$kind"
+  COLLISION_AGENT="$HOME_SKILL_COLLISION/.pi/agent"
+  mkdir -p "$COLLISION_AGENT"
+  case "$kind" in
+    skill-file)
+      collision_path="$COLLISION_AGENT/skills/implement-me-pi"
+      other_skill_path="$COLLISION_AGENT/skills/implement-spec-me-pi"
+      mkdir -p "$(dirname "$collision_path")"
+      printf '%s\n' 'user skill file sentinel' > "$collision_path"
+      expected_collision_message="$collision_path already exists and is not a link"
+      ;;
+    skill-link)
+      collision_path="$COLLISION_AGENT/skills/implement-spec-me-pi"
+      other_skill_path="$COLLISION_AGENT/skills/implement-me-pi"
+      collision_target="$TMP/user-skill-link-sentinel.md"
+      mkdir -p "$(dirname "$collision_path")"
+      printf '%s\n' 'user skill link sentinel' > "$collision_target"
+      ln -s "$collision_target" "$collision_path"
+      expected_collision_message="$collision_path already exists and is not a link"
+      ;;
+    pilot-name)
+      collision_path="$HOME_SKILL_COLLISION/.agents/skills/implement-spec-me-pi/SKILL.md"
+      other_skill_path="$COLLISION_AGENT/skills/implement-me-pi"
+      PILOT_CONTENT=$'---\nname: implement-spec-me-pi\ndescription: Isolated personal pilot collision fixture.\ndisable-model-invocation: true\n---\n\nPersonal pilot source remains intact.'
+      mkdir -p "$(dirname "$collision_path")"
+      printf '%s\n' "$PILOT_CONTENT" > "$collision_path"
+      expected_collision_message="user skill name collision at $(dirname "$collision_path")"
+      ;;
+  esac
+  : > "$PI_LOG"
+  : > "$RTK_LOG"
+  expect_installer "$kind collision fails before install effects" 1 "$HOME_SKILL_COLLISION" "$TMP/skill-$kind.out"
+  check "$kind collision is reported during preflight" grep -Fq "$expected_collision_message" "$TMP/skill-$kind.out"
+  check "$kind collision preserves the existing entry" test -e "$collision_path"
+  check "$kind collision creates no settings file" test ! -e "$COLLISION_AGENT/settings.json"
+  check "$kind collision creates no extensions directory" test ! -e "$COLLISION_AGENT/extensions"
+  check "$kind collision creates no other skill pointer" test ! -e "$other_skill_path" -a ! -L "$other_skill_path"
+  if [ "$kind" = pilot-name ]; then
+    check "pilot name collision creates neither repo skill pointer" test ! -e "$COLLISION_AGENT/skills/implement-me-pi" -a ! -L "$COLLISION_AGENT/skills/implement-me-pi" -a ! -e "$COLLISION_AGENT/skills/implement-spec-me-pi" -a ! -L "$COLLISION_AGENT/skills/implement-spec-me-pi"
+  fi
+  check "$kind collision creates no global policy link" test ! -e "$COLLISION_AGENT/AGENTS.md" -a ! -L "$COLLISION_AGENT/AGENTS.md"
+  check "$kind collision invokes neither Pi nor RTK" test ! -s "$PI_LOG" -a ! -s "$RTK_LOG"
+  case "$kind" in
+    skill-file) check "skill file collision remains a regular file" test ! -L "$collision_path" ;;
+    skill-link) check "skill link collision retains its target" assert_link "$collision_path" "$collision_target" ;;
+    pilot-name) check "personal pilot content remains intact" assert_file_text "$collision_path" "$PILOT_CONTENT" ;;
+  esac
+done
+check "skill collision preflight invokes no network npm" test ! -e "$NPM_MARKER"
 
 # A Pi upgrade changes the bundled example: the copy is kept and the drift reported with the fix.
 printf '%s\n' '// upgraded Pi handoff' > "$FAKE_ROOT/examples/extensions/handoff.ts"

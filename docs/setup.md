@@ -1,16 +1,18 @@
 # Optional full rig setup
 
-You do not need the repository's installer to use the Pi package. A package install loads the extensions declared in `package.json`; it does not adopt the author's global policy, install model pools or skills, or set up the rest of this rig.
+You do not need the repository's installer to use the Pi package. A package install loads the extensions declared in `package.json`; it does not adopt the author's global policy, install model pools, or set up the rest of this rig. The package keeps `pi.skills: []` intentionally, so its conventional skill source directory is not loaded through package discovery.
 
-`./install.sh` is an optional personal setup for someone deliberately adopting the full me-pi rig. Run it only from the checkout you intend to use. It requires `pi` on `PATH` and makes changes to personal Pi resources that apply across sessions:
+`./install.sh` is an optional personal setup for someone deliberately adopting the full me-pi rig. Run it only from the live checkout's main session, never a worktree, temp clone, or worker. It requires `pi` on `PATH` and makes changes to personal Pi resources that apply across sessions:
 
 - Links this checkout's `GLOBAL_AGENTS.md` to `~/.pi/agent/AGENTS.md` only when that destination is absent. An existing file or different link is left unchanged and causes the installer to report an error.
+- Links the repo-owned `implement-me-pi` and `implement-spec-me-pi` skill directories under `~/.pi/agent/skills/`. Pi discovers these user-level skills from any target project; no per-project copies are needed. The installer keeps package discovery gated with `pi.skills: []` and exposes the skills only through these user-level links.
+- Preflights both skill links and same-name entries in `~/.agents/skills` before any setup mutation. A file, link, or skill-name collision stops the entire install without overwriting or migrating the existing entry. Preserve a same-named personal pilot and resolve its migration separately before installing.
 - Registers the checkout's root package in Pi and removes a prior `extensions/` package registration when Pi lists that local source, avoiding duplicate extension loading.
 - Installs the unpinned npm package `pi-web-access`, which supplies the web tools used by delegate's `research` and `challenge` roles.
 - Does not install Claude Code auth extensions or modify existing Anthropic auth package registrations.
 - Copies Pi's `interactive-shell.ts` and `handoff.ts` examples into `~/.pi/agent/extensions/` if absent. Existing copies are not overwritten; differing copies are reported.
 - Runs `rtk init --global --agent pi` if `rtk` is available.
 
-The global policy link affects every Pi session that reads `~/.pi/agent/AGENTS.md`; it is separate from installing the package. Review `GLOBAL_AGENTS.md` and the install script before choosing this setup. The script preserves an existing policy file rather than replacing it, but reports that the me-pi policy is not active when the destination is occupied.
+The global policy link affects every Pi session that reads `~/.pi/agent/AGENTS.md`; it is separate from installing the package. The skill links also affect user-level skill discovery across projects. Review `GLOBAL_AGENTS.md` and the install script before choosing this setup. The script preserves existing policy and skill files rather than replacing them, and reports collisions before changing personal Pi resources. Restart Pi or run `/reload` after a successful install to discover the skills.
 
 For a package-only install, use the Git command in the [README](../README.md). The GitHub repository is private, so access and authentication must be available to Pi; GitHub transport has not been tested. See the [delegate guide](delegate.md) for model pools, worker operation, and recovery.

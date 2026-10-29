@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install me-pi: link repo-owned policy into live Pi/agent directories and register packages.
+# Install me-pi: link repo-owned policy and skills into live Pi/agent directories, then register packages.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd -P)"
@@ -20,12 +20,53 @@ if [ -e "$POLICY_DESTINATION" ] || [ -L "$POLICY_DESTINATION" ]; then
   fi
 fi
 
+SKILLS_SOURCE="$REPO/skills"
+SKILLS_DESTINATION="$PI_AGENT/skills"
+GLOBAL_SKILLS_DESTINATION="$HOME/.agents/skills"
+if [ -L "$SKILLS_DESTINATION" ]; then
+  echo "✗ $SKILLS_DESTINATION is a link; refusing to add skill pointers through it." >&2
+  exit 1
+elif [ -e "$SKILLS_DESTINATION" ] && [ ! -d "$SKILLS_DESTINATION" ]; then
+  echo "✗ $SKILLS_DESTINATION exists and is not a directory; left unchanged." >&2
+  exit 1
+fi
+
+for skill in implement-me-pi implement-spec-me-pi; do
+  source="$SKILLS_SOURCE/$skill"
+  destination="$SKILLS_DESTINATION/$skill"
+  global_name="$GLOBAL_SKILLS_DESTINATION/$skill"
+  if [ ! -d "$source" ] || [ ! -f "$source/SKILL.md" ]; then
+    echo "✗ repo skill source is missing: $source/SKILL.md" >&2
+    exit 1
+  fi
+  if [ -e "$destination" ] || [ -L "$destination" ]; then
+    if [ ! -L "$destination" ] || [ "$(readlink "$destination")" != "$source" ]; then
+      echo "✗ $destination already exists and is not a link to $source; left unchanged. Resolve the collision explicitly and re-run ./install.sh." >&2
+      exit 1
+    fi
+  fi
+  if [ -e "$global_name" ] || [ -L "$global_name" ]; then
+    echo "✗ user skill name collision at $global_name; left unchanged. Preserve and resolve the existing skill separately before re-running ./install.sh." >&2
+    exit 1
+  fi
+done
+
 link_policy() {
   if [ -L "$POLICY_DESTINATION" ] && [ "$(readlink "$POLICY_DESTINATION")" = "$POLICY_SOURCE" ]; then
     echo "✓ global AGENTS.md"
   else
     ln -s "$POLICY_SOURCE" "$POLICY_DESTINATION"
     echo "✓ global AGENTS.md"
+  fi
+}
+
+install_skill_pointer() {
+  local skill="$1" source="$SKILLS_SOURCE/$1" destination="$SKILLS_DESTINATION/$1"
+  if [ -L "$destination" ] && [ "$(readlink "$destination")" = "$source" ]; then
+    echo "✓ skill $skill"
+  else
+    ln -s "$source" "$destination"
+    echo "✓ skill $skill"
   fi
 }
 
@@ -60,8 +101,10 @@ install_pi_example() {
   fi
 }
 
-mkdir -p "$PI_AGENT/extensions"
+mkdir -p "$PI_AGENT/extensions" "$SKILLS_DESTINATION"
 link_policy
+install_skill_pointer implement-me-pi
+install_skill_pointer implement-spec-me-pi
 
 # Register the root Pi package first. The old extensions-directory source has a
 # separate identity, so remove it only after the root registration succeeds.
