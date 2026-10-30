@@ -17,6 +17,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runToolCall } from "@earendil-works/pi-agent-core";
+import { createBashTool } from "@earendil-works/pi-coding-agent";
 import { isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
 
 // Scratch space for the fake pi binary, configs, and pid files.
@@ -122,6 +123,7 @@ writeFileSync(
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
@@ -161,12 +163,68 @@ const retryable = (errorMessage) => {
   emit("", { stopReason: "error", errorMessage });
   console.log(JSON.stringify({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 1, errorMessage }));
 };
+async function runAgentLoopFixture() {
+  const importFromRepo = (path) => import(pathToFileURL(join(process.env.ME_PI_TEST_ROOT, path)).href);
+  const [{ runAgentLoop }, { createBashTool }, { createAssistantMessageEventStream }] = await Promise.all([
+    importFromRepo("node_modules/@earendil-works/pi-agent-core/dist/index.js"),
+    importFromRepo("node_modules/@earendil-works/pi-coding-agent/dist/index.js"),
+    importFromRepo("node_modules/@earendil-works/pi-ai/dist/index.js"),
+  ]);
+  const commands = JSON.parse(process.env.FAKE_PI_AGENT_COMMANDS || "[]");
+  const hook = process.env.FAKE_PI_AGENT_HOOK || "";
+  const hookAt = Number(process.env.FAKE_PI_AGENT_HOOK_AT || 1);
+  let request = 0;
+  const bash = createBashTool(process.cwd(), { exposeSessionEnvironment: false });
+  const model = {
+    provider: "fixture", id: "fixture", name: "fixture", api: "openai-responses", baseUrl: "http://fixture.invalid",
+    input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    reasoning: false, contextWindow: 8192, maxTokens: 1024,
+  };
+  const streamFn = () => {
+    const step = commands[request++];
+    const message = {
+      role: "assistant",
+      content: step ? [{ type: "toolCall", id: "fixture-" + request, name: "bash", arguments: step }] : [{ type: "text", text: "Finished the local task." }],
+      api: "openai-responses", provider: "fixture", model: "fixture",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: step ? "toolUse" : "stop", timestamp: Date.now(),
+    };
+    const stream = createAssistantMessageEventStream();
+    stream.push({ type: "start", partial: message });
+    stream.push({ type: "done", reason: message.stopReason, message });
+    stream.end(message);
+    return stream;
+  };
+  const config = {
+    model, convertToLlm: (messages) => messages, toolExecution: "sequential",
+    afterToolCall: ({ toolCall, result }) => {
+      if (request !== hookAt || !hook) return undefined;
+      if (hook === "drop-structured") return { content: result.content };
+      if (hook === "contradict-success") return { isError: false };
+      if (hook === "contradict-error") return { isError: true };
+      if (hook === "preserve-status") return { details: { hook: "preserved" } };
+      return undefined;
+    },
+  };
+  await runAgentLoop(
+    [{ role: "user", content: "Run this hermetic implementation fixture.", timestamp: Date.now() }],
+    { messages: [], tools: [bash] },
+    config,
+    (event) => process.stdout.write(JSON.stringify(event) + "\\n"),
+    undefined,
+    streamFn,
+  );
+}
 let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
   if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), configuredEndpoint: readConfiguredEndpoint(), approve: args.includes("--approve"), prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
+  if (mode === "implement-agent-loop") {
+    runAgentLoopFixture().catch((error) => { console.error(error); process.exitCode = 1; });
+    return;
+  }
   if (mode === "rebuttal-rate-limit-model" && prompt.includes("## Round 2 (rebuttal)") && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     retryable("429 rate_limit_error: rebuttal unavailable");
     process.exit(1);
@@ -225,7 +283,7 @@ process.stdin.on("end", () => {
   if (mode === "tool-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     const toolCallId = "prior-effect";
     console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "printf prior-effect" } }));
-    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "bash", isError: false, result: { content: [{ type: "text", text: "prior effect completed" }] } }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "bash", isError: false, result: { content: [{ type: "text", text: "prior effect completed" }], structuredContent: { exit_code: 0 } } }));
     retryable("temporary provider failure");
     process.exit(1);
   }
@@ -287,7 +345,7 @@ process.stdin.on("end", () => {
     if (!options.omitStart) console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
     if (!options.omitEnd) console.log(JSON.stringify({
       type: "tool_execution_end", toolCallId, toolName: options.endToolName || toolName,
-      result: options.result || {}, isError,
+      result: options.result !== undefined ? options.result : !isError && toolName === "bash" ? { structuredContent: { exit_code: 0 } } : {}, isError,
       ...(options.effectiveCommand !== undefined ? { effectiveCommand: options.effectiveCommand } : {}),
     }));
   };
@@ -307,12 +365,13 @@ process.stdin.on("end", () => {
     const check = process.env.FAKE_PI_RAN || "npm test";
     if (scenario === "binary-collision") {
       runBash("printf 'x' > a; printf 'y' > b; git add -A; git commit -m 'feat: baseline collision tree'");
+      writeFileSync("feature.txt", "fixed\\n");
       runBash(check);
       runBash("printf 'x\\\\0b\\\\0file\\\\0\\\\060\\\\0y' > a; rm b; false");
       runBash("git add -A");
       runBash("git commit -m 'feat: binary collision'");
     } else {
-      runBash("printf 'checked\\n' > feature.txt");
+      runBash("printf 'fixed\\n' > feature.txt");
       runBash(check);
       if (scenario !== "unchanged") {
         runBash("printf 'mutated\\n' > feature.txt; false");
@@ -588,8 +647,12 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 		ME_PI_ROLE: undefined,
 		ME_PI_DELEGATE_JOB_ID: undefined,
 		ME_PI_DELEGATE_ATTEMPT: undefined,
+		ME_PI_TEST_ROOT: REPO_ROOT,
 		FAKE_PI_EVENT_MARKER: undefined,
 		FAKE_PI_TOOL_EVENTS: undefined,
+		FAKE_PI_AGENT_COMMANDS: undefined,
+		FAKE_PI_AGENT_HOOK: undefined,
+		FAKE_PI_AGENT_HOOK_AT: undefined,
 		TMPDIR: TEST_HOME,
 		...env,
 	};
@@ -3533,7 +3596,8 @@ function implementRepo() {
 	git("config", "user.name", "Implement Test");
 	mkdirSync(join(repo, "sub"));
 	writeFileSync(join(repo, "sub", "a.txt"), "a\n");
-	writeFileSync(join(repo, "package.json"), `${JSON.stringify({ private: true, scripts: { test: "true" } })}\n`);
+	writeFileSync(join(repo, "verify.mjs"), 'import { readFileSync } from "node:fs";\nif (!["fixed", "mutated"].includes(readFileSync("feature.txt", "utf8").trim())) { console.error("fixture not repaired"); process.exitCode = 1; }\n');
+	writeFileSync(join(repo, "package.json"), `${JSON.stringify({ private: true, scripts: { test: "node verify.mjs" } })}\n`);
 	git("add", "-A");
 	git("commit", "-q", "-m", "initial");
 	git("branch", "other");
@@ -3587,6 +3651,34 @@ test(
 		await waitFor(() => messages.length === 2, "the cancelled capacity-check job");
 	},
 );
+
+test("exported Pi createBashTool and runToolCall report canonical nonzero and successful results", async (t) => {
+	const cwd = mkdtempSync(join(TEST_HOME, "direct-bash-tool-"));
+	const bash = createBashTool(cwd, { exposeSessionEnvironment: false });
+	const assistantMessage = {
+		role: "assistant",
+		content: [],
+		api: "openai-responses",
+		provider: "fixture",
+		model: "fixture",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	};
+	const context = { messages: [], tools: [bash] };
+	const call = (id, command) => runToolCall(
+		{ type: "toolCall", id, name: "bash", arguments: { command } },
+		{ tools: [bash], assistantMessage, context },
+	);
+	const failed = await call("direct-failure", "printf 'side-effect\\n' > failed.txt; exit 7");
+	assert.equal(failed.isError, true);
+	assert.equal(failed.result.structuredContent.exit_code, 7);
+	assert.equal(readFileSync(join(cwd, "failed.txt"), "utf8"), "side-effect\n");
+	const succeeded = await call("direct-success", "printf 'verified\\n' > passed.txt");
+	assert.equal(succeeded.isError, false);
+	assert.equal(succeeded.result.structuredContent.exit_code, 0);
+	assert.equal(readFileSync(join(cwd, "passed.txt"), "utf8"), "verified\n");
+});
 
 test("implement commits on the current branch; the result is a 2-line handback and a 0600 details file", async (t) => {
 	const { tool, commands } = setup(t, { env: implementEnv("implement-commit") });
@@ -3657,6 +3749,151 @@ test("implement event tracking keeps a fresh final check after over 100 calls an
 
 	const events = readFileSync(marker, "utf8").trim().split("\n");
 	assert.deepEqual(events, [...Array(101).fill("read"), "write", "bash"]);
+});
+
+test("implement accepts correlated completed Bash failures after repair, fresh check, and normal commit", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "agent-loop-job-"));
+	const commands = [
+		{ command: "printf 'broken\\n' > feature.txt && node verify.mjs" },
+		{ command: "printf 'partial\\n' > partial.txt; exit 7" },
+		{ command: "printf 'fixed\\n' > feature.txt && node verify.mjs" },
+		{ command: "npm test" },
+		{ command: "git add feature.txt partial.txt && git commit -m 'feat: repair feature'" },
+	];
+	const { tool } = setup(t, {
+		env: implementEnv("implement-agent-loop", {
+			TMPDIR: tmp,
+			FAKE_PI_AGENT_COMMANDS: JSON.stringify(commands),
+			FAKE_PI_AGENT_HOOK: "preserve-status",
+		}),
+	});
+	const { repo, git, ctx } = implementRepo();
+	const result = await run(tool, implement(), undefined, undefined, ctx);
+	const handback = text(result);
+
+	assert.equal(result.isError, false, handback);
+	assert.equal(result.details.implement.failed, false);
+	assert.deepEqual(result.details.implement.check.runs, ["pass: npm test"]);
+	assert.equal(git("log", "-1", "--format=%s"), "feat: repair feature");
+	assert.equal(git("show", "HEAD:feature.txt"), "fixed");
+	assert.equal(git("show", "HEAD:partial.txt"), "partial");
+	assert.equal(git("status", "--porcelain"), "");
+
+	const provenance = result.details.implement.outcome.provenance[0];
+	const failures = provenance.stopFacts.filter((fact) => fact.cause === "tool-failure");
+	assert.equal(failures.length, 2);
+	assert.ok(failures.every((fact) => fact.owner === "delegate-parent" && fact.effect === "completed"));
+	for (const failure of failures) {
+		const effect = provenance.toolEffects.find((fact) => fact.toolCallId === failure.toolCallId);
+		assert.equal(effect.toolName, "bash");
+		assert.equal(effect.effect, "completed");
+		assert.equal(effect.replaySafe, false);
+	}
+	assert.equal(provenance.complete, true);
+
+	const capture = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	assert.deepEqual(capture.entries.map((entry) => entry.exitCode.value), [1, 7]);
+	assert.equal(capture.entries[0].command.rawArgsCommand.value.text, commands[0].command);
+	assert.equal(capture.entries[1].command.rawArgsCommand.value.text, commands[1].command);
+	assert.match(handback, /check ✓ `npm test`/);
+	assert.ok(existsSync(repo));
+});
+
+test("signal and timeout Bash failures remain unresolved after a fresh check and commit", async (t) => {
+	for (const [scenario, command, expectedExit] of [
+		["signal", "kill -TERM $$", 143],
+		["timeout", "sleep 2", undefined],
+	]) {
+		const tmp = mkdtempSync(join(TEST_HOME, "agent-loop-job-"));
+		const commands = [
+			{ command: "printf 'fixed\\n' > feature.txt" },
+			{ command, ...(scenario === "timeout" && { timeout: 0.05 }) },
+			{ command: "npm test" },
+			{ command: "git add feature.txt && git commit -m 'feat: interrupted command fixture'" },
+		];
+		const { tool } = setup(t, {
+			env: implementEnv("implement-agent-loop", { TMPDIR: tmp, FAKE_PI_AGENT_COMMANDS: JSON.stringify(commands) }),
+		});
+		const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+		assert.equal(result.isError, true, `${scenario}: ${text(result)}`);
+		assert.equal(result.details.implement.check.status, "pass");
+		assert.match(text(result), /acceptance withheld/);
+		const provenance = result.details.implement.outcome.provenance[0];
+		assert.equal(provenance.toolEffects[1].effect, "unknown", scenario);
+		assert.equal(provenance.stopFacts[0].cause, "tool-failure", scenario);
+		assert.equal(provenance.stopFacts[0].effect, "unknown", scenario);
+		if (expectedExit !== undefined) {
+			assert.equal(provenance.toolEffects[1].replaySafe, false);
+			const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+			assert.equal(artifact.entries[0].exitCode.value, expectedExit);
+		} else {
+			assert.equal(result.details.implement.outcome.failedToolCapture.path !== undefined, true);
+			const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+			assert.equal(artifact.entries[0].exitCode.state, "not-provided");
+		}
+	}
+});
+
+test("implement repairs a failed declared check and preserves its history through commit", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "agent-loop-job-"));
+	const commands = [
+		{ command: "printf 'broken\\n' > feature.txt" },
+		{ command: "npm test" },
+		{ command: "printf 'fixed\\n' > feature.txt" },
+		{ command: "npm test" },
+		{ command: "git add feature.txt && git commit -m 'feat: repair declared check'" },
+	];
+	const { tool } = setup(t, {
+		env: implementEnv("implement-agent-loop", { TMPDIR: tmp, FAKE_PI_AGENT_COMMANDS: JSON.stringify(commands) }),
+	});
+	const { git, ctx } = implementRepo();
+	const result = await run(tool, implement(), undefined, undefined, ctx);
+	assert.equal(result.isError, false, text(result));
+	assert.equal(result.details.implement.check.status, "pass");
+	assert.deepEqual(result.details.implement.check.runs, ["fail: npm test", "pass: npm test"]);
+	assert.equal(git("log", "-1", "--format=%s"), "feat: repair declared check");
+	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	assert.equal(artifact.entries.length, 1);
+	assert.equal(artifact.entries[0].exitCode.value, 1);
+	assert.equal(artifact.entries[0].command.rawArgsCommand.value.text, "npm test");
+	assert.equal(result.details.implement.outcome.provenance[0].stopFacts[0].effect, "completed");
+});
+
+test("dropped and contradictory Bash status metadata cannot become accepted via a fresh green check", async (t) => {
+	for (const [hook, command, expectedExit, expectedComplete, captureFailure] of [
+		["drop-structured", "printf 'fixed\\n' > feature.txt; exit 7", undefined, true, true],
+		["contradict-success", "printf 'fixed\\n' > feature.txt; exit 7", 7, false, false],
+		["contradict-error", "printf 'fixed\\n' > feature.txt", 0, true, true],
+	]) {
+		const tmp = mkdtempSync(join(TEST_HOME, "agent-loop-job-"));
+		const commands = [
+			{ command },
+			{ command: "npm test" },
+			{ command: "git add feature.txt && git commit -m 'feat: hook metadata fixture'" },
+		];
+		const { tool } = setup(t, {
+			env: implementEnv("implement-agent-loop", {
+				TMPDIR: tmp,
+				FAKE_PI_AGENT_COMMANDS: JSON.stringify(commands),
+				FAKE_PI_AGENT_HOOK: hook,
+			}),
+		});
+		const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+		assert.equal(result.isError, true, `${hook}: ${text(result)}`);
+		assert.equal(result.details.implement.check.status, "pass");
+		assert.match(text(result), /acceptance withheld/);
+		const provenance = result.details.implement.outcome.provenance[0];
+		assert.equal(provenance.complete, expectedComplete);
+		assert.equal(provenance.toolEffects[0].effect, "unknown");
+		assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "unknown"));
+		if (captureFailure) {
+			const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+			if (expectedExit === undefined) assert.equal(artifact.entries[0].exitCode.state, "not-provided");
+			else assert.equal(artifact.entries[0].exitCode.value, expectedExit);
+		} else {
+			assert.equal(result.details.implement.outcome.failedToolCapture, undefined);
+		}
+	}
 });
 
 test("implement captures targeted failures while a later declared check passes", async (t) => {
@@ -3772,7 +4009,7 @@ test("provider failures without tool failures do not create diagnostic artifacts
 	);
 });
 
-test("implement refuses fallback after a failed tool effect and preserves its evidence", async (t) => {
+test("implement refuses fallback after a completed non-replay-safe Bash failure and preserves its evidence", async (t) => {
 	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
 	const { tool } = setup(t, {
 		config: POOL_SET,
@@ -3789,7 +4026,9 @@ test("implement refuses fallback after a failed tool effect and preserves its ev
 	assert.equal(result.details.implement.check.status, "fail");
 	assert.match(result.details.round1[0].fallbackBlockReason, /competing safety stop/);
 	const provenance = result.details.round1[0].provenance[0];
-	assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "unknown"));
+	assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "completed"));
+	assert.equal(provenance.toolEffects[0].effect, "completed");
+	assert.equal(provenance.toolEffects[0].replaySafe, false);
 	assert.equal(provenance.providerRetry.owner, "pi-runtime");
 	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
 	assert.equal(artifact.entries.length, 1);
@@ -3897,7 +4136,7 @@ test("implement: work left uncommitted becomes a WIP commit on the branch and an
 
 test("implement Bash content freshness ignores Git metadata but stales mutations until a passing rerun", async (t) => {
 	for (const [scenario, expectedStatus, expectedContent] of [
-		["unchanged", "pass", "checked\n"],
+		["unchanged", "pass", "fixed\n"],
 		["stale", "stale", "mutated\n"],
 		["rerun", "pass", "mutated\n"],
 	]) {
@@ -3920,9 +4159,11 @@ test("implement Bash content freshness ignores Git metadata but stales mutations
 			assert.match(handback, /check stale \(checkout content changed after the last check\)/);
 			assert.match(handback, /^✗ check stale: checkout content changed after the last check$/m);
 		} else if (scenario === "rerun") {
-			assert.equal(result.isError, true, handback);
+			assert.equal(result.isError, false, handback);
 			assert.match(handback, /check ✓/);
-			assert.match(handback, /acceptance withheld/, "a fresh check cannot resolve the earlier unknown tool effect");
+			assert.doesNotMatch(handback, /acceptance withheld/);
+			const provenance = result.details.implement.outcome.provenance[0];
+			assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "completed"));
 		} else {
 			assert.equal(result.isError, false, handback);
 			assert.match(handback, /check ✓/);
@@ -3950,7 +4191,7 @@ test("implement Bash binary-content collision stales a committed tree through th
 		execFileSync("git", ["-C", repo, "show", "HEAD:a"]),
 		Buffer.from("7800620066696c6500300079", "hex"),
 	);
-	assert.deepEqual(git("ls-tree", "-r", "--name-only", "HEAD").split("\n").sort(), ["a", "package.json", "sub/a.txt"]);
+	assert.deepEqual(git("ls-tree", "-r", "--name-only", "HEAD").split("\n").sort(), ["a", "feature.txt", "package.json", "sub/a.txt", "verify.mjs"]);
 	assert.equal(git("status", "--porcelain"), "");
 });
 
@@ -3958,7 +4199,7 @@ test("implement check freshness fails closed when a passing check cannot be snap
 	const root = join(TEST_HOME, "missing-checkout");
 	const job = { repoRoot: root, check: { command: CHECK, status: "none", runs: [] } };
 	const calls = new Map([["check", { tool: "bash", command: CHECK }]]);
-	trackCheck(job, calls, { toolCallId: "check", isError: false }, root);
+	trackCheck(job, calls, { toolCallId: "check", isError: false, result: { structuredContent: { exit_code: 0 } } }, root);
 	assert.equal(job.check.status, "stale");
 	assert.match(job.check.staleReason, /could not be verified/);
 	assert.match(job.check.runs[0], /content snapshot unavailable/);

@@ -29,7 +29,9 @@ export type StopResource =
 export type EffectState = "not-started" | "denied" | "completed" | "partial" | "unknown";
 export type StopOwner = "delegate-parent" | "delegate-worker" | "guard" | "pi-runtime" | "implement";
 
-/** Small owner-emitted stop fact. Cause is intentionally independent from the exhausted resource. */
+/** Small owner-emitted stop fact. Cause is intentionally independent from the exhausted resource.
+ * A correlated parent-owned Bash `tool-failure/completed` records a reported ordinary command exit; it never implies replay safety.
+ */
 export interface StopFact {
 	owner: StopOwner;
 	jobId: string;
@@ -40,7 +42,7 @@ export interface StopFact {
 	effect: EffectState;
 }
 
-/** Outcome of one tool call, used only to decide whether restarting the assignment is safe. */
+/** Outcome of one tool call. `completed` records the reported tool termination; only explicitly safe reads are replay-safe. */
 export interface ToolEffectFact {
 	owner: "pi-runtime";
 	jobId: string;

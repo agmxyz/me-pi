@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 
-const [projectDir] = process.argv.slice(2);
+const [projectDir, expectedCollision] = process.argv.slice(2);
 const agentDir = process.env.PI_CODING_AGENT_DIR;
 if (!projectDir || !agentDir) throw new Error("Pass a target project and isolated PI_CODING_AGENT_DIR");
 
@@ -18,7 +18,22 @@ const { skills, diagnostics } = resourceLoader.getSkills();
 const byName = new Map(skills.map((skill) => [skill.name, skill]));
 const expectedNames = ["implement", "implement-me-pi", "implement-spec", "implement-spec-me-pi"];
 assert.deepEqual([...byName.keys()].sort(), expectedNames);
-assert.deepEqual(diagnostics, []);
+if (expectedCollision === "--renamed-pilot-collision") {
+	assert.equal(diagnostics.length, 1);
+	assert.equal(diagnostics[0].type, "collision");
+	assert.equal(diagnostics[0].collision.resourceType, "skill");
+	assert.equal(diagnostics[0].collision.name, "implement-spec-me-pi");
+	assert.equal(
+		diagnostics[0].collision.winnerPath,
+		join(resolvedAgentDir, "skills", "implement-spec-me-pi", "SKILL.md"),
+	);
+	assert.equal(
+		diagnostics[0].collision.loserPath,
+		join(process.env.HOME, ".agents", "skills", "implement-spec-me-pi.pilot-bak", "SKILL.md"),
+	);
+} else {
+	assert.deepEqual(diagnostics, []);
+}
 
 for (const name of ["implement-me-pi", "implement-spec-me-pi"]) {
 	const skill = byName.get(name);

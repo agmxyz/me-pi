@@ -22,6 +22,7 @@ fi
 
 SKILLS_SOURCE="$REPO/skills"
 SKILLS_DESTINATION="$PI_AGENT/skills"
+# This checks literal destination paths only; Pi's loader remains authoritative for frontmatter-name collisions elsewhere.
 GLOBAL_SKILLS_DESTINATION="$HOME/.agents/skills"
 if [ -L "$SKILLS_DESTINATION" ]; then
   echo "✗ $SKILLS_DESTINATION is a link; refusing to add skill pointers through it." >&2

@@ -162,13 +162,15 @@ checks=0
 fails=0
 INSTALL_RC=0
 check() { # <description> <command...>
-  local description="$1"
+  local description="$1" output
   shift
   checks=$((checks + 1))
-  if "$@" >/dev/null 2>&1; then
+  output="$TMP/check-$checks.out"
+  if "$@" >"$output" 2>&1; then
     echo "✓ $description"
   else
     echo "✗ $description"
+    while IFS= read -r line; do printf '  %s\n' "$line"; done < "$output"
     fails=$((fails + 1))
   fi
 }
@@ -179,13 +181,35 @@ assert_skill_links() {
   assert_link "$agent_dir/skills/implement-me-pi" "$repo_root/skills/implement-me-pi" &&
     assert_link "$agent_dir/skills/implement-spec-me-pi" "$repo_root/skills/implement-spec-me-pi"
 }
-assert_skill_discovery() {
-  local home="$1" agent_dir="$2" project
-  shift 2
+SKILL_LOADER_RUN=0
+run_skill_loader() { # <home> <agent dir> <mode> <project...>; disable package installation/network while probing resource discovery.
+  local home="$1" agent_dir="$2" mode="$3" project settings="$2/settings.json" backup status=0
+  shift 3
+  SKILL_LOADER_RUN=$((SKILL_LOADER_RUN + 1))
+  backup="$TMP/skill-settings-$SKILL_LOADER_RUN.json"
+  cp "$settings" "$backup"
+  node - "$settings" <<'NODE'
+const fs = require("node:fs");
+const path = process.argv[2];
+const settings = JSON.parse(fs.readFileSync(path, "utf8"));
+settings.packages = [];
+fs.writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`);
+NODE
+  rm -f "$NPM_MARKER"
   for project in "$@"; do
-    HOME="$home" PI_CODING_AGENT_DIR="$agent_dir" \
-      node "$SOURCE_REPO/test/fixtures/user-skill-discovery-harness.mjs" "$project" || return 1
+    HOME="$home" PI_CODING_AGENT_DIR="$agent_dir" PATH="$TEST_PATH" \
+      node "$SOURCE_REPO/test/fixtures/user-skill-discovery-harness.mjs" "$project" $mode || { status=1; break; }
   done
+  cp "$backup" "$settings"
+  rm -f "$backup"
+  if [ -e "$NPM_MARKER" ]; then status=1; fi
+  return "$status"
+}
+assert_skill_discovery() {
+  run_skill_loader "$1" "$2" "" "${@:3}"
+}
+assert_renamed_pilot_collision() {
+  run_skill_loader "$1" "$2" "--renamed-pilot-collision" "${@:3}"
 }
 assert_file_text() { printf '%s\n' "$2" | cmp -s - "$1"; }
 
@@ -284,7 +308,18 @@ PI_AGENT="$HOME_FRESH/.pi/agent"
 AGENTS_HOME="$HOME_FRESH/.agents"
 ORIGINAL_IMPLEMENT="$AGENTS_HOME/skills/implement/SKILL.md"
 ORIGINAL_IMPLEMENT_SPEC="$AGENTS_HOME/skills/implement-spec/SKILL.md"
-mkdir -p "$PI_AGENT" "$(dirname "$ORIGINAL_IMPLEMENT")" "$(dirname "$ORIGINAL_IMPLEMENT_SPEC")"
+PRESERVED_PILOT="$HOME_FRESH/preserved-pilot/implement-spec-me-pi.pilot-bak"
+PRESERVED_PILOT_SKILL='---
+name: implement-spec-me-pi
+description: Complete isolated pilot backup fixture.
+disable-model-invocation: true
+---
+
+Synthetic pilot backup; preserve every file.'
+PRESERVED_PILOT_REFERENCE='Reference material from the isolated pilot.'
+PRESERVED_PILOT_SCRIPT='#!/usr/bin/env bash
+printf "%s\\n" "pilot fixture"'
+mkdir -p "$PI_AGENT" "$(dirname "$ORIGINAL_IMPLEMENT")" "$(dirname "$ORIGINAL_IMPLEMENT_SPEC")" "$PRESERVED_PILOT/references" "$PRESERVED_PILOT/scripts"
 cat > "$ORIGINAL_IMPLEMENT" <<'SKILL'
 ---
 name: implement
@@ -303,6 +338,9 @@ disable-model-invocation: true
 
 Original implement-spec fixture; preserve this content.
 SKILL
+printf '%s\n' "$PRESERVED_PILOT_SKILL" > "$PRESERVED_PILOT/SKILL.md"
+printf '%s\n' "$PRESERVED_PILOT_REFERENCE" > "$PRESERVED_PILOT/references/plan.md"
+printf '%s\n' "$PRESERVED_PILOT_SCRIPT" > "$PRESERVED_PILOT/scripts/verify.sh"
 node - "$PI_AGENT/settings.json" <<'NODE'
 const fs = require("node:fs");
 const settingsPath = process.argv[2];
@@ -322,6 +360,10 @@ check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLO
 check "both repo skills linked once at user level" assert_skill_links "$PI_AGENT" "$FIXTURE"
 mkdir -p "$TMP/target-project-one" "$TMP/target-project-two"
 check "real Pi discovers repo skills and existing originals from two projects" assert_skill_discovery "$HOME_FRESH" "$PI_AGENT" "$TMP/target-project-one" "$TMP/target-project-two"
+check "preserved pilot backup remains outside discovered roots" test -d "$PRESERVED_PILOT" -a ! -e "$AGENTS_HOME/skills/implement-spec-me-pi.pilot-bak" -a ! -L "$AGENTS_HOME/skills/implement-spec-me-pi.pilot-bak"
+check "preserved pilot SKILL remains intact" assert_file_text "$PRESERVED_PILOT/SKILL.md" "$PRESERVED_PILOT_SKILL"
+check "preserved pilot reference remains intact" assert_file_text "$PRESERVED_PILOT/references/plan.md" "$PRESERVED_PILOT_REFERENCE"
+check "preserved pilot support script remains intact" assert_file_text "$PRESERVED_PILOT/scripts/verify.sh" "$PRESERVED_PILOT_SCRIPT"
 check "existing implement original remains unchanged" assert_file_text "$ORIGINAL_IMPLEMENT" $'---\nname: implement\ndescription: Isolated fixture for the existing implement skill.\ndisable-model-invocation: true\n---\n\nOriginal implement fixture; preserve this content.'
 check "existing implement-spec original remains unchanged" assert_file_text "$ORIGINAL_IMPLEMENT_SPEC" $'---\nname: implement-spec\ndescription: Isolated fixture for the existing implement-spec skill.\ndisable-model-invocation: true\n---\n\nOriginal implement-spec fixture; preserve this content.'
 check "root package registered and pinned web-access source migrated" assert_packages_registered "$PI_AGENT/settings.json" "$FIXTURE"
@@ -356,6 +398,9 @@ check "repeat preserves credential contents" assert_file_text "$PI_AGENT/auth.js
 check "repeat preserves external extension" assert_file_text "$PI_AGENT/extensions/external-extension.ts" 'external extension sentinel'
 check "repeat preserves external skill" assert_file_text "$AGENTS_HOME/skills/external-skill/SKILL.md" 'external skill sentinel'
 check "repeat keeps both repo skill links idempotent" assert_skill_links "$PI_AGENT" "$FIXTURE"
+check "repeat preserves pilot SKILL" assert_file_text "$PRESERVED_PILOT/SKILL.md" "$PRESERVED_PILOT_SKILL"
+check "repeat preserves pilot reference" assert_file_text "$PRESERVED_PILOT/references/plan.md" "$PRESERVED_PILOT_REFERENCE"
+check "repeat preserves pilot support script" assert_file_text "$PRESERVED_PILOT/scripts/verify.sh" "$PRESERVED_PILOT_SCRIPT"
 check "repeat preserves implement original" assert_file_text "$ORIGINAL_IMPLEMENT" $'---\nname: implement\ndescription: Isolated fixture for the existing implement skill.\ndisable-model-invocation: true\n---\n\nOriginal implement fixture; preserve this content.'
 check "repeat preserves implement-spec original" assert_file_text "$ORIGINAL_IMPLEMENT_SPEC" $'---\nname: implement-spec\ndescription: Isolated fixture for the existing implement-spec skill.\ndisable-model-invocation: true\n---\n\nOriginal implement-spec fixture; preserve this content.'
 check "repeat retains interactive-shell contents" cmp -s "$PI_AGENT/extensions/interactive-shell.ts" "$FAKE_ROOT/examples/extensions/interactive-shell.ts"
@@ -364,6 +409,25 @@ check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FI
 check "repeat preserves existing Anthropic auth package" assert_package_source_registered "$PI_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth"
 check "Pi and RTK stubs invoked without auth extension changes" assert_invocation_logs
 check "npm fallback remains unused" test ! -e "$NPM_MARKER"
+
+# The installer checks literal destination paths, not every discovered skill's frontmatter name.
+# A renamed pilot under .agents/skills passes path preflight but must remain a visible real-loader collision.
+HOME_RENAMED="$TMP/home-renamed-pilot"
+RENAMED_AGENT="$HOME_RENAMED/.pi/agent"
+RENAMED_PILOT="$HOME_RENAMED/.agents/skills/implement-spec-me-pi.pilot-bak"
+RENAMED_PILOT_CONTENT=$'---\nname: implement-spec-me-pi\ndescription: Renamed isolated pilot collision fixture.\ndisable-model-invocation: true\n---\n\nPreserve this complete renamed pilot.'
+mkdir -p "$RENAMED_AGENT" "$HOME_RENAMED/.agents/skills/implement" "$HOME_RENAMED/.agents/skills/implement-spec" "$RENAMED_PILOT/references" "$RENAMED_PILOT/scripts" "$TMP/target-project-three" "$TMP/target-project-four"
+cp "$ORIGINAL_IMPLEMENT" "$HOME_RENAMED/.agents/skills/implement/SKILL.md"
+cp "$ORIGINAL_IMPLEMENT_SPEC" "$HOME_RENAMED/.agents/skills/implement-spec/SKILL.md"
+printf '%s\n' "$RENAMED_PILOT_CONTENT" > "$RENAMED_PILOT/SKILL.md"
+printf '%s\n' 'Renamed pilot reference must remain intact.' > "$RENAMED_PILOT/references/plan.md"
+printf '%s\n' '#!/usr/bin/env bash' 'echo preserve' > "$RENAMED_PILOT/scripts/verify.sh"
+: > "$PI_LOG"
+: > "$RTK_LOG"
+expect_installer "renamed pilot with duplicate frontmatter is outside literal-path preflight" 0 "$HOME_RENAMED" "$TMP/renamed-pilot.out"
+check "renamed pilot still yields a real-loader collision from two projects" assert_renamed_pilot_collision "$HOME_RENAMED" "$RENAMED_AGENT" "$TMP/target-project-three" "$TMP/target-project-four"
+check "renamed pilot source remains intact" assert_file_text "$RENAMED_PILOT/SKILL.md" "$RENAMED_PILOT_CONTENT"
+check "renamed pilot supporting files remain intact" test -f "$RENAMED_PILOT/references/plan.md" -a -f "$RENAMED_PILOT/scripts/verify.sh"
 
 # An already-correct policy link is accepted without blocking package setup.
 HOME_PRELINK="$TMP/home-prelink"

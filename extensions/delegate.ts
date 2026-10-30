@@ -700,6 +700,12 @@ function firstEventField(...fields: { present: boolean; value?: unknown }[]): { 
 	return fields.find((field) => field.present) ?? { present: false };
 }
 
+function bashExitCode(resultValue: unknown): number | undefined {
+	const structured = eventRecord(eventRecord(resultValue)?.structuredContent);
+	if (!structured || !Object.hasOwn(structured, "exit_code")) return undefined;
+	return Number.isInteger(structured.exit_code) ? (structured.exit_code as number) : undefined;
+}
+
 function toolResultText(result: EventRecord | undefined): string | undefined {
 	if (!Array.isArray(result?.content)) return undefined;
 	const text = result.content.flatMap((part: unknown) => {
@@ -762,7 +768,7 @@ function failedToolResult(resultValue: unknown, toolName: string | undefined): F
 export function trackCheck(
 	job: Checkout,
 	calls: Map<string, { tool: string; command: string }>,
-	event: { toolCallId?: unknown; isError?: unknown },
+	event: { toolCallId?: unknown; isError?: unknown; result?: unknown },
 	cwd: string,
 ): void {
 	const call = calls.get(String(event.toolCallId));
@@ -779,9 +785,17 @@ export function trackCheck(
 		if (isCheckRun(call.command, check.command, cwd)) {
 			job.contentBaseline = undefined;
 			delete check.staleReason;
-			if (event.isError) {
+			const exitCode = bashExitCode(event.result);
+			if (event.isError === true || (exitCode !== undefined && exitCode !== 0)) {
 				check.status = "fail";
 				check.runs.push(`fail: ${call.command}`);
+				return;
+			}
+			if (event.isError !== false || exitCode !== 0) {
+				stale(
+					"declared Bash check result lacks a canonical successful exit status",
+					`status unavailable or contradictory: ${call.command}`,
+				);
 				return;
 			}
 			try {
@@ -1114,8 +1128,19 @@ function runWorkerAttempt(
 			}
 			if (event.isError === true) {
 				const denied = ownerFacts.length > 0 && ownerFacts.every((stopFact) => stopFact.effect === "denied");
+				const exitCode = bashExitCode(event.result);
+				const completedBashFailure =
+					!stopped &&
+					!ownerFacts.length &&
+					fact?.toolName === "bash" &&
+					fact.toolCallId === toolCallId &&
+					toolName === "bash" &&
+					Number.isInteger(exitCode) &&
+					(exitCode as number) >= 1 &&
+					(exitCode as number) <= 127 &&
+					!provenance.stopFacts.some((stopFact) => stopFact.toolCallId === toolCallId);
 				if (fact) {
-					fact.effect = denied ? "denied" : "unknown";
+					fact.effect = denied ? "denied" : completedBashFailure ? "completed" : "unknown";
 					fact.replaySafe = false;
 				}
 				if (!denied)
@@ -1126,11 +1151,26 @@ function runWorkerAttempt(
 						...(toolCallId && { toolCallId }),
 						cause: "tool-failure",
 						resource: "tool",
-						effect: "unknown",
+						effect: completedBashFailure ? "completed" : "unknown",
 					});
-			} else if (event.isError === false && fact && !ownerFacts.length) {
-				fact.effect = "completed";
-				fact.replaySafe = replaySafeReadTools.has(fact.toolName);
+			} else if (event.isError === false && fact && !ownerFacts.length && fact.toolName === toolName) {
+				if (fact.toolName === "bash" && bashExitCode(event.result) !== 0) {
+					provenance.complete = false;
+					fact.effect = "unknown";
+					if (bashExitCode(event.result) !== undefined)
+						provenance.stopFacts.push({
+							owner: "delegate-parent",
+							jobId: job.jobId,
+							attempt: attemptIndex,
+							toolCallId,
+							cause: "tool-failure",
+							resource: "tool",
+							effect: "unknown",
+						});
+				} else {
+					fact.effect = "completed";
+					fact.replaySafe = replaySafeReadTools.has(fact.toolName);
+				}
 			} else {
 				provenance.complete = false;
 				if (fact) fact.effect = "unknown";

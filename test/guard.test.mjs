@@ -317,6 +317,7 @@ test("PROTECTED_BRANCHES is main and master", () => {
 function setup() {
 	let handler;
 	let command;
+	const events = [];
 	registerGuard({
 		on: (_event, h) => {
 			handler = h;
@@ -324,8 +325,9 @@ function setup() {
 		registerCommand: (_name, definition) => {
 			command = definition;
 		},
+		events: { emit: (...event) => events.push(event) },
 	});
-	return { handler, command };
+	return { handler, command, events };
 }
 
 test("confirms with UI, blocks without UI or on refusal", async () => {

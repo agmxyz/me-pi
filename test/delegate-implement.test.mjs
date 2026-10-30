@@ -336,6 +336,111 @@ test("finish withholds acceptance for missing provenance, unknown effects, and d
 	}
 });
 
+test("finish permits only one correlated completed non-replay-safe Bash failure", async () => {
+	for (const scenario of [
+		{ name: "matching ordinary Bash failure", allowed: true },
+		{ name: "wrong tool", allowed: false, toolName: "read" },
+		{ name: "replay-safe failure", allowed: false, replaySafe: true },
+		{ name: "missing effect", allowed: false, missingEffect: true },
+		{ name: "duplicate effect id", allowed: false, duplicateEffect: true },
+		{ name: "duplicate stop id", allowed: false, duplicateStop: true },
+		{
+			name: "competing guard denial",
+			allowed: false,
+			extraStop: { owner: "guard", cause: "guard-denial", resource: "guard", effect: "denied" },
+		},
+		{
+			name: "competing wrap-up limit",
+			allowed: false,
+			extraStop: { owner: "delegate-parent", cause: "wrap-up-limit", resource: "tool-time", effect: "denied" },
+		},
+		{ name: "attempt incomplete", allowed: false, incomplete: true },
+	]) {
+		const { repo, git } = goalFixture();
+		const job = await prepare(repo, `im-failure-${scenario.name.replaceAll(" ", "-")}`, CHECK);
+		commit(git, repo, "feature.txt");
+		passed(job);
+		const toolCallId = "ordinary-failure";
+		const attempt = {
+			jobId: job.id,
+			attempt: 1,
+			complete: !scenario.incomplete,
+			stopFacts: [
+				{
+					owner: "delegate-parent",
+					jobId: job.id,
+					attempt: 1,
+					toolCallId,
+					cause: "tool-failure",
+					resource: "tool",
+					effect: "completed",
+				},
+				...(scenario.extraStop
+					? [
+						{
+							jobId: job.id,
+							attempt: 1,
+							toolCallId,
+							...scenario.extraStop,
+						},
+					]
+					: []),
+				...(scenario.duplicateStop
+					? [
+						{
+							owner: "delegate-parent",
+							jobId: job.id,
+							attempt: 1,
+							toolCallId,
+							cause: "tool-failure",
+							resource: "tool",
+							effect: "completed",
+						},
+					]
+					: []),
+			],
+			toolEffects: scenario.missingEffect
+				? []
+				: [
+						{
+							owner: "pi-runtime",
+							jobId: job.id,
+							attempt: 1,
+							toolCallId,
+							toolName: scenario.toolName ?? "bash",
+							effect: "completed",
+							replaySafe: scenario.replaySafe ?? false,
+						},
+						...(scenario.duplicateEffect
+							? [
+									{
+										owner: "pi-runtime",
+										jobId: job.id,
+										attempt: 1,
+										toolCallId,
+										toolName: "bash",
+										effect: "completed",
+										replaySafe: false,
+									},
+								]
+							: []),
+					],
+		};
+		const facts = await finish(job, {
+			answer: "Repaired and verified.",
+			provenance: [attempt],
+		});
+		assert.equal(facts.failed, !scenario.allowed, scenario.name);
+		assert.equal(facts.delivered.commit, "normal", scenario.name);
+		assert.equal(facts.delivered.check, "pass", scenario.name);
+		if (!scenario.allowed)
+			assert.ok(
+				facts.problems.some((problem) => problem.includes("acceptance withheld")),
+				scenario.name,
+			);
+	}
+});
+
 test("finish commits leftovers as WIP on the branch with hooks off; odd reasons stay on one line", async () => {
 	const { repo, git } = goalFixture();
 	// A hook that would fail the commit: the WIP commit skips it.

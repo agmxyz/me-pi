@@ -550,17 +550,65 @@ function markIntegrity(facts: Facts, state: DeliveredState["integrity"]): void {
 	if (state === "tripped" || facts.delivered.integrity !== "tripped") facts.delivered.integrity = state;
 }
 
-/** A provider retry alone is harmless after a later successful candidate; other stops or unresolved effects block acceptance. */
-function hasUnresolvedProvenance(outcome: Outcome): boolean {
+function correlatedCompletedBashFailure(fact: StopFact, attempt: AttemptProvenance, allStopFacts: StopFact[]): boolean {
+	if (
+		fact.owner !== "delegate-parent" ||
+		fact.cause !== "tool-failure" ||
+		fact.resource !== "tool" ||
+		fact.effect !== "completed" ||
+		!fact.toolCallId ||
+		fact.jobId !== attempt.jobId ||
+		fact.attempt !== attempt.attempt
+	)
+		return false;
+	const callId = fact.toolCallId;
+	const stopsForCall = allStopFacts.filter(
+		(stop) =>
+			stop.owner === "delegate-parent" &&
+			stop.cause === "tool-failure" &&
+			stop.jobId === fact.jobId &&
+			stop.attempt === fact.attempt &&
+			stop.toolCallId === callId,
+	);
+	const effectsForCall = attempt.toolEffects.filter(
+		(effect) =>
+			effect.owner === "pi-runtime" &&
+			effect.jobId === fact.jobId &&
+			effect.attempt === fact.attempt &&
+			effect.toolCallId === callId,
+	);
 	return (
-		!outcome.provenance?.length ||
-		(outcome.stopFacts ?? []).some((fact) => fact.cause !== "provider-retry-classified") ||
-		outcome.provenance.some(
-			(attempt) =>
-				!attempt.complete ||
-				attempt.stopFacts.some((fact) => fact.cause !== "provider-retry-classified") ||
-				attempt.toolEffects.some((fact) => fact.effect !== "completed"),
-		)
+		stopsForCall.length === 1 &&
+		effectsForCall.length === 1 &&
+		effectsForCall[0].toolName === "bash" &&
+		effectsForCall[0].effect === "completed" &&
+		effectsForCall[0].replaySafe === false
+	);
+}
+
+/** A completed Bash failure is diagnostic only when its parent stop/effect pair is unique; other stops and unresolved effects block. */
+function hasUnresolvedProvenance(outcome: Outcome): boolean {
+	const attempts = outcome.provenance ?? [];
+	if (!attempts.length) return true;
+	const allStopFacts = [...(outcome.stopFacts ?? []), ...attempts.flatMap((attempt) => attempt.stopFacts)];
+	const allowedFailures = new Set(
+		attempts.flatMap((attempt) =>
+			attempt.stopFacts
+				.filter((fact) => correlatedCompletedBashFailure(fact, attempt, allStopFacts))
+				.map((fact) => `${fact.jobId}\0${fact.attempt}\0${fact.toolCallId}`),
+		),
+	);
+	const isDiagnostic = (fact: StopFact) =>
+		fact.cause === "provider-retry-classified" ||
+		(fact.toolCallId !== undefined &&
+			allowedFailures.has(`${fact.jobId}\0${fact.attempt}\0${fact.toolCallId}`) &&
+			fact.owner === "delegate-parent" &&
+			fact.cause === "tool-failure" &&
+			fact.resource === "tool" &&
+			fact.effect === "completed");
+	return (
+		allStopFacts.some((fact) => !isDiagnostic(fact)) ||
+		attempts.some((attempt) => !attempt.complete || attempt.toolEffects.some((fact) => fact.effect !== "completed"))
 	);
 }
 

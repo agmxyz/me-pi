@@ -46,7 +46,12 @@ function assertUserInvokedReviewContract(source, name) {
 	assert.match(source, /accept an unchanged checked commit only while its check evidence remains fresh/);
 	assert.match(source, /ask only for genuinely new authority, consequential choices, or unresolved safety/);
 	assert.doesNotMatch(source, /automatic retry/i);
-	assert.match(source, /load `tdd`/i);
+	assert.match(source, /Do not load `tdd` by default/);
+	assert.match(source, /explicitly requires test-first\/red-first/);
+	assert.match(source, /evidence-driven implementation/);
+	assert.match(source, /run focused verification/);
+	assert.doesNotMatch(source, /user-confirmed test seams|confirm.*test seams.*with the user/i);
+	assert.doesNotMatch(source, /mandatory TDD|vertical red-green slices/i);
 	assert.match(source, /load `code-review`/i);
 }
 
@@ -66,4 +71,7 @@ test("both user-invoked implementation entrypoints retain full independent revie
 	assert.match(delegateGuide, /first-attempt success ends the slice/);
 	assert.match(delegateGuide, /two continuations exhaust it/);
 	assert.match(delegateGuide, /timeout requires termination and state\/effect reconciliation/);
+	assert.match(delegateGuide, /canonical structured `exit_code` from 1 through 127/);
+	assert.match(delegateGuide, /replaySafe: false/);
+	assert.match(delegateGuide, /denied\/limited\/unknown outcomes, missing or mismatched call identity, and partial\/unclosed calls remain fail-closed/);
 });
