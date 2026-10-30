@@ -1,6 +1,6 @@
 # Delegation autonomy improvements
 
-**Status: APPROVED LOCAL PLAN — the pragmatic verification amendment is implemented locally; fresh exact check and independent coordinator review are pending.** A4 remains INACTIVE. This spec and its local ticket/handoff files are temporary planning artifacts; retain them for execution and remove them only during separately requested later cleanup.
+**Status: APPROVED LOCAL PLAN — the pragmatic verification amendment is implemented locally; the current exact check passed (204 tests; 103 installer smoke checks). The worker handback records the normal local commit; independent coordinator review and final acceptance remain pending.** A4 remains INACTIVE. This spec and its local ticket/handoff files are temporary planning artifacts; retain them for execution and remove them only during separately requested later cleanup.
 The user chose local-only tickets. Implementation proceeds only under explicit task approvals. The separately approved scout-cap amendment and the revision-specific cross-model-fallback/A4 amendment below change only their stated scopes; they authorize no unstated plan changes. No GitHub issues, remote publication, policy activation or installation is authorized merely by reading this file, and current policy remains binding until its approved activation gate is satisfied.
 
 ## Approved delivery decisions (user, 2026-10-29)
@@ -22,7 +22,7 @@ This amendment supersedes only the cross-model fallback acceptance and the A4 co
 
 A4 remains authored **INACTIVE**. Its future continuation target is at most two coordinator-led continuations after the initial attempt, always on the same selected eligible model and within the original task-data/provider authority. A continuation cannot switch pool candidates, evade an account/provider limit, or reset authority. Require trusted provenance, termination and effect reconciliation, fixed-slice accounting and all existing per-attempt time/cost/tool-call budgets. The aggregate three-attempt envelope remains a coordinator ledger/skill obligation, not runtime enforcement. No policy activation, install, reload, or migration is authorized by this amendment; those require the complete separate approval and lifecycle gate.
 
-**Order:** A3 → A5 → A1 → A2 → A0-source → A4 (inactive) → frozen final review → activation (separate user approval: A0-live, pilot rename, `GLOBAL_AGENTS.md` edit, install, reload).
+**Order:** A3 → A5 → A1 → A2 → A0-source → A4 (inactive) → frozen final review → activation (separate user approval: A0-live, complete preservation of the personal pilot outside all applicable discovery roots and aliases, `GLOBAL_AGENTS.md` edit, install, reload). No preservation path is selected here.
 
 ## User-approved pragmatic verification amendment (current implementation scope)
 

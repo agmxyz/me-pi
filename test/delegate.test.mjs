@@ -17,8 +17,8 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runToolCall } from "@earendil-works/pi-agent-core";
-import { createBashTool } from "@earendil-works/pi-coding-agent";
 import { isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
+import { createBashTool } from "@earendil-works/pi-coding-agent";
 
 // Scratch space for the fake pi binary, configs, and pid files.
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-test-"));
@@ -3596,8 +3596,14 @@ function implementRepo() {
 	git("config", "user.name", "Implement Test");
 	mkdirSync(join(repo, "sub"));
 	writeFileSync(join(repo, "sub", "a.txt"), "a\n");
-	writeFileSync(join(repo, "verify.mjs"), 'import { readFileSync } from "node:fs";\nif (!["fixed", "mutated"].includes(readFileSync("feature.txt", "utf8").trim())) { console.error("fixture not repaired"); process.exitCode = 1; }\n');
-	writeFileSync(join(repo, "package.json"), `${JSON.stringify({ private: true, scripts: { test: "node verify.mjs" } })}\n`);
+	writeFileSync(
+		join(repo, "verify.mjs"),
+		'import { readFileSync } from "node:fs";\nif (!["fixed", "mutated"].includes(readFileSync("feature.txt", "utf8").trim())) { console.error("fixture not repaired"); process.exitCode = 1; }\n',
+	);
+	writeFileSync(
+		join(repo, "package.json"),
+		`${JSON.stringify({ private: true, scripts: { test: "node verify.mjs" } })}\n`,
+	);
 	git("add", "-A");
 	git("commit", "-q", "-m", "initial");
 	git("branch", "other");
@@ -3652,7 +3658,7 @@ test(
 	},
 );
 
-test("exported Pi createBashTool and runToolCall report canonical nonzero and successful results", async (t) => {
+test("exported Pi createBashTool and runToolCall report canonical nonzero and successful results", async () => {
 	const cwd = mkdtempSync(join(TEST_HOME, "direct-bash-tool-"));
 	const bash = createBashTool(cwd, { exposeSessionEnvironment: false });
 	const assistantMessage = {
@@ -3661,15 +3667,23 @@ test("exported Pi createBashTool and runToolCall report canonical nonzero and su
 		api: "openai-responses",
 		provider: "fixture",
 		model: "fixture",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "toolUse",
 		timestamp: Date.now(),
 	};
 	const context = { messages: [], tools: [bash] };
-	const call = (id, command) => runToolCall(
-		{ type: "toolCall", id, name: "bash", arguments: { command } },
-		{ tools: [bash], assistantMessage, context },
-	);
+	const call = (id, command) =>
+		runToolCall(
+			{ type: "toolCall", id, name: "bash", arguments: { command } },
+			{ tools: [bash], assistantMessage, context },
+		);
 	const failed = await call("direct-failure", "printf 'side-effect\\n' > failed.txt; exit 7");
 	assert.equal(failed.isError, true);
 	assert.equal(failed.result.structuredContent.exit_code, 7);
@@ -3792,7 +3806,10 @@ test("implement accepts correlated completed Bash failures after repair, fresh c
 	assert.equal(provenance.complete, true);
 
 	const capture = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
-	assert.deepEqual(capture.entries.map((entry) => entry.exitCode.value), [1, 7]);
+	assert.deepEqual(
+		capture.entries.map((entry) => entry.exitCode.value),
+		[1, 7],
+	);
 	assert.equal(capture.entries[0].command.rawArgsCommand.value.text, commands[0].command);
 	assert.equal(capture.entries[1].command.rawArgsCommand.value.text, commands[1].command);
 	assert.match(handback, /check ✓ `npm test`/);
@@ -4191,7 +4208,13 @@ test("implement Bash binary-content collision stales a committed tree through th
 		execFileSync("git", ["-C", repo, "show", "HEAD:a"]),
 		Buffer.from("7800620066696c6500300079", "hex"),
 	);
-	assert.deepEqual(git("ls-tree", "-r", "--name-only", "HEAD").split("\n").sort(), ["a", "feature.txt", "package.json", "sub/a.txt", "verify.mjs"]);
+	assert.deepEqual(git("ls-tree", "-r", "--name-only", "HEAD").split("\n").sort(), [
+		"a",
+		"feature.txt",
+		"package.json",
+		"sub/a.txt",
+		"verify.mjs",
+	]);
 	assert.equal(git("status", "--porcelain"), "");
 });
 
@@ -4199,7 +4222,12 @@ test("implement check freshness fails closed when a passing check cannot be snap
 	const root = join(TEST_HOME, "missing-checkout");
 	const job = { repoRoot: root, check: { command: CHECK, status: "none", runs: [] } };
 	const calls = new Map([["check", { tool: "bash", command: CHECK }]]);
-	trackCheck(job, calls, { toolCallId: "check", isError: false, result: { structuredContent: { exit_code: 0 } } }, root);
+	trackCheck(
+		job,
+		calls,
+		{ toolCallId: "check", isError: false, result: { structuredContent: { exit_code: 0 } } },
+		root,
+	);
 	assert.equal(job.check.status, "stale");
 	assert.match(job.check.staleReason, /could not be verified/);
 	assert.match(job.check.runs[0], /content snapshot unavailable/);

@@ -73,5 +73,8 @@ test("both user-invoked implementation entrypoints retain full independent revie
 	assert.match(delegateGuide, /timeout requires termination and state\/effect reconciliation/);
 	assert.match(delegateGuide, /canonical structured `exit_code` from 1 through 127/);
 	assert.match(delegateGuide, /replaySafe: false/);
-	assert.match(delegateGuide, /denied\/limited\/unknown outcomes, missing or mismatched call identity, and partial\/unclosed calls remain fail-closed/);
+	assert.match(
+		delegateGuide,
+		/denied\/limited\/unknown outcomes, missing or mismatched call identity, and partial\/unclosed calls remain fail-closed/,
+	);
 });

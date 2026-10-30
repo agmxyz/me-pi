@@ -377,26 +377,26 @@ test("finish permits only one correlated completed non-replay-safe Bash failure"
 				},
 				...(scenario.extraStop
 					? [
-						{
-							jobId: job.id,
-							attempt: 1,
-							toolCallId,
-							...scenario.extraStop,
-						},
-					]
+							{
+								jobId: job.id,
+								attempt: 1,
+								toolCallId,
+								...scenario.extraStop,
+							},
+						]
 					: []),
 				...(scenario.duplicateStop
 					? [
-						{
-							owner: "delegate-parent",
-							jobId: job.id,
-							attempt: 1,
-							toolCallId,
-							cause: "tool-failure",
-							resource: "tool",
-							effect: "completed",
-						},
-					]
+							{
+								owner: "delegate-parent",
+								jobId: job.id,
+								attempt: 1,
+								toolCallId,
+								cause: "tool-failure",
+								resource: "tool",
+								effect: "completed",
+							},
+						]
 					: []),
 			],
 			toolEffects: scenario.missingEffect

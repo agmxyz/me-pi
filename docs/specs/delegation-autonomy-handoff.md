@@ -2,7 +2,7 @@
 
 **Reading this handoff does not authorize policy activation, live installation, migration, or remote action.**
 
-Implementation branch: `delegation-autonomy`, starting at `508f092d442261b6e6b796a9744016095365a7cb`; preserve fixed integrated review baseline `17d2d09e5319e23a93f6d034337c6f72b4f2d311`. Current changes are local. The required final exact check, normal commit, independent coordinator review, and final acceptance are pending. Do not report independent review complete.
+Implementation branch: `delegation-autonomy`, starting at `508f092d442261b6e6b796a9744016095365a7cb`; preserve fixed integrated review baseline `17d2d09e5319e23a93f6d034337c6f72b4f2d311`. The current amended source passed the exact check (204 tests; 103 installer smoke checks). The worker handback records its normal local commit; independent coordinator review and final acceptance remain pending. Do not report independent review complete.
 
 ## User-approved pragmatic verification amendment (current implementation)
 
@@ -11,7 +11,7 @@ Implementation branch: `delegation-autonomy`, starting at `508f092d442261b6e6b79
 - Finalization may ignore a parent `tool-failure/completed` only when exactly one `pi-runtime` Bash effect matches for the same job/attempt/call ID and `replaySafe: false`; this one-to-one rule applies independently to each such failure, while any competing stop or duplicate/missing fact blocks. This permits same-run repair, not automatic replay, another worker attempt, or A4 recovery. Fresh passing declared checks and normal committed delivery remain required.
 - Repo-owned implementation skills use evidence-driven verification by default, without mandatory red-first work or routine user seam approval; explicit user/repository test-first requirements remain binding. Installer preflight checks literal destination paths, not all Pi-discovered frontmatter names. Use the real loader for collision tests. The in-root `.pilot-bak` recipe is superseded; do not inspect or modify the personal pilot.
 
-The focused runtime tests and installer shell checks have been run, but the required `npm run check --prefix extensions` has not yet been run for the final state. Run it alone after the last edit. No `GLOBAL_AGENTS.md` edit, live install/reload, personal-pilot migration, external tracker action, or remote publication is in scope.
+The required `npm run check --prefix extensions` passed on the current source (204 tests; 103 installer smoke checks); the worker handback records the normal local commit. No `GLOBAL_AGENTS.md` edit, live install/reload, personal-pilot migration, external tracker action, or remote publication is in scope.
 
 ## Prior user-approved cross-model amendment (2026-10-30; historical; base revision `delegation-autonomy1e60e1d`)
 
@@ -52,9 +52,9 @@ Earlier planning notes referred to branch `uncap-readonly-delegate`, HEAD `13b32
 
 ## Implementation completion
 
-Run exactly **`npm run check --prefix extensions`** alone after the final edit. It has not yet been run for this final state. Preserve test strength and use owner interfaces. Keep coordinator artifacts read-only, preserve the one-writer boundary, and capture review inputs before review. Stop/report genuine guard/worker limits; never route around them.
+The exact delivery check is **`npm run check --prefix extensions`**, run alone after the final edit; record the actual result and normal local commit in the worker handback. Preserve test strength and use owner interfaces. Keep coordinator artifacts read-only, preserve the one-writer boundary, and capture review inputs before review. Stop/report genuine guard/worker limits; never route around them.
 
-The check and independent review recorded for `f0a40af` are historical evidence for that earlier source state only. Current changes start at `508f092d442261b6e6b796a9744016095365a7cb` and preserve review baseline `17d2d09e5319e23a93f6d034337c6f72b4f2d311`. After the exact check, make a normal local commit only if it passes. Independent coordinator review, any required findings work, and final acceptance remain pending. A4 is inactive; no live policy edit/install/reload, pilot migration, push, PR, or remote publication is in scope.
+The check and independent review recorded for `f0a40af` are historical evidence for that earlier source state only. Current changes start at `508f092d442261b6e6b796a9744016095365a7cb` and preserve review baseline `17d2d09e5319e23a93f6d034337c6f72b4f2d311`. The worker handback records the fresh exact-check result and normal local commit. Independent coordinator review, any required findings work, and final acceptance remain pending. A4 is inactive; no live policy edit/install/reload, pilot migration, push, PR, or remote publication is in scope.
 
 ## Coordinator next steps
 
