@@ -28,12 +28,27 @@ function assertUserInvokedReviewContract(source, name) {
 	);
 	assert.match(
 		source,
-		/Until the full A4 activation gate above is complete, a guard or worker-limit block means stop and report/,
+		/The user-approved deletion of `GLOBAL_AGENTS\.md` in `a2d3e79` removed that file's former blanket stop-on-any-guard\/worker-limit clause/,
 	);
-	assert.match(source, /This skill grants no recovery authority before the full A4 gate is active/);
+	assert.match(source, /Standing A4 recovery remains \*\*INACTIVE\*\*/);
+	assert.match(
+		source,
+		/A user may separately approve a bounded continuation for one particular task without activating standing A4/,
+	);
+	assert.match(source, /trusted worker termination, effect, checkout, and fixed-slice allowance reconciliation/);
+	assert.match(source, /at most two continuations after the initial attempt in that fixed slice/);
+	assert.match(source, /same selected eligible model and within per-attempt limits/);
+	assert.match(source, /Relabeling, splitting, changing job IDs, or advancing bases never resets the allowance/);
+	assert.match(source, /A new attempt cannot suppress an earlier hook or reuse expired allowance/);
+	assert.match(source, /A guard-denied effect remains denied/);
+	assert.match(source, /Unknown\/partial effects or integrity uncertainty stop affected writes and acceptance/);
+	assert.match(
+		source,
+		/restores or updates the separately approved `GLOBAL_AGENTS\.md` policy as its final policy step/,
+	);
 	assert.match(source, /## Future bounded coordinator recovery — INACTIVE/);
 	assert.match(source, /INACTIVE: coordinator policy only, not runtime enforcement/);
-	assert.match(source, /No continuation is permitted until the separate A4 activation gate is complete/);
+	assert.match(source, /No standing A4 continuation is permitted until the separate A4 activation gate is complete/);
 	assert.match(source, /one initial attempt plus at most two coordinator-started continuations/);
 	assert.match(source, /original origin\/base and every attempt base/);
 	assert.match(source, /135 hard minutes plus possible termination\/finalization overhead/);
@@ -55,7 +70,7 @@ function assertUserInvokedReviewContract(source, name) {
 	assert.match(source, /load `code-review`/i);
 }
 
-test("both user-invoked implementation entrypoints retain full independent review and current stop boundaries", () => {
+test("both user-invoked implementation entrypoints retain full review and bounded continuation authority", () => {
 	assertUserInvokedReviewContract(singleTask, "implement-me-pi");
 	assertUserInvokedReviewContract(specGraph, "implement-spec-me-pi");
 	assert.match(singleTask, /commits before the coordinator's independent review/);
@@ -66,6 +81,12 @@ test("both user-invoked implementation entrypoints retain full independent revie
 	assert.match(specGraph, /one implement writer per repository/);
 	assert.match(specGraph, /one integration branch/);
 	assert.match(specGraph, /does not call the separate user-only `implement-me-pi` skill through `Skill`/);
+	assert.match(delegateGuide, /absence grants no standing recovery authority/);
+	assert.match(
+		delegateGuide,
+		/A user may explicitly approve a bounded continuation for a particular task without activating standing A4/,
+	);
+	assert.match(delegateGuide, /A guard-denied effect remains denied/);
 	assert.match(delegateGuide, /### Future bounded coordinator recovery — INACTIVE/);
 	assert.match(delegateGuide, /Normative coordinator walkthroughs—not runtime tests or aggregate enforcement/);
 	assert.match(delegateGuide, /first-attempt success ends the slice/);
