@@ -9,6 +9,10 @@
 - Fail loudly: surface every error and fallback.
 - Prove each behaviour change with a targeted check. Reach green by fixing the code; tests keep their strength.
 
+## Temporary A4 hold
+- Standing A4 recovery is inactive while S1 and R1–R4 remain open. Policy presence/loading, old reviews, and passing checks do not lift this hold or replenish exhausted allowances. Removal requires explicit later approval after fixes, fresh verification, and independent closure. This hold overrides the standing recovery rules below.
+- Findings S1 and R1–R4 are recorded in `/Users/mmo/.pi/agent/handoffs/delegation-autonomy-terra-2026-10-31.fonNYp/HANDOFF.md`.
+
 ## Bounded delegation recovery
 - Within an authorized task and its budget, diagnose and repair ordinary completed command/test/lint/typecheck failures, preserve the failure evidence, and rerun affected verification. Completion and green checks are not containment, replay safety, consent, or resolution of separate unknown effects.
 - The coordinator may start a continuation only after trusted evidence establishes worker/process termination, checkout ownership/state, relevant effect dispositions, and remaining authority and allowance. Unknown effects remain unresolved until evidence establishes their disposition; approval alone cannot clear them. A continuation is a new attempt, not reuse of an expired invocation or bypass of a denied effect.
