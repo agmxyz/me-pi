@@ -29,3 +29,6 @@ cache/
 
 # Root development dependencies
 node_modules/
+
+# Agent tool worktrees created inside the checkout
+.claude/
