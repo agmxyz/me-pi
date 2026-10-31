@@ -28,6 +28,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type ArtifactWriteResult,
+	FAILED_TOOL_ARTIFACT_LIMITS,
 	FailedToolArtifactCollector,
 	type FailedToolCallInput,
 } from "./delegate-artifacts.ts";
@@ -723,8 +724,16 @@ function bashStatuses(resultValue: unknown): { exitCode?: number; diagnostics: s
 	return {
 		...(valid ? { exitCode: canonical as number } : {}),
 		diagnostics: fields
-			.filter(([, field]) => field.present && typeof field.value === "number" && Number.isFinite(field.value))
-			.map(([name, field]) => `${name}=${field.value}`),
+			.filter(([, field]) => field.present)
+			.map(([name, field]) => {
+				const value = field.value;
+				if (typeof value === "number") return `${name}=${value}`;
+				// Only short numeric strings are useful status evidence; never serialize arbitrary metadata.
+				if (typeof value === "string")
+					return `${name}=string:${value.length <= 3 && /^\d+$/.test(value) ? value : "[REDACTED]"}`;
+				if (typeof value === "boolean" || value === null) return `${name}=${String(value)}`;
+				return `${name}=${typeof value}`;
+			}),
 	};
 }
 
@@ -957,6 +966,9 @@ function runWorkerAttempt(
 		const anonymousCaptureCalls: CapturedToolCall[] = [];
 		const activeEffects = new Map<string, ToolEffectFact[]>();
 		const seenToolCallIds = new Set<string>();
+		// Separate from failed-tool artifacts: these are owner-reported successes with contradictory statuses.
+		const contradictorySuccesses: string[] = [];
+		let omittedContradictorySuccesses = 0;
 		let latestAssistantError: { provider: string; model: string; api: string } | undefined;
 		const replaySafeReadTools = new Set(["read", "grep", "find", "ls", "Skill"]);
 
@@ -1034,6 +1046,14 @@ function runWorkerAttempt(
 			const endedToolName = typeof event.toolName === "string" ? event.toolName : undefined;
 			if (call?.toolName && endedToolName && call.toolName !== endedToolName)
 				collector.noteAnomaly("malformed-event");
+			if (event.isError === false && (call?.toolName ?? endedToolName) === "bash") {
+				const status = bashStatuses(event.result);
+				if (status.exitCode !== 0 && status.diagnostics.length) {
+					if (contradictorySuccesses.length < FAILED_TOOL_ARTIFACT_LIMITS.maxDiagnosticsPerCall)
+						contradictorySuccesses.push(`isError=false ${status.diagnostics.join("; ")}`);
+					else omittedContradictorySuccesses++;
+				}
+			}
 			if (event.isError !== true) return;
 			const endedAt = Date.now();
 			const eventResult = eventRecord(event.result);
@@ -1283,6 +1303,11 @@ function runWorkerAttempt(
 			if (pid !== undefined) groups.delete(pid);
 			if (pid !== undefined) implement?.pids.delete(pid);
 			result.ms = Date.now() - start;
+			if (contradictorySuccesses.length) {
+				result.stderr += `\ndelegate: contradictory Bash success status diagnostics:\n${contradictorySuccesses.join("\n")}`;
+				if (omittedContradictorySuccesses)
+					result.stderr += `\ndelegate: ${omittedContradictorySuccesses} further status diagnostics omitted`;
+			}
 			if (result.outDir) {
 				try {
 					result.files = listOutput(result.outDir);

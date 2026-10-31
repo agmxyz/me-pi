@@ -14,6 +14,7 @@ const ticketIndex = readFileSync(join(root, "docs/specs/delegation-autonomy-tick
 const autonomySpec = readFileSync(join(root, "docs/specs/delegation-autonomy.md"), "utf8");
 const activationHandoff = readFileSync(join(root, "docs/specs/delegation-autonomy-handoff.md"), "utf8");
 const a2Ticket = readFileSync(join(root, "docs/specs/delegation-autonomy-tickets/A2.md"), "utf8");
+const a4Ticket = readFileSync(join(root, "docs/specs/delegation-autonomy-tickets/A4.md"), "utf8");
 
 function sectionBetween(source, heading, nextHeading) {
 	const start = source.indexOf(heading);
@@ -184,6 +185,16 @@ test("both user-invoked implementation entrypoints retain full review and bounde
 		delegateGuide,
 		/denied\/limited\/unknown outcomes, missing or mismatched call identity, and partial\/unclosed calls remain fail-closed/,
 	);
+});
+
+test("historical lifecycle approvals do not authorize a new A4 lifecycle", () => {
+	for (const source of [autonomySpec, activationHandoff, a4Ticket]) {
+		assert.match(source, /historical lifecycle approval.*2026-10-31/i);
+		assert.match(source, /new lifecycle requires current user authority/i);
+	}
+	assert.doesNotMatch(autonomySpec, /The current approval separately authorizes/);
+	assert.doesNotMatch(activationHandoff, /The user-approved scope covers this alignment/);
+	assert.doesNotMatch(a4Ticket, /User approval for the exact policy and lifecycle is already granted/);
 });
 
 test("adoption notes date staging facts and defer A4 authority to actual-session revalidation", () => {

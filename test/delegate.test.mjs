@@ -391,15 +391,17 @@ process.stdin.on("end", () => {
     if (scenario === "reuse") {
       tool("read", { path: "a" }, false, { toolCallId: "reused" });
       tool("read", { path: "b" }, false, { toolCallId: "reused" });
-    } else if (scenario === "conflict" || scenario === "provider") {
-      tool("bash", { command: "exit 7" }, true, { result: { structuredContent: { exit_code: 7 }, ...(scenario === "conflict" ? { details: { exitCode: 143 } } : {}) } });
+    } else if (["conflict", "invalid-alias", "invalid-secret", "success-conflict", "provider"].includes(scenario)) {
+      tool("bash", { command: "exit 7" }, scenario !== "success-conflict", { result: { structuredContent: { exit_code: 7 }, ...(["conflict", "success-conflict"].includes(scenario) ? { details: { exitCode: 143 } } : scenario === "invalid-alias" ? { details: { exitCode: "143" } } : scenario === "invalid-secret" ? { details: { exitCode: "TOKEN=synthetic-secret" } } : {}) } });
       if (scenario === "provider") retryable("temporary provider failure");
+    } else if (scenario === "success-overflow") {
+      for (let i = 0; i < 21; i++) tool("bash", { command: "fixture" }, false, { result: { structuredContent: { exit_code: 0 }, details: { exitCode: "TOKEN=synthetic-secret" } } });
     }
     writeFileSync("feature.txt", "fixed\\n");
     git("add", "feature.txt");
     git("commit", "-q", "-m", "feat: fixture");
     const status = scenario === "check-missing" ? {} : scenario === "check-invalid" ? { exit_code: "0" } : { exit_code: 0 };
-    tool("bash", { command: "npm test" }, false, { result: { structuredContent: status, ...(scenario === "check-conflict" ? { details: { exitCode: 143 } } : scenario === "check-match" ? { details: { exitCode: 0 } } : {}) } });
+    tool("bash", { command: "npm test" }, false, { result: { structuredContent: status, ...(["check-conflict", "check-success-conflict"].includes(scenario) ? { details: { exitCode: 143 } } : scenario === "check-match" ? { details: { exitCode: 0 } } : {}) } });
     emit("Finished fixture.");
     process.exit(0);
   }
@@ -3826,6 +3828,59 @@ test("implement rejects conflicting Bash status aliases through event finalizati
 		});
 });
 
+test("invalid Bash alias diagnostics retain their path, type and value", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "invalid-alias" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	const diagnostics = artifact.entries[0].statusDiagnostics.map((item) => item.text).join(" ");
+	assert.match(diagnostics, /structuredContent.exit_code=7/);
+	assert.match(diagnostics, /details.exitCode=string:143/);
+});
+
+test("status diagnostics redact arbitrary strings and bound success records", async (t) => {
+	for (const scenario of ["invalid-secret", "success-overflow"])
+		await t.test(scenario, async (t) => {
+			const { tool } = setup(t, {
+				env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: scenario }),
+			});
+			const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+			assert.equal(result.isError, true, text(result));
+			const captured =
+				scenario === "invalid-secret"
+					? readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8")
+					: readFileSync(result.details.implement.detailsPath, "utf8");
+			assert.match(captured, /details.exitCode=string:\[REDACTED\]/);
+			assert.doesNotMatch(captured, /synthetic-secret/);
+			if (scenario === "success-overflow") {
+				assert.equal((captured.match(/isError=false/g) ?? []).length, 20);
+				assert.match(captured, /1 further status diagnostics omitted/);
+			}
+		});
+});
+
+test("success-marked conflicting Bash statuses survive finalization", async (t) => {
+	for (const scenario of ["success-conflict", "check-success-conflict"])
+		await t.test(scenario, async (t) => {
+			const { tool } = setup(t, {
+				env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: scenario }),
+			});
+			const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+			assert.equal(result.isError, true, text(result));
+			assert.equal(result.details.implement.check.status === "pass", scenario === "success-conflict");
+			assert.equal(result.details.implement.outcome.failedToolCapture, undefined);
+			const details = readFileSync(result.details.implement.detailsPath, "utf8");
+			assert.match(details, /isError=false/);
+			assert.match(
+				details,
+				scenario === "success-conflict" ? /structuredContent.exit_code=7/ : /structuredContent.exit_code=0/,
+			);
+			assert.match(details, /details.exitCode=143/);
+		});
+});
+
 test("implement check requires canonical status and accepts matching or absent aliases", async (t) => {
 	for (const scenario of ["check-missing", "check-invalid", "check-match", "check-absent"])
 		await t.test(scenario, async (t) => {
@@ -3983,6 +4038,8 @@ test("dropped and contradictory Bash status metadata cannot become accepted via 
 			else assert.equal(artifact.entries[0].exitCode.value, expectedExit);
 		} else {
 			assert.equal(result.details.implement.outcome.failedToolCapture, undefined);
+			const details = readFileSync(result.details.implement.detailsPath, "utf8");
+			assert.match(details, /isError=false structuredContent.exit_code=7/);
 		}
 	}
 });
