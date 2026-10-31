@@ -28,6 +28,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type ArtifactWriteResult,
+	boundedCallId,
 	FAILED_TOOL_ARTIFACT_LIMITS,
 	FailedToolArtifactCollector,
 	type FailedToolCallInput,
@@ -1050,7 +1051,9 @@ function runWorkerAttempt(
 				const status = bashStatuses(event.result);
 				if (status.exitCode !== 0 && status.diagnostics.length) {
 					if (contradictorySuccesses.length < FAILED_TOOL_ARTIFACT_LIMITS.maxDiagnosticsPerCall)
-						contradictorySuccesses.push(`isError=false ${status.diagnostics.join("; ")}`);
+						contradictorySuccesses.push(
+							`isError=false toolCallId=${boundedCallId(call?.toolCallId ?? id ?? "(missing)").text} ${status.diagnostics.join("; ")}`,
+						);
 					else omittedContradictorySuccesses++;
 				}
 			}
@@ -1303,6 +1306,9 @@ function runWorkerAttempt(
 			if (pid !== undefined) groups.delete(pid);
 			if (pid !== undefined) implement?.pids.delete(pid);
 			result.ms = Date.now() - start;
+			// Derive the child's own tail before appending delegate diagnostics; appended text must not become the
+			// reported child failure when the worker crashes without a final answer.
+			const lastStderr = result.stderr.trim().split("\n").at(-1)?.slice(0, 300);
 			if (contradictorySuccesses.length) {
 				result.stderr += `\ndelegate: contradictory Bash success status diagnostics:\n${contradictorySuccesses.join("\n")}`;
 				if (omittedContradictorySuccesses)
@@ -1318,7 +1324,6 @@ function runWorkerAttempt(
 			// A final answer ("stop") counts even if a stop or stray pipe holder came after it.
 			const answered = lastStopReason === "stop" && !result.failure && Boolean(result.output.trim());
 			if (problem) provenance.complete = false;
-			const lastStderr = result.stderr.trim().split("\n").at(-1)?.slice(0, 300);
 			if (answered) {
 				// Kept for the details only: what happened after the answer was complete.
 				const after = [problem, stopped && `stopped: ${stopped}`, code !== 0 && `exit ${code}`].filter(Boolean);

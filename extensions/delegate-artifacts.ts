@@ -218,6 +218,11 @@ function boundedText(text: string, maxBytes = TEXT_CAP): ArtifactText {
 	};
 }
 
+/** Bounded, redacted call identity for diagnostics that must correlate outside the failed-call artifact. */
+export function boundedCallId(callId: string): ArtifactText {
+	return boundedText(callId, MAX_CALL_ID_BYTES);
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	try {

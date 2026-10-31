@@ -396,6 +396,18 @@ process.stdin.on("end", () => {
       if (scenario === "provider") retryable("temporary provider failure");
     } else if (scenario === "success-overflow") {
       for (let i = 0; i < 21; i++) tool("bash", { command: "fixture" }, false, { result: { structuredContent: { exit_code: 0 }, details: { exitCode: "TOKEN=synthetic-secret" } } });
+    } else if (scenario === "success-multi") {
+      tool("bash", { command: "exit 7" }, false, { toolCallId: "call-seven", result: { structuredContent: { exit_code: 7 } } });
+      tool("bash", { command: "exit 8" }, false, { toolCallId: "call-eight", result: { structuredContent: { exit_code: 8 } } });
+      tool("bash", { command: "exit 9" }, false, { toolCallId: "call-" + "x".repeat(300), result: { structuredContent: { exit_code: 9 } } });
+    } else if (scenario === "success-crash") {
+      tool("bash", { command: "exit 7" }, false, { toolCallId: "call-crash", result: { structuredContent: { exit_code: 7 }, details: { exitCode: 143 } } });
+      process.stderr.write("boom: last stderr line\\n");
+      process.exit(3);
+    } else if (scenario === "duplicate-end") {
+      tool("bash", { command: "printf completed" }, false, { toolCallId: "call-completed", result: { structuredContent: { exit_code: 0 } } });
+      tool("bash", { command: "printf duplicate" }, true, { toolCallId: "call-completed", omitStart: true });
+      tool("read", { path: "unique" }, false, { toolCallId: "call-unique" });
     }
     writeFileSync("feature.txt", "fixed\\n");
     git("add", "feature.txt");
@@ -3798,6 +3810,51 @@ test("implement rejects lifetime call ID reuse through event finalization", asyn
 	);
 });
 
+test("implement rejects a duplicate END after a completed call while retaining correlation diagnostics", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "duplicate-end" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const facts = result.details.implement;
+	assert.equal(facts.check.status, "pass");
+	assert.equal(facts.delivered.commit, "normal");
+	assert.equal(facts.delivered.wip, false);
+	assert.equal(facts.problems.includes("provenance/effect state is incomplete or stopped; acceptance withheld"), true);
+
+	const provenance = facts.outcome.provenance[0];
+	assert.equal(provenance.complete, false);
+	const effects = provenance.toolEffects.filter((fact) => fact.toolCallId === "call-completed");
+	assert.deepEqual(
+		effects.map((fact) => [fact.toolName, fact.effect, fact.replaySafe]),
+		[
+			["bash", "completed", false],
+			["bash", "unknown", false],
+		],
+		"the completed call and its duplicate end stay separately attributed",
+	);
+	const stop = provenance.stopFacts.find(
+		(fact) => fact.toolCallId === "call-completed" && fact.cause === "tool-failure",
+	);
+	assert.equal(stop.owner, "delegate-parent");
+	assert.equal(stop.effect, "unknown");
+	assert.equal(
+		provenance.toolEffects.find((fact) => fact.toolCallId === "call-unique").effect,
+		"completed",
+		"unique call IDs still complete normally",
+	);
+
+	const artifact = JSON.parse(readFileSync(facts.outcome.failedToolCapture.path, "utf8"));
+	assert.equal(artifact.capture.failureCount, 1);
+	assert.equal(artifact.entries.length, 1);
+	assert.equal(artifact.entries[0].toolCallId.text, "call-completed");
+	assert.equal(artifact.entries[0].startedAt, null, "the duplicate end has no matching start");
+	assert.ok(artifact.entries[0].missingFields.includes("startedAt"));
+	assert.ok(artifact.capture.anomalies["end-without-start"] >= 1);
+	const details = readFileSync(facts.detailsPath, "utf8");
+	assert.match(details, /tool=call-completed cause=tool-failure resource=tool effect=unknown/);
+});
+
 test("implement rejects a competing provider retry after ordinary Bash repair", async (t) => {
 	const { tool } = setup(t, {
 		config: POOL_SET,
@@ -3879,6 +3936,74 @@ test("success-marked conflicting Bash statuses survive finalization", async (t) 
 			);
 			assert.match(details, /details.exitCode=143/);
 		});
+});
+
+test("multiple success-marked conflicting Bash calls retain bounded call identity in finalization", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "success-multi" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const facts = result.details.implement;
+	assert.equal(facts.check.status, "pass");
+	assert.equal(facts.delivered.commit, "normal");
+	assert.equal(facts.outcome.failedToolCapture, undefined, "successful conflicts do not create failed-tool artifacts");
+
+	const details = readFileSync(facts.detailsPath, "utf8");
+	const diagnostics = details.split("\n").filter((line) => line.includes("isError=false"));
+	assert.equal(diagnostics.length, 3);
+	const seven = diagnostics.find((line) => line.includes("toolCallId=call-seven"));
+	const eight = diagnostics.find((line) => line.includes("toolCallId=call-eight"));
+	const long = diagnostics.find((line) => /toolCallId=call-x{10}/.test(line));
+	assert.ok(seven, details);
+	assert.ok(eight, details);
+	assert.ok(long, details);
+	assert.match(seven, /structuredContent\.exit_code=7/);
+	assert.match(eight, /structuredContent\.exit_code=8/);
+	assert.match(long, /structuredContent\.exit_code=9/);
+	assert.doesNotMatch(seven, /call-eight|exit_code=8/);
+	assert.doesNotMatch(eight, /call-seven|exit_code=7/);
+	const retainedCallId = long.match(/toolCallId=(\S+)/)[1];
+	assert.equal(retainedCallId.length, 256, "call identity is bounded");
+	assert.ok(`call-${"x".repeat(300)}`.startsWith(retainedCallId), "the bounded identity keeps the call ID prefix");
+
+	const provenance = facts.outcome.provenance[0];
+	for (const [toolCallId, exitCode] of [
+		["call-seven", 7],
+		["call-eight", 8],
+		[`call-${"x".repeat(300)}`, 9],
+	]) {
+		const effect = provenance.toolEffects.find((fact) => fact.toolCallId === toolCallId);
+		assert.equal(effect.effect, "unknown");
+		const stop = provenance.stopFacts.find(
+			(fact) => fact.toolCallId === toolCallId && fact.cause === "tool-failure" && fact.effect === "unknown",
+		);
+		assert.ok(stop, `call ${exitCode} keeps a correlated unknown stop fact`);
+	}
+});
+
+test("a crashing child keeps its real stderr tail alongside contradictory success diagnostics", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "success-crash" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const facts = result.details.implement;
+	assert.ok(!facts.outcome.answer?.trim(), "the crashing child gave no final answer");
+	assert.match(
+		facts.outcome.failure,
+		/^exit 3: boom: last stderr line/,
+		"the reported failure uses the child's crash tail",
+	);
+	assert.doesNotMatch(
+		facts.outcome.failure,
+		/isError=false/,
+		"an appended diagnostic does not replace the crash message",
+	);
+	assert.match(facts.outcome.stderr, /boom: last stderr line/);
+	assert.match(facts.outcome.stderr, /contradictory Bash success status diagnostics/);
+	assert.match(facts.outcome.stderr, /isError=false toolCallId=call-crash/);
+	assert.match(facts.outcome.stderr, /structuredContent\.exit_code=7; details\.exitCode=143/);
 });
 
 test("implement check requires canonical status and accepts matching or absent aliases", async (t) => {
@@ -4039,7 +4164,7 @@ test("dropped and contradictory Bash status metadata cannot become accepted via 
 		} else {
 			assert.equal(result.details.implement.outcome.failedToolCapture, undefined);
 			const details = readFileSync(result.details.implement.detailsPath, "utf8");
-			assert.match(details, /isError=false structuredContent.exit_code=7/);
+			assert.match(details, /isError=false toolCallId=\S+ structuredContent\.exit_code=7/);
 		}
 	}
 });
