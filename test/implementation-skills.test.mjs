@@ -13,6 +13,7 @@ const setupGuide = readFileSync(join(root, "docs/setup.md"), "utf8");
 const ticketIndex = readFileSync(join(root, "docs/specs/delegation-autonomy-tickets/README.md"), "utf8");
 const autonomySpec = readFileSync(join(root, "docs/specs/delegation-autonomy.md"), "utf8");
 const activationHandoff = readFileSync(join(root, "docs/specs/delegation-autonomy-handoff.md"), "utf8");
+const a2Ticket = readFileSync(join(root, "docs/specs/delegation-autonomy-tickets/A2.md"), "utf8");
 
 function sectionBetween(source, heading, nextHeading) {
 	const start = source.indexOf(heading);
@@ -205,6 +206,16 @@ test("adoption notes date staging facts and defer A4 authority to actual-session
 	assert.match(
 		ticketIndex,
 		/Dated A4 staging checkpoint \(2026-10-31; source `0422473bb01f48283515aa10c1be93fed6bbf9be`; not a live ledger\)/,
+	);
+	const pragmaticAmendment = sectionBetween(
+		a2Ticket,
+		"## User-approved pragmatic verification amendment (current implementation scope)",
+		"## Original outcome and scope (historical requirement; current acceptance is amended above)",
+	);
+	assert.doesNotMatch(pragmaticAmendment, /\bA4 remains INACTIVE\b/);
+	assert.match(
+		pragmaticAmendment,
+		/This runtime amendment does not itself activate A4; apply the actual-session load and revalidation gate defined above\./,
 	);
 	assert.match(autonomySpec, checkpoint);
 	assert.match(autonomySpec, /revalidated in the actual session/);
