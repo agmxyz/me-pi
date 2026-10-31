@@ -512,6 +512,7 @@ check "post-registration failure keeps only the completed registration in settin
 check "post-registration failure stops after the failed list" cmp -s "$TMP/expected-post-write-failure-pi.log" "$PI_LOG"
 check "post-registration failure invokes no RTK setup" test ! -s "$RTK_LOG"
 check "post-registration failure copies no Pi examples" test ! -e "$POST_WRITE_AGENT/extensions/interactive-shell.ts" -a ! -e "$POST_WRITE_AGENT/extensions/handoff.ts"
+check "post-registration failure leaves the extensions directory otherwise empty" test "$(find "$POST_WRITE_AGENT/extensions" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -eq 1
 check "post-registration failure preserves credential contents" assert_file_text "$POST_WRITE_AGENT/auth.json" 'credential sentinel: never overwrite'
 check "post-registration failure preserves external extension" assert_file_text "$POST_WRITE_AGENT/extensions/external-extension.ts" 'external extension sentinel'
 check "post-registration failure preserves external skill" assert_file_text "$HOME_POST_WRITE/.agents/skills/external-skill/SKILL.md" 'external skill sentinel'
@@ -590,7 +591,7 @@ TEST_PATH="$saved_path"
 check "failing RTK init reports its warning" grep -Fq "RTK initialization failed or refused an overwrite" "$TMP/rtk-fail.out"
 check "failing RTK init still prints Done" grep -Fq "Done. Restart pi sessions" "$TMP/rtk-fail.out"
 check "failing RTK init still registers packages" assert_packages_registered "$HOME_RTK_FAIL/.pi/agent/settings.json" "$FIXTURE"
-check "failing RTK init is invoked once with the Pi agent" grep -Fxq "init --global --agent pi" "$RTK_LOG"
+check "failing RTK init is invoked once with the Pi agent" test "$(grep -Fxc "init --global --agent pi" "$RTK_LOG")" -eq 1
 
 # Upgrade a previous extensions-directory registration, including a filtered object.
 HOME_UPGRADE="$TMP/home-upgrade"
