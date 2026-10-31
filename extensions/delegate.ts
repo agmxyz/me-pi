@@ -714,12 +714,17 @@ function bashStatuses(resultValue: unknown): { exitCode?: number; diagnostics: s
 		["exitCode", eventField(result, "exitCode")],
 	] as const;
 	const canonical = fields[0][1].value;
-	const valid = fields[0][1].present && Number.isSafeInteger(canonical) && fields.slice(1).every(([, field]) =>
-		!field.present || (Number.isSafeInteger(field.value) && field.value === canonical),
-	);
+	const valid =
+		fields[0][1].present &&
+		Number.isSafeInteger(canonical) &&
+		fields
+			.slice(1)
+			.every(([, field]) => !field.present || (Number.isSafeInteger(field.value) && field.value === canonical));
 	return {
 		...(valid ? { exitCode: canonical as number } : {}),
-		diagnostics: fields.filter(([, field]) => field.present && typeof field.value === "number" && Number.isFinite(field.value)).map(([name, field]) => `${name}=${field.value}`),
+		diagnostics: fields
+			.filter(([, field]) => field.present && typeof field.value === "number" && Number.isFinite(field.value))
+			.map(([name, field]) => `${name}=${field.value}`),
 	};
 }
 
@@ -1076,7 +1081,15 @@ function runWorkerAttempt(
 			if (toolCallId && seenToolCallIds.has(toolCallId)) {
 				provenance.complete = false;
 				implement?.artifacts.noteAnomaly("duplicate-tool-call-id");
-				provenance.stopFacts.push({ owner: "delegate-parent", jobId: job.jobId, attempt: attemptIndex, toolCallId, cause: "tool-failure", resource: "tool", effect: "unknown" });
+				provenance.stopFacts.push({
+					owner: "delegate-parent",
+					jobId: job.jobId,
+					attempt: attemptIndex,
+					toolCallId,
+					cause: "tool-failure",
+					resource: "tool",
+					effect: "unknown",
+				});
 			}
 			if (toolCallId) seenToolCallIds.add(toolCallId);
 			const fact: ToolEffectFact = {

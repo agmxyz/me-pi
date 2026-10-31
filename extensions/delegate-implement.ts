@@ -600,11 +600,11 @@ function hasUnresolvedProvenance(outcome: Outcome): boolean {
 	);
 	const isDiagnostic = (fact: StopFact) =>
 		fact.toolCallId !== undefined &&
-			allowedFailures.has(`${fact.jobId}\0${fact.attempt}\0${fact.toolCallId}`) &&
-			fact.owner === "delegate-parent" &&
-			fact.cause === "tool-failure" &&
-			fact.resource === "tool" &&
-			fact.effect === "completed";
+		allowedFailures.has(`${fact.jobId}\0${fact.attempt}\0${fact.toolCallId}`) &&
+		fact.owner === "delegate-parent" &&
+		fact.cause === "tool-failure" &&
+		fact.resource === "tool" &&
+		fact.effect === "completed";
 	return (
 		allStopFacts.some((fact) => !isDiagnostic(fact)) ||
 		attempts.some((attempt) => !attempt.complete || attempt.toolEffects.some((fact) => fact.effect !== "completed"))
@@ -767,7 +767,10 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 		}
 		facts.commits = listed.slice(0, MAX_COMMITS).map(shown);
 		facts.commitCount = listed.length;
-		if (log.ok) facts.delivered.commit = commits.some((line) => !line.split("\0")[3]?.startsWith("WIP(delegate")) ? "normal" : "none";
+		if (log.ok)
+			facts.delivered.commit = commits.some((line) => !line.split("\0")[3]?.startsWith("WIP(delegate"))
+				? "normal"
+				: "none";
 		const short = await git(job.repoRoot, ["diff", "--shortstat", `${job.base}..${sha}`]);
 		const stat = await git(job.repoRoot, ["diff", "--stat", `${job.base}..${sha}`]);
 		if (!short.ok || !stat.ok) {

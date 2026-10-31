@@ -640,7 +640,12 @@ function makeEntry(
 		output,
 		error,
 		...(Array.isArray(result?.statusDiagnostics)
-			? { statusDiagnostics: result.statusDiagnostics.slice(0, 6).filter((value): value is string => typeof value === "string").map((value) => boundedText(value, 256)) }
+			? {
+					statusDiagnostics: result.statusDiagnostics
+						.slice(0, 6)
+						.filter((value): value is string => typeof value === "string")
+						.map((value) => boundedText(value, 256)),
+				}
 			: {}),
 		childDiagnostics: {
 			state:
