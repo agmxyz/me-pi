@@ -8,6 +8,65 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const singleTask = readFileSync(join(root, "skills/implement-me-pi/SKILL.md"), "utf8");
 const specGraph = readFileSync(join(root, "skills/implement-spec-me-pi/SKILL.md"), "utf8");
 const delegateGuide = readFileSync(join(root, "docs/delegate.md"), "utf8");
+const readme = readFileSync(join(root, "README.md"), "utf8");
+const setupGuide = readFileSync(join(root, "docs/setup.md"), "utf8");
+const ticketIndex = readFileSync(join(root, "docs/specs/delegation-autonomy-tickets/README.md"), "utf8");
+const autonomySpec = readFileSync(join(root, "docs/specs/delegation-autonomy.md"), "utf8");
+const activationHandoff = readFileSync(join(root, "docs/specs/delegation-autonomy-handoff.md"), "utf8");
+
+function sectionBetween(source, heading, nextHeading) {
+	const start = source.indexOf(heading);
+	const end = source.indexOf(nextHeading, start + heading.length);
+	assert.notEqual(start, -1, `missing section: ${heading}`);
+	assert.notEqual(end, -1, `missing section boundary: ${nextHeading}`);
+	return source.slice(start, end);
+}
+
+function assertContinuationDecisionPath(source, name) {
+	const operational =
+		name === "implement-me-pi"
+			? sectionBetween(source, "## 3. Reconcile the handback", "## 4.")
+			: sectionBetween(source, "## 4. Accept or reject each handback", "## 5.");
+	const correction = sectionBetween(source, "## 5.", "## 6.");
+	const authority = source.slice(source.indexOf("## Current authority boundary"));
+
+	assert.match(
+		operational,
+		/If standing A4 is active in this actually loaded and revalidated session and every activation gate in the current authority boundary is satisfied/,
+	);
+	assert.match(operational, /without new per-continuation approval/);
+	assert.match(
+		operational,
+		/If any standing gate is absent or unverified, proceed only after the user explicitly approves that particular bounded continuation/,
+	);
+	assert.match(operational, /fresh passing (?:exact )?check,? and normal committed delivery/);
+	assert.match(
+		operational,
+		/Unknown\/partial effects, guard-denied effects, integrity uncertainty, missing prerequisites, and exhausted allowance stop affected work/,
+	);
+	assert.match(operational, /denied substantive effect/);
+	assert.match(operational, /never retry or relay|never retried or relayed/);
+	assert.doesNotMatch(operational, /Without explicit user approval for a particular bounded continuation, stop/);
+	assert.doesNotMatch(source, /Without task-specific approval, report the incomplete handback/);
+	assert.match(correction, /failed or incomplete corrective handback remains unaccepted/);
+	assert.match(correction, /authority route in step [34]/);
+	assert.match(
+		authority,
+		/Continuation authority follows one explicit route: after trusted termination, effect, checkout, and fixed-slice allowance reconciliation/,
+	);
+	assert.match(
+		authority,
+		/qualifying loaded A4 session may handle ordinary repairs\/findings and a reconciled worker-limit continuation without a new routine approval/,
+	);
+	assert.match(
+		authority,
+		/when any standing gate is absent or unverified, only the user's explicit approval for that particular bounded continuation can authorize another attempt/,
+	);
+
+	if (name === "implement-spec-me-pi") {
+		assert.match(operational, /graph frontier advances only after that acceptance/);
+	}
+}
 
 function assertUserInvokedReviewContract(source, name) {
 	assert.match(source, new RegExp(`^name: ${name}$`, "m"));
@@ -32,19 +91,19 @@ function assertUserInvokedReviewContract(source, name) {
 	);
 	assert.match(
 		source,
-		/Standing A4 is load-gated: it is active only in sessions that have loaded the separately approved policy, supported provenance-capable runtime, and matching reviewed skills after all activation gates above are satisfied; otherwise it remains \*\*INACTIVE\*\*/,
+		/Standing A4 is active only in a session where the separately approved policy, supported provenance-capable runtime, and matching reviewed skills are actually installed, loaded, and revalidated/,
 	);
-	assert.match(
-		source,
-		/A user may separately approve a bounded continuation for one particular task without activating standing A4/,
-	);
-	assert.match(source, /trusted worker termination, effect, checkout, and fixed-slice allowance reconciliation/);
+	assertContinuationDecisionPath(source, name);
+	assert.match(source, /trusted termination, effect, checkout, and fixed-slice allowance reconciliation/);
 	assert.match(source, /at most two continuations after the initial attempt in that fixed slice/);
 	assert.match(source, /same selected eligible model and within per-attempt limits/);
 	assert.match(source, /Relabeling, splitting, changing job IDs, or advancing bases never resets the allowance/);
 	assert.match(source, /A new attempt cannot suppress an earlier hook or reuse expired allowance/);
 	assert.match(source, /A guard-denied effect remains denied/);
-	assert.match(source, /Unknown\/partial effects or integrity uncertainty stop affected writes and acceptance/);
+	assert.match(
+		source,
+		/Unknown\/partial effects, integrity uncertainty, missing prerequisites, and exhaustion stop affected writes and acceptance/,
+	);
 	assert.match(source, /applies the separately approved `GLOBAL_AGENTS\.md` policy as its final policy step/);
 	assert.match(source, /## Standing bounded coordinator recovery — LOAD-GATED/);
 	assert.match(
@@ -53,7 +112,7 @@ function assertUserInvokedReviewContract(source, name) {
 	);
 	assert.match(
 		source,
-		/active only in a session where the separately approved global policy, supported provenance-capable runtime, and matching reviewed skill resources are installed and loaded/,
+		/active only in a session where the separately approved policy, supported provenance-capable runtime, and matching reviewed skills are actually installed, loaded, and revalidated/,
 	);
 	assert.match(source, /If any prerequisite is absent or unverified, A4 is INACTIVE in that session/);
 	assert.match(
@@ -96,10 +155,17 @@ test("both user-invoked implementation entrypoints retain full review and bounde
 	assert.match(specGraph, /one integration branch/);
 	assert.match(specGraph, /does not call the separate user-only `implement-me-pi` skill through `Skill`/);
 	assert.match(delegateGuide, /absence grants no standing recovery authority/);
+	const guideAuthority = sectionBetween(delegateGuide, "**Current authority boundary:**", "## Configure model pools");
 	assert.match(
-		delegateGuide,
-		/A user may explicitly approve a bounded continuation for a particular task without activating standing A4/,
+		guideAuthority,
+		/qualifying loaded A4 session may handle ordinary repairs\/findings and a reconciled worker-limit continuation .* without a new routine approval/,
 	);
+	assert.match(
+		guideAuthority,
+		/If any standing gate is absent or unverified, proceed only after the user explicitly approves that particular bounded continuation/,
+	);
+	assert.match(guideAuthority, /denied substantive effect/);
+	assert.doesNotMatch(guideAuthority, /Without task-specific approval/);
 	assert.match(delegateGuide, /A guard-denied effect remains denied/);
 	assert.match(delegateGuide, /### Standing bounded coordinator recovery — LOAD-GATED/);
 	assert.match(
@@ -117,4 +183,37 @@ test("both user-invoked implementation entrypoints retain full review and bounde
 		delegateGuide,
 		/denied\/limited\/unknown outcomes, missing or mismatched call identity, and partial\/unclosed calls remain fail-closed/,
 	);
+});
+
+test("adoption notes date staging facts and defer A4 authority to actual-session revalidation", () => {
+	const checkpoint =
+		/Dated staging checkpoint \(2026-10-31; source `0422473bb01f48283515aa10c1be93fed6bbf9be`; not a live ledger\)/;
+	assert.match(readme, checkpoint);
+	assert.match(setupGuide, checkpoint);
+	assert.match(
+		readme,
+		/currently governing policy, supported provenance-capable runtime, and matching reviewed skills.*revalidated in the actual session/,
+	);
+	assert.match(
+		setupGuide,
+		/verify the currently governing policy, supported provenance-capable runtime, matching reviewed skills loaded in the actual session/,
+	);
+	assert.doesNotMatch(readme, /Current checkout adoption status/);
+	assert.doesNotMatch(setupGuide, /Current live-checkout status/);
+	assert.match(readme, /At this source checkpoint.*had not been applied.*had not reloaded/);
+	assert.match(setupGuide, /At that checkpoint.*had not been applied.*had not reloaded/);
+	assert.match(
+		ticketIndex,
+		/Dated A4 staging checkpoint \(2026-10-31; source `0422473bb01f48283515aa10c1be93fed6bbf9be`; not a live ledger\)/,
+	);
+	assert.match(autonomySpec, checkpoint);
+	assert.match(autonomySpec, /revalidated in the actual session/);
+	assert.match(activationHandoff, /Dated A4 activation-source staging checkpoint/);
+	assert.match(
+		activationHandoff,
+		/Checkpoint: 2026-10-31, source `0422473bb01f48283515aa10c1be93fed6bbf9be`; not a live status ledger/,
+	);
+	assert.doesNotMatch(ticketIndex, /Current A4 alignment status/);
+	assert.doesNotMatch(autonomySpec, /Activation-readiness status at source alignment/);
+	assert.doesNotMatch(activationHandoff, /Current A4 activation-source alignment status/);
 });
