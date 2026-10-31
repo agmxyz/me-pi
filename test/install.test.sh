@@ -84,6 +84,10 @@ case "$command" in
     }
     source="$2"
     printf '%s %s\n' "$command" "$source" >> "$ME_PI_TEST_PI_LOG"
+    if [ -n "${ME_PI_TEST_PI_FAIL_INSTALL:-}" ] && [ "$command" = install ] && [ "$source" = "$ME_PI_TEST_PI_FAIL_INSTALL" ]; then
+      echo "✗ injected fixture failure: refusing to register $source" >&2
+      exit 75
+    fi
     node - "$settings" "$command" "$source" <<'NODE'
 const fs = require("node:fs");
 const [settingsPath, command, requestedSource] = process.argv.slice(2);
@@ -212,6 +216,7 @@ assert_renamed_pilot_collision() {
   run_skill_loader "$1" "$2" "--renamed-pilot-collision" "${@:3}"
 }
 assert_file_text() { printf '%s\n' "$2" | cmp -s - "$1"; }
+assert_file_lacks_text() { ! grep -Fq -- "$2" "$1"; }
 
 run_installer() { # <temporary HOME> <output file>
   local home="$1" output="$2"
@@ -409,6 +414,52 @@ check "repeat retains global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FI
 check "repeat preserves existing Anthropic auth package" assert_package_source_registered "$PI_AGENT/settings.json" "npm:@gotgenes/pi-anthropic-auth"
 check "Pi and RTK stubs invoked without auth extension changes" assert_invocation_logs
 check "npm fallback remains unused" test ! -e "$NPM_MARKER"
+
+# A failing root registration is not rolled back: the policy and skill pointers created before
+# `pi install` remain, later steps do not run, and pre-existing user state stays untouched.
+HOME_PARTIAL="$TMP/home-partial-registration"
+PARTIAL_AGENT="$HOME_PARTIAL/.pi/agent"
+PARTIAL_SETTINGS="$PARTIAL_AGENT/settings.json"
+PARTIAL_SETTINGS_BACKUP="$TMP/partial-settings-before.json"
+mkdir -p "$PARTIAL_AGENT/extensions" "$HOME_PARTIAL/.agents/skills/external-skill"
+node - "$PARTIAL_SETTINGS" <<'NODE'
+const fs = require("node:fs");
+const settingsPath = process.argv[2];
+fs.writeFileSync(settingsPath, `${JSON.stringify({
+  theme: "light",
+  machinePreference: "keep-this",
+  lastChangelogVersion: "test-version",
+  packages: [
+    "npm:@gotgenes/pi-anthropic-auth",
+    "npm:external-string@1.2.3",
+    { source: "npm:external-object@4.5.6", config: { keep: true } },
+  ],
+}, null, 2)}\n`);
+NODE
+printf '%s\n' 'credential sentinel: never overwrite' > "$PARTIAL_AGENT/auth.json"
+printf '%s\n' 'external extension sentinel' > "$PARTIAL_AGENT/extensions/external-extension.ts"
+printf '%s\n' 'external skill sentinel' > "$HOME_PARTIAL/.agents/skills/external-skill/SKILL.md"
+cp "$PARTIAL_SETTINGS" "$PARTIAL_SETTINGS_BACKUP"
+: > "$PI_LOG"
+: > "$RTK_LOG"
+rm -f "$NPM_MARKER"
+ME_PI_TEST_PI_FAIL_INSTALL="$FIXTURE"
+export ME_PI_TEST_PI_FAIL_INSTALL
+expect_installer "failing root registration exits nonzero" 75 "$HOME_PARTIAL" "$TMP/partial-registration.out"
+unset ME_PI_TEST_PI_FAIL_INSTALL
+printf '%s\n' "install $FIXTURE" > "$TMP/expected-partial-failure-pi.log"
+check "failed registration reports the injected failure" grep -Fq "injected fixture failure: refusing to register $FIXTURE" "$TMP/partial-registration.out"
+check "failed registration reports no misleading Done" assert_file_lacks_text "$TMP/partial-registration.out" "Done."
+check "failed registration retains created global policy link" assert_link "$PARTIAL_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
+check "failed registration retains created skill links" assert_skill_links "$PARTIAL_AGENT" "$FIXTURE"
+check "failed registration stops after the attempted root install" cmp -s "$TMP/expected-partial-failure-pi.log" "$PI_LOG"
+check "failed registration invokes no RTK setup" test ! -s "$RTK_LOG"
+check "failed registration copies no Pi examples" test ! -e "$PARTIAL_AGENT/extensions/interactive-shell.ts" -a ! -e "$PARTIAL_AGENT/extensions/handoff.ts"
+check "failed registration leaves pre-existing settings untouched" cmp -s "$PARTIAL_SETTINGS_BACKUP" "$PARTIAL_SETTINGS"
+check "failed registration preserves credential contents" assert_file_text "$PARTIAL_AGENT/auth.json" 'credential sentinel: never overwrite'
+check "failed registration preserves external extension" assert_file_text "$PARTIAL_AGENT/extensions/external-extension.ts" 'external extension sentinel'
+check "failed registration preserves external skill" assert_file_text "$HOME_PARTIAL/.agents/skills/external-skill/SKILL.md" 'external skill sentinel'
+check "failed registration leaves npm fallback unused" test ! -e "$NPM_MARKER"
 
 # The installer checks literal destination paths, not every discovered skill's frontmatter name.
 # A renamed pilot under .agents/skills passes path preflight but must remain a visible real-loader collision.

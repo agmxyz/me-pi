@@ -187,6 +187,21 @@ test("both user-invoked implementation entrypoints retain full review and bounde
 	);
 });
 
+test("guide documents evidence-driven verification and its explicit test-first override", () => {
+	const verification = sectionBetween(
+		delegateGuide,
+		"### Coordinator artifacts and verification",
+		"### One writer and frozen review",
+	);
+	assert.match(verification, /strongest supported seam that answers the task/);
+	assert.match(verification, /real owner or event seam rather than a mock mirror/);
+	assert.match(verification, /evidence-driven default/);
+	assert.match(verification, /no routine user approval of internal test seams/);
+	assert.match(verification, /does not load `tdd` or require red-first work/);
+	assert.match(verification, /explicit user or repository test-first\/red-first requirement.*overrides/i);
+	assert.match(verification, /load and follow `tdd`/);
+});
+
 test("historical lifecycle approvals do not authorize a new A4 lifecycle", () => {
 	for (const source of [autonomySpec, activationHandoff, a4Ticket]) {
 		assert.match(source, /historical lifecycle approval.*2026-10-31/i);
