@@ -218,6 +218,9 @@ test("adoption notes date staging facts and defer A4 authority to actual-session
 		/This runtime amendment does not itself activate A4; apply the actual-session load and revalidation gate defined above\./,
 	);
 	assert.match(autonomySpec, checkpoint);
+	const pragmaticSpec = sectionBetween(autonomySpec, "## User-approved pragmatic verification amendment", "## Decisions in scope");
+	assert.match(pragmaticSpec, /At the 2026-10-31 source staging checkpoint `0422473`.*were then pending/);
+	assert.doesNotMatch(pragmaticSpec, /The present source alignment still does not edit/);
 	assert.match(autonomySpec, /revalidated in the actual session/);
 	assert.match(activationHandoff, /Dated A4 activation-source staging checkpoint/);
 	assert.match(

@@ -354,6 +354,7 @@ test("finish permits only one correlated completed non-replay-safe Bash failure"
 			allowed: false,
 			extraStop: { owner: "delegate-parent", cause: "wrap-up-limit", resource: "tool-time", effect: "denied" },
 		},
+		{ name: "competing provider retry", allowed: false, extraStop: { owner: "pi-runtime", cause: "provider-retry-classified", resource: "provider", effect: "unknown" } },
 		{ name: "attempt incomplete", allowed: false, incomplete: true },
 	]) {
 		const { repo, git } = goalFixture();
@@ -562,6 +563,26 @@ test("finish never throws; git timeouts become problems and the lock is released
 	assert.equal(facts.delivered.integrity, "unknown");
 	assert.match(formatHandback(facts), /timed out after 1 ms/);
 	assert.ok(!existsSync(lockOf(repo)));
+});
+
+test("terminal WIP is not delivered, while a normal commit resolves prior WIP", async (t) => {
+	for (const scenario of ["unchanged", "worker-wip", "resolved"]) await t.test(scenario, async () => {
+		const { repo, git } = goalFixture();
+		if (scenario !== "worker-wip") {
+			writeFileSync(join(repo, "a.txt"), "half\n");
+			git("commit", "-qam", "WIP(delegate earlier): stopped");
+		}
+		const job = await prepare(repo, `im-wip-${scenario}`, CHECK);
+		if (scenario !== "unchanged") {
+			writeFileSync(join(repo, "a.txt"), "done\n");
+			git("commit", "-qam", scenario === "worker-wip" ? "WIP(delegate worker): stopped" : "feat: resolve WIP");
+		}
+		passed(job);
+		const facts = await finish(job, ok(job));
+		assert.equal(facts.failed, scenario !== "resolved", scenario);
+		assert.equal(facts.delivered.wip, scenario !== "resolved", scenario);
+		assert.equal(facts.delivered.commit, scenario === "resolved" ? "normal" : "none", scenario);
+	});
 });
 
 test("prepare notes a WIP HEAD from an earlier attempt", async () => {

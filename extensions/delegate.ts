@@ -700,10 +700,31 @@ function firstEventField(...fields: { present: boolean; value?: unknown }[]): { 
 	return fields.find((field) => field.present) ?? { present: false };
 }
 
+// Only the canonical status authorizes completion; known aliases can veto it, never replace it.
+function bashStatuses(resultValue: unknown): { exitCode?: number; diagnostics: string[] } {
+	const result = eventRecord(resultValue);
+	const structured = eventRecord(result?.structuredContent);
+	const details = eventRecord(result?.details);
+	const fields = [
+		["structuredContent.exit_code", eventField(structured, "exit_code")],
+		["structuredContent.exitCode", eventField(structured, "exitCode")],
+		["details.exit_code", eventField(details, "exit_code")],
+		["details.exitCode", eventField(details, "exitCode")],
+		["exit_code", eventField(result, "exit_code")],
+		["exitCode", eventField(result, "exitCode")],
+	] as const;
+	const canonical = fields[0][1].value;
+	const valid = fields[0][1].present && Number.isSafeInteger(canonical) && fields.slice(1).every(([, field]) =>
+		!field.present || (Number.isSafeInteger(field.value) && field.value === canonical),
+	);
+	return {
+		...(valid ? { exitCode: canonical as number } : {}),
+		diagnostics: fields.filter(([, field]) => field.present && typeof field.value === "number" && Number.isFinite(field.value)).map(([name, field]) => `${name}=${field.value}`),
+	};
+}
+
 function bashExitCode(resultValue: unknown): number | undefined {
-	const structured = eventRecord(eventRecord(resultValue)?.structuredContent);
-	if (!structured || !Object.hasOwn(structured, "exit_code")) return undefined;
-	return Number.isInteger(structured.exit_code) ? (structured.exit_code as number) : undefined;
+	return bashStatuses(resultValue).exitCode;
 }
 
 function toolResultText(result: EventRecord | undefined): string | undefined {
@@ -756,6 +777,9 @@ function failedToolResult(resultValue: unknown, toolName: string | undefined): F
 		...(structuredOutput !== undefined || content !== undefined ? { outputText: structuredOutput ?? content } : {}),
 		...(error.present ? { error: error.value as string } : {}),
 		...(diagnostic.present ? { childDiagnostics: diagnostic.value as string | readonly string[] } : {}),
+		...(toolName === "bash" && bashStatuses(resultValue).diagnostics.length
+			? { statusDiagnostics: bashStatuses(resultValue).diagnostics }
+			: {}),
 		...(fullOutputPath.present ? { fullOutputPath: fullOutputPath.value as string } : {}),
 		...(diagnosticReferences.present
 			? { childDiagnosticReferences: diagnosticReferences.value as readonly string[] }
@@ -927,6 +951,7 @@ function runWorkerAttempt(
 		const captureCalls = new Map<string, CapturedToolCall[]>();
 		const anonymousCaptureCalls: CapturedToolCall[] = [];
 		const activeEffects = new Map<string, ToolEffectFact[]>();
+		const seenToolCallIds = new Set<string>();
 		let latestAssistantError: { provider: string; model: string; api: string } | undefined;
 		const replaySafeReadTools = new Set(["read", "grep", "find", "ls", "Skill"]);
 
@@ -982,7 +1007,6 @@ function runWorkerAttempt(
 				return;
 			}
 			const callsForId = captureCalls.get(toolCallId) ?? [];
-			if (callsForId.length) collector.noteAnomaly("duplicate-tool-call-id");
 			callsForId.push(call);
 			captureCalls.set(toolCallId, callsForId);
 		};
@@ -1049,6 +1073,12 @@ function runWorkerAttempt(
 			const toolCallId = typeof event.toolCallId === "string" && event.toolCallId ? event.toolCallId : "";
 			const toolName = typeof event.toolName === "string" ? event.toolName : "unknown";
 			if (!toolCallId || toolName === "unknown") provenance.complete = false;
+			if (toolCallId && seenToolCallIds.has(toolCallId)) {
+				provenance.complete = false;
+				implement?.artifacts.noteAnomaly("duplicate-tool-call-id");
+				provenance.stopFacts.push({ owner: "delegate-parent", jobId: job.jobId, attempt: attemptIndex, toolCallId, cause: "tool-failure", resource: "tool", effect: "unknown" });
+			}
+			if (toolCallId) seenToolCallIds.add(toolCallId);
 			const fact: ToolEffectFact = {
 				owner: "pi-runtime",
 				jobId: job.jobId,

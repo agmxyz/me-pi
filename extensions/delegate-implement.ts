@@ -599,13 +599,12 @@ function hasUnresolvedProvenance(outcome: Outcome): boolean {
 		),
 	);
 	const isDiagnostic = (fact: StopFact) =>
-		fact.cause === "provider-retry-classified" ||
-		(fact.toolCallId !== undefined &&
+		fact.toolCallId !== undefined &&
 			allowedFailures.has(`${fact.jobId}\0${fact.attempt}\0${fact.toolCallId}`) &&
 			fact.owner === "delegate-parent" &&
 			fact.cause === "tool-failure" &&
 			fact.resource === "tool" &&
-			fact.effect === "completed");
+			fact.effect === "completed";
 	return (
 		allStopFacts.some((fact) => !isDiagnostic(fact)) ||
 		attempts.some((attempt) => !attempt.complete || attempt.toolEffects.some((fact) => fact.effect !== "completed"))
@@ -662,7 +661,7 @@ export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Fact
 	facts.failed =
 		Boolean(outcome.failure) ||
 		!outcome.answer?.trim() ||
-		facts.wip !== undefined ||
+		facts.delivered.wip ||
 		facts.problems.length > 0 ||
 		job.check.status !== "pass";
 	return facts;
@@ -727,6 +726,11 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 	} else {
 		const sha = tip.out.trim();
 		facts.tip = sha;
+		const subject = await git(job.repoRoot, ["log", "-1", "--format=%s", sha]);
+		if (!subject.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`delivered HEAD subject unreadable: ${subject.err}`);
+		} else facts.delivered.wip = subject.out.trim().startsWith("WIP(delegate");
 		const ancestry = await git(job.repoRoot, ["merge-base", "--is-ancestor", job.base, sha]);
 		if (!ancestry.ok) {
 			markIntegrity(facts, ancestry.code === 1 ? "tripped" : "unknown");
@@ -763,7 +767,7 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 		}
 		facts.commits = listed.slice(0, MAX_COMMITS).map(shown);
 		facts.commitCount = listed.length;
-		if (log.ok) facts.delivered.commit = listed.length > (facts.wip ? 1 : 0) ? "normal" : "none";
+		if (log.ok) facts.delivered.commit = commits.some((line) => !line.split("\0")[3]?.startsWith("WIP(delegate")) ? "normal" : "none";
 		const short = await git(job.repoRoot, ["diff", "--shortstat", `${job.base}..${sha}`]);
 		const stat = await git(job.repoRoot, ["diff", "--stat", `${job.base}..${sha}`]);
 		if (!short.ok || !stat.ok) {

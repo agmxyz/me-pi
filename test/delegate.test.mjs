@@ -386,6 +386,23 @@ process.stdin.on("end", () => {
     emit("Checked and committed content.");
     process.exit(0);
   }
+  if (mode === "implement-review-regression") {
+    const scenario = process.env.FAKE_PI_REVIEW_SCENARIO;
+    if (scenario === "reuse") {
+      tool("read", { path: "a" }, false, { toolCallId: "reused" });
+      tool("read", { path: "b" }, false, { toolCallId: "reused" });
+    } else if (scenario === "conflict" || scenario === "provider") {
+      tool("bash", { command: "exit 7" }, true, { result: { structuredContent: { exit_code: 7 }, ...(scenario === "conflict" ? { details: { exitCode: 143 } } : {}) } });
+      if (scenario === "provider") retryable("temporary provider failure");
+    }
+    writeFileSync("feature.txt", "fixed\\n");
+    git("add", "feature.txt");
+    git("commit", "-q", "-m", "feat: fixture");
+    const status = scenario === "check-missing" ? {} : scenario === "check-invalid" ? { exit_code: "0" } : { exit_code: 0 };
+    tool("bash", { command: "npm test" }, false, { result: { structuredContent: status, ...(scenario === "check-conflict" ? { details: { exitCode: 143 } } : scenario === "check-match" ? { details: { exitCode: 0 } } : {}) } });
+    emit("Finished fixture.");
+    process.exit(0);
+  }
   if (mode === "implement-artifacts" || mode === "implement-check-artifact-fail" || mode === "implement-read-artifact-fail") {
     const target = "export GITHUB_TOKEN='command-fake-secret' AWS_SECRET_ACCESS_KEY='command-aws-secret' npm run targeted-test";
     if (mode === "implement-artifacts") {
@@ -3763,6 +3780,49 @@ test("implement event tracking keeps a fresh final check after over 100 calls an
 
 	const events = readFileSync(marker, "utf8").trim().split("\n");
 	assert.deepEqual(events, [...Array(101).fill("read"), "write", "bash"]);
+});
+
+test("implement rejects lifetime call ID reuse through event finalization", async (t) => {
+	const { tool } = setup(t, { env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "reuse" }) });
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.check.status, "pass");
+	assert.equal(result.details.implement.outcome.provenance[0].complete, false);
+	assert.match(readFileSync(result.details.implement.detailsPath, "utf8"), /tool=reused cause=tool-failure resource=tool effect=unknown/);
+});
+
+test("implement rejects a competing provider retry after ordinary Bash repair", async (t) => {
+	const { tool } = setup(t, { config: POOL_SET, env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "provider" }) });
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.check.status, "pass");
+	assert.equal(result.details.implement.delivered.commit, "normal");
+	const facts = result.details.implement.outcome.provenance[0].stopFacts;
+	assert.ok(facts.some((fact) => fact.cause === "tool-failure" && fact.effect === "completed"));
+	assert.ok(facts.some((fact) => fact.cause === "provider-retry-classified" && fact.effect === "unknown"));
+});
+
+test("implement rejects conflicting Bash status aliases through event finalization", async (t) => {
+	for (const scenario of ["conflict", "check-conflict"]) await t.test(scenario, async (t) => {
+		const { tool } = setup(t, { env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: scenario }) });
+		const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+		assert.equal(result.isError, true, `${scenario}: ${text(result)}`);
+		if (scenario === "conflict") {
+			assert.equal(result.details.implement.check.status, "pass");
+			const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+			assert.match(JSON.stringify(artifact.entries[0]), /143/);
+		} else assert.notEqual(result.details.implement.check.status, "pass");
+	});
+});
+
+test("implement check requires canonical status and accepts matching or absent aliases", async (t) => {
+	for (const scenario of ["check-missing", "check-invalid", "check-match", "check-absent"]) await t.test(scenario, async (t) => {
+		const { tool } = setup(t, { env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: scenario }) });
+		const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+		const valid = scenario === "check-match" || scenario === "check-absent";
+		assert.equal(result.isError, !valid, text(result));
+		assert.equal(result.details.implement.check.status === "pass", valid);
+	});
 });
 
 test("implement accepts correlated completed Bash failures after repair, fresh check, and normal commit", async (t) => {

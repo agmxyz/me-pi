@@ -79,6 +79,7 @@ export type FailedToolCallInput = {
 		outputText?: string;
 		error?: string;
 		childDiagnostics?: string | readonly string[];
+		statusDiagnostics?: readonly string[];
 		fullOutputPath?: string;
 		childDiagnosticReferences?: readonly string[];
 		summary?: unknown;
@@ -99,6 +100,7 @@ export type FailedToolArtifactEntry = {
 	output: TextField;
 	error: TextField;
 	childDiagnostics: TextList;
+	statusDiagnostics?: ArtifactText[];
 	references: {
 		fullOutputPathState: "provided" | "not-provided";
 		childDiagnosticReferencesState: "provided" | "not-provided";
@@ -348,6 +350,7 @@ function textValues(
 		addField(entry.error, "error");
 		addField(entry.output, "output");
 		for (const item of entry.childDiagnostics.items) values.push({ value: item, group: "diagnostics" });
+		for (const item of entry.statusDiagnostics ?? []) values.push({ value: item, group: "diagnostics" });
 		for (const item of entry.references.items) values.push({ value: item.value, group: "references" });
 		addField(entry.resultSummary, "summary");
 	}
@@ -636,6 +639,9 @@ function makeEntry(
 		exitCode: { state: exitCode === null ? "not-provided" : "provided", value: exitCode },
 		output,
 		error,
+		...(Array.isArray(result?.statusDiagnostics)
+			? { statusDiagnostics: result.statusDiagnostics.slice(0, 6).filter((value): value is string => typeof value === "string").map((value) => boundedText(value, 256)) }
+			: {}),
 		childDiagnostics: {
 			state:
 				diagnosticsField.present &&
