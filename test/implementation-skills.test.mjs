@@ -195,6 +195,7 @@ test("guide documents evidence-driven verification and its explicit test-first o
 	);
 	assert.match(verification, /strongest supported seam that answers the task/);
 	assert.match(verification, /real owner or event seam rather than a mock mirror/);
+	assert.match(verification, /record what the chosen evidence catches and misses/);
 	assert.match(verification, /evidence-driven default/);
 	assert.match(verification, /no routine user approval of internal test seams/);
 	assert.match(verification, /does not load `tdd` or require red-first work/);

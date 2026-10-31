@@ -3982,6 +3982,22 @@ test("multiple success-marked conflicting Bash calls retain bounded call identit
 	}
 });
 
+test("bounded diagnostic call IDs mark byte truncation in contradictory success diagnostics", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "success-multi" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const details = readFileSync(result.details.implement.detailsPath, "utf8");
+	const diagnostics = details.split("\n").filter((line) => line.includes("isError=false"));
+	const long = diagnostics.find((line) => line.includes("toolCallId=call-x"));
+	assert.ok(long, details);
+	assert.match(long, /^isError=false toolCallId=call-x{10}\S* \[truncated\] structuredContent\.exit_code=9$/);
+	const short = diagnostics.find((line) => line.includes("toolCallId=call-seven"));
+	assert.ok(short, details);
+	assert.doesNotMatch(short, /\[truncated\]/);
+});
+
 test("a crashing child keeps its real stderr tail alongside contradictory success diagnostics", async (t) => {
 	const { tool } = setup(t, {
 		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "success-crash" }),

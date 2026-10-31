@@ -968,6 +968,7 @@ function runWorkerAttempt(
 		const activeEffects = new Map<string, ToolEffectFact[]>();
 		const seenToolCallIds = new Set<string>();
 		// Separate from failed-tool artifacts: these are owner-reported successes with contradictory statuses.
+		// The attempt-wide cap reuses maxDiagnosticsPerCall; each artifact record has its own childDiagnostics cap.
 		const contradictorySuccesses: string[] = [];
 		let omittedContradictorySuccesses = 0;
 		let latestAssistantError: { provider: string; model: string; api: string } | undefined;
@@ -1050,11 +1051,11 @@ function runWorkerAttempt(
 			if (event.isError === false && (call?.toolName ?? endedToolName) === "bash") {
 				const status = bashStatuses(event.result);
 				if (status.exitCode !== 0 && status.diagnostics.length) {
-					if (contradictorySuccesses.length < FAILED_TOOL_ARTIFACT_LIMITS.maxDiagnosticsPerCall)
-						contradictorySuccesses.push(
-							`isError=false toolCallId=${boundedCallId(call?.toolCallId ?? id ?? "(missing)").text} ${status.diagnostics.join("; ")}`,
-						);
-					else omittedContradictorySuccesses++;
+					if (contradictorySuccesses.length < FAILED_TOOL_ARTIFACT_LIMITS.maxDiagnosticsPerCall) {
+						const bounded = boundedCallId(call?.toolCallId ?? id ?? "(missing)");
+						const idText = bounded.truncated ? `${bounded.text} [truncated]` : bounded.text;
+						contradictorySuccesses.push(`isError=false toolCallId=${idText} ${status.diagnostics.join("; ")}`);
+					} else omittedContradictorySuccesses++;
 				}
 			}
 			if (event.isError !== true) return;

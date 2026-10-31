@@ -128,6 +128,10 @@ NODE
       exit 90
     }
     printf '%s\n' list >> "$ME_PI_TEST_PI_LOG"
+    if [ -n "${ME_PI_TEST_PI_FAIL_LIST:-}" ]; then
+      echo "✗ injected fixture failure: pi list unavailable after registration" >&2
+      exit 76
+    fi
     node - "$settings" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
@@ -216,6 +220,7 @@ assert_renamed_pilot_collision() {
   run_skill_loader "$1" "$2" "--renamed-pilot-collision" "${@:3}"
 }
 assert_file_text() { printf '%s\n' "$2" | cmp -s - "$1"; }
+assert_files_differ() { ! cmp -s "$1" "$2"; }
 assert_file_lacks_text() { ! grep -Fq -- "$2" "$1"; }
 
 run_installer() { # <temporary HOME> <output file>
@@ -461,6 +466,57 @@ check "failed registration preserves external extension" assert_file_text "$PART
 check "failed registration preserves external skill" assert_file_text "$HOME_PARTIAL/.agents/skills/external-skill/SKILL.md" 'external skill sentinel'
 check "failed registration leaves npm fallback unused" test ! -e "$NPM_MARKER"
 
+# A failure after the root registration has mutated settings is not rolled back either: the completed
+# registration remains, later steps do not run, and pre-existing user state stays untouched.
+HOME_POST_WRITE="$TMP/home-post-write-registration"
+POST_WRITE_AGENT="$HOME_POST_WRITE/.pi/agent"
+POST_WRITE_SETTINGS="$POST_WRITE_AGENT/settings.json"
+POST_WRITE_SETTINGS_BACKUP="$TMP/post-write-settings-before.json"
+POST_WRITE_SETTINGS_AFTER="$TMP/post-write-settings-after.json"
+mkdir -p "$POST_WRITE_AGENT/extensions" "$HOME_POST_WRITE/.agents/skills/external-skill"
+node - "$POST_WRITE_SETTINGS" "$POST_WRITE_SETTINGS_AFTER" "$FIXTURE" <<'NODE'
+const fs = require("node:fs");
+const [settingsPath, expectedPath, repoRoot] = process.argv.slice(2);
+const settings = {
+  theme: "light",
+  machinePreference: "keep-this",
+  lastChangelogVersion: "test-version",
+  packages: [
+    "npm:@gotgenes/pi-anthropic-auth",
+    "npm:external-string@1.2.3",
+    { source: "npm:external-object@4.5.6", config: { keep: true } },
+  ],
+};
+fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+settings.packages.push(repoRoot);
+fs.writeFileSync(expectedPath, `${JSON.stringify(settings, null, 2)}\n`);
+NODE
+printf '%s\n' 'credential sentinel: never overwrite' > "$POST_WRITE_AGENT/auth.json"
+printf '%s\n' 'external extension sentinel' > "$POST_WRITE_AGENT/extensions/external-extension.ts"
+printf '%s\n' 'external skill sentinel' > "$HOME_POST_WRITE/.agents/skills/external-skill/SKILL.md"
+cp "$POST_WRITE_SETTINGS" "$POST_WRITE_SETTINGS_BACKUP"
+: > "$PI_LOG"
+: > "$RTK_LOG"
+rm -f "$NPM_MARKER"
+ME_PI_TEST_PI_FAIL_LIST=1
+export ME_PI_TEST_PI_FAIL_LIST
+expect_installer "failure after registration exits nonzero" 76 "$HOME_POST_WRITE" "$TMP/post-write-registration.out"
+unset ME_PI_TEST_PI_FAIL_LIST
+printf '%s\n' "install $FIXTURE" "list" > "$TMP/expected-post-write-failure-pi.log"
+check "post-registration failure reports the injected list failure" grep -Fq "injected fixture failure: pi list unavailable after registration" "$TMP/post-write-registration.out"
+check "post-registration failure reports no misleading Done" assert_file_lacks_text "$TMP/post-write-registration.out" "Done."
+check "post-registration failure retains created global policy link" assert_link "$POST_WRITE_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
+check "post-registration failure retains created skill links" assert_skill_links "$POST_WRITE_AGENT" "$FIXTURE"
+check "post-registration failure mutates settings before failing" assert_files_differ "$POST_WRITE_SETTINGS_BACKUP" "$POST_WRITE_SETTINGS"
+check "post-registration failure keeps only the completed registration in settings" cmp -s "$POST_WRITE_SETTINGS_AFTER" "$POST_WRITE_SETTINGS"
+check "post-registration failure stops after the failed list" cmp -s "$TMP/expected-post-write-failure-pi.log" "$PI_LOG"
+check "post-registration failure invokes no RTK setup" test ! -s "$RTK_LOG"
+check "post-registration failure copies no Pi examples" test ! -e "$POST_WRITE_AGENT/extensions/interactive-shell.ts" -a ! -e "$POST_WRITE_AGENT/extensions/handoff.ts"
+check "post-registration failure preserves credential contents" assert_file_text "$POST_WRITE_AGENT/auth.json" 'credential sentinel: never overwrite'
+check "post-registration failure preserves external extension" assert_file_text "$POST_WRITE_AGENT/extensions/external-extension.ts" 'external extension sentinel'
+check "post-registration failure preserves external skill" assert_file_text "$HOME_POST_WRITE/.agents/skills/external-skill/SKILL.md" 'external skill sentinel'
+check "post-registration failure leaves npm fallback unused" test ! -e "$NPM_MARKER"
+
 # The installer checks literal destination paths, not every discovered skill's frontmatter name.
 # A renamed pilot under .agents/skills passes path preflight but must remain a visible real-loader collision.
 HOME_RENAMED="$TMP/home-renamed-pilot"
@@ -491,6 +547,50 @@ expect_installer "existing correct global AGENTS link succeeds" 0 "$HOME_PRELINK
 check "existing correct global AGENTS link remains valid" assert_link "$PRELINK_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
 check "existing correct global AGENTS link registers packages" assert_packages_registered "$PRELINK_AGENT/settings.json" "$FIXTURE"
 check "existing correct global AGENTS link permits normal Pi and RTK setup" assert_single_install_logs
+
+# Absent or failing RTK setup is a non-fatal fallback: the install completes and reports it.
+HOME_NO_RTK="$TMP/home-no-rtk"
+mkdir -p "$HOME_NO_RTK"
+NO_RTK_BIN="$TMP/no-rtk-bin"
+mkdir -p "$NO_RTK_BIN"
+for tool in bash git dirname basename mkdir ln cp rm readlink realpath head cat cmp grep node; do
+  ln -sf "$(command -v "$tool")" "$NO_RTK_BIN/$tool"
+done
+ln -sf "$FAKE_BIN/pi" "$NO_RTK_BIN/pi"
+: > "$PI_LOG"
+: > "$RTK_LOG"
+saved_path="$TEST_PATH"
+TEST_PATH="$NO_RTK_BIN"
+expect_installer "absent RTK is skipped without failing the install" 0 "$HOME_NO_RTK" "$TMP/no-rtk.out"
+TEST_PATH="$saved_path"
+check "absent RTK reports the skip" grep -Fq "rtk not found; skipped RTK extension setup" "$TMP/no-rtk.out"
+check "absent RTK still prints Done" grep -Fq "Done. Restart pi sessions" "$TMP/no-rtk.out"
+check "absent RTK still registers packages" assert_packages_registered "$HOME_NO_RTK/.pi/agent/settings.json" "$FIXTURE"
+check "absent RTK invokes no RTK setup" test ! -s "$RTK_LOG"
+
+# A failing RTK init warns but does not abort the install or roll back registration.
+HOME_RTK_FAIL="$TMP/home-rtk-fail"
+mkdir -p "$HOME_RTK_FAIL"
+RTK_FAIL_BIN="$TMP/rtk-fail-bin"
+mkdir -p "$RTK_FAIL_BIN"
+cat > "$RTK_FAIL_BIN/rtk" <<'RTK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$ME_PI_TEST_RTK_LOG"
+echo "✗ injected fixture failure: rtk init refused" >&2
+exit 1
+RTK
+chmod +x "$RTK_FAIL_BIN/rtk"
+: > "$PI_LOG"
+: > "$RTK_LOG"
+saved_path="$TEST_PATH"
+TEST_PATH="$RTK_FAIL_BIN:$TEST_PATH"
+expect_installer "failing RTK init warns without failing the install" 0 "$HOME_RTK_FAIL" "$TMP/rtk-fail.out"
+TEST_PATH="$saved_path"
+check "failing RTK init reports its warning" grep -Fq "RTK initialization failed or refused an overwrite" "$TMP/rtk-fail.out"
+check "failing RTK init still prints Done" grep -Fq "Done. Restart pi sessions" "$TMP/rtk-fail.out"
+check "failing RTK init still registers packages" assert_packages_registered "$HOME_RTK_FAIL/.pi/agent/settings.json" "$FIXTURE"
+check "failing RTK init is invoked once with the Pi agent" grep -Fxq "init --global --agent pi" "$RTK_LOG"
 
 # Upgrade a previous extensions-directory registration, including a filtered object.
 HOME_UPGRADE="$TMP/home-upgrade"

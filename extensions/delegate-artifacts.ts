@@ -11,6 +11,13 @@ import {
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
+/**
+ * Caps by scope: `maxTextBytes` bounds one text field or summary-node byte budget; `maxFailedCalls` and
+ * `maxUnmatchedStarts` bound retained records; `maxArtifactBytes` bounds the whole written artifact;
+ * `maxDiagnosticsPerCall` bounds one record's childDiagnostics list and is also reused in delegate.ts as the
+ * attempt-wide cap on contradictory Bash success diagnostics. Anomaly `record-cap` counts whole-record omissions
+ * at the collector's limits; `aggregate-cap` counts per-record list omissions and whole-artifact fitting.
+ */
 export const FAILED_TOOL_ARTIFACT_LIMITS = {
 	maxFailedCalls: 100,
 	maxUnmatchedStarts: 100,
