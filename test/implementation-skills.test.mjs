@@ -216,7 +216,8 @@ test("historical lifecycle approvals do not authorize a new A4 lifecycle", () =>
 test("adoption notes date staging facts and defer A4 authority to actual-session revalidation", () => {
 	const checkpoint =
 		/Dated staging checkpoint \(2026-10-31; source `0422473bb01f48283515aa10c1be93fed6bbf9be`; not a live ledger\)/;
-	assert.match(readme, checkpoint);
+	assert.match(readme, /not a live status ledger/);
+	assert.match(readme, /dated adoption evidence: \[setup guide\]\(docs\/setup\.md\)/);
 	assert.match(setupGuide, checkpoint);
 	assert.match(
 		readme,
@@ -228,7 +229,6 @@ test("adoption notes date staging facts and defer A4 authority to actual-session
 	);
 	assert.doesNotMatch(readme, /Current checkout adoption status/);
 	assert.doesNotMatch(setupGuide, /Current live-checkout status/);
-	assert.match(readme, /At this source checkpoint.*had not been applied.*had not reloaded/);
 	assert.match(setupGuide, /At that checkpoint.*had not been applied.*had not reloaded/);
 	assert.match(
 		ticketIndex,

@@ -70,7 +70,7 @@ Standing A4 is **LOAD-GATED**: it is active only within sessions where the separ
 
 Shared vocabulary: [`GLOSSARY.md`](../../GLOSSARY.md). Numerical limits and authority rules belong in this spec, not the glossary.
 
-Use current behavior from [`docs/delegate.md`](../delegate.md), `extensions/delegate.ts`, `extensions/delegate-implement.ts`, `extensions/guard.ts`, and `/Users/mmo/.agents/skills/implement-spec-me-pi/SKILL.md`. Karto evidence and limits are in [`docs/research/karto-action-plan.md`](../research/karto-action-plan.md) and [`docs/research/karto-delegation-pilot.md`](../research/karto-delegation-pilot.md); they inform this spec but do not authorize changes. Apply [`docs/coding-standards.md`](../coding-standards.md) to implementation.
+Use current behavior from [`docs/delegate.md`](../delegate.md), `extensions/delegate.ts`, `extensions/delegate-implement.ts`, `extensions/guard.ts`, and `/Users/mmo/.agents/skills/implement-spec-me-pi/SKILL.md`. *(Superseded pointer: the versioned source is now the repo-owned [`skills/implement-spec-me-pi/SKILL.md`](../../skills/implement-spec-me-pi/SKILL.md); the personal pilot path is a historical safety boundary—do not inspect or modify it.)* Karto evidence and limits are in [`docs/research/karto-action-plan.md`](../research/karto-action-plan.md) and [`docs/research/karto-delegation-pilot.md`](../research/karto-delegation-pilot.md); they inform this spec but do not authorize changes. Apply [`docs/coding-standards.md`](../coding-standards.md) to implementation.
 
 ## Operating contract
 
