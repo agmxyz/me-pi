@@ -16,6 +16,9 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
+import { runToolCall } from "@earendil-works/pi-agent-core";
+import { isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
+import { createBashTool } from "@earendil-works/pi-coding-agent";
 
 // Scratch space for the fake pi binary, configs, and pid files.
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-test-"));
@@ -38,6 +41,8 @@ const {
 	writeBlockedIn,
 	trackCheck,
 } = await import("../extensions/delegate.ts");
+const { default: registerGuard } = await import("../extensions/guard.ts");
+const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../extensions/delegate-provenance.ts");
 const { progressLines } = await import("../extensions/delegate-render.ts");
 const { registerDelegateCommand } = await import("../extensions/delegate-command.ts");
 const { snapshotContent } = await import("../extensions/delegate-implement.ts");
@@ -55,6 +60,7 @@ const HAIKU = "anthropic/claude-haiku-5-5";
 const SONNET = "anthropic/claude-sonnet-5-5";
 const OPUS = "anthropic/claude-opus-5-5";
 const LUNA = "openai-codex/gpt-6-luna";
+const COPILOT = "github-copilot/claude-sonnet-5-5";
 const POOL_SET = {
 	version: 3,
 	scout: {
@@ -74,13 +80,27 @@ const POOL_SET = {
 };
 const ONE_OFF = "google/gemini-test";
 const UNAUTHENTICATED = "unauthed/model";
-const REGISTRY_MODELS = [HAIKU, SONNET, OPUS, LUNA, ONE_OFF];
+const REGISTRY_MODELS = [HAIKU, SONNET, OPUS, LUNA, ONE_OFF, COPILOT];
 
-function registryFixture({ catalog = REGISTRY_MODELS, available = catalog, authenticated } = {}) {
+function registryFixture({
+	catalog = REGISTRY_MODELS,
+	available = catalog,
+	authenticated,
+	oauthProviders = [],
+	registeredProviders = [],
+} = {}) {
 	const model = (id) => {
 		const slash = id.indexOf("/");
 		return slash > 0
-			? { provider: id.slice(0, slash), id: id.slice(slash + 1), name: id.slice(slash + 1) }
+			? {
+					provider: id.slice(0, slash),
+					id: id.slice(slash + 1),
+					name: id.slice(slash + 1),
+					api: ["anthropic", "github-copilot"].includes(id.slice(0, slash))
+						? "anthropic-messages"
+						: "openai-responses",
+					baseUrl: `https://${id.slice(0, slash)}.example/v1`,
+				}
 			: undefined;
 	};
 	const models = catalog.map(model).filter(Boolean);
@@ -90,6 +110,8 @@ function registryFixture({ catalog = REGISTRY_MODELS, available = catalog, authe
 		find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
 		getAvailable: () => availableModels,
 		hasConfiguredAuth: (candidate) => authProviders.has(candidate.provider),
+		isUsingOAuth: (candidate) => oauthProviders.includes(candidate.provider),
+		getRegisteredProviderIds: () => registeredProviders,
 	};
 }
 
@@ -101,34 +123,186 @@ writeFileSync(
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
+const readConfiguredEndpoint = () => {
+  if (!process.env.FAKE_PI_MODELS_PATH) return undefined;
+  const config = JSON.parse(readFileSync(process.env.FAKE_PI_MODELS_PATH, "utf8"));
+  return config.providers?.anthropic?.baseUrl;
+};
+const driftConfiguredEndpoint = () => {
+  if (!process.env.FAKE_PI_DRIFT_ENDPOINT) return;
+  const path = process.env.FAKE_PI_MODELS_PATH;
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  config.providers ??= {};
+  config.providers.anthropic ??= {};
+  config.providers.anthropic.baseUrl = process.env.FAKE_PI_DRIFT_ENDPOINT;
+  writeFileSync(path, JSON.stringify(config));
+};
 const usage = (cost) => ({ input: 10, output: 5, totalTokens: 15, cost: { input: cost / 2, output: cost / 2, total: cost } });
-const emit = (text, { cost = 0.002, stopReason = "stop", errorMessage } = {}) => console.log(JSON.stringify({
-  type: "message_end",
-  message: { role: "assistant", model: (flag("--model") || "session-default").split("/").pop(), usage: usage(cost), stopReason, errorMessage, content: [{ type: "text", text }] },
-}));
+const emit = (text, { cost = 0.002, stopReason = "stop", errorMessage } = {}) => {
+  const selectedModel = flag("--model") || "anthropic/session-default";
+  const slash = selectedModel.indexOf("/");
+  console.log(JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      provider: slash > 0 ? selectedModel.slice(0, slash) : "",
+      model: slash > 0 ? selectedModel.slice(slash + 1) : selectedModel,
+      api: "fake-api",
+      usage: usage(cost),
+      stopReason,
+      errorMessage,
+      content: [{ type: "text", text }],
+    },
+  }));
+};
+const retryable = (errorMessage) => {
+  emit("", { stopReason: "error", errorMessage });
+  console.log(JSON.stringify({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 1, errorMessage }));
+};
+async function runAgentLoopFixture() {
+  const importFromRepo = (path) => import(pathToFileURL(join(process.env.ME_PI_TEST_ROOT, path)).href);
+  const [{ runAgentLoop }, { createBashTool }, { createAssistantMessageEventStream }] = await Promise.all([
+    importFromRepo("node_modules/@earendil-works/pi-agent-core/dist/index.js"),
+    importFromRepo("node_modules/@earendil-works/pi-coding-agent/dist/index.js"),
+    importFromRepo("node_modules/@earendil-works/pi-ai/dist/index.js"),
+  ]);
+  const commands = JSON.parse(process.env.FAKE_PI_AGENT_COMMANDS || "[]");
+  const hook = process.env.FAKE_PI_AGENT_HOOK || "";
+  const hookAt = Number(process.env.FAKE_PI_AGENT_HOOK_AT || 1);
+  let request = 0;
+  const bash = createBashTool(process.cwd(), { exposeSessionEnvironment: false });
+  const model = {
+    provider: "fixture", id: "fixture", name: "fixture", api: "openai-responses", baseUrl: "http://fixture.invalid",
+    input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    reasoning: false, contextWindow: 8192, maxTokens: 1024,
+  };
+  const streamFn = () => {
+    const step = commands[request++];
+    const message = {
+      role: "assistant",
+      content: step ? [{ type: "toolCall", id: "fixture-" + request, name: "bash", arguments: step }] : [{ type: "text", text: "Finished the local task." }],
+      api: "openai-responses", provider: "fixture", model: "fixture",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: step ? "toolUse" : "stop", timestamp: Date.now(),
+    };
+    const stream = createAssistantMessageEventStream();
+    stream.push({ type: "start", partial: message });
+    stream.push({ type: "done", reason: message.stopReason, message });
+    stream.end(message);
+    return stream;
+  };
+  const config = {
+    model, convertToLlm: (messages) => messages, toolExecution: "sequential",
+    afterToolCall: ({ toolCall, result }) => {
+      if (request !== hookAt || !hook) return undefined;
+      if (hook === "drop-structured") return { content: result.content };
+      if (hook === "contradict-success") return { isError: false };
+      if (hook === "contradict-error") return { isError: true };
+      if (hook === "preserve-status") return { details: { hook: "preserved" } };
+      return undefined;
+    },
+  };
+  await runAgentLoop(
+    [{ role: "user", content: "Run this hermetic implementation fixture.", timestamp: Date.now() }],
+    { messages: [], tools: [bash] },
+    config,
+    (event) => process.stdout.write(JSON.stringify(event) + "\\n"),
+    undefined,
+    streamFn,
+  );
+}
 let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
-  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), prompt }) + "\\n");
+  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), configuredEndpoint: readConfiguredEndpoint(), approve: args.includes("--approve"), prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
+  if (mode === "implement-agent-loop") {
+    runAgentLoopFixture().catch((error) => { console.error(error); process.exitCode = 1; });
+    return;
+  }
   if (mode === "rebuttal-rate-limit-model" && prompt.includes("## Round 2 (rebuttal)") && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
-    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: rebuttal unavailable" });
+    retryable("429 rate_limit_error: rebuttal unavailable");
     process.exit(1);
   }
   if (mode === "rate-limit-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
-    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
+    retryable("429 rate_limit_error: too many requests");
+    driftConfiguredEndpoint();
     process.exit(1);
   }
   if (mode === "rate-limit-models" && process.env.FAKE_PI_FAIL_MODELS?.split(",").includes(flag("--model"))) {
-    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
+    retryable("429 rate_limit_error: too many requests");
+    process.exit(1);
+  }
+  if (mode === "rate-limit-delayed" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    setTimeout(() => { retryable("429 rate_limit_error: too many requests"); process.exit(1); }, Number(process.env.FAKE_PI_RETRY_DELAY || 0));
+    return;
+  }
+  if (mode === "read-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    const toolCallId = "safe-read";
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "README.md" } }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: "read completed" }] } }));
+    retryable("temporary provider failure");
     process.exit(1);
   }
   if (mode === "quota-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     emit("", { stopReason: "error", errorMessage: process.env.FAKE_PI_ERROR });
+    process.exit(1);
+  }
+  if (mode === "malformed-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    emit("", { stopReason: "error", errorMessage: "temporary provider failure" });
+    console.log(JSON.stringify({ type: "auto_retry_start", attempt: 0, maxAttempts: 3 }));
+    process.exit(1);
+  }
+  if (mode === "shell-429" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    const toolCallId = "shell-429";
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "echo 429 rate_limit_error" } }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "bash", isError: true, result: { content: [{ type: "text", text: "429 rate_limit_error: too many requests" }] } }));
+    emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" });
+    process.exit(1);
+  }
+  if (mode === "partial-result-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    const toolCallId = "partial-result";
+    const args = { command: "printf before-failure" };
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args }));
+    console.log(JSON.stringify({
+      type: "tool_execution_update", toolCallId, toolName: "bash", args,
+      partialResult: { content: [{ type: "text", text: "partial output" }], details: {} },
+    }));
+    console.log(JSON.stringify({
+      type: "tool_execution_end", toolCallId, toolName: "bash", isError: true,
+      result: { content: [{ type: "text", text: "tool failed after partial output" }], details: {} },
+    }));
+    retryable("temporary provider failure");
+    process.exit(1);
+  }
+  if (mode === "tool-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    const toolCallId = "prior-effect";
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "printf prior-effect" } }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "bash", isError: false, result: { content: [{ type: "text", text: "prior effect completed" }], structuredContent: { exit_code: 0 } } }));
+    retryable("temporary provider failure");
+    process.exit(1);
+  }
+  if (mode === "start-then-retry" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "unfinished", toolName: "bash", args: { command: "printf maybe-effect" } }));
+    retryable("temporary provider failure");
+    process.exit(1);
+  }
+  if (mode === "blocked-owner-event" || mode === "blocked-owner-hang") {
+    const toolCallId = "blocked-call";
+    const fact = { owner: "guard", jobId: process.env.ME_PI_DELEGATE_JOB_ID, attempt: Number(process.env.ME_PI_DELEGATE_ATTEMPT), toolCallId, cause: "guard-denial", resource: "guard", effect: "denied" };
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command: "git push origin main" } }));
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName: "bash", isError: true, result: { content: [{ type: "text", text: "Blocked by guard" }], details: { __mePiDelegateProvenance: [fact] } } }));
+    if (mode === "blocked-owner-hang") {
+      emit("still working", { stopReason: "toolUse" });
+      setInterval(() => {}, 1000);
+      return;
+    }
+    emit("", { stopReason: "error", errorMessage: "Blocked by guard" });
     process.exit(1);
   }
   if (mode === "unavailable-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
@@ -171,7 +345,7 @@ process.stdin.on("end", () => {
     if (!options.omitStart) console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
     if (!options.omitEnd) console.log(JSON.stringify({
       type: "tool_execution_end", toolCallId, toolName: options.endToolName || toolName,
-      result: options.result || {}, isError,
+      result: options.result !== undefined ? options.result : !isError && toolName === "bash" ? { structuredContent: { exit_code: 0 } } : {}, isError,
       ...(options.effectiveCommand !== undefined ? { effectiveCommand: options.effectiveCommand } : {}),
     }));
   };
@@ -191,12 +365,13 @@ process.stdin.on("end", () => {
     const check = process.env.FAKE_PI_RAN || "npm test";
     if (scenario === "binary-collision") {
       runBash("printf 'x' > a; printf 'y' > b; git add -A; git commit -m 'feat: baseline collision tree'");
+      writeFileSync("feature.txt", "fixed\\n");
       runBash(check);
       runBash("printf 'x\\\\0b\\\\0file\\\\0\\\\060\\\\0y' > a; rm b; false");
       runBash("git add -A");
       runBash("git commit -m 'feat: binary collision'");
     } else {
-      runBash("printf 'checked\\n' > feature.txt");
+      runBash("printf 'fixed\\n' > feature.txt");
       runBash(check);
       if (scenario !== "unchanged") {
         runBash("printf 'mutated\\n' > feature.txt; false");
@@ -209,6 +384,37 @@ process.stdin.on("end", () => {
       }
     }
     emit("Checked and committed content.");
+    process.exit(0);
+  }
+  if (mode === "implement-review-regression") {
+    const scenario = process.env.FAKE_PI_REVIEW_SCENARIO;
+    if (scenario === "reuse") {
+      tool("read", { path: "a" }, false, { toolCallId: "reused" });
+      tool("read", { path: "b" }, false, { toolCallId: "reused" });
+    } else if (["conflict", "invalid-alias", "invalid-secret", "success-conflict", "provider"].includes(scenario)) {
+      tool("bash", { command: "exit 7" }, scenario !== "success-conflict", { result: { structuredContent: { exit_code: 7 }, ...(["conflict", "success-conflict"].includes(scenario) ? { details: { exitCode: 143 } } : scenario === "invalid-alias" ? { details: { exitCode: "143" } } : scenario === "invalid-secret" ? { details: { exitCode: "TOKEN=synthetic-secret" } } : {}) } });
+      if (scenario === "provider") retryable("temporary provider failure");
+    } else if (scenario === "success-overflow") {
+      for (let i = 0; i < 21; i++) tool("bash", { command: "fixture" }, false, { result: { structuredContent: { exit_code: 0 }, details: { exitCode: "TOKEN=synthetic-secret" } } });
+    } else if (scenario === "success-multi") {
+      tool("bash", { command: "exit 7" }, false, { toolCallId: "call-seven", result: { structuredContent: { exit_code: 7 } } });
+      tool("bash", { command: "exit 8" }, false, { toolCallId: "call-eight", result: { structuredContent: { exit_code: 8 } } });
+      tool("bash", { command: "exit 9" }, false, { toolCallId: "call-" + "x".repeat(300), result: { structuredContent: { exit_code: 9 } } });
+    } else if (scenario === "success-crash") {
+      tool("bash", { command: "exit 7" }, false, { toolCallId: "call-crash", result: { structuredContent: { exit_code: 7 }, details: { exitCode: 143 } } });
+      process.stderr.write("boom: last stderr line\\n");
+      process.exit(3);
+    } else if (scenario === "duplicate-end") {
+      tool("bash", { command: "printf completed" }, false, { toolCallId: "call-completed", result: { structuredContent: { exit_code: 0 } } });
+      tool("bash", { command: "printf duplicate" }, true, { toolCallId: "call-completed", omitStart: true });
+      tool("read", { path: "unique" }, false, { toolCallId: "call-unique" });
+    }
+    writeFileSync("feature.txt", "fixed\\n");
+    git("add", "feature.txt");
+    git("commit", "-q", "-m", "feat: fixture");
+    const status = scenario === "check-missing" ? {} : scenario === "check-invalid" ? { exit_code: "0" } : { exit_code: 0 };
+    tool("bash", { command: "npm test" }, false, { result: { structuredContent: status, ...(["check-conflict", "check-success-conflict"].includes(scenario) ? { details: { exitCode: 143 } } : scenario === "check-match" ? { details: { exitCode: 0 } } : {}) } });
+    emit("Finished fixture.");
     process.exit(0);
   }
   if (mode === "implement-artifacts" || mode === "implement-check-artifact-fail" || mode === "implement-read-artifact-fail") {
@@ -248,7 +454,7 @@ process.stdin.on("end", () => {
   if (mode === "implement-fallback-artifacts") {
     if ((flag("--model") || "").includes("luna")) {
       tool("bash", { command: "npm test" }, true, { result: { content: [{ type: "text", text: "first attempt tool failure" }], structuredContent: { exit_code: 3 } } });
-      emit("", { stopReason: "error", errorMessage: "429 rate_limit_error: retry artifacts" });
+      retryable("429 rate_limit_error: retry artifacts");
       process.exit(1);
     }
     tool("read", { path: "not-retained" }, true, { result: { content: [{ type: "text", text: "fallback tool failure" }] } });
@@ -362,6 +568,7 @@ process.stdin.on("end", () => {
     "workerRun=" + (process.env.ME_PI_RUN || ""),
     "prompt=" + JSON.stringify(prompt),
     ...(args.includes("--approve") ? ["approve=yes"] : args.includes("--no-approve") ? ["approve=no"] : []),
+    "skills=" + (process.env.ME_PI_SKILLS || "all"),
   ].join(" "));
 });
 `,
@@ -375,6 +582,82 @@ const CTX = {
 	modelRegistry: registryFixture(),
 };
 const text = (res) => res.content.map((c) => c.text).join("\n");
+// Legacy scope-shaped input is used to prove that coordinator metadata cannot enable child fallback.
+const fallbackAuthorization = (
+	models,
+	{ authority = "named", taskDataClass = "repository-source", registry = CTX.modelRegistry } = {},
+) => ({
+	authorizationRef: "coordinator-recorded-contract:test-run",
+	authority,
+	taskDataClass,
+	candidates: models.map((modelId) => {
+		const slash = modelId.indexOf("/");
+		const provider = modelId.slice(0, slash);
+		return {
+			model: modelId,
+			provider,
+			destination: registry.find(provider, modelId.slice(slash + 1)).baseUrl,
+			dataClasses: [taskDataClass],
+		};
+	}),
+});
+
+test("dispatch stays first-only when a parent snapshot cannot bind a later child's endpoint", async (t) => {
+	const marker = scratch("fallback-child-endpoint-marker");
+	const modelsPath = join(mkdtempSync(join(TEST_HOME, "child-models-")), "models.json");
+	const registry = registryFixture();
+	const parentDestination = registry.find("anthropic", "claude-sonnet-5-5").baseUrl;
+	writeFileSync(modelsPath, JSON.stringify({ providers: { anthropic: { baseUrl: parentDestination } } }));
+	let credentialResolutionCalls = 0;
+	registry.getApiKeyAndHeaders = () => {
+		credentialResolutionCalls++;
+		throw new Error("credential resolution must not be called");
+	};
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: {
+			FAKE_PI_MODE: "rate-limit-model",
+			FAKE_PI_FAIL_MODEL: HAIKU,
+			FAKE_PI_MARKER: marker,
+			FAKE_PI_MODELS_PATH: modelsPath,
+			FAKE_PI_DRIFT_ENDPOINT: "https://child-config-changed.invalid/v1",
+		},
+	});
+	const result = await run(
+		tool,
+		{
+			role: "review",
+			task: "do not send this task to a later child with a changed endpoint",
+			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET], { registry }),
+		},
+		undefined,
+		undefined,
+		{ ...CTX, modelRegistry: registry },
+	);
+	assert.equal(result.isError, true);
+	assert.match(
+		result.details.round1[0].fallbackBlockReason,
+		/cross-model fallback deferred.*child-boundary endpoint enforcement/,
+	);
+	assert.equal(result.details.round1[0].requested.model, HAIKU);
+	assert.equal(result.details.round1[0].provenance[0].providerRetry.owner, "pi-runtime");
+	assert.equal(result.details.round1[0].provenance[0].providerRetry.sourceEvent, "auto_retry_start");
+	const launches = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.equal(launches.length, 1, "no next Pi child was spawned after the child config drifted");
+	assert.equal(launches[0].model, HAIKU);
+	assert.equal(launches[0].configuredEndpoint, parentDestination, "the first child observed the parent snapshot URL");
+	assert.match(launches[0].prompt, /do not send this task to a later child/);
+	assert.equal(
+		JSON.parse(readFileSync(modelsPath, "utf8")).providers.anthropic.baseUrl,
+		"https://child-config-changed.invalid/v1",
+		"the config a later child would load changed after the parent snapshot",
+	);
+	assert.equal(credentialResolutionCalls, 0);
+});
 
 function applyEnv(vars) {
 	for (const [k, v] of Object.entries(vars)) {
@@ -383,16 +666,26 @@ function applyEnv(vars) {
 	}
 }
 
+// Multiple setups in one test share one original environment snapshot.
+const setupEnvironments = new WeakMap();
+
 // Sets env vars and limits for one test and restores them afterwards.
-function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
+function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuard = false } = {}) {
 	const vars = {
 		PI_BIN: FAKE_BIN,
 		ME_PI_RUN: undefined,
 		ME_PI_OUTPUT_DIR: undefined,
 		ME_PI_BUDGET: undefined,
 		ME_PI_ROLE: undefined,
+		ME_PI_SKILLS: undefined,
+		ME_PI_DELEGATE_JOB_ID: undefined,
+		ME_PI_DELEGATE_ATTEMPT: undefined,
+		ME_PI_TEST_ROOT: REPO_ROOT,
 		FAKE_PI_EVENT_MARKER: undefined,
 		FAKE_PI_TOOL_EVENTS: undefined,
+		FAKE_PI_AGENT_COMMANDS: undefined,
+		FAKE_PI_AGENT_HOOK: undefined,
+		FAKE_PI_AGENT_HOOK_AT: undefined,
 		TMPDIR: TEST_HOME,
 		...env,
 	};
@@ -401,18 +694,39 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		writeFileSync(path, typeof config === "string" ? config : JSON.stringify(config));
 		vars.ME_PI_DELEGATE_CONFIG = path;
 	} else vars.ME_PI_DELEGATE_CONFIG = join(TEST_HOME, "missing.json");
-	const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+	let saved = setupEnvironments.get(t);
+	if (!saved) {
+		saved = {};
+		setupEnvironments.set(t, saved);
+		t.after(() => {
+			applyEnv(saved);
+			Object.assign(LIMITS, DEFAULT_LIMITS);
+			setupEnvironments.delete(t);
+		});
+	}
+	for (const k of Object.keys(vars)) {
+		if (!Object.hasOwn(saved, k)) saved[k] = process.env[k];
+	}
 	applyEnv(vars);
 	Object.assign(LIMITS, limits);
-	t.after(() => {
-		applyEnv(saved);
-		Object.assign(LIMITS, DEFAULT_LIMITS);
-	});
 	const tools = {};
 	const handlers = {};
+	const registeredHandlers = new Map();
+	const eventHandlers = new Map();
+	const events = {
+		on: (name, handler) => {
+			const listeners = eventHandlers.get(name) ?? [];
+			listeners.push(handler);
+			eventHandlers.set(name, listeners);
+		},
+		emit: (name, value) => {
+			for (const handler of eventHandlers.get(name) ?? []) handler(value);
+		},
+	};
 	const commands = {};
 	const messages = [];
 	const pi = {
+		events,
 		sendMessage: (message, options) => messages.push({ message, options }),
 		registerTool: (d) => {
 			tools[d.name] = d;
@@ -422,7 +736,18 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		},
 		getAllTools: () => Object.values(tools).map((d) => ({ name: d.name })),
 		on: (event, h) => {
-			handlers[event] = h;
+			const listeners = registeredHandlers.get(event) ?? [];
+			listeners.push(h);
+			registeredHandlers.set(event, listeners);
+			handlers[event] = async (...args) => {
+				let result;
+				for (const listener of listeners) {
+					const next = await listener(...args);
+					if (next !== undefined) result = next;
+					if (event === "tool_call" && next?.block) break;
+				}
+				return result;
+			};
 		},
 	};
 	// The call history survives reloads on globalThis; each test starts empty unless it simulates a reload.
@@ -432,7 +757,8 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false } = {}) {
 		globalThis[Symbol.for("me-pi.delegate.job-count")] = 0;
 	}
 	registerExtension(pi);
-	return { tool: tools.delegate, handlers, commands, pi, messages };
+	if (withGuard) registerGuard(pi);
+	return { tool: tools.delegate, handlers, commands, pi, events, messages };
 }
 
 const run = (tool, params, signal, onUpdate, ctx = CTX) => tool.execute("call", params, signal, onUpdate, ctx);
@@ -454,6 +780,33 @@ async function waitFor(check, what, ms = 10000) {
 const waitDead = (pid) => waitFor(() => !isAlive(pid), `pid ${pid} to die`, 5000).then(() => true);
 const scratch = (name) => join(mkdtempSync(join(TEST_HOME, `${name}-`)), name);
 
+test("multiple setups restore the original environment after child cleanup, including later keys", async (t) => {
+	const existing = "ME_PI_TEST_SETUP_EXISTING";
+	const later = "ME_PI_TEST_SETUP_LATER";
+	const original = { [existing]: process.env[existing], [later]: process.env[later] };
+	t.after(() => applyEnv(original));
+	applyEnv({ [existing]: "original", [later]: undefined });
+	const before = {
+		PI_BIN: process.env.PI_BIN,
+		TMPDIR: process.env.TMPDIR,
+		ME_PI_DELEGATE_CONFIG: process.env.ME_PI_DELEGATE_CONFIG,
+		[existing]: process.env[existing],
+		[later]: process.env[later],
+	};
+	await t.test("two setups complete successfully", (child) => {
+		setup(child, { env: { [existing]: "first" } });
+		assert.equal(process.env[existing], "first");
+		assert.equal(process.env[later], undefined);
+		setup(child, { env: { [existing]: "second", [later]: "introduced" } });
+		assert.equal(process.env[existing], "second");
+		assert.equal(process.env[later], "introduced");
+	});
+	for (const [key, value] of Object.entries(before)) {
+		assert.equal(process.env[key], value, `${key} restored after child cleanup`);
+	}
+	assert.equal(Object.hasOwn(process.env, later), false, "later key is deleted, not stringified");
+});
+
 test("registers delegate in the main session; workers get only the secret-path block", (t) => {
 	const main = setup(t);
 	assert.ok(main.tool);
@@ -463,6 +816,7 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge", "implement"]);
 	assert.equal(properties.check.type, "string");
 	assert.match(properties.check.description, /one unchained command/);
+	assert.match(properties.fallbackAuthorization.description, /cross-model fallback is deferred/);
 	assert.match(properties.check.description, /runs it alone, exactly as given, after its final edit/);
 	assert.equal(properties.branch, undefined);
 	assert.equal(properties.web.type, "boolean");
@@ -472,7 +826,127 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.equal(typeof main.tool.renderResult, "function");
 	const worker = setup(t, { env: { ME_PI_RUN: "1" } });
 	assert.equal(worker.tool, undefined, "no nested delegation");
-	assert.deepEqual(Object.keys(worker.handlers).sort(), ["message_end", "tool_call"]);
+	assert.deepEqual(Object.keys(worker.handlers).sort(), [
+		"before_agent_start",
+		"message_end",
+		"tool_call",
+		"tool_execution_end",
+	]);
+});
+
+test("Pi blocked calls are reported on tool_execution_end, not tool_result", async (t) => {
+	const { handlers } = setup(t, {
+		env: {
+			ME_PI_RUN: "1",
+			ME_PI_ROLE: "general",
+			ME_PI_DELEGATE_JOB_ID: "actual-pi-job",
+			ME_PI_DELEGATE_ATTEMPT: "1",
+		},
+		withGuard: true,
+	});
+	let executed = false;
+	let afterCalled = false;
+	const bash = {
+		name: "bash",
+		label: "Bash",
+		description: "Run a shell command",
+		parameters: Type.Object({ command: Type.String() }),
+		execute: async () => {
+			executed = true;
+			return { content: [], details: {} };
+		},
+	};
+	const toolCall = {
+		id: "actual-blocked-call",
+		name: "bash",
+		arguments: { command: "git push origin main" },
+	};
+	const outcome = await runToolCall(toolCall, {
+		tools: [bash],
+		assistantMessage: { role: "assistant", content: [] },
+		context: { messages: [], tools: [bash] },
+		beforeToolCall: ({ toolCall: call, args }) =>
+			handlers.tool_call(
+				{ toolName: call.name, toolCallId: call.id, input: args },
+				{ cwd: REPO_ROOT, hasUI: false },
+			),
+		afterToolCall: () => {
+			afterCalled = true;
+		},
+	});
+	assert.equal(outcome.isError, true);
+	assert.equal(executed, false);
+	assert.equal(afterCalled, false, "Pi skips afterToolCall for an immediate blocked-call result");
+	const event = {
+		type: "tool_execution_end",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		result: outcome.result,
+		isError: outcome.isError,
+	};
+	await handlers.tool_execution_end(event);
+	assert.deepEqual(event.result.details[TOOL_PROVENANCE_DETAIL_KEY], [
+		{
+			owner: "guard",
+			jobId: "actual-pi-job",
+			attempt: 1,
+			toolCallId: toolCall.id,
+			cause: "guard-denial",
+			resource: "guard",
+			effect: "denied",
+		},
+	]);
+	assert.equal(handlers.tool_result, undefined);
+});
+
+test("Pi transports delegate-worker wrap-up denials on tool_execution_end", async (t) => {
+	const { handlers } = setup(t, {
+		env: {
+			ME_PI_RUN: "1",
+			ME_PI_ROLE: "general",
+			ME_PI_DELEGATE_JOB_ID: "budget-pi-job",
+			ME_PI_DELEGATE_ATTEMPT: "1",
+			ME_PI_BUDGET: JSON.stringify({ tools: 0, deadline: Date.now() + 60_000, cost: 1 }),
+		},
+	});
+	const read = {
+		name: "read",
+		label: "Read",
+		description: "Read a file",
+		parameters: Type.Object({ path: Type.String() }),
+		execute: async () => ({ content: [], details: {} }),
+	};
+	const toolCall = { id: "budget-blocked-call", name: "read", arguments: { path: "README.md" } };
+	const outcome = await runToolCall(toolCall, {
+		tools: [read],
+		assistantMessage: { role: "assistant", content: [] },
+		context: { messages: [], tools: [read] },
+		beforeToolCall: ({ toolCall: call, args }) =>
+			handlers.tool_call(
+				{ toolName: call.name, toolCallId: call.id, input: args },
+				{ cwd: REPO_ROOT, hasUI: false },
+			),
+	});
+	assert.equal(outcome.isError, true);
+	const event = {
+		type: "tool_execution_end",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		result: outcome.result,
+		isError: outcome.isError,
+	};
+	await handlers.tool_execution_end(event);
+	assert.deepEqual(event.result.details[TOOL_PROVENANCE_DETAIL_KEY], [
+		{
+			owner: "delegate-worker",
+			jobId: "budget-pi-job",
+			attempt: 1,
+			toolCallId: toolCall.id,
+			cause: "wrap-up-limit",
+			resource: "tool-calls",
+			effect: "denied",
+		},
+	]);
 });
 
 test("workers cannot name secret paths in read, grep, find, or ls", async (t) => {
@@ -524,6 +998,10 @@ test("implement workers' bash calls are checked against the worker-only rules", 
 	const blocked = await hook(bash("git push origin x"), { cwd: REPO_ROOT });
 	assert.equal(blocked?.block, true);
 	assert.match(blocked.reason, /^Blocked: git push is main-session only; list it as BLOCKED\.$/);
+	assert.equal(await hook(bash("bash -n install.sh test/install.test.sh"), { cwd: REPO_ROOT }), undefined);
+	const installerChain = await hook(bash("bash -n install.sh && bash install.sh"), { cwd: REPO_ROOT });
+	assert.equal(installerChain?.block, true);
+	assert.match(installerChain.reason, /install\.sh would change Pi's settings and live links/);
 	assert.equal(await hook(bash("npm test"), { cwd: REPO_ROOT }), undefined);
 	const other = setup(t, { env: { ME_PI_RUN: "1" } }).handlers.tool_call;
 	assert.equal(await other(bash("git push origin x"), { cwd: REPO_ROOT }), undefined);
@@ -531,8 +1009,12 @@ test("implement workers' bash calls are checked against the worker-only rules", 
 
 test("workers get a wrap-up budget: scout tool calls, 80% of the time limit and cost cap", async (t) => {
 	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-budget" } });
+	assert.equal(LIMITS.scoutToolCalls, 60);
+	assert.equal(LIMITS.scoutTimeoutSecs, 300);
+	assert.equal(LIMITS.costCapUsd, 5);
+	assert.equal(LIMITS.wrapUpShare, 0.8);
 	for (const [role, tools, secs] of [
-		["scout", 30, 300],
+		["scout", 60, 300],
 		["general", null, 900],
 		["research", null, 900],
 		["review", null, 900],
@@ -595,9 +1077,9 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	assert.match(risky.reason, /git push is main-session only/);
 	assert.match((await call(denied)).reason, /budget reached \(1 tool call\)/);
 
-	const cappedScout = worker({ tools: 30, deadline: far, cost: 1 }, "scout");
-	for (let i = 0; i < 30; i++) assert.equal(await call(cappedScout), undefined);
-	assert.match((await call(cappedScout)).reason, /budget reached \(30 tool calls\)/);
+	const cappedScout = worker({ tools: 60, deadline: far, cost: 1 }, "scout");
+	for (let i = 0; i < 60; i++) assert.equal(await call(cappedScout), undefined);
+	assert.match((await call(cappedScout)).reason, /budget reached \(60 tool calls\)/);
 
 	for (const role of ["general", "research", "review", "challenge", "implement"]) {
 		const uncapped = worker({ tools: null, deadline: far, cost: 1 }, role);
@@ -755,7 +1237,7 @@ test("output with no files written says so; without output there is no write too
 	assert.doesNotMatch(without, /Files in|,write/);
 });
 
-test("model pools resolve per-model thinking, ordered fallbacks, and independent overrides", () => {
+test("model pools resolve per-model thinking, ordered candidates, and independent overrides", () => {
 	assert.deepEqual(resolveRun("scout", {}, POOL_SET), {
 		model: LUNA,
 		candidates: [
@@ -838,6 +1320,56 @@ test("model pools resolve per-model thinking, ordered fallbacks, and independent
 		candidates: [{ model: ONE_OFF, thinking: "low" }],
 		thinking: "low",
 	});
+	const withReviewPool = {
+		...POOL_SET,
+		review: {
+			models: [
+				{ model: OPUS, thinking: "high" },
+				{ model: SONNET, thinking: "medium" },
+			],
+			thinking: "low",
+		},
+	};
+	assert.deepEqual(resolveRun("review", {}, withReviewPool), {
+		model: OPUS,
+		candidates: [
+			{ model: OPUS, thinking: "high" },
+			{ model: SONNET, thinking: "medium" },
+		],
+		thinking: "high",
+	});
+	assert.deepEqual(resolveRun("general", {}, withReviewPool), {
+		model: LUNA,
+		candidates: [
+			{ model: LUNA, thinking: "max" },
+			{ model: OPUS, thinking: "max" },
+		],
+		thinking: "max",
+	});
+	assert.deepEqual(resolveRun("research", {}, withReviewPool), {
+		model: LUNA,
+		candidates: [
+			{ model: LUNA, thinking: "max" },
+			{ model: OPUS, thinking: "max" },
+		],
+		thinking: "max",
+	});
+	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, withReviewPool), {
+		model: ONE_OFF,
+		candidates: [{ model: ONE_OFF, thinking: "low" }],
+		thinking: "low",
+	});
+	// An exact model absent from review keeps existing cross-pool precedence (scout before worker).
+	assert.deepEqual(resolveRun("review", { model: LUNA }, withReviewPool), {
+		model: LUNA,
+		candidates: [{ model: LUNA, thinking: "off" }],
+		thinking: "off",
+	});
+	assert.deepEqual(resolveRun("review", { model: LUNA, thinking: "max" }, withReviewPool), {
+		model: LUNA,
+		candidates: [{ model: LUNA, thinking: "max" }],
+		thinking: "max",
+	});
 });
 
 test("unlisted models use role defaults or independent thinking overrides without changing config", async (t) => {
@@ -889,7 +1421,7 @@ test("unlisted models use role defaults or independent thinking overrides withou
 	);
 });
 
-test("an explicit thinking override applies to every configured fallback candidate", async (t) => {
+test("an explicit thinking override applies to the first selected pool candidate", async (t) => {
 	const marker = scratch("thinking-fallback-marker");
 	const config = {
 		version: 3,
@@ -906,8 +1438,16 @@ test("an explicit thinking override applies to every configured fallback candida
 		config,
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "review", task: "x", runs: [{ thinking: "medium" }] });
-	assert.equal(res.isError, false, text(res));
+	const res = await run(tool, {
+		role: "review",
+		task: "x",
+		runs: [{ thinking: "medium" }],
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(res.isError, true, text(res));
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.equal(res.details.round1[0].requested.thinking, "medium");
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -916,10 +1456,7 @@ test("an explicit thinking override applies to every configured fallback candida
 				const { model, thinking } = JSON.parse(line);
 				return [model, thinking];
 			}),
-		[
-			[HAIKU, "medium"],
-			[SONNET, "medium"],
-		],
+		[[HAIKU, "medium"]],
 	);
 });
 
@@ -977,7 +1514,6 @@ test("an unlisted model never falls back to the configured pool", async (t) => {
 			.map((line) => JSON.parse(line).model),
 		[ONE_OFF],
 	);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 });
 
 test("an explicitly selected configured model never falls back after an availability failure", async (t) => {
@@ -1006,10 +1542,9 @@ test("an explicitly selected configured model never falls back after an availabi
 		[HAIKU],
 	);
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, []);
 });
 
-test("a rate-limited worker falls back through its pool and reports both attempts", async (t) => {
+test("a rate-limited worker does not fall back through its pool", async (t) => {
 	const marker = scratch("fallback-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1019,44 +1554,24 @@ test("a rate-limited worker falls back through its pool and reports both attempt
 		},
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const progress = [];
-	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
-	assert.equal(res.isError, false, text(res));
-	assert.ok(
-		progress.some(
-			(update) => update.details.view.runs[0].model === HAIKU && update.details.view.runs[0].thinking === "max",
-		),
-	);
-	assert.ok(
-		progress.some(
-			(update) => update.details.view.runs[0].model === SONNET && update.details.view.runs[0].thinking === "max",
-		),
-	);
-	assert.ok(progress.some((update) => update.content[0].text.includes("claude-haiku-5-5 @max")));
-	assert.ok(progress.some((update) => update.content[0].text.includes("claude-sonnet-5-5 @max")));
+	const res = await run(tool, {
+		role: "review",
+		task: "x",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(res.isError, true, text(res));
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
+	assert.match(text(res), /Pool fallback not attempted: cross-model fallback deferred/);
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
-		calls.map((c) => [c.model, c.thinking]),
-		[
-			[HAIKU, "max"],
-			[SONNET, "max"],
-		],
+		calls.map((call) => [call.model, call.thinking]),
+		[[HAIKU, "max"]],
 	);
-	assert.equal(res.details.round1[0].requested.model, SONNET);
-	assert.deepEqual(res.details.round1[0].fallbackAttempts, [
-		{
-			model: HAIKU,
-			thinking: "max",
-			failure: "exit 1: 429 rate_limit_error: too many requests",
-			nextModel: SONNET,
-			nextThinking: "max",
-		},
-	]);
-	assert.match(text(res), /claude-haiku-5-5.*rate_limit_error.*trying anthropic\/claude-sonnet-5-5/s);
-	assert.equal(res.usage.cost.total, 0.004);
+	assert.equal(res.usage.cost.total, 0.002);
 });
 
-test("usage-limit and quota errors also fall through the worker pool", async (t) => {
+test("quota and usage-limit failures do not fall through an authorized pool", async (t) => {
 	// One setup, so its env restore runs once; each case only swaps the error text.
 	const { tool } = setup(t, {
 		config: {
@@ -1072,14 +1587,33 @@ test("usage-limit and quota errors also fall through the worker pool", async (t)
 		"insufficient_quota: check your plan",
 	]) {
 		process.env.FAKE_PI_ERROR = error;
-		const res = await run(tool, { role: "review", task: "x" });
-		assert.equal(res.isError, false, text(res));
-		assert.equal(res.details.round1[0].requested.model, SONNET, error);
-		assert.equal(res.details.round1[0].fallbackAttempts[0].failure, `exit 1: ${error}`);
+		const res = await run(tool, {
+			role: "review",
+			task: "x",
+			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+		});
+		assert.equal(res.isError, true, error);
+		assert.equal(res.details.round1[0].requested.model, HAIKU, error);
+		assert.match(res.details.round1[0].fallbackBlockReason, /no structured retry classification/);
 	}
 });
 
-test("fallback attempts share the worker cost cap", async (t) => {
+test("Pi's retry classifier separates transient availability from quota and billing exhaustion", () => {
+	assert.equal(
+		isRetryableAssistantError({ stopReason: "error", errorMessage: "429 rate_limit_error: too many requests" }),
+		true,
+	);
+	for (const errorMessage of [
+		"Codex error: The usage limit has been reached",
+		"429 quota exceeded for this project",
+		"insufficient_quota: check your plan",
+		"billing account is disabled",
+	])
+		assert.equal(isRetryableAssistantError({ stopReason: "error", errorMessage }), false, errorMessage);
+	assert.equal(isRetryableAssistantError({ stopReason: "stop", errorMessage: "429 rate_limit_error" }), false);
+});
+
+test("first-only dispatch reports the first candidate's worker cost", async (t) => {
 	const marker = scratch("fallback-cost-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1094,18 +1628,26 @@ test("fallback attempts share the worker cost cap", async (t) => {
 		},
 		limits: { costCapUsd: 0.003 },
 	});
-	const res = await run(tool, { role: "review", task: "x" });
+	const res = await run(tool, {
+		role: "review",
+		task: "x",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET, OPUS], { authority: "adopted-snapshot" }),
+	});
 	assert.equal(res.isError, true);
-	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
+	assert.equal(res.usage.cost.total, 0.002);
 	assert.deepEqual(
-		calls.map((call) => call.model),
-		[HAIKU, SONNET],
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map(JSON.parse)
+			.map((call) => call.model),
+		[HAIKU],
 	);
-	assert.match(text(res), /stopped: cost cap \$0\.001 reached/);
-	assert.equal(res.usage.cost.total, 0.004);
 });
 
-test("per-model thinking follows each ordered candidate during fallback", async (t) => {
+test("default dispatch keeps the first candidate's configured thinking level", async (t) => {
 	const marker = scratch("per-model-thinking-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1119,35 +1661,35 @@ test("per-model thinking follows each ordered candidate during fallback", async 
 				thinking: "max",
 			},
 		},
-		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker },
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker },
 	});
 	const progress = [];
-	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
-	assert.equal(res.isError, false, text(res));
+	const res = await run(
+		tool,
+		{ role: "review", task: "x", fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) },
+		undefined,
+		(update) => progress.push(update),
+	);
+	assert.equal(res.isError, true, text(res));
 	assert.ok(
 		progress.some(
 			(update) => update.details.view.runs[0].model === LUNA && update.details.view.runs[0].thinking === "max",
 		),
 	);
 	assert.ok(
-		progress.some(
-			(update) => update.details.view.runs[0].model === OPUS && update.details.view.runs[0].thinking === "low",
-		),
+		progress.every((update) => update.details.view.runs[0].model !== OPUS || update.details.view.runs[0].done),
 	);
-	assert.ok(progress.some((update) => update.content[0].text.includes("claude-opus-5-5 @low")));
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
 		calls.map(({ model, thinking }) => [model, thinking]),
-		[
-			[LUNA, "max"],
-			[OPUS, "low"],
-		],
+		[[LUNA, "max"]],
 	);
-	assert.equal(res.details.round1[0].requested.model, OPUS);
-	assert.equal(res.details.round1[0].requested.thinking, "low");
+	assert.equal(res.details.round1[0].requested.model, LUNA);
+	assert.equal(res.details.round1[0].requested.thinking, "max");
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 });
 
-test("model-unavailable errors fall through the same ordered worker pool when model is omitted", async (t) => {
+test("model-unavailable errors without structured retry evidence fail closed", async (t) => {
 	const marker = scratch("unavailable-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -1157,16 +1699,303 @@ test("model-unavailable errors fall through the same ordered worker pool when mo
 		},
 		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "research", task: "x" });
-	assert.equal(res.isError, false, text(res));
+	const res = await run(tool, {
+		role: "research",
+		task: "x",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(res.isError, true, text(res));
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line).model),
-		[HAIKU, SONNET],
+		[HAIKU],
 	);
-	assert.match(text(res), /model not found: unavailable.*trying anthropic\/claude-sonnet-5-5/s);
+	assert.match(text(res), /no structured retry classification/);
+});
+
+test("an adopted scope and later config changes cannot enable cross-model fallback", async (t) => {
+	const marker = scratch("adopted-snapshot-frozen-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET, OPUS], thinking: "max" },
+		},
+		env: {
+			FAKE_PI_MODE: "rate-limit-models",
+			FAKE_PI_FAIL_MODELS: `${HAIKU},${SONNET}`,
+			FAKE_PI_MARKER: marker,
+		},
+	});
+	// Even a valid-looking adopted scope does not enable fallback at the fresh child boundary.
+	const authorization = fallbackAuthorization([HAIKU, SONNET], { authority: "adopted-snapshot" });
+	const pending = run(tool, {
+		role: "review",
+		task: "use the adopted recorded snapshot, not later config",
+		fallbackAuthorization: authorization,
+	});
+	const opusScope = fallbackAuthorization([OPUS]).candidates[0];
+	authorization.candidates.push(opusScope);
+	authorization.candidates[1].provider = "changed-provider";
+	authorization.candidates[1].destination = "https://changed.invalid";
+	authorization.candidates[1].dataClasses[0] = "public";
+	writeFileSync(
+		process.env.ME_PI_DELEGATE_CONFIG,
+		JSON.stringify({
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, OPUS, ONE_OFF], thinking: "max" },
+		}),
+	);
+
+	const res = await pending;
+	assert.equal(res.isError, true, text(res));
+	assert.equal(res.details.round1[0].requested.model, HAIKU);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+});
+
+test("configuration and authorization added after dispatch cannot start another child", async (t) => {
+	const marker = scratch("late-fallback-authorization-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const params = { role: "review", task: "frozen at dispatch" };
+	const pending = run(tool, params);
+	writeFileSync(
+		process.env.ME_PI_DELEGATE_CONFIG,
+		JSON.stringify({
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET, OPUS], thinking: "max" },
+		}),
+	);
+	params.fallbackAuthorization = fallbackAuthorization([HAIKU, SONNET, OPUS]);
+	const res = await pending;
+	assert.equal(res.isError, true, text(res));
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+});
+
+test("named, adopted, or mismatched scope metadata cannot enable fallback", async (t) => {
+	const marker = scratch("scope-metadata-no-fallback-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [LUNA], thinking: "low" },
+			worker: { models: [HAIKU, SONNET], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+	});
+	const validNamed = fallbackAuthorization([HAIKU, SONNET]);
+	const validAdopted = fallbackAuthorization([HAIKU, SONNET], { authority: "adopted-snapshot" });
+	const mismatched = fallbackAuthorization([HAIKU, SONNET]);
+	mismatched.candidates[1].destination = "https://other.invalid";
+	for (const [name, authorization] of [
+		["named", validNamed],
+		["adopted", validAdopted],
+		["mismatched destination", mismatched],
+	]) {
+		const res = await run(tool, { role: "review", task: name, fallbackAuthorization: authorization });
+		assert.equal(res.isError, true, name);
+		assert.equal(res.details.round1[0].requested.model, HAIKU, name);
+		assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/, name);
+	}
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map(JSON.parse)
+			.map((call) => call.model),
+		[HAIKU, HAIKU, HAIKU],
+	);
+});
+
+test("fallback fails closed on malformed evidence, shell 429s, prior effects, and blocked calls", async (t) => {
+	const config = {
+		version: 2,
+		scout: { models: [LUNA], thinking: "low" },
+		worker: { models: [HAIKU, SONNET], thinking: "max" },
+	};
+	const cases = [
+		["malformed-retry", /no structured retry classification/, "no-retry"],
+		["shell-429", /no structured retry classification/, "tool-failure"],
+		["partial-result-then-retry", /competing safety stop/, "partial-result-unknown"],
+		["tool-then-retry", /tool effects are unknown or unsafe/, "completed-unsafe"],
+		["start-then-retry", /tool effects are unknown or unsafe/, "unmatched-unknown"],
+		["blocked-owner-event", /no structured retry classification/, "guard-denial"],
+	];
+	for (const [mode, reason, kind] of cases) {
+		const marker = scratch(`fallback-${mode}-marker`);
+		const { tool } = setup(t, {
+			config,
+			env: { FAKE_PI_MODE: mode, FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+		});
+		const res = await run(tool, {
+			role: "review",
+			task: mode,
+			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+		});
+		assert.equal(res.isError, true, mode);
+		assert.match(res.details.round1[0].fallbackBlockReason, reason, mode);
+		assert.deepEqual(
+			readFileSync(marker, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line).model),
+			[HAIKU],
+			mode,
+		);
+		const provenance = res.details.round1[0].provenance[0];
+		if (kind === "tool-failure" || kind === "partial-result-unknown")
+			assert.ok(
+				provenance.stopFacts.some((fact) => fact.cause === "tool-failure"),
+				mode,
+			);
+		if (kind === "tool-failure") {
+			assert.equal(provenance.toolEffects[0].effect, "unknown", mode);
+			assert.equal(provenance.toolEffects[0].partialResultObserved, undefined, mode);
+		}
+		if (kind === "partial-result-unknown") {
+			assert.equal(provenance.toolEffects[0].effect, "unknown", mode);
+			assert.equal(provenance.toolEffects[0].partialResultObserved, true, mode);
+			assert.notEqual(provenance.toolEffects[0].effect, "partial", mode);
+		}
+		if (kind === "completed-unsafe")
+			assert.deepEqual(provenance.toolEffects[0], {
+				owner: "pi-runtime",
+				jobId: provenance.jobId,
+				attempt: 1,
+				toolCallId: "prior-effect",
+				toolName: "bash",
+				effect: "completed",
+				replaySafe: false,
+			});
+		if (kind === "unmatched-unknown") {
+			assert.equal(provenance.complete, false, mode);
+			assert.equal(provenance.toolEffects[0].effect, "unknown", mode);
+		}
+		if (kind === "guard-denial")
+			assert.ok(
+				provenance.stopFacts.some((fact) => fact.owner === "guard" && fact.cause === "guard-denial"),
+				mode,
+			);
+	}
+});
+
+test("fallback keeps the original tool deadline and retains a competing guard denial", async (t) => {
+	const delayedMarker = scratch("fallback-deadline-marker");
+	const config = {
+		version: 2,
+		scout: { models: [LUNA], thinking: "low" },
+		worker: { models: [HAIKU, SONNET], thinking: "max" },
+	};
+	const delayed = setup(t, {
+		config,
+		env: {
+			FAKE_PI_MODE: "rate-limit-delayed",
+			FAKE_PI_FAIL_MODEL: HAIKU,
+			FAKE_PI_RETRY_DELAY: "850",
+			FAKE_PI_MARKER: delayedMarker,
+		},
+		limits: { timeoutSecs: 1 },
+	});
+	const deadline = await run(delayed.tool, {
+		role: "review",
+		task: "original tool deadline",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(deadline.isError, true, text(deadline));
+	assert.match(deadline.details.round1[0].fallbackBlockReason, /original tool deadline/);
+	assert.ok(
+		deadline.details.round1[0].provenance[0].stopFacts.some(
+			(fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-time",
+		),
+	);
+	assert.deepEqual(
+		readFileSync(delayedMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+
+	const competingMarker = scratch("fallback-competing-stop-marker");
+	const competing = setup(t, {
+		config,
+		env: { FAKE_PI_MODE: "blocked-owner-hang", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: competingMarker },
+		limits: { timeoutSecs: 0.5 },
+	});
+	const stopped = await run(competing.tool, {
+		role: "review",
+		task: "competing safety cause",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(stopped.isError, true, text(stopped));
+	const stopFacts = stopped.details.round1[0].provenance[0].stopFacts;
+	assert.ok(stopFacts.some((fact) => fact.owner === "guard" && fact.cause === "guard-denial"));
+	assert.ok(stopFacts.some((fact) => fact.owner === "delegate-parent" && fact.cause === "hard-timeout"));
+	assert.equal(stopped.details.round1[0].provenance[0].toolEffects[0].effect, "denied");
+	assert.deepEqual(
+		readFileSync(competingMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
+});
+
+test("fallback preserves the cumulative scout tool-call allowance", async (t) => {
+	const marker = scratch("fallback-scout-call-limit-marker");
+	const { tool } = setup(t, {
+		config: {
+			version: 2,
+			scout: { models: [HAIKU, SONNET], thinking: "low" },
+			worker: { models: [LUNA], thinking: "max" },
+		},
+		env: { FAKE_PI_MODE: "read-then-retry", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
+		limits: { scoutToolCalls: 1 },
+	});
+	const res = await run(tool, {
+		role: "scout",
+		task: "shared scout call limit",
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
+	});
+	assert.equal(res.isError, true, text(res));
+	assert.match(res.details.round1[0].fallbackBlockReason, /cumulative scout tool-call allowance is spent/);
+	const provenance = res.details.round1[0].provenance[0];
+	assert.equal(res.details.round1[0].toolCallCount, 1);
+	assert.deepEqual(
+		provenance.toolEffects.map(({ effect, replaySafe }) => [effect, replaySafe]),
+		[["completed", true]],
+	);
+	assert.ok(provenance.stopFacts.some((fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-calls"));
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		[HAIKU],
+	);
 });
 
 test("non-availability failures do not trigger pool fallback", async (t) => {
@@ -1191,7 +2020,6 @@ test("non-availability failures do not trigger pool fallback", async (t) => {
 		calls.map((call) => call.model),
 		[HAIKU],
 	);
-	assert.equal(res.details.round1[0].fallbackAttempts.length, 0);
 });
 
 test("v1 and v2 configs migrate to per-model levels, and empty pools use the session model", () => {
@@ -1266,6 +2094,10 @@ test("v1 and v2 configs migrate to per-model levels, and empty pools use the ses
 		thinking: "medium",
 	});
 	assert.throws(() => resolveRun("review", {}, empty, "x/session"), /main session's thinking level is unknown/);
+	assert.throws(
+		() => resolveRun("review", {}, { ...empty, review: { models: [] } }, "x/session"),
+		/set review\.thinking/,
+	);
 });
 
 function commandCtx({ available = [HAIKU, SONNET, OPUS] } = {}) {
@@ -1427,6 +2259,7 @@ test("/delegate status: the set with availability, missing tools, running and re
 	assert.ok(
 		before.includes(`Worker pool: 1. ${OPUS} (max) ✗ not available (no login or unknown id); 2. ${HAIKU} (low) ✓`),
 	);
+	assert.equal(before.includes("Review pool:"), false);
 	assert.match(before, /\nTools: missing Skill \(this repo's extensions\/skill\.ts\), web_search \(pi-web-access\)/);
 	assert.match(before, /\nRunning: none\nLast calls: none$/);
 
@@ -1490,6 +2323,73 @@ test("/delegate models directs users to edit JSON manually without writing it", 
 	assert.equal(readFileSync(path, "utf8"), original);
 });
 
+const POLICY = [
+	"## Output",
+	"- lead with the result",
+	"## Recovery (coordinator only)",
+	"- coordinator ledger",
+	"",
+	"## Approval (coordinator and implement only)",
+	"- protected actions",
+	"## Secrets",
+	"- never read keys",
+].join("\n");
+
+test("workers drop coordinator-only policy, writer policy unless implement, and unlisted skills", (t) => {
+	const options = () => ({
+		contextFiles: [{ path: "/g/AGENTS.md", content: POLICY }],
+		skills: [{ name: "code-review" }, { name: "tdd" }, { name: "pr" }],
+	});
+	const reader = options();
+	const { skills } = reader;
+	const handlers = setup(t, {
+		env: { ME_PI_RUN: "1", ME_PI_ROLE: "review", ME_PI_SKILLS: JSON.stringify(["code-review", "pr"]) },
+	}).handlers;
+	handlers.before_agent_start({ systemPromptOptions: reader });
+	assert.equal(reader.contextFiles[0].content, "## Output\n- lead with the result\n## Secrets\n- never read keys");
+	assert.deepEqual(
+		reader.skills.map((s) => s.name),
+		["code-review", "pr"],
+	);
+	assert.equal(reader.skills, skills, "filtered in place, so the Skill tool's array matches the prompt");
+
+	const writer = options();
+	setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement" } }).handlers.before_agent_start({
+		systemPromptOptions: writer,
+	});
+	assert.match(writer.contextFiles[0].content, /## Approval \(coordinator and implement only\)\n- protected actions/);
+	assert.doesNotMatch(writer.contextFiles[0].content, /coordinator ledger/);
+	assert.equal(writer.skills.length, 3, "no allowlist keeps every skill");
+});
+
+test("readOnlySkills reaches read-only workers and is validated", async (t) => {
+	const config = {
+		version: 3,
+		scout: { models: [] },
+		worker: { models: [] },
+		readOnlySkills: ["code-review", "pr"],
+	};
+	assert.deepEqual(loadModelSet(join(mkdtempSync(join(TEST_HOME, "cfg-")), "x.json")).readOnlySkills, undefined);
+	const { tool } = setup(t, { config });
+	const res = await run(tool, { role: "review", task: "x" });
+	assert.equal(res.isError, false, text(res));
+	assert.match(text(res), /skills=\["code-review","pr"\]/);
+	const plain = await run(setup(t).tool, { role: "review", task: "x" });
+	assert.match(text(plain), /skills=all/);
+	for (const [value, error] of [
+		["code-review", /readOnlySkills must be an array of skill names/],
+		[["pr", ""], /readOnlySkills must be an array of skill names/],
+		[["pr", "pr"], /readOnlySkills lists a skill twice/],
+	]) {
+		const bad = await run(setup(t, { config: { ...config, readOnlySkills: value } }).tool, {
+			role: "scout",
+			task: "x",
+		});
+		assert.equal(bad.isError, true);
+		assert.match(text(bad), error);
+	}
+});
+
 test("v3 model configs validate per-model thinking", (t) => {
 	const write = (content) => {
 		const path = scratch("delegate.json");
@@ -1506,6 +2406,25 @@ test("v3 model configs validate per-model thinking", (t) => {
 		{ version: 3, scout: { models: [] }, worker: { models: [] } },
 		"pool-level thinking is optional",
 	);
+	assert.deepEqual(
+		loadModelSet(
+			write(
+				JSON.stringify({
+					version: 3,
+					scout: { models: [] },
+					worker: { models: [{ model: LUNA, thinking: "max" }] },
+					review: { models: [{ model: OPUS, thinking: "high" }], thinking: "medium" },
+				}),
+			),
+		),
+		{
+			version: 3,
+			scout: { models: [] },
+			worker: { models: [{ model: LUNA, thinking: "max" }] },
+			review: { models: [{ model: OPUS, thinking: "high" }], thinking: "medium" },
+		},
+		"review pool is optional and validated in v3",
+	);
 	assert.deepEqual(loadModelSet(write(JSON.stringify(POOL_SET))), POOL_SET);
 	assert.equal(loadModelSet(write(JSON.stringify(POOL_SET))).worker.models[1].thinking, "max");
 	for (const [content, error] of [
@@ -1518,11 +2437,52 @@ test("v3 model configs validate per-model thinking", (t) => {
 		[JSON.stringify({ version: 4 }), /unsupported version 4 \(expected 2 or 3\)/],
 		[
 			JSON.stringify({
+				version: 2,
+				scout: { models: [HAIKU], thinking: "low" },
+				worker: { models: [OPUS], thinking: "max" },
+				review: { models: [SONNET], thinking: "high" },
+			}),
+			/unknown key\(s\) review \(allowed: version, scout, worker\)/,
+		],
+		[
+			JSON.stringify({
 				version: 3,
 				scout: { models: [{ model: HAIKU, thinking: "high" }], thinking: "low" },
 				worker: { models: [], thinking: "max" },
 			}),
 			/scout.models\[0\].thinking must be one of low, off/,
+		],
+		[
+			JSON.stringify({
+				version: 3,
+				scout: { models: [], thinking: "low" },
+				worker: { models: [] },
+				review: "invalid",
+			}),
+			/review: expected an object/,
+		],
+		[
+			JSON.stringify({
+				version: 3,
+				scout: { models: [], thinking: "low" },
+				worker: { models: [] },
+				review: { models: [{ model: HAIKU, thinking: "nope" }] },
+			}),
+			/review\.models\[0\]\.thinking must be one of off, minimal, low, medium, high, xhigh, max/,
+		],
+		[
+			JSON.stringify({
+				version: 3,
+				scout: { models: [], thinking: "low" },
+				worker: { models: [] },
+				review: {
+					models: [
+						{ model: HAIKU, thinking: "high" },
+						{ model: HAIKU, thinking: "low" },
+					],
+				},
+			}),
+			/review\.models lists model .* twice/,
 		],
 		[
 			JSON.stringify({
@@ -1548,6 +2508,106 @@ test("v3 model configs validate per-model thinking", (t) => {
 	});
 });
 
+test("review pool selects its first candidate, reports status, and preserves worker/scout behavior", async (t) => {
+	const marker = scratch("review-pool-marker");
+	const config = {
+		version: 3,
+		scout: {
+			models: [{ model: HAIKU, thinking: "low" }],
+			thinking: "low",
+		},
+		worker: {
+			models: [
+				{ model: LUNA, thinking: "max" },
+				{ model: OPUS, thinking: "high" },
+			],
+			thinking: "max",
+		},
+		review: {
+			models: [
+				{ model: SONNET, thinking: "high" },
+				{ model: OPUS, thinking: "medium" },
+			],
+			thinking: "low",
+		},
+	};
+	const main = setup(t, {
+		config,
+		env: { FAKE_PI_MODE: "success", FAKE_PI_FAIL_MODEL: SONNET, FAKE_PI_MARKER: marker },
+		limits: { costCapUsd: 0.005 },
+	});
+	const { ctx: statusCtx, notes } = commandCtx({ available: [HAIKU, OPUS] });
+	await main.commands.delegate.handler("status", statusCtx);
+	assert.ok(
+		notes[0][0].includes(
+			`Review pool: 1. ${SONNET} (high) ✗ not available (no login or unknown id); 2. ${OPUS} (medium) ✓`,
+		),
+	);
+
+	const reviewRes = await run(main.tool, {
+		role: "review",
+		task: "check review pool",
+		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS]),
+	});
+	assert.equal(reviewRes.isError, false, text(reviewRes));
+	assert.equal(reviewRes.details.round1[0].requested.model, SONNET);
+	assert.equal(reviewRes.details.round1[0].requested.thinking, "high");
+
+	const generalRes = await run(main.tool, { role: "general", task: "check worker pool" });
+	assert.equal(generalRes.isError, false, text(generalRes));
+	assert.equal(generalRes.details.round1[0].requested.model, LUNA);
+	assert.equal(generalRes.details.round1[0].requested.thinking, "max");
+
+	const scoutRes = await run(main.tool, { role: "scout", task: "check scout pool" });
+	assert.equal(scoutRes.isError, false, text(scoutRes));
+	assert.equal(scoutRes.details.round1[0].requested.model, HAIKU);
+	assert.equal(scoutRes.details.round1[0].requested.thinking, "low");
+
+	process.env.FAKE_PI_MODE = "rate-limit-model";
+	const exactFail = await run(main.tool, { role: "review", task: "exact fail", runs: [{ model: SONNET }] });
+	assert.equal(exactFail.isError, true);
+
+	const calls = readFileSync(marker, "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => {
+			const { model, thinking } = JSON.parse(line);
+			return [model, thinking];
+		});
+	assert.deepEqual(calls, [
+		[SONNET, "high"],
+		[LUNA, "max"],
+		[HAIKU, "low"],
+		[SONNET, "high"],
+	]);
+
+	// Exhausting the cap on the first attempt must prevent any review fallback.
+	const costMarker = scratch("review-pool-cost-marker");
+	const capped = setup(t, {
+		config,
+		env: { FAKE_PI_MODE: "rate-limit-models", FAKE_PI_FAIL_MODELS: `${SONNET},${OPUS}`, FAKE_PI_MARKER: costMarker },
+		limits: { costCapUsd: 0.002 },
+	});
+	const cappedRes = await run(capped.tool, {
+		role: "review",
+		task: "budget shared",
+		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS]),
+	});
+	assert.equal(cappedRes.isError, true);
+	const costStops = cappedRes.details.round1[0].provenance[0].stopFacts;
+	assert.ok(costStops.some((fact) => fact.cause === "hard-cost-limit" && fact.resource === "hard-cost"));
+	assert.ok(costStops.some((fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-cost"));
+	assert.equal(cappedRes.usage.cost.total, 0.002);
+	assert.deepEqual(
+		readFileSync(costMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map(JSON.parse)
+			.map(({ model, thinking }) => [model, thinking]),
+		[[SONNET, "high"]],
+	);
+});
+
 test("the schema allows exact model IDs outside the configured pools", (t) => {
 	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
 	const model = tool.parameters.properties.runs.items.properties.model;
@@ -1555,6 +2615,7 @@ test("the schema allows exact model IDs outside the configured pools", (t) => {
 	assert.equal(model.enum, undefined);
 	assert.match(model.description, /exact Pi model ID/);
 	assert.match(tool.parameters.properties.runs.description, /explicitly named model runs alone and never falls back/i);
+	assert.match(tool.parameters.properties.fallbackAuthorization.description, /does not enable fallback/);
 });
 
 test(
@@ -1832,7 +2893,7 @@ test("several runs answer the same task in parallel; usage is summed", async (t)
 	assert.equal(res.usage.cost.total, 0.004);
 });
 
-test("default-origin rebuttals keep pool fallback while explicit-origin rebuttals stop", async (t) => {
+test("default-origin rebuttals retain exact candidates without cross-model fallback", async (t) => {
 	const config = {
 		version: 3,
 		scout: { models: [], thinking: "low" },
@@ -1859,19 +2920,17 @@ test("default-origin rebuttals keep pool fallback while explicit-origin rebuttal
 		task: "check fallback across rebuttal rounds",
 		runs: [{}, {}],
 		rebuttal: true,
+		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET, OPUS]),
 	});
-	assert.equal(defaultResult.isError, false, text(defaultResult));
+	assert.equal(defaultResult.isError, true, text(defaultResult));
 	assert.deepEqual(
-		defaultResult.details.round2.map((r) => [
-			r.requested.model,
-			r.requested.thinking,
-			r.fallbackAttempts[0]?.nextModel,
-		]),
+		defaultResult.details.round2.map((r) => [r.requested.model, r.requested.thinking]),
 		[
-			[SONNET, "low", SONNET],
-			[SONNET, "low", SONNET],
+			[HAIKU, "high"],
+			[HAIKU, "high"],
 		],
 	);
+	assert.ok(defaultResult.details.round2.every((r) => /cross-model fallback deferred/.test(r.fallbackBlockReason)));
 
 	const explicitMarker = scratch("explicit-rebuttal-no-fallback-marker");
 	process.env.FAKE_PI_MARKER = explicitMarker;
@@ -1883,7 +2942,6 @@ test("default-origin rebuttals keep pool fallback while explicit-origin rebuttal
 	});
 	assert.equal(explicitResult.isError, true);
 	assert.equal(explicitResult.details.round2[0].requested.model, HAIKU);
-	assert.deepEqual(explicitResult.details.round2[0].fallbackAttempts, []);
 	assert.deepEqual(
 		readFileSync(explicitMarker, "utf8")
 			.trim()
@@ -2445,7 +3503,7 @@ test("concurrent foreground calls receive distinct compact widget labels", async
 	assert.equal((await second).isError, false);
 });
 
-test("the TUI widget tracks the current configured fallback candidate", async (t) => {
+test("the TUI widget keeps the first configured candidate after a provider retry", async (t) => {
 	const { tool } = setup(t, {
 		config: {
 			version: 3,
@@ -2461,13 +3519,20 @@ test("the TUI widget tracks the current configured fallback candidate", async (t
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU },
 	});
 	const ui = tuiCtx();
-	const result = await run(tool, { role: "review", task: "fallback widget" }, undefined, undefined, ui.ctx);
-	assert.equal(result.isError, false);
+	const result = await run(
+		tool,
+		{ role: "review", task: "fallback widget", fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]) },
+		undefined,
+		undefined,
+		ui.ctx,
+	);
+	assert.equal(result.isError, true);
+	assert.ok(ui.snapshots.some((snapshot) => snapshot.some((line) => line.includes("claude-haiku-5-5 @high"))));
 	assert.ok(
-		ui.snapshots.some((snapshot) =>
-			snapshot.some((line) => line.includes("claude-sonnet-5-5 @low") && line.includes("↻")),
+		ui.snapshots.every((snapshot) =>
+			snapshot.every((line) => !line.includes("claude-sonnet-5-5 @low") && !line.includes("↻")),
 		),
-		"the widget switches to the next actual candidate and marks its fallback",
+		"the disabled fallback never appears as a started worker",
 	);
 	assert.deepEqual(ui.widget(), [], "the final candidate completion hides the widget");
 });
@@ -2636,7 +3701,14 @@ function implementRepo() {
 	git("config", "user.name", "Implement Test");
 	mkdirSync(join(repo, "sub"));
 	writeFileSync(join(repo, "sub", "a.txt"), "a\n");
-	writeFileSync(join(repo, "package.json"), `${JSON.stringify({ private: true, scripts: { test: "true" } })}\n`);
+	writeFileSync(
+		join(repo, "verify.mjs"),
+		'import { readFileSync } from "node:fs";\nif (!["fixed", "mutated"].includes(readFileSync("feature.txt", "utf8").trim())) { console.error("fixture not repaired"); process.exitCode = 1; }\n',
+	);
+	writeFileSync(
+		join(repo, "package.json"),
+		`${JSON.stringify({ private: true, scripts: { test: "node verify.mjs" } })}\n`,
+	);
 	git("add", "-A");
 	git("commit", "-q", "-m", "initial");
 	git("branch", "other");
@@ -2690,6 +3762,42 @@ test(
 		await waitFor(() => messages.length === 2, "the cancelled capacity-check job");
 	},
 );
+
+test("exported Pi createBashTool and runToolCall report canonical nonzero and successful results", async () => {
+	const cwd = mkdtempSync(join(TEST_HOME, "direct-bash-tool-"));
+	const bash = createBashTool(cwd, { exposeSessionEnvironment: false });
+	const assistantMessage = {
+		role: "assistant",
+		content: [],
+		api: "openai-responses",
+		provider: "fixture",
+		model: "fixture",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	};
+	const context = { messages: [], tools: [bash] };
+	const call = (id, command) =>
+		runToolCall(
+			{ type: "toolCall", id, name: "bash", arguments: { command } },
+			{ tools: [bash], assistantMessage, context },
+		);
+	const failed = await call("direct-failure", "printf 'side-effect\\n' > failed.txt; exit 7");
+	assert.equal(failed.isError, true);
+	assert.equal(failed.result.structuredContent.exit_code, 7);
+	assert.equal(readFileSync(join(cwd, "failed.txt"), "utf8"), "side-effect\n");
+	const succeeded = await call("direct-success", "printf 'verified\\n' > passed.txt");
+	assert.equal(succeeded.isError, false);
+	assert.equal(succeeded.result.structuredContent.exit_code, 0);
+	assert.equal(readFileSync(join(cwd, "passed.txt"), "utf8"), "verified\n");
+});
 
 test("implement commits on the current branch; the result is a 2-line handback and a 0600 details file", async (t) => {
 	const { tool, commands } = setup(t, { env: implementEnv("implement-commit") });
@@ -2762,6 +3870,395 @@ test("implement event tracking keeps a fresh final check after over 100 calls an
 	assert.deepEqual(events, [...Array(101).fill("read"), "write", "bash"]);
 });
 
+test("implement rejects lifetime call ID reuse through event finalization", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "reuse" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.check.status, "pass");
+	assert.equal(result.details.implement.outcome.provenance[0].complete, false);
+	assert.match(
+		readFileSync(result.details.implement.detailsPath, "utf8"),
+		/tool=reused cause=tool-failure resource=tool effect=unknown/,
+	);
+});
+
+test("implement rejects a duplicate END after a completed call while retaining correlation diagnostics", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "duplicate-end" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const facts = result.details.implement;
+	assert.equal(facts.check.status, "pass");
+	assert.equal(facts.delivered.commit, "normal");
+	assert.equal(facts.delivered.wip, false);
+	assert.equal(facts.problems.includes("provenance/effect state is incomplete or stopped; acceptance withheld"), true);
+
+	const provenance = facts.outcome.provenance[0];
+	assert.equal(provenance.complete, false);
+	const effects = provenance.toolEffects.filter((fact) => fact.toolCallId === "call-completed");
+	assert.deepEqual(
+		effects.map((fact) => [fact.toolName, fact.effect, fact.replaySafe]),
+		[
+			["bash", "completed", false],
+			["bash", "unknown", false],
+		],
+		"the completed call and its duplicate end stay separately attributed",
+	);
+	const stop = provenance.stopFacts.find(
+		(fact) => fact.toolCallId === "call-completed" && fact.cause === "tool-failure",
+	);
+	assert.equal(stop.owner, "delegate-parent");
+	assert.equal(stop.effect, "unknown");
+	assert.equal(
+		provenance.toolEffects.find((fact) => fact.toolCallId === "call-unique").effect,
+		"completed",
+		"unique call IDs still complete normally",
+	);
+
+	const artifact = JSON.parse(readFileSync(facts.outcome.failedToolCapture.path, "utf8"));
+	assert.equal(artifact.capture.failureCount, 1);
+	assert.equal(artifact.entries.length, 1);
+	assert.equal(artifact.entries[0].toolCallId.text, "call-completed");
+	assert.equal(artifact.entries[0].startedAt, null, "the duplicate end has no matching start");
+	assert.ok(artifact.entries[0].missingFields.includes("startedAt"));
+	assert.ok(artifact.capture.anomalies["end-without-start"] >= 1);
+	const details = readFileSync(facts.detailsPath, "utf8");
+	assert.match(details, /tool=call-completed cause=tool-failure resource=tool effect=unknown/);
+});
+
+test("implement rejects a competing provider retry after ordinary Bash repair", async (t) => {
+	const { tool } = setup(t, {
+		config: POOL_SET,
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "provider" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.check.status, "pass");
+	assert.equal(result.details.implement.delivered.commit, "normal");
+	const facts = result.details.implement.outcome.provenance[0].stopFacts;
+	assert.ok(facts.some((fact) => fact.cause === "tool-failure" && fact.effect === "completed"));
+	assert.ok(facts.some((fact) => fact.cause === "provider-retry-classified" && fact.effect === "unknown"));
+});
+
+test("implement rejects conflicting Bash status aliases through event finalization", async (t) => {
+	for (const scenario of ["conflict", "check-conflict"])
+		await t.test(scenario, async (t) => {
+			const { tool } = setup(t, {
+				env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: scenario }),
+			});
+			const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+			assert.equal(result.isError, true, `${scenario}: ${text(result)}`);
+			if (scenario === "conflict") {
+				assert.equal(result.details.implement.check.status, "pass");
+				const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+				assert.match(JSON.stringify(artifact.entries[0]), /143/);
+			} else assert.notEqual(result.details.implement.check.status, "pass");
+		});
+});
+
+test("invalid Bash alias diagnostics retain their path, type and value", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "invalid-alias" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	const diagnostics = artifact.entries[0].statusDiagnostics.map((item) => item.text).join(" ");
+	assert.match(diagnostics, /structuredContent.exit_code=7/);
+	assert.match(diagnostics, /details.exitCode=string:143/);
+});
+
+test("status diagnostics redact arbitrary strings and bound success records", async (t) => {
+	for (const scenario of ["invalid-secret", "success-overflow"])
+		await t.test(scenario, async (t) => {
+			const { tool } = setup(t, {
+				env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: scenario }),
+			});
+			const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+			assert.equal(result.isError, true, text(result));
+			const captured =
+				scenario === "invalid-secret"
+					? readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8")
+					: readFileSync(result.details.implement.detailsPath, "utf8");
+			assert.match(captured, /details.exitCode=string:\[REDACTED\]/);
+			assert.doesNotMatch(captured, /synthetic-secret/);
+			if (scenario === "success-overflow") {
+				assert.equal((captured.match(/isError=false/g) ?? []).length, 20);
+				assert.match(captured, /1 further status diagnostics omitted/);
+			}
+		});
+});
+
+test("success-marked conflicting Bash statuses survive finalization", async (t) => {
+	for (const scenario of ["success-conflict", "check-success-conflict"])
+		await t.test(scenario, async (t) => {
+			const { tool } = setup(t, {
+				env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: scenario }),
+			});
+			const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+			assert.equal(result.isError, true, text(result));
+			assert.equal(result.details.implement.check.status === "pass", scenario === "success-conflict");
+			assert.equal(result.details.implement.outcome.failedToolCapture, undefined);
+			const details = readFileSync(result.details.implement.detailsPath, "utf8");
+			assert.match(details, /isError=false/);
+			assert.match(
+				details,
+				scenario === "success-conflict" ? /structuredContent.exit_code=7/ : /structuredContent.exit_code=0/,
+			);
+			assert.match(details, /details.exitCode=143/);
+		});
+});
+
+test("multiple success-marked conflicting Bash calls retain bounded call identity in finalization", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "success-multi" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const facts = result.details.implement;
+	assert.equal(facts.check.status, "pass");
+	assert.equal(facts.delivered.commit, "normal");
+	assert.equal(facts.outcome.failedToolCapture, undefined, "successful conflicts do not create failed-tool artifacts");
+
+	const details = readFileSync(facts.detailsPath, "utf8");
+	const diagnostics = details.split("\n").filter((line) => line.includes("isError=false"));
+	assert.equal(diagnostics.length, 3);
+	const seven = diagnostics.find((line) => line.includes("toolCallId=call-seven"));
+	const eight = diagnostics.find((line) => line.includes("toolCallId=call-eight"));
+	const long = diagnostics.find((line) => /toolCallId=call-x{10}/.test(line));
+	assert.ok(seven, details);
+	assert.ok(eight, details);
+	assert.ok(long, details);
+	assert.match(seven, /structuredContent\.exit_code=7/);
+	assert.match(eight, /structuredContent\.exit_code=8/);
+	assert.match(long, /structuredContent\.exit_code=9/);
+	assert.doesNotMatch(seven, /call-eight|exit_code=8/);
+	assert.doesNotMatch(eight, /call-seven|exit_code=7/);
+	const retainedCallId = long.match(/toolCallId=(\S+)/)[1];
+	assert.equal(retainedCallId.length, 256, "call identity is bounded");
+	assert.ok(`call-${"x".repeat(300)}`.startsWith(retainedCallId), "the bounded identity keeps the call ID prefix");
+
+	const provenance = facts.outcome.provenance[0];
+	for (const [toolCallId, exitCode] of [
+		["call-seven", 7],
+		["call-eight", 8],
+		[`call-${"x".repeat(300)}`, 9],
+	]) {
+		const effect = provenance.toolEffects.find((fact) => fact.toolCallId === toolCallId);
+		assert.equal(effect.effect, "unknown");
+		const stop = provenance.stopFacts.find(
+			(fact) => fact.toolCallId === toolCallId && fact.cause === "tool-failure" && fact.effect === "unknown",
+		);
+		assert.ok(stop, `call ${exitCode} keeps a correlated unknown stop fact`);
+	}
+});
+
+test("bounded diagnostic call IDs mark byte truncation in contradictory success diagnostics", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "success-multi" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const details = readFileSync(result.details.implement.detailsPath, "utf8");
+	const diagnostics = details.split("\n").filter((line) => line.includes("isError=false"));
+	const long = diagnostics.find((line) => line.includes("toolCallId=call-x"));
+	assert.ok(long, details);
+	assert.match(long, /^isError=false toolCallId=call-x{10}\S* \[truncated\] structuredContent\.exit_code=9$/);
+	const short = diagnostics.find((line) => line.includes("toolCallId=call-seven"));
+	assert.ok(short, details);
+	assert.doesNotMatch(short, /\[truncated\]/);
+});
+
+test("a crashing child keeps its real stderr tail alongside contradictory success diagnostics", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: "success-crash" }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, true, text(result));
+	const facts = result.details.implement;
+	assert.ok(!facts.outcome.answer?.trim(), "the crashing child gave no final answer");
+	assert.match(
+		facts.outcome.failure,
+		/^exit 3: boom: last stderr line/,
+		"the reported failure uses the child's crash tail",
+	);
+	assert.doesNotMatch(
+		facts.outcome.failure,
+		/isError=false/,
+		"an appended diagnostic does not replace the crash message",
+	);
+	assert.match(facts.outcome.stderr, /boom: last stderr line/);
+	assert.match(facts.outcome.stderr, /contradictory Bash success status diagnostics/);
+	assert.match(facts.outcome.stderr, /isError=false toolCallId=call-crash/);
+	assert.match(facts.outcome.stderr, /structuredContent\.exit_code=7; details\.exitCode=143/);
+});
+
+test("implement check requires canonical status and accepts matching or absent aliases", async (t) => {
+	for (const scenario of ["check-missing", "check-invalid", "check-match", "check-absent"])
+		await t.test(scenario, async (t) => {
+			const { tool } = setup(t, {
+				env: implementEnv("implement-review-regression", { FAKE_PI_REVIEW_SCENARIO: scenario }),
+			});
+			const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+			const valid = scenario === "check-match" || scenario === "check-absent";
+			assert.equal(result.isError, !valid, text(result));
+			assert.equal(result.details.implement.check.status === "pass", valid);
+		});
+});
+
+test("implement accepts correlated completed Bash failures after repair, fresh check, and normal commit", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "agent-loop-job-"));
+	const commands = [
+		{ command: "printf 'broken\\n' > feature.txt && node verify.mjs" },
+		{ command: "printf 'partial\\n' > partial.txt; exit 7" },
+		{ command: "printf 'fixed\\n' > feature.txt && node verify.mjs" },
+		{ command: "npm test" },
+		{ command: "git add feature.txt partial.txt && git commit -m 'feat: repair feature'" },
+	];
+	const { tool } = setup(t, {
+		env: implementEnv("implement-agent-loop", {
+			TMPDIR: tmp,
+			FAKE_PI_AGENT_COMMANDS: JSON.stringify(commands),
+			FAKE_PI_AGENT_HOOK: "preserve-status",
+		}),
+	});
+	const { repo, git, ctx } = implementRepo();
+	const result = await run(tool, implement(), undefined, undefined, ctx);
+	const handback = text(result);
+
+	assert.equal(result.isError, false, handback);
+	assert.equal(result.details.implement.failed, false);
+	assert.deepEqual(result.details.implement.check.runs, ["pass: npm test"]);
+	assert.equal(git("log", "-1", "--format=%s"), "feat: repair feature");
+	assert.equal(git("show", "HEAD:feature.txt"), "fixed");
+	assert.equal(git("show", "HEAD:partial.txt"), "partial");
+	assert.equal(git("status", "--porcelain"), "");
+
+	const provenance = result.details.implement.outcome.provenance[0];
+	const failures = provenance.stopFacts.filter((fact) => fact.cause === "tool-failure");
+	assert.equal(failures.length, 2);
+	assert.ok(failures.every((fact) => fact.owner === "delegate-parent" && fact.effect === "completed"));
+	for (const failure of failures) {
+		const effect = provenance.toolEffects.find((fact) => fact.toolCallId === failure.toolCallId);
+		assert.equal(effect.toolName, "bash");
+		assert.equal(effect.effect, "completed");
+		assert.equal(effect.replaySafe, false);
+	}
+	assert.equal(provenance.complete, true);
+
+	const capture = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	assert.deepEqual(
+		capture.entries.map((entry) => entry.exitCode.value),
+		[1, 7],
+	);
+	assert.equal(capture.entries[0].command.rawArgsCommand.value.text, commands[0].command);
+	assert.equal(capture.entries[1].command.rawArgsCommand.value.text, commands[1].command);
+	assert.match(handback, /check ✓ `npm test`/);
+	assert.ok(existsSync(repo));
+});
+
+test("signal and timeout Bash failures remain unresolved after a fresh check and commit", async (t) => {
+	for (const [scenario, command, expectedExit] of [
+		["signal", "kill -TERM $$", 143],
+		["timeout", "sleep 2", undefined],
+	]) {
+		const tmp = mkdtempSync(join(TEST_HOME, "agent-loop-job-"));
+		const commands = [
+			{ command: "printf 'fixed\\n' > feature.txt" },
+			{ command, ...(scenario === "timeout" && { timeout: 0.05 }) },
+			{ command: "npm test" },
+			{ command: "git add feature.txt && git commit -m 'feat: interrupted command fixture'" },
+		];
+		const { tool } = setup(t, {
+			env: implementEnv("implement-agent-loop", { TMPDIR: tmp, FAKE_PI_AGENT_COMMANDS: JSON.stringify(commands) }),
+		});
+		const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+		assert.equal(result.isError, true, `${scenario}: ${text(result)}`);
+		assert.equal(result.details.implement.check.status, "pass");
+		assert.match(text(result), /acceptance withheld/);
+		const provenance = result.details.implement.outcome.provenance[0];
+		assert.equal(provenance.toolEffects[1].effect, "unknown", scenario);
+		assert.equal(provenance.stopFacts[0].cause, "tool-failure", scenario);
+		assert.equal(provenance.stopFacts[0].effect, "unknown", scenario);
+		if (expectedExit !== undefined) {
+			assert.equal(provenance.toolEffects[1].replaySafe, false);
+			const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+			assert.equal(artifact.entries[0].exitCode.value, expectedExit);
+		} else {
+			assert.equal(result.details.implement.outcome.failedToolCapture.path !== undefined, true);
+			const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+			assert.equal(artifact.entries[0].exitCode.state, "not-provided");
+		}
+	}
+});
+
+test("implement repairs a failed declared check and preserves its history through commit", async (t) => {
+	const tmp = mkdtempSync(join(TEST_HOME, "agent-loop-job-"));
+	const commands = [
+		{ command: "printf 'broken\\n' > feature.txt" },
+		{ command: "npm test" },
+		{ command: "printf 'fixed\\n' > feature.txt" },
+		{ command: "npm test" },
+		{ command: "git add feature.txt && git commit -m 'feat: repair declared check'" },
+	];
+	const { tool } = setup(t, {
+		env: implementEnv("implement-agent-loop", { TMPDIR: tmp, FAKE_PI_AGENT_COMMANDS: JSON.stringify(commands) }),
+	});
+	const { git, ctx } = implementRepo();
+	const result = await run(tool, implement(), undefined, undefined, ctx);
+	assert.equal(result.isError, false, text(result));
+	assert.equal(result.details.implement.check.status, "pass");
+	assert.deepEqual(result.details.implement.check.runs, ["fail: npm test", "pass: npm test"]);
+	assert.equal(git("log", "-1", "--format=%s"), "feat: repair declared check");
+	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	assert.equal(artifact.entries.length, 1);
+	assert.equal(artifact.entries[0].exitCode.value, 1);
+	assert.equal(artifact.entries[0].command.rawArgsCommand.value.text, "npm test");
+	assert.equal(result.details.implement.outcome.provenance[0].stopFacts[0].effect, "completed");
+});
+
+test("dropped and contradictory Bash status metadata cannot become accepted via a fresh green check", async (t) => {
+	for (const [hook, command, expectedExit, expectedComplete, captureFailure] of [
+		["drop-structured", "printf 'fixed\\n' > feature.txt; exit 7", undefined, true, true],
+		["contradict-success", "printf 'fixed\\n' > feature.txt; exit 7", 7, false, false],
+		["contradict-error", "printf 'fixed\\n' > feature.txt", 0, true, true],
+	]) {
+		const tmp = mkdtempSync(join(TEST_HOME, "agent-loop-job-"));
+		const commands = [
+			{ command },
+			{ command: "npm test" },
+			{ command: "git add feature.txt && git commit -m 'feat: hook metadata fixture'" },
+		];
+		const { tool } = setup(t, {
+			env: implementEnv("implement-agent-loop", {
+				TMPDIR: tmp,
+				FAKE_PI_AGENT_COMMANDS: JSON.stringify(commands),
+				FAKE_PI_AGENT_HOOK: hook,
+			}),
+		});
+		const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+		assert.equal(result.isError, true, `${hook}: ${text(result)}`);
+		assert.equal(result.details.implement.check.status, "pass");
+		assert.match(text(result), /acceptance withheld/);
+		const provenance = result.details.implement.outcome.provenance[0];
+		assert.equal(provenance.complete, expectedComplete);
+		assert.equal(provenance.toolEffects[0].effect, "unknown");
+		assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "unknown"));
+		if (captureFailure) {
+			const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+			if (expectedExit === undefined) assert.equal(artifact.entries[0].exitCode.state, "not-provided");
+			else assert.equal(artifact.entries[0].exitCode.value, expectedExit);
+		} else {
+			assert.equal(result.details.implement.outcome.failedToolCapture, undefined);
+			const details = readFileSync(result.details.implement.detailsPath, "utf8");
+			assert.match(details, /isError=false toolCallId=\S+ structuredContent\.exit_code=7/);
+		}
+	}
+});
+
 test("implement captures targeted failures while a later declared check passes", async (t) => {
 	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
 	const reference = scratch("referenced-output");
@@ -2774,11 +4271,11 @@ test("implement captures targeted failures while a later declared check passes",
 	});
 	const { ctx } = implementRepo();
 	const result = await run(tool, implement(), undefined, undefined, ctx);
-	assert.equal(result.isError, false, text(result));
-	assert.equal(result.details.implement.failed, false);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.failed, true);
 	assert.equal(result.details.implement.check.status, "pass");
 	assert.deepEqual(result.details.implement.check.runs, ["pass: npm test"]);
-	assert.equal(text(result).split("\n").length, 2, "successful handback keeps its two-line shape");
+	assert.match(text(result), /acceptance withheld/);
 
 	const capture = result.details.implement.outcome.failedToolCapture;
 	assert.equal(capture.status, "written");
@@ -2875,31 +4372,39 @@ test("provider failures without tool failures do not create diagnostic artifacts
 	);
 });
 
-test("implement aggregates failures across fallback attempts with distinct provenance", async (t) => {
+test("implement refuses fallback after a completed non-replay-safe Bash failure and preserves its evidence", async (t) => {
 	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
 	const { tool } = setup(t, {
 		config: POOL_SET,
 		env: implementEnv("implement-fallback-artifacts", { TMPDIR: tmp }),
 	});
-	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
-	assert.equal(result.isError, false, text(result));
-	assert.equal(result.details.implement.check.status, "pass");
+	const result = await run(
+		tool,
+		implement({ fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) }),
+		undefined,
+		undefined,
+		implementRepo().ctx,
+	);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.check.status, "fail");
+	assert.match(result.details.round1[0].fallbackBlockReason, /competing safety stop/);
+	const provenance = result.details.round1[0].provenance[0];
+	assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "completed"));
+	assert.equal(provenance.toolEffects[0].effect, "completed");
+	assert.equal(provenance.toolEffects[0].replaySafe, false);
+	assert.equal(provenance.providerRetry.owner, "pi-runtime");
 	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
-	assert.equal(artifact.entries.length, 2);
+	assert.equal(artifact.entries.length, 1);
 	assert.deepEqual(
 		artifact.entries.map((entry) => [entry.attempt.index, entry.attempt.requestedModel.text]),
-		[
-			[1, LUNA],
-			[2, OPUS],
-		],
+		[[1, LUNA]],
 	);
 	assert.equal(artifact.entries[0].exitCode.value, 3);
 	assert.equal(artifact.entries[0].command.effectiveCommand.state, "not-provided");
 	assert.equal(artifact.entries[0].command.effectiveCommand.value, null);
-	assert.equal(artifact.entries[1].exitCode.state, "not-provided");
 	assert.deepEqual(
 		artifact.entries.map((entry) => entry.toolName.text),
-		["bash", "read"],
+		["bash"],
 	);
 });
 
@@ -2939,17 +4444,17 @@ test("implement cancellation flushes failures and reports correlation anomalies"
 	assert.ok(artifact.capture.anomalies["malformed-event"] >= 1);
 });
 
-test("capture storage failure is visible without changing a passing gate or two-line handback", async (t) => {
+test("capture storage failure is visible while unknown effects still withhold acceptance", async (t) => {
 	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
 	const { tool } = setup(t, {
 		env: implementEnv("implement-artifacts", { TMPDIR: tmp, FAKE_PI_BLOCK_ARTIFACT: "1" }),
 	});
 	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
-	assert.equal(result.isError, false, text(result));
-	assert.equal(result.details.implement.failed, false);
+	assert.equal(result.isError, true, text(result));
+	assert.equal(result.details.implement.failed, true);
 	assert.equal(result.details.implement.check.status, "pass");
-	assert.equal(text(result).split("\n").length, 2, "the warning stays inline in the successful handback");
 	assert.match(text(result), /⚠ capture unavailable:/);
+	assert.match(text(result), /acceptance withheld/);
 	const details = readFileSync(result.details.implement.detailsPath, "utf8");
 	assert.match(details, /capture unavailable:/);
 	const id = result.details.implement.id;
@@ -2983,12 +4488,18 @@ test("implement: work left uncommitted becomes a WIP commit on the branch and an
 	const id = text(res).match(/^✗ (im\d+) /)[1];
 	assert.equal(git("log", "-1", "--format=%s"), `WIP(delegate ${id}): left uncommitted by the worker`);
 	assert.match(text(res), /^✗ WIP \w+ on goal\/x \(left uncommitted by the worker\): left\.txt$/m);
+	assert.deepEqual(res.details.implement.delivered, {
+		check: "pass",
+		commit: "none",
+		wip: true,
+		integrity: "clear",
+	});
 	assert.equal(git("status", "--porcelain"), "");
 });
 
 test("implement Bash content freshness ignores Git metadata but stales mutations until a passing rerun", async (t) => {
 	for (const [scenario, expectedStatus, expectedContent] of [
-		["unchanged", "pass", "checked\n"],
+		["unchanged", "pass", "fixed\n"],
 		["stale", "stale", "mutated\n"],
 		["rerun", "pass", "mutated\n"],
 	]) {
@@ -2999,6 +4510,7 @@ test("implement Bash content freshness ignores Git metadata but stales mutations
 		const result = await run(tool, implement(), undefined, undefined, ctx);
 		const handback = text(result);
 		assert.equal(result.details.implement.check.status, expectedStatus, scenario);
+		assert.equal(result.details.implement.delivered.check, expectedStatus, scenario);
 		assert.equal(
 			execFileSync("git", ["-C", repo, "show", "HEAD:feature.txt"], { encoding: "utf8" }),
 			expectedContent,
@@ -3009,6 +4521,12 @@ test("implement Bash content freshness ignores Git metadata but stales mutations
 			assert.equal(result.isError, true, handback);
 			assert.match(handback, /check stale \(checkout content changed after the last check\)/);
 			assert.match(handback, /^✗ check stale: checkout content changed after the last check$/m);
+		} else if (scenario === "rerun") {
+			assert.equal(result.isError, false, handback);
+			assert.match(handback, /check ✓/);
+			assert.doesNotMatch(handback, /acceptance withheld/);
+			const provenance = result.details.implement.outcome.provenance[0];
+			assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "completed"));
 		} else {
 			assert.equal(result.isError, false, handback);
 			assert.match(handback, /check ✓/);
@@ -3027,6 +4545,7 @@ test("implement Bash binary-content collision stales a committed tree through th
 	const handback = text(result);
 
 	assert.equal(result.details.implement.check.status, "stale", handback);
+	assert.equal(result.details.implement.delivered.check, "stale", handback);
 	assert.equal(result.isError, true, handback);
 	assert.match(handback, /check stale \(checkout content changed after the last check\)/);
 	assert.deepEqual(execFileSync("git", ["-C", repo, "show", "HEAD^:a"]), Buffer.from("x"));
@@ -3035,7 +4554,13 @@ test("implement Bash binary-content collision stales a committed tree through th
 		execFileSync("git", ["-C", repo, "show", "HEAD:a"]),
 		Buffer.from("7800620066696c6500300079", "hex"),
 	);
-	assert.deepEqual(git("ls-tree", "-r", "--name-only", "HEAD").split("\n").sort(), ["a", "package.json", "sub/a.txt"]);
+	assert.deepEqual(git("ls-tree", "-r", "--name-only", "HEAD").split("\n").sort(), [
+		"a",
+		"feature.txt",
+		"package.json",
+		"sub/a.txt",
+		"verify.mjs",
+	]);
 	assert.equal(git("status", "--porcelain"), "");
 });
 
@@ -3043,7 +4568,12 @@ test("implement check freshness fails closed when a passing check cannot be snap
 	const root = join(TEST_HOME, "missing-checkout");
 	const job = { repoRoot: root, check: { command: CHECK, status: "none", runs: [] } };
 	const calls = new Map([["check", { tool: "bash", command: CHECK }]]);
-	trackCheck(job, calls, { toolCallId: "check", isError: false }, root);
+	trackCheck(
+		job,
+		calls,
+		{ toolCallId: "check", isError: false, result: { structuredContent: { exit_code: 0 } } },
+		root,
+	);
 	assert.equal(job.check.status, "stale");
 	assert.match(job.check.staleReason, /could not be verified/);
 	assert.match(job.check.runs[0], /content snapshot unavailable/);
@@ -3141,6 +4671,15 @@ test("implement: a second job in the same repo is refused; the main session's wr
 	await workerStarted(repo);
 	const second = await run(tool, implement(), undefined, undefined, ctx);
 	assert.match(text(second), /^implement job im\d+ \(pid \d+\) is already writing in /);
+	assert.deepEqual(second.details.stopFacts[0], {
+		owner: "implement",
+		jobId: second.details.stopFacts[0].jobId,
+		attempt: 1,
+		toolCallId: "call",
+		cause: "lock-refusal",
+		resource: "checkout-lock",
+		effect: "denied",
+	});
 	const hook = handlers.tool_call;
 	const outside = mkdtempSync(join(TEST_HOME, "outside-"));
 	const blocked = await hook({ toolName: "edit", input: { path: join(repo, "sub", "a.txt") } }, { cwd: outside });
@@ -3206,6 +4745,8 @@ test("implement background cancel: SIGTERM first, WIP commit, lock gone, report 
 	const content = messages[0].message.content;
 	assert.match(content, /^Background delegate job bg1 failed:\n\n✗ im\d+ goal\/x /);
 	assert.match(content, /^✗ stopped: cancelled$/m);
+	const details = readFileSync(content.match(/Details: (\S+)/)[1], "utf8");
+	assert.match(details, /delegate-parent job=im\d+ attempt=1 cause=cancelled resource=cancellation effect=unknown/);
 	assert.match(git("log", "-1", "--format=%s"), /^WIP\(delegate im\d+\): stopped: cancelled$/);
 	assert.ok(!existsSync(lock));
 });
@@ -3273,26 +4814,61 @@ test("implement worker env: fences, parent, remote and gh cut-offs, tools, appro
 
 test("implement refuses runs[].model and runs[].thinking: it uses the worker pool", async (t) => {
 	const { tool } = setup(t, { config: POOL_SET, env: implementEnv("implement-commit") });
-	const { ctx, lock } = implementRepo();
+	const { ctx, lock, git } = implementRepo();
 	for (const r of [{ model: OPUS }, { thinking: "low" }, { model: LUNA, thinking: "max" }]) {
 		const res = await run(tool, implement({ runs: [r] }), undefined, undefined, ctx);
 		assert.equal(res.isError, true);
 		assert.equal(text(res), "implement uses the worker pool in delegate.json; set models there");
 		assert.ok(!existsSync(lock), "refused before prepare");
 	}
+	const head = git("rev-parse", "HEAD");
 	const plain = await run(tool, implement({ runs: [{}] }), undefined, undefined, ctx);
-	assert.match(text(plain), /^✗ im\d+ goal\/x .*\[gpt-6-luna @max /, "an empty run entry still runs on the pool");
+	assert.equal(plain.isError, false, text(plain));
+	assert.match(text(plain), /^✓ im\d+ goal\/x .*; check ✓ `npm test` \[gpt-6-luna @max /);
+	assert.equal(plain.details.round1.length, 1);
+	assert.deepEqual(plain.details.round1[0].requested, { model: LUNA, thinking: "max" });
+	assert.deepEqual(plain.details.implement.delivered, {
+		check: "pass",
+		commit: "normal",
+		wip: false,
+		integrity: "clear",
+	});
+	const facts = plain.details.implement;
+	assert.equal(facts.failed, false);
+	assert.deepEqual(facts.problems, []);
+	assert.equal(facts.outcome.failure, undefined);
+	assert.equal(facts.wip, undefined);
+	assert.equal(facts.base, head);
+	assert.equal(facts.tip, git("rev-parse", "HEAD"));
+	assert.notEqual(facts.tip, head);
+	assert.equal(facts.commitCount, 1);
+	assert.equal(facts.check.status, "pass");
+	assert.deepEqual(facts.check.runs, ["pass: npm test"]);
+	assert.ok(!existsSync(lock), "successful run releases the lock");
 });
 
-test("implement follows the worker pool in order, with each entry's thinking", async (t) => {
+test("implement dispatches only the first worker pool candidate", async (t) => {
+	const marker = scratch("implement-first-candidate-marker");
 	const { tool } = setup(t, {
 		config: POOL_SET,
-		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
+		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker }),
 	});
 	const { ctx } = implementRepo();
 	const res = await run(tool, implement(), undefined, undefined, ctx);
+	assert.equal(res.isError, true);
+	assert.equal(res.details.round1[0].requested.model, LUNA);
+	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map(JSON.parse)
+			.map((call) => call.model),
+		[LUNA],
+	);
 	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
-	assert.match(details, new RegExp(`^${LUNA} @max failed \\(exit 1: 429 .*; next ${OPUS} @max$`, "m"));
+	assert.match(details, /^# im\d+ .* \[gpt-6-luna @max/m);
+	assert.doesNotMatch(details, /claude-opus-5-5/);
 });
 
 test("implement gets its own time limit; the wrap-up deadline is 80% of it", async (t) => {
@@ -3302,25 +4878,32 @@ test("implement gets its own time limit; the wrap-up deadline is 80% of it", asy
 	const res = await run(tool, implement(), undefined, undefined, ctx);
 	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
 	const budget = JSON.parse(details.match(/^\{"tools".*\}$/m)[0]);
-	assert.equal(LIMITS.implementTimeoutSecs, 1800);
+	assert.equal(LIMITS.implementTimeoutSecs, 2700);
 	assert.equal(LIMITS.costCapUsd, 5);
 	assert.equal(budget.tools, null);
 	assert.ok(Number.isFinite(budget.deadline));
 	assert.ok(Number.isFinite(budget.cost));
 	assert.equal(budget.cost, 4);
-	assert.ok(budget.deadline >= before + 1800 * 800 && budget.deadline <= Date.now() + 1800 * 800);
+	assert.ok(budget.deadline >= before + 2700 * 800 && budget.deadline <= Date.now() + 2700 * 800);
 });
 
-test("implement: no --approve on a fallback attempt", async (t) => {
+test("implement sends --approve only to its first trusted candidate", async (t) => {
+	const marker = scratch("implement-approved-first-candidate-marker");
 	const { tool } = setup(t, {
 		config: POOL_SET,
-		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA }),
+		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker }),
 	});
 	const { ctx } = implementRepo();
 	const res = await run(tool, implement(), undefined, undefined, { ...ctx, isProjectTrusted: () => true });
-	const details = readFileSync(text(res).match(/Details: (\S+)/)[1], "utf8");
-	assert.match(details, /approve=no/, "the fallback attempt");
-	assert.match(details, /^openai-codex\/gpt-6-luna @max failed \(exit 1: 429 /m);
+	assert.equal(res.isError, true);
+	const launches = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
+	assert.equal(launches.length, 1);
+	assert.equal(launches[0].model, LUNA);
+	assert.equal(
+		launches[0].approve,
+		true,
+		"the coordinator's trust decision still applies to the selected first candidate",
+	);
 });
 
 test("implement workers cannot write inside the git dir and stop when their coordinator is gone", async (t) => {

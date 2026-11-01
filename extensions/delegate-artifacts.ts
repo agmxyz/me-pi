@@ -11,6 +11,15 @@ import {
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
+/**
+ * Caps by scope: `maxTextBytes` bounds one text field or summary-node byte budget; `maxFailedCalls` and
+ * `maxUnmatchedStarts` bound retained records; `maxArtifactBytes` bounds the whole written artifact;
+ * `maxReferencesPerCall` and `maxReferenceBytes` bound one record's childReferences list and each reference;
+ * `maxDiagnosticsPerCall` bounds one record's childDiagnostics list and is also reused in delegate.ts as the
+ * attempt-wide cap on contradictory Bash success diagnostics. The module-local `MAX_CALL_ID_BYTES` bounds a
+ * tool-call ID independently of these artifact caps. Anomaly `record-cap` counts whole-record omissions at the
+ * collector's limits; `aggregate-cap` counts per-record list omissions and whole-artifact fitting.
+ */
 export const FAILED_TOOL_ARTIFACT_LIMITS = {
 	maxFailedCalls: 100,
 	maxUnmatchedStarts: 100,
@@ -79,6 +88,7 @@ export type FailedToolCallInput = {
 		outputText?: string;
 		error?: string;
 		childDiagnostics?: string | readonly string[];
+		statusDiagnostics?: readonly string[];
 		fullOutputPath?: string;
 		childDiagnosticReferences?: readonly string[];
 		summary?: unknown;
@@ -99,6 +109,7 @@ export type FailedToolArtifactEntry = {
 	output: TextField;
 	error: TextField;
 	childDiagnostics: TextList;
+	statusDiagnostics?: ArtifactText[];
 	references: {
 		fullOutputPathState: "provided" | "not-provided";
 		childDiagnosticReferencesState: "provided" | "not-provided";
@@ -214,6 +225,11 @@ function boundedText(text: string, maxBytes = TEXT_CAP): ArtifactText {
 		bytesRetained: Buffer.byteLength(retained, "utf8"),
 		truncated: retained !== redacted,
 	};
+}
+
+/** Bounded, redacted call identity for diagnostics that must correlate outside the failed-call artifact. */
+export function boundedCallId(callId: string): ArtifactText {
+	return boundedText(callId, MAX_CALL_ID_BYTES);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -348,6 +364,7 @@ function textValues(
 		addField(entry.error, "error");
 		addField(entry.output, "output");
 		for (const item of entry.childDiagnostics.items) values.push({ value: item, group: "diagnostics" });
+		for (const item of entry.statusDiagnostics ?? []) values.push({ value: item, group: "diagnostics" });
 		for (const item of entry.references.items) values.push({ value: item.value, group: "references" });
 		addField(entry.resultSummary, "summary");
 	}
@@ -636,6 +653,14 @@ function makeEntry(
 		exitCode: { state: exitCode === null ? "not-provided" : "provided", value: exitCode },
 		output,
 		error,
+		...(Array.isArray(result?.statusDiagnostics)
+			? {
+					statusDiagnostics: result.statusDiagnostics
+						.slice(0, 6)
+						.filter((value): value is string => typeof value === "string")
+						.map((value) => boundedText(value, 256)),
+				}
+			: {}),
 		childDiagnostics: {
 			state:
 				diagnosticsField.present &&

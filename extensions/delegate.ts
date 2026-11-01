@@ -4,12 +4,13 @@
  *
  * Workers are `pi --mode json -p` child processes with read, search, and `Skill` tools (plus web tools for
  * research, challenge, or `web: true`); the main session does every edit, check, and commit. The models
- * come from ordered scout and worker pools in ~/.pi/agent/delegate.json. In workers this extension only blocks
+ * come from ordered scout, worker, and optional review pools in ~/.pi/agent/delegate.json. In workers this extension only blocks
  * reads of likely secret paths (see secretPathIn) and, with `output: true`, writes outside the worker's own
  * temp directory (see writeBlockedIn), and blocks tools once the wrap-up budget is spent (see budgetSpent).
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
@@ -27,6 +28,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type ArtifactWriteResult,
+	boundedCallId,
+	FAILED_TOOL_ARTIFACT_LIMITS,
 	FailedToolArtifactCollector,
 	type FailedToolCallInput,
 } from "./delegate-artifacts.ts";
@@ -36,6 +39,7 @@ import {
 	type Facts,
 	finish as finishImplement,
 	formatHandback,
+	ImplementLockRefusal,
 	isCheckRun,
 	nextImplementId,
 	prepare as prepareImplement,
@@ -43,6 +47,16 @@ import {
 	snapshotContent,
 	workerEnv,
 } from "./delegate-implement.ts";
+import {
+	type AttemptProvenance,
+	isProviderRetryFact,
+	isStopFact,
+	type ProviderRetryFact,
+	type StopFact,
+	type StopResource,
+	TOOL_PROVENANCE_DETAIL_KEY,
+	type ToolEffectFact,
+} from "./delegate-provenance.ts";
 import {
 	type ActivityWidgetRow,
 	activityWidget,
@@ -54,20 +68,20 @@ import {
 	renderCall,
 	renderResult,
 } from "./delegate-render.ts";
-import { gitTreeWrite, workerRisk } from "./guard.ts";
+import { GUARD_STOP_EVENT, gitTreeWrite, workerRisk } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
 export const LIMITS = {
 	scoutTimeoutSecs: 300,
 	timeoutSecs: 900,
-	implementTimeoutSecs: 1800,
+	implementTimeoutSecs: 2700,
 	costCapUsd: 5,
 	exitGraceMs: 1000,
 	// implement: SIGTERM first, so Pi stops its bash commands before finish commits WIP.
 	termGraceMs: 3000,
 	// Wrap-up budget, enforced inside the worker: past it, tool calls are blocked so the model answers
 	// before a hard limit kills it without one.
-	scoutToolCalls: 30,
+	scoutToolCalls: 60,
 	wrapUpShare: 0.8,
 };
 const MAX_RUNS = 4;
@@ -251,6 +265,13 @@ export function budgetSpent(budget: Budget, calls: number, cost: number, now = D
 	return undefined;
 }
 
+function budgetResource(budget: Budget, calls: number, cost: number, now = Date.now()): StopResource | undefined {
+	if (budget.tools !== null && calls > budget.tools) return "tool-calls";
+	if (now >= budget.deadline) return "tool-time";
+	if (cost >= budget.cost) return "tool-cost";
+	return undefined;
+}
+
 const MAX_LISTED = 50;
 
 /**
@@ -278,6 +299,9 @@ interface Role {
 interface Job extends Role {
 	role: string;
 	output: boolean;
+	jobId: string;
+	// Skills the worker may see and load; undefined means all.
+	skills?: string[];
 	// implement: its checkout job, and whether the main session trusts this project (for `--approve`).
 	implement?: {
 		job: Checkout;
@@ -345,6 +369,30 @@ const workerSystemPrompt = ({ role, answer, implement }: Job, outDir?: string) =
 			: ""
 	}`;
 
+// Policy sections a worker skips, marked in their `## ` heading; a section runs to the next `## ` heading.
+const policySection = (marker: string) =>
+	new RegExp(`^## [^\\n]*\\(${marker}\\)[^\\n]*\\n(?:(?!## )[^\\n]*(?:\\n|$))*`, "gm");
+const COORDINATOR_ONLY = policySection("coordinator only");
+const COORDINATOR_AND_IMPLEMENT = policySection("coordinator and implement only");
+
+/**
+ * Drops from a worker's prompt what it cannot use: coordinator-only policy for every worker, policy for
+ * writers when the worker only reads, and skills outside `skills` (undefined keeps all). Mutates `options`
+ * in place, so the `Skill` tool, which holds the same skills array, serves only what the prompt lists.
+ */
+function scopeWorkerPrompt(
+	options: { contextFiles?: { content: string }[]; skills?: { name: string }[] },
+	{ implement, skills }: { implement: boolean; skills?: string[] },
+) {
+	for (const file of options.contextFiles ?? []) {
+		file.content = file.content.replace(COORDINATOR_ONLY, "");
+		if (!implement) file.content = file.content.replace(COORDINATOR_AND_IMPLEMENT, "");
+	}
+	if (!skills || !options.skills) return;
+	const kept = options.skills.filter((s) => skills.includes(s.name));
+	options.skills.splice(0, options.skills.length, ...kept);
+}
+
 // --- Model pools ----------------------------------------------------------------------------------
 
 export interface ModelEntry {
@@ -353,7 +401,7 @@ export interface ModelEntry {
 }
 
 export interface ModelPool {
-	/** Ordered fallbacks; each model has an independent thinking level. */
+	/** Ordered candidates; dispatch selects only the first, with cross-model fallback deferred. */
 	models: ModelEntry[];
 	/** Thinking for models without an entry (the session model when the pool is empty); omitted means the main session's level. */
 	thinking?: string;
@@ -363,6 +411,9 @@ export interface ModelSet {
 	version: 3;
 	scout: ModelPool;
 	worker: ModelPool;
+	review?: ModelPool;
+	/** Skills read-only workers may see and load; omitted means all. `implement` always sees all. */
+	readOnlySkills?: string[];
 }
 
 const defaultModelSet = (): ModelSet => ({
@@ -466,9 +517,11 @@ function validModelSet(raw: any, where: string): ModelSet {
 	if (raw.version === undefined) return legacyModelSet(raw, where);
 	if (raw.version !== 2 && raw.version !== 3)
 		throw new Error(`${where}: unsupported version ${JSON.stringify(raw.version)} (expected 2 or 3)`);
-	const unknown = Object.keys(raw).filter((k) => !["version", "scout", "worker"].includes(k));
+	const allowed =
+		raw.version === 2 ? ["version", "scout", "worker"] : ["version", "scout", "worker", "review", "readOnlySkills"];
+	const unknown = Object.keys(raw).filter((k) => !allowed.includes(k));
 	if (unknown.length)
-		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: version, scout, worker)`);
+		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: ${allowed.join(", ")})`);
 	if (raw.version === 2) {
 		return {
 			version: 3,
@@ -480,7 +533,16 @@ function validModelSet(raw: any, where: string): ModelSet {
 		version: 3,
 		scout: validV3Pool(raw.scout, `${where}.scout`, true),
 		worker: validV3Pool(raw.worker, `${where}.worker`, false),
+		...(raw.review !== undefined ? { review: validV3Pool(raw.review, `${where}.review`, false) } : {}),
+		...(raw.readOnlySkills !== undefined ? { readOnlySkills: skillNames(raw.readOnlySkills, where) } : {}),
 	};
+}
+
+function skillNames(value: unknown, where: string): string[] {
+	if (!Array.isArray(value) || value.some((s) => typeof s !== "string" || !s.trim()))
+		throw new Error(`${where}.readOnlySkills must be an array of skill names`);
+	if (new Set(value).size !== value.length) throw new Error(`${where}.readOnlySkills lists a skill twice`);
+	return value;
 }
 
 interface RunSpec {
@@ -494,7 +556,7 @@ export interface ResolvedCandidate {
 }
 
 export interface ResolvedRun {
-	/** Candidate models in attempt order; an undefined model means Pi's session model. */
+	/** Role selection snapshot; only its first candidate is dispatched. An undefined model means Pi's session model. */
 	candidates: ResolvedCandidate[];
 	model?: string;
 	thinking: string;
@@ -509,17 +571,18 @@ export function resolveRun(
 	sessionThinking?: string,
 ): ResolvedRun {
 	const scout = role === "scout";
-	const pool = scout ? set.scout : set.worker;
+	const poolName = scout ? "scout" : role === "review" && set.review ? "review" : "worker";
+	const pool = set[poolName] ?? set.worker;
 	// Models without an entry: the pool's level, else the main session's.
 	const unlisted = () => {
 		const thinking = run.thinking ?? pool.thinking ?? sessionThinking;
 		if (!thinking)
 			throw new Error(
-				`the main session's thinking level is unknown; set ${scout ? "scout" : "worker"}.thinking in ${configPath()} or pass runs[].thinking`,
+				`the main session's thinking level is unknown; set ${poolName}.thinking in ${configPath()} or pass runs[].thinking`,
 			);
 		return thinking;
 	};
-	const configuredEntries = [...set.scout.models, ...set.worker.models];
+	const configuredEntries = [...set.scout.models, ...set.worker.models, ...(set.review?.models ?? [])];
 	const candidates = run.model
 		? [
 				{
@@ -542,15 +605,6 @@ export function resolveRun(
 	return { candidates: withOverrides, model: first.model, thinking: first.thinking };
 }
 
-function resumeRun(base: ResolvedRun, result: RunResult): ResolvedRun {
-	const index = base.candidates.findIndex(
-		(candidate) => candidate.model === result.requested.model && candidate.thinking === result.requested.thinking,
-	);
-	const candidates = base.candidates.slice(index < 0 ? 0 : index);
-	const first = candidates[0];
-	return { candidates, model: first.model, thinking: first.thinking };
-}
-
 function initialActivity(
 	runs: ResolvedRun[],
 	personas: Persona[],
@@ -565,7 +619,6 @@ function initialActivity(
 			thinking: candidate.thinking,
 			startedAt,
 			active: true,
-			fallbacks: 0,
 			persona: personas[index],
 		};
 	});
@@ -616,14 +669,6 @@ function piCommand(args: string[]): { command: string; args: string[] } {
 	return { command: process.execPath, args };
 }
 
-export interface FallbackAttempt {
-	model?: string;
-	thinking: string;
-	failure: string;
-	nextModel?: string;
-	nextThinking: string;
-}
-
 export interface RunResult {
 	/** The model and thinking this run was started with (the model id Pi reports may lack the provider). */
 	requested: { model?: string; thinking: string };
@@ -635,8 +680,9 @@ export interface RunResult {
 	model?: string;
 	output: string;
 	failure?: string;
-	fallbackAttempts?: FallbackAttempt[];
-	fallbackMessage?: string;
+	fallbackBlockReason?: string;
+	provenance?: AttemptProvenance[];
+	toolCallCount?: number;
 	turns: number;
 	usage: Record<string, any>;
 	tools: string[];
@@ -659,8 +705,11 @@ function addUsage(total: Record<string, any>, usage: Record<string, any> | undef
 const costOf = (usage: Record<string, any>): number => usage.cost?.total ?? 0;
 
 interface AttemptBudget {
-	timeoutMs: number;
-	costCapUsd: number;
+	hardDeadline: number;
+	hardCostCapUsd: number;
+	toolDeadline: number;
+	toolCostCapUsd: number;
+	toolCalls: number | null;
 }
 
 type CapturedToolCall = {
@@ -688,6 +737,46 @@ function eventField(record: EventRecord | undefined, key: string): { present: bo
 
 function firstEventField(...fields: { present: boolean; value?: unknown }[]): { present: boolean; value?: unknown } {
 	return fields.find((field) => field.present) ?? { present: false };
+}
+
+// Only the canonical status authorizes completion; known aliases can veto it, never replace it.
+function bashStatuses(resultValue: unknown): { exitCode?: number; diagnostics: string[] } {
+	const result = eventRecord(resultValue);
+	const structured = eventRecord(result?.structuredContent);
+	const details = eventRecord(result?.details);
+	const fields = [
+		["structuredContent.exit_code", eventField(structured, "exit_code")],
+		["structuredContent.exitCode", eventField(structured, "exitCode")],
+		["details.exit_code", eventField(details, "exit_code")],
+		["details.exitCode", eventField(details, "exitCode")],
+		["exit_code", eventField(result, "exit_code")],
+		["exitCode", eventField(result, "exitCode")],
+	] as const;
+	const canonical = fields[0][1].value;
+	const valid =
+		fields[0][1].present &&
+		Number.isSafeInteger(canonical) &&
+		fields
+			.slice(1)
+			.every(([, field]) => !field.present || (Number.isSafeInteger(field.value) && field.value === canonical));
+	return {
+		...(valid ? { exitCode: canonical as number } : {}),
+		diagnostics: fields
+			.filter(([, field]) => field.present)
+			.map(([name, field]) => {
+				const value = field.value;
+				if (typeof value === "number") return `${name}=${value}`;
+				// Only short numeric strings are useful status evidence; never serialize arbitrary metadata.
+				if (typeof value === "string")
+					return `${name}=string:${value.length <= 3 && /^\d+$/.test(value) ? value : "[REDACTED]"}`;
+				if (typeof value === "boolean" || value === null) return `${name}=${String(value)}`;
+				return `${name}=${typeof value}`;
+			}),
+	};
+}
+
+function bashExitCode(resultValue: unknown): number | undefined {
+	return bashStatuses(resultValue).exitCode;
 }
 
 function toolResultText(result: EventRecord | undefined): string | undefined {
@@ -740,6 +829,9 @@ function failedToolResult(resultValue: unknown, toolName: string | undefined): F
 		...(structuredOutput !== undefined || content !== undefined ? { outputText: structuredOutput ?? content } : {}),
 		...(error.present ? { error: error.value as string } : {}),
 		...(diagnostic.present ? { childDiagnostics: diagnostic.value as string | readonly string[] } : {}),
+		...(toolName === "bash" && bashStatuses(resultValue).diagnostics.length
+			? { statusDiagnostics: bashStatuses(resultValue).diagnostics }
+			: {}),
 		...(fullOutputPath.present ? { fullOutputPath: fullOutputPath.value as string } : {}),
 		...(diagnosticReferences.present
 			? { childDiagnosticReferences: diagnosticReferences.value as readonly string[] }
@@ -752,7 +844,7 @@ function failedToolResult(resultValue: unknown, toolName: string | undefined): F
 export function trackCheck(
 	job: Checkout,
 	calls: Map<string, { tool: string; command: string }>,
-	event: { toolCallId?: unknown; isError?: unknown },
+	event: { toolCallId?: unknown; isError?: unknown; result?: unknown },
 	cwd: string,
 ): void {
 	const call = calls.get(String(event.toolCallId));
@@ -769,9 +861,17 @@ export function trackCheck(
 		if (isCheckRun(call.command, check.command, cwd)) {
 			job.contentBaseline = undefined;
 			delete check.staleReason;
-			if (event.isError) {
+			const exitCode = bashExitCode(event.result);
+			if (event.isError === true || (exitCode !== undefined && exitCode !== 0)) {
 				check.status = "fail";
 				check.runs.push(`fail: ${call.command}`);
+				return;
+			}
+			if (event.isError !== false || exitCode !== 0) {
+				stale(
+					"declared Bash check result lacks a canonical successful exit status",
+					`status unavailable or contradictory: ${call.command}`,
+				);
 				return;
 			}
 			try {
@@ -825,11 +925,20 @@ function runWorkerAttempt(
 ): Promise<RunResult> {
 	const start = Date.now();
 	const { role, web } = job;
+	const provenance: AttemptProvenance = {
+		jobId: job.jobId,
+		attempt: attemptIndex,
+		complete: true,
+		stopFacts: [],
+		toolEffects: [],
+	};
 	const result: RunResult = {
 		requested: run,
 		web,
 		outDir,
 		output: "",
+		provenance: [provenance],
+		toolCallCount: 0,
 		turns: 0,
 		usage: {},
 		tools: [],
@@ -843,14 +952,24 @@ function runWorkerAttempt(
 	if (implement) args.push(approve ? "--approve" : "--no-approve");
 	args.push("--thinking", run.thinking, "--append-system-prompt", workerSystemPrompt(job, result.outDir));
 	if (run.model) args.push("--model", run.model);
-	const { timeoutMs, costCapUsd } = budget;
+	const timeoutMs = Math.max(0, budget.hardDeadline - start);
 
 	return new Promise((done) => {
-		if (signal.aborted)
+		if (signal.aborted) {
+			const sessionEnded = signal.reason === SESSION_ENDED;
+			provenance.stopFacts.push({
+				owner: "delegate-parent",
+				jobId: job.jobId,
+				attempt: attemptIndex,
+				cause: sessionEnded ? "session-ended" : "cancelled",
+				resource: "cancellation",
+				effect: "not-started",
+			});
 			return done({
 				...result,
-				failure: signal.reason === SESSION_ENDED ? "session ended before start" : "cancelled before start",
+				failure: sessionEnded ? "session ended before start" : "cancelled before start",
 			});
+		}
 		const { command, args: argv } = piCommand(args);
 		// Detached: the worker leads its own process group, so one SIGKILL stops its children too.
 		const proc = spawn(command, argv, {
@@ -862,10 +981,13 @@ function runWorkerAttempt(
 				ME_PI_RUN: "1",
 				ME_PI_ROLE: role,
 				ME_PI_OUTPUT_DIR: result.outDir ?? "",
+				ME_PI_SKILLS: job.skills ? JSON.stringify(job.skills) : "",
+				ME_PI_DELEGATE_JOB_ID: job.jobId,
+				ME_PI_DELEGATE_ATTEMPT: String(attemptIndex),
 				ME_PI_BUDGET: JSON.stringify({
-					tools: role === "scout" ? LIMITS.scoutToolCalls : null,
-					deadline: start + LIMITS.wrapUpShare * timeoutMs,
-					cost: LIMITS.wrapUpShare * costCapUsd,
+					tools: budget.toolCalls,
+					deadline: budget.toolDeadline,
+					cost: budget.toolCostCapUsd,
 				} satisfies Budget),
 			}),
 		});
@@ -881,6 +1003,14 @@ function runWorkerAttempt(
 		const calls = new Map<string, { tool: string; command: string }>();
 		const captureCalls = new Map<string, CapturedToolCall[]>();
 		const anonymousCaptureCalls: CapturedToolCall[] = [];
+		const activeEffects = new Map<string, ToolEffectFact[]>();
+		const seenToolCallIds = new Set<string>();
+		// Separate from failed-tool artifacts: these are owner-reported successes with contradictory statuses.
+		// The attempt-wide cap reuses maxDiagnosticsPerCall; each artifact record has its own childDiagnostics cap.
+		const contradictorySuccesses: string[] = [];
+		let omittedContradictorySuccesses = 0;
+		let latestAssistantError: { provider: string; model: string; api: string } | undefined;
+		const replaySafeReadTools = new Set(["read", "grep", "find", "ls", "Skill"]);
 
 		let termTimer: NodeJS.Timeout | undefined;
 		let progressTimer: NodeJS.Timeout | undefined;
@@ -934,7 +1064,6 @@ function runWorkerAttempt(
 				return;
 			}
 			const callsForId = captureCalls.get(toolCallId) ?? [];
-			if (callsForId.length) collector.noteAnomaly("duplicate-tool-call-id");
 			callsForId.push(call);
 			captureCalls.set(toolCallId, callsForId);
 		};
@@ -957,6 +1086,16 @@ function runWorkerAttempt(
 			const endedToolName = typeof event.toolName === "string" ? event.toolName : undefined;
 			if (call?.toolName && endedToolName && call.toolName !== endedToolName)
 				collector.noteAnomaly("malformed-event");
+			if (event.isError === false && (call?.toolName ?? endedToolName) === "bash") {
+				const status = bashStatuses(event.result);
+				if (status.exitCode !== 0 && status.diagnostics.length) {
+					if (contradictorySuccesses.length < FAILED_TOOL_ARTIFACT_LIMITS.maxDiagnosticsPerCall) {
+						const bounded = boundedCallId(call?.toolCallId ?? id ?? "(missing)");
+						const idText = bounded.truncated ? `${bounded.text} [truncated]` : bounded.text;
+						contradictorySuccesses.push(`isError=false toolCallId=${idText} ${status.diagnostics.join("; ")}`);
+					} else omittedContradictorySuccesses++;
+				}
+			}
 			if (event.isError !== true) return;
 			const endedAt = Date.now();
 			const eventResult = eventRecord(event.result);
@@ -996,9 +1135,185 @@ function runWorkerAttempt(
 			captureCalls.clear();
 			anonymousCaptureCalls.length = 0;
 		};
-		const stop = (reason: string) => {
+		const startToolEffect = (event: EventRecord) => {
+			result.toolCallCount = (result.toolCallCount ?? 0) + 1;
+			const toolCallId = typeof event.toolCallId === "string" && event.toolCallId ? event.toolCallId : "";
+			const toolName = typeof event.toolName === "string" ? event.toolName : "unknown";
+			if (!toolCallId || toolName === "unknown") provenance.complete = false;
+			if (toolCallId && seenToolCallIds.has(toolCallId)) {
+				provenance.complete = false;
+				implement?.artifacts.noteAnomaly("duplicate-tool-call-id");
+				provenance.stopFacts.push({
+					owner: "delegate-parent",
+					jobId: job.jobId,
+					attempt: attemptIndex,
+					toolCallId,
+					cause: "tool-failure",
+					resource: "tool",
+					effect: "unknown",
+				});
+			}
+			if (toolCallId) seenToolCallIds.add(toolCallId);
+			const fact: ToolEffectFact = {
+				owner: "pi-runtime",
+				jobId: job.jobId,
+				attempt: attemptIndex,
+				toolCallId: toolCallId || "(missing)",
+				toolName,
+				effect: "unknown",
+				replaySafe: false,
+			};
+			provenance.toolEffects.push(fact);
+			if (!toolCallId) return;
+			const callsForId = activeEffects.get(toolCallId) ?? [];
+			if (callsForId.length) provenance.complete = false;
+			callsForId.push(fact);
+			activeEffects.set(toolCallId, callsForId);
+		};
+		const observeToolEffectUpdate = (event: EventRecord) => {
+			const toolCallId = typeof event.toolCallId === "string" && event.toolCallId ? event.toolCallId : "";
+			const toolName = typeof event.toolName === "string" ? event.toolName : "unknown";
+			const calls = toolCallId ? activeEffects.get(toolCallId) : undefined;
+			if (
+				!calls ||
+				calls.length !== 1 ||
+				calls[0].toolName !== toolName ||
+				!Object.hasOwn(event, "partialResult") ||
+				!eventRecord(event.partialResult)
+			) {
+				provenance.complete = false;
+				return;
+			}
+			// Pi's update event proves only that a tool reported partial output, not whether its side effects
+			// completed or partially occurred. Keep the effect unknown unless its final owner boundary says otherwise.
+			calls[0].partialResultObserved = true;
+		};
+		const endToolEffect = (event: EventRecord) => {
+			const toolCallId = typeof event.toolCallId === "string" && event.toolCallId ? event.toolCallId : "";
+			const toolName = typeof event.toolName === "string" ? event.toolName : "unknown";
+			const callsForId = toolCallId ? activeEffects.get(toolCallId) : undefined;
+			const fact = callsForId?.shift();
+			if (callsForId?.length === 0 && toolCallId) activeEffects.delete(toolCallId);
+			if (!toolCallId || !fact) provenance.complete = false;
+			if (fact && fact.toolName !== toolName) provenance.complete = false;
+			const resultRecord = eventRecord(event.result);
+			const details = eventRecord(resultRecord?.details);
+			const hasMarker = Boolean(details && Object.hasOwn(details, TOOL_PROVENANCE_DETAIL_KEY));
+			const marker = details?.[TOOL_PROVENANCE_DETAIL_KEY];
+			const ownerFacts: StopFact[] = [];
+			if (hasMarker) {
+				if (!Array.isArray(marker)) provenance.complete = false;
+				else {
+					for (const value of marker) {
+						if (
+							!isStopFact(value) ||
+							value.jobId !== job.jobId ||
+							value.attempt !== attemptIndex ||
+							value.toolCallId !== toolCallId ||
+							(value.owner !== "guard" && value.owner !== "delegate-worker")
+						) {
+							provenance.complete = false;
+							continue;
+						}
+						ownerFacts.push(value);
+						provenance.stopFacts.push(value);
+					}
+				}
+			}
+			if (!fact) {
+				provenance.toolEffects.push({
+					owner: "pi-runtime",
+					jobId: job.jobId,
+					attempt: attemptIndex,
+					toolCallId: toolCallId || "(missing)",
+					toolName,
+					effect: "unknown",
+					replaySafe: false,
+				});
+			}
+			if (event.isError === true) {
+				const denied = ownerFacts.length > 0 && ownerFacts.every((stopFact) => stopFact.effect === "denied");
+				const exitCode = bashExitCode(event.result);
+				const completedBashFailure =
+					!stopped &&
+					!ownerFacts.length &&
+					fact?.toolName === "bash" &&
+					fact.toolCallId === toolCallId &&
+					toolName === "bash" &&
+					Number.isInteger(exitCode) &&
+					(exitCode as number) >= 1 &&
+					(exitCode as number) <= 127 &&
+					!provenance.stopFacts.some((stopFact) => stopFact.toolCallId === toolCallId);
+				if (fact) {
+					fact.effect = denied ? "denied" : completedBashFailure ? "completed" : "unknown";
+					fact.replaySafe = false;
+				}
+				if (!denied)
+					provenance.stopFacts.push({
+						owner: "delegate-parent",
+						jobId: job.jobId,
+						attempt: attemptIndex,
+						...(toolCallId && { toolCallId }),
+						cause: "tool-failure",
+						resource: "tool",
+						effect: completedBashFailure ? "completed" : "unknown",
+					});
+			} else if (event.isError === false && fact && !ownerFacts.length && fact.toolName === toolName) {
+				if (fact.toolName === "bash" && bashExitCode(event.result) !== 0) {
+					provenance.complete = false;
+					fact.effect = "unknown";
+					if (bashExitCode(event.result) !== undefined)
+						provenance.stopFacts.push({
+							owner: "delegate-parent",
+							jobId: job.jobId,
+							attempt: attemptIndex,
+							toolCallId,
+							cause: "tool-failure",
+							resource: "tool",
+							effect: "unknown",
+						});
+				} else {
+					fact.effect = "completed";
+					fact.replaySafe = replaySafeReadTools.has(fact.toolName);
+				}
+			} else {
+				provenance.complete = false;
+				if (fact) fact.effect = "unknown";
+			}
+		};
+		const flushUnknownToolEffects = () => {
+			if (activeEffects.size) provenance.complete = false;
+			for (const callsForId of activeEffects.values())
+				for (const fact of callsForId) {
+					fact.effect = "unknown";
+					fact.replaySafe = false;
+				}
+			activeEffects.clear();
+		};
+		const parentFact = (
+			cause: StopFact["cause"],
+			resource: StopResource,
+			effect: StopFact["effect"] = "unknown",
+		): StopFact => ({
+			owner: "delegate-parent",
+			jobId: job.jobId,
+			attempt: attemptIndex,
+			cause,
+			resource,
+			effect,
+		});
+		const retainParentFact = (cause: StopFact["cause"], resource: StopResource) => {
+			if (
+				!provenance.stopFacts.some(
+					(fact) => fact.owner === "delegate-parent" && fact.cause === cause && fact.resource === resource,
+				)
+			)
+				provenance.stopFacts.push(parentFact(cause, resource));
+		};
+		const stop = (reason: string, fact?: StopFact) => {
 			if (finished || stopped || pid === undefined) return;
 			stopped = reason;
+			if (fact) provenance.stopFacts.push(fact);
 			if (implement) {
 				// Pi's print mode handles SIGTERM by stopping its bash commands, which run in their own groups.
 				try {
@@ -1017,6 +1332,7 @@ function runWorkerAttempt(
 			if (finished) return;
 			if (buffer.trim()) processLine(buffer);
 			flushUnclosedCalls();
+			flushUnknownToolEffects();
 			flushProgress();
 			finished = true;
 			clearProgressTimer();
@@ -1029,6 +1345,14 @@ function runWorkerAttempt(
 			if (pid !== undefined) groups.delete(pid);
 			if (pid !== undefined) implement?.pids.delete(pid);
 			result.ms = Date.now() - start;
+			// Derive the child's own tail before appending delegate diagnostics; appended text must not become the
+			// reported child failure when the worker crashes without a final answer.
+			const lastStderr = result.stderr.trim().split("\n").at(-1)?.slice(0, 300);
+			if (contradictorySuccesses.length) {
+				result.stderr += `\ndelegate: contradictory Bash success status diagnostics:\n${contradictorySuccesses.join("\n")}`;
+				if (omittedContradictorySuccesses)
+					result.stderr += `\ndelegate: ${omittedContradictorySuccesses} further status diagnostics omitted`;
+			}
 			if (result.outDir) {
 				try {
 					result.files = listOutput(result.outDir);
@@ -1038,13 +1362,14 @@ function runWorkerAttempt(
 			}
 			// A final answer ("stop") counts even if a stop or stray pipe holder came after it.
 			const answered = lastStopReason === "stop" && !result.failure && Boolean(result.output.trim());
-			const lastStderr = result.stderr.trim().split("\n").at(-1)?.slice(0, 300);
+			if (problem) provenance.complete = false;
 			if (answered) {
 				// Kept for the details only: what happened after the answer was complete.
 				const after = [problem, stopped && `stopped: ${stopped}`, code !== 0 && `exit ${code}`].filter(Boolean);
 				if (after.length) result.stderr += `\ndelegate: after the final answer: ${after.join("; ")}`;
 			} else if (problem) result.failure = problem;
-			else if (stopped) result.failure = `stopped: ${stopped}`;
+			else if (stopped)
+				result.failure = result.failure ? `${result.failure}; stopped: ${stopped}` : `stopped: ${stopped}`;
 			else if (code !== 0) result.failure = `exit ${code}: ${result.failure ?? (lastStderr || "no error message")}`;
 			else if (!result.failure)
 				result.failure = result.output.trim() ? "worker ended without a final answer" : "worker produced no answer";
@@ -1056,13 +1381,18 @@ function runWorkerAttempt(
 			try {
 				event = JSON.parse(line);
 			} catch {
+				provenance.complete = false;
 				implement?.artifacts.noteAnomaly("malformed-event");
 				return; // Not a usable event (pi prints JSON lines in this mode).
 			}
 			if (!event || typeof event !== "object" || Array.isArray(event)) {
+				provenance.complete = false;
 				implement?.artifacts.noteAnomaly("malformed-event");
 				return;
 			}
+			if (event.type === "tool_execution_start") startToolEffect(event);
+			if (event.type === "tool_execution_update") observeToolEffectUpdate(event);
+			if (event.type === "tool_execution_end") endToolEffect(event);
 			if (event.type === "tool_execution_start") {
 				if (typeof event.toolName === "string") {
 					result.tools.push(toolLabel(event.toolName));
@@ -1077,6 +1407,48 @@ function runWorkerAttempt(
 				trackCheck(implement.job, calls, event, cwd);
 				captureToolEnd(event);
 			}
+			if (event.type === "auto_retry_start") {
+				const failed = latestAssistantError;
+				latestAssistantError = undefined;
+				const slash = run.model?.indexOf("/") ?? -1;
+				const retry = event.attempt;
+				if (
+					!failed ||
+					slash <= 0 ||
+					failed.provider !== run.model?.slice(0, slash) ||
+					failed.model !== run.model?.slice(slash + 1) ||
+					!Number.isSafeInteger(retry) ||
+					retry < 1
+				) {
+					provenance.complete = false;
+					return;
+				}
+				const providerRetry: ProviderRetryFact = {
+					owner: "pi-runtime",
+					jobId: job.jobId,
+					attempt: attemptIndex,
+					provider: failed.provider,
+					model: failed.model,
+					api: failed.api,
+					sourceEvent: "auto_retry_start",
+					retry,
+				};
+				if (!isProviderRetryFact(providerRetry)) {
+					provenance.complete = false;
+					return;
+				}
+				provenance.providerRetry = providerRetry;
+				provenance.stopFacts.push({
+					owner: "pi-runtime",
+					jobId: job.jobId,
+					attempt: attemptIndex,
+					cause: "provider-retry-classified",
+					resource: "provider",
+					effect: "unknown",
+				});
+				result.fallbackBlockReason = retryRefusalReason(job, run.model, provenance, result, budget);
+				return;
+			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
 			const msg = event.message;
 			result.turns++;
@@ -1086,18 +1458,40 @@ function runWorkerAttempt(
 			if (text.length) result.output = text.map((p: any) => p.text).join("\n");
 			// Only the latest reply decides: Pi may retry after a transient error and then answer.
 			lastStopReason = msg.stopReason;
+			latestAssistantError =
+				msg.stopReason === "error" &&
+				typeof msg.provider === "string" &&
+				typeof msg.model === "string" &&
+				typeof msg.api === "string"
+					? { provider: msg.provider, model: msg.model, api: msg.api }
+					: undefined;
 			const bad = ["error", "aborted", "length"].includes(msg.stopReason);
 			result.failure = bad ? msg.errorMessage || `model stopped: ${msg.stopReason}` : undefined;
-			// A final reply ("stop") is kept even when it crosses the cap; only continuing runs are stopped.
-			if (msg.stopReason !== "stop" && costOf(result.usage) >= costCapUsd) stop(`cost cap $${costCapUsd} reached`);
+			// Keep a final "stop" reply even over cap. For continuing replies, retain every spent dimension before
+			// enforcing hard cost: stopping the child may prevent its later auto_retry_start event.
+			if (msg.stopReason !== "stop") {
+				const currentCost = costOf(result.usage);
+				if (currentCost >= budget.toolCostCapUsd) retainParentFact("wrap-up-limit", "tool-cost");
+				if (currentCost >= budget.hardCostCapUsd) {
+					retainParentFact("hard-cost-limit", "hard-cost");
+					stop(`cost cap $${budget.hardCostCapUsd} reached`);
+				}
+			}
 			cancelPendingProgress();
 			onProgress(result);
 		};
 
-		const timer = setTimeout(() => stop(`timeout after ${timeoutMs / 1000}s`), timeoutMs);
+		const timer = setTimeout(
+			() => stop(`timeout after ${timeoutMs / 1000}s`, parentFact("hard-timeout", "hard-time")),
+			timeoutMs,
+		);
 		let exitTimer: NodeJS.Timeout | undefined;
 		// A session shutdown aborts with SESSION_ENDED; /delegate cancel and the turn's abort are a cancel.
-		const onAbort = () => stop(signal.reason === SESSION_ENDED ? "session ended" : "cancelled");
+		const onAbort = () =>
+			stop(
+				signal.reason === SESSION_ENDED ? "session ended" : "cancelled",
+				parentFact(signal.reason === SESSION_ENDED ? "session-ended" : "cancelled", "cancellation"),
+			);
 		signal.addEventListener("abort", onAbort, { once: true });
 
 		proc.stdout.setEncoding("utf8");
@@ -1127,13 +1521,64 @@ function runWorkerAttempt(
 	});
 }
 
-const retryableAvailabilityFailure = (failure: string | undefined): boolean =>
-	Boolean(
-		failure &&
-			/\b429\b|rate[_ -]?limit|usage limit|quota exceeded|insufficient_quota|too many requests|overload(?:ed)?|\b(?:503|529)\b|service unavailable|temporarily unavailable|(?:unknown|unsupported|invalid) model|model.{0,50}(?:not found|unavailable|not available|not supported|does not exist|missing)/i.test(
-				failure,
-			),
-	);
+// Pi's fresh child cannot bind its effective endpoint before task data is sent, so a
+// structured retry can never authorize dispatch of another pool candidate in this release.
+function retryRefusalReason(
+	job: Job,
+	model: string | undefined,
+	provenance: AttemptProvenance,
+	result: RunResult,
+	budget: AttemptBudget,
+): string {
+	if (!model) return "the selected session model has no exact provider/model identity";
+	const slash = model.indexOf("/");
+	if (
+		slash <= 0 ||
+		!provenance.providerRetry ||
+		provenance.providerRetry.provider !== model.slice(0, slash) ||
+		provenance.providerRetry.model !== model.slice(slash + 1)
+	)
+		return "no correlated Pi runtime retry classification is available";
+	if (!provenance.complete) return "attempt provenance is incomplete; replay is refused";
+	if (provenance.stopFacts.some((fact) => fact.cause !== "provider-retry-classified"))
+		return "a competing safety stop prevents replay";
+	if (provenance.toolEffects.some((fact) => !fact.replaySafe || fact.effect !== "completed"))
+		return "tool effects are unknown or unsafe to replay";
+	const retainLimitStop = (cause: StopFact["cause"], resource: StopResource) => {
+		if (
+			!provenance.stopFacts.some(
+				(fact) => fact.owner === "delegate-parent" && fact.cause === cause && fact.resource === resource,
+			)
+		)
+			provenance.stopFacts.push({
+				owner: "delegate-parent",
+				jobId: job.jobId,
+				attempt: provenance.attempt,
+				cause,
+				resource,
+				effect: "unknown",
+			});
+	};
+	const now = Date.now();
+	const hardTimeSpent = now >= budget.hardDeadline;
+	const toolTimeSpent = now >= budget.toolDeadline;
+	if (hardTimeSpent) retainLimitStop("hard-timeout", "hard-time");
+	if (toolTimeSpent) retainLimitStop("wrap-up-limit", "tool-time");
+	if (hardTimeSpent) return "the original hard deadline is spent";
+	if (toolTimeSpent) return "the original tool deadline is spent";
+	const currentCost = costOf(result.usage);
+	const hardCostSpent = currentCost >= budget.hardCostCapUsd;
+	const toolCostSpent = currentCost >= budget.toolCostCapUsd;
+	if (hardCostSpent) retainLimitStop("hard-cost-limit", "hard-cost");
+	if (toolCostSpent) retainLimitStop("wrap-up-limit", "tool-cost");
+	if (hardCostSpent) return "the cumulative hard cost allowance is spent";
+	if (toolCostSpent) return "the cumulative tool cost allowance is spent";
+	if (job.role === "scout" && budget.toolCalls !== null && (result.toolCallCount ?? 0) >= budget.toolCalls) {
+		retainLimitStop("wrap-up-limit", "tool-calls");
+		return "the cumulative scout tool-call allowance is spent";
+	}
+	return "cross-model fallback deferred until child-boundary endpoint enforcement and positive scope/budget tests are available";
+}
 
 function persistFailedToolCapture(
 	job: Checkout,
@@ -1154,10 +1599,15 @@ async function runWorker(
 	const start = Date.now();
 	const secs =
 		{ scout: LIMITS.scoutTimeoutSecs, implement: LIMITS.implementTimeoutSecs }[job.role] ?? LIMITS.timeoutSecs;
-	const timeoutMs = secs * 1000;
-	const deadline = start + timeoutMs;
-	let costSpent = 0;
-	const candidates = run.candidates.length ? run.candidates : [{ model: undefined, thinking: run.thinking }];
+	const hardDeadline = start + secs * 1000;
+	const toolDeadline = start + LIMITS.wrapUpShare * secs * 1000;
+	const hardCostCap = LIMITS.costCapUsd;
+	const toolCostCap = LIMITS.wrapUpShare * hardCostCap;
+	const candidates = Object.freeze(
+		(run.candidates.length ? run.candidates : [{ model: undefined, thinking: run.thinking }]).map((candidate) =>
+			Object.freeze({ ...candidate }),
+		),
+	);
 	let outDir: string | undefined;
 	if (job.output) {
 		try {
@@ -1177,83 +1627,29 @@ async function runWorker(
 		}
 	}
 
-	const attempts: RunResult[] = [];
-	const fallbackAttempts: FallbackAttempt[] = [];
-	for (let i = 0; i < candidates.length; i++) {
-		const candidate = candidates[i];
-		const { model, thinking } = candidate;
-		const remainingMs = deadline - Date.now();
-		const remainingCost = LIMITS.costCapUsd - costSpent;
-		if (remainingMs <= 0 || remainingCost <= 0) {
-			const last = attempts.at(-1);
-			if (last)
-				last.failure = `stopped: ${remainingMs <= 0 ? "time limit" : `cost cap $${LIMITS.costCapUsd}`} reached before trying ${model ?? "session model"}`;
-			break;
-		}
-		// `--approve` only on the first attempt: the tree was clean, so .pi equals the trusted HEAD; a fallback may run
-		// the earlier attempt's edits.
-		const approve = job.implement?.trusted === true && i === 0;
-		const attempt = await runWorkerAttempt(
-			job,
-			prompt,
-			{ model, thinking },
-			cwd,
-			signal,
-			(r) =>
-				onProgress({
-					...r,
-					tools: [...attempts.flatMap((previous) => previous.tools), ...r.tools].slice(-MAX_TOOL_HISTORY),
-					fallbackAttempts: [...fallbackAttempts],
-				}),
-			outDir,
-			{ timeoutMs: remainingMs, costCapUsd: remainingCost },
-			i + 1,
-			approve,
-		);
-		attempts.push(attempt);
-		costSpent += costOf(attempt.usage);
-		if (!retryableAvailabilityFailure(attempt.failure) || i === candidates.length - 1) break;
-		const nextCandidate = candidates[i + 1];
-		const nextModel = nextCandidate.model;
-		const nextTime = deadline - Date.now();
-		const nextCost = LIMITS.costCapUsd - costSpent;
-		if (nextTime <= 0 || nextCost <= 0) {
-			attempt.failure = `${attempt.failure}; pool fallback stopped: ${nextTime <= 0 ? "time limit" : `cost cap $${LIMITS.costCapUsd}`} reached`;
-			break;
-		}
-		fallbackAttempts.push({
-			model,
-			thinking,
-			failure: attempt.failure as string,
-			nextModel,
-			nextThinking: nextCandidate.thinking,
-		});
-		const next = `${nextModel ?? "session model"} @${nextCandidate.thinking}`;
-		onProgress({
-			...attempt,
-			requested: { model: nextCandidate.model, thinking: nextCandidate.thinking },
-			fallbackAttempts: [...fallbackAttempts],
-			fallbackMessage: `${model ?? "session model"} @${thinking} failed (${attempt.failure}); trying ${next}`,
-		});
-	}
-
-	const last = attempts.at(-1);
-	if (!last) throw new Error("delegate worker pool has no candidates");
-	const usage: Record<string, any> = {};
-	for (const attempt of attempts) addUsage(usage, attempt.usage);
-	return {
-		...last,
-		usage,
-		turns: attempts.reduce((sum, attempt) => sum + attempt.turns, 0),
-		tools: attempts.flatMap((attempt) => attempt.tools).slice(-MAX_TOOL_HISTORY),
-		stderr: attempts
-			.map((attempt) => attempt.stderr)
-			.filter(Boolean)
-			.join("\n")
-			.slice(-4096),
-		ms: Date.now() - start,
-		fallbackAttempts,
+	const candidate = Object.freeze({ ...candidates[0] });
+	const budget: AttemptBudget = {
+		hardDeadline,
+		hardCostCapUsd: hardCostCap,
+		toolDeadline,
+		toolCostCapUsd: toolCostCap,
+		toolCalls: job.role === "scout" ? LIMITS.scoutToolCalls : null,
 	};
+	const attempt = await runWorkerAttempt(
+		job,
+		prompt,
+		candidate,
+		cwd,
+		signal,
+		onProgress,
+		outDir,
+		budget,
+		1,
+		job.implement?.trusted === true,
+	);
+	if (candidates.length > 1 && attempt.failure && !attempt.provenance?.[0]?.providerRetry)
+		attempt.fallbackBlockReason ??= "Pi runtime supplied no structured retry classification";
+	return attempt;
 }
 
 // --- Result formatting ----------------------------------------------------------------------------
@@ -1313,11 +1709,6 @@ function runView(
 		output: r.output ?? "",
 		outDir: r.outDir,
 		files: r.files,
-		fallbacks: r.fallbackAttempts?.map(
-			(a) =>
-				`${a.model ?? "session model"} @${a.thinking} failed (${a.failure}); next ${a.nextModel ?? "session model"} @${a.nextThinking}`,
-		),
-		fallbackMessage: r.fallbackMessage,
 	};
 }
 
@@ -1329,13 +1720,9 @@ function formatRun(r: RunResult): string {
 	else if (!r.failure) body = `${answer}${filesLine(r)}\n${label(r)}`;
 	else {
 		const partial = r.output.trim() ? `\nPartial answer:\n${cap(r.output.trim(), FAILED_PARTIAL_CAP)}` : "";
-		body = `✗ ${r.failure}${partial}${filesLine(r)}\n${label(r)}`;
+		body = `✗ ${r.failure}${r.fallbackBlockReason ? `\nPool fallback not attempted: ${r.fallbackBlockReason}.` : ""}${partial}${filesLine(r)}\n${label(r)}`;
 	}
-	const fallbacks = (r.fallbackAttempts ?? []).map(
-		(a) =>
-			`↻ ${a.model ?? "session model"} @${a.thinking} failed (${a.failure}); trying ${a.nextModel ?? "session model"} @${a.nextThinking}`,
-	);
-	return [...fallbacks, body].join("\n");
+	return body;
 }
 
 function rebuttalPrompt(task: string, own: RunResult, others: RunResult[]): string {
@@ -1348,7 +1735,11 @@ function rebuttalPrompt(task: string, own: RunResult, others: RunResult[]): stri
 // --- Tool -----------------------------------------------------------------------------------------
 
 function configuredModels(set: ModelSet): string[] {
-	return [...new Set([...set.scout.models, ...set.worker.models].map((entry) => entry.model))];
+	return [
+		...new Set(
+			[...set.scout.models, ...set.worker.models, ...(set.review?.models ?? [])].map((entry) => entry.model),
+		),
+	];
 }
 
 interface ModelAvailabilityRegistry {
@@ -1402,7 +1793,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); all other roles use the worker pool. Each model has its own thinking level; when model is omitted, availability failures try the next pool model. Explicit models never fall back. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Only the first configured candidate is dispatched; cross-model fallback is deferred pending supported child-boundary endpoint enforcement and positive scope/budget tests. Explicit models remain exact. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
@@ -1426,12 +1817,44 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back, even when listed in the role's pool. Only an omitted model uses ordered pool fallback on availability failures. For several models on the same task, use one entry per model. Not for implement: it uses the worker pool in delegate.json in order.",
+					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. For several models on the same task, use one entry per model. Not for implement: it uses only the first candidate in the worker pool in delegate.json.",
 				items: {
 					type: "object",
 					additionalProperties: false,
 					properties: { model, thinking: { type: "string", enum: THINKING_LEVELS } },
 				},
+			},
+			fallbackAuthorization: {
+				type: "object",
+				description:
+					"Coordinator scope intent only; cross-model fallback is deferred until the fresh Pi child can enforce its effective provider endpoint before task data is sent and positive scope/budget tests pass. Supplying this object does not enable fallback or authorize a destination.",
+				additionalProperties: false,
+				properties: {
+					authorizationRef: { type: "string", minLength: 1 },
+					authority: { type: "string", enum: ["named", "adopted-snapshot"] },
+					taskDataClass: { type: "string", minLength: 1 },
+					candidates: {
+						type: "array",
+						minItems: 1,
+						items: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								model: { type: "string", minLength: 1 },
+								provider: { type: "string", minLength: 1 },
+								destination: {
+									type: "string",
+									minLength: 1,
+									description:
+										"Requested destination in the coordinator's scope contract. The current runtime does not validate or enforce this value at the child's request boundary.",
+								},
+								dataClasses: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+							},
+							required: ["model", "provider", "destination", "dataClasses"],
+						},
+					},
+				},
+				required: ["authorizationRef", "authority", "taskDataClass", "candidates"],
 			},
 			output: {
 				type: "boolean",
@@ -1505,33 +1928,105 @@ export default function (pi: ExtensionAPI) {
 	// block, the output-directory write block, and for `implement` the worker-only bash rules and the orphan stop.
 	if (process.env.ME_PI_RUN) {
 		const budget = parseBudget(process.env.ME_PI_BUDGET);
+		const jobId = process.env.ME_PI_DELEGATE_JOB_ID ?? "";
+		const attempt = Number(process.env.ME_PI_DELEGATE_ATTEMPT);
+		const hasIdentity = Boolean(jobId) && Number.isSafeInteger(attempt) && attempt > 0;
 		let calls = 0;
 		let overBudget = 0;
 		let cost = 0;
+		const pendingStopFacts = new Map<string, StopFact[]>();
+		const skills = process.env.ME_PI_SKILLS ? (JSON.parse(process.env.ME_PI_SKILLS) as string[]) : undefined;
+		pi.on("before_agent_start", (event) =>
+			scopeWorkerPrompt(event.systemPromptOptions, { implement: process.env.ME_PI_ROLE === "implement", skills }),
+		);
+		const rememberStop = (toolCallId: unknown, fact: StopFact) => {
+			if (typeof toolCallId !== "string" || !toolCallId || !hasIdentity) return;
+			const facts = pendingStopFacts.get(toolCallId) ?? [];
+			facts.push(fact);
+			pendingStopFacts.set(toolCallId, facts);
+		};
+		pi.events.on(GUARD_STOP_EVENT, (value: unknown) => {
+			const event = eventRecord(value);
+			if (
+				!event ||
+				event.owner !== "guard" ||
+				event.jobId !== jobId ||
+				event.attempt !== attempt ||
+				event.cause !== "guard-denial" ||
+				event.resource !== "guard" ||
+				event.effect !== "denied"
+			)
+				return;
+			const fact: StopFact = {
+				owner: "guard",
+				jobId,
+				attempt,
+				toolCallId: String(event.toolCallId ?? ""),
+				cause: "guard-denial",
+				resource: "guard",
+				effect: "denied",
+			};
+			if (isStopFact(fact) && fact.toolCallId) rememberStop(fact.toolCallId, fact);
+		});
 		pi.on("message_end", async (event) => {
 			const msg = event.message as any;
 			if (msg?.role === "assistant") cost += costOf(msg.usage ?? {});
 		});
+		// Blocked tool calls are finalized as immediate errors: Pi emits tool_execution_end but skips
+		// afterToolCall/tool_result. Annotate that supported end event so the parent can correlate denial.
+		pi.on("tool_execution_end", (event) => {
+			const facts = pendingStopFacts.get(event.toolCallId);
+			if (!facts?.length) return;
+			const result = eventRecord(event.result);
+			if (!result) return;
+			pendingStopFacts.delete(event.toolCallId);
+			const details = eventRecord(result.details) ?? {};
+			const marker: unknown[] = [...facts];
+			if (Object.hasOwn(details, TOOL_PROVENANCE_DETAIL_KEY)) marker.unshift(undefined);
+			result.details = { ...details, [TOOL_PROVENANCE_DETAIL_KEY]: marker };
+		});
 		pi.on("tool_call", async (event, ctx) => {
+			const recordBlock = (reason: string, cause: StopFact["cause"], resource: StopResource, terminate = false) => {
+				if (hasIdentity && event.toolCallId) {
+					const fact: StopFact = {
+						owner: "delegate-worker",
+						jobId,
+						attempt,
+						toolCallId: event.toolCallId,
+						cause,
+						resource,
+						effect: "denied",
+					};
+					rememberStop(event.toolCallId, fact);
+				}
+				return { block: true, reason, terminate };
+			};
 			// An implement worker whose coordinator died would keep writing in a checkout nobody watches.
 			const parent = Number(process.env.ME_PI_PARENT);
 			if (parent > 0 && (process.ppid === 1 || !processAlive(parent)))
-				return { block: true, reason: "Blocked: the coordinator is gone; stop now.", terminate: true };
-			const spent = budget && budgetSpent(budget, ++calls, cost);
-			if (spent)
-				return {
-					block: true,
-					reason: `Blocked: budget reached (${spent}). Stop using tools; give your final answer now, and list what is unverified.`,
-					// A model that keeps calling tools is stopped; the parent keeps its last text as a partial answer.
-					terminate: ++overBudget > MAX_BLOCKED_OVER_BUDGET,
-				};
+				return recordBlock("Blocked: the coordinator is gone; stop now.", "coordinator-lost", "coordination", true);
+			const nextCall = ++calls;
+			const spent = budget && budgetSpent(budget, nextCall, cost);
+			if (spent) {
+				const resource = budget ? (budgetResource(budget, nextCall, cost) ?? "tool-time") : "tool-time";
+				return recordBlock(
+					`Blocked: budget reached (${spent}). Stop using tools; give your final answer now, and list what is unverified.`,
+					"wrap-up-limit",
+					resource,
+					++overBudget > MAX_BLOCKED_OVER_BUDGET,
+				);
+			}
 			if (event.toolName === "bash" && process.env.ME_PI_ROLE === "implement") {
 				const risk = workerRisk(String((event.input as { command?: unknown }).command ?? ""));
-				if (risk) return { block: true, reason: `Blocked: ${risk}; list it as BLOCKED.` };
+				if (risk) return recordBlock(`Blocked: ${risk}; list it as BLOCKED.`, "worker-fence-denial", "guard");
 			}
 			const secret = secretPathIn(event.toolName, event.input, ctx.cwd);
 			if (secret)
-				return { block: true, reason: `Blocked: ${secret} may hold secrets; delegated workers cannot read it.` };
+				return recordBlock(
+					`Blocked: ${secret} may hold secrets; delegated workers cannot read it.`,
+					"worker-fence-denial",
+					"guard",
+				);
 			const write = writeBlockedIn(
 				event.toolName,
 				event.input,
@@ -1539,7 +2034,7 @@ export default function (pi: ExtensionAPI) {
 				process.env.ME_PI_OUTPUT_DIR,
 				process.env.ME_PI_DENY_DIR,
 			);
-			if (write) return { block: true, reason: `Blocked: ${write}.` };
+			if (write) return recordBlock(`Blocked: ${write}.`, "worker-fence-denial", "guard");
 			return undefined;
 		});
 		return;
@@ -1569,7 +2064,6 @@ export default function (pi: ExtensionAPI) {
 					thinking: worker.thinking,
 					startedAt: worker.startedAt,
 					lastTool: worker.lastTool,
-					fallbacks: worker.fallbacks,
 					stage: call.stage ?? "Workers",
 					persona: worker.persona,
 				})),
@@ -1666,7 +2160,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Only the first selected candidate is dispatched; cross-model fallback is deferred until supported child-boundary endpoint enforcement and positive scope/budget tests are available, and explicit models stay exact. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),
@@ -1674,10 +2168,26 @@ export default function (pi: ExtensionAPI) {
 		parameters: buildSchema() as any,
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
-			const fail = (text: string) => ({ content: [{ type: "text" as const, text }], details: {}, isError: true });
+			const fail = (text: string, details: Record<string, unknown> = {}) => ({
+				content: [{ type: "text" as const, text }],
+				details,
+				isError: true,
+			});
 			const { role = "general", task, web, answer, output, rebuttal, background, check } = params ?? {};
 			const unknown = Object.keys(params ?? {}).filter(
-				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal", "background", "check"].includes(k),
+				(k) =>
+					![
+						"role",
+						"task",
+						"web",
+						"answer",
+						"output",
+						"runs",
+						"rebuttal",
+						"background",
+						"check",
+						"fallbackAuthorization",
+					].includes(k),
 			);
 			if (unknown.length)
 				return fail(
@@ -1713,6 +2223,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			const job: Job = {
 				role,
+				jobId: randomUUID(),
 				web: web ?? ROLES[role].web,
 				answer: answer?.trim() ?? ROLES[role].answer,
 				output: output === true,
@@ -1740,6 +2251,7 @@ export default function (pi: ExtensionAPI) {
 				for (const spec of specs)
 					if (spec.model && !configured.has(spec.model)) validateOneOffModel(spec.model, ctx?.modelRegistry);
 				resolved = specs.map((r) => resolveRun(role, r, set, session, ctx?.thinkingLevel));
+				if (role !== "implement") job.skills = set.readOnlySkills;
 			} catch (err: any) {
 				return fail(err.message);
 			}
@@ -1753,6 +2265,7 @@ export default function (pi: ExtensionAPI) {
 					`${busy} worker(s) already running; at most ${MAX_RUNS} run at once. Wait for a background answer or stop one with /delegate cancel <id>.`,
 				);
 			const callKey = `delegate-call-${++activeCallCount}`;
+			const implementId = role === "implement" ? nextImplementId() : undefined;
 			const foregroundId = background ? undefined : `fg${++foregroundCount}`;
 			const preparationId = role === "implement" && background ? `prep${++preparationCount}` : foregroundId;
 			// The session this call belongs to; a shutdown during prepare must not leave a job behind.
@@ -1775,7 +2288,12 @@ export default function (pi: ExtensionAPI) {
 				// Tracked through the shutdown-time finish: session_shutdown snapshots `running` once, so the finish
 				// for a session that ended during prepare must be part of the same promise.
 				const preparing = (async () => {
-					const prepared = await prepareImplement(ctx?.cwd ?? process.cwd(), nextImplementId(), check.trim());
+					const prepared = await prepareImplement(
+						ctx?.cwd ?? process.cwd(),
+						implementId!,
+						check.trim(),
+						String(_id),
+					);
 					if (ended.aborted) await finishImplement(prepared, { failure: "stopped: session ended" });
 					return prepared;
 				})();
@@ -1787,13 +2305,17 @@ export default function (pi: ExtensionAPI) {
 				try {
 					co = await preparing;
 				} catch (err: any) {
-					return fail(err?.message ?? String(err));
+					return fail(
+						err?.message ?? String(err),
+						err instanceof ImplementLockRefusal ? { stopFacts: [err.stopFact] } : {},
+					);
 				} finally {
 					running.delete(settled);
 					active.delete(slot);
 					updateActivityWidget(ctx, ended);
 				}
 				if (ended.aborted) return fail("stopped: session ended");
+				job.jobId = co.id;
 				job.implement = {
 					job: co,
 					trusted: ctx?.isProjectTrusted?.() === true,
@@ -1856,7 +2378,6 @@ export default function (pi: ExtensionAPI) {
 									startedAt: callState.workers?.[i]?.startedAt ?? callState.start,
 									active: !finished[i],
 									lastTool: run.lastTool,
-									fallbacks: run.fallbacks?.length ?? 0,
 									persona: runPersonas[i],
 								}));
 								updateActivityWidget(ctx, ended);
@@ -1919,13 +2440,10 @@ export default function (pi: ExtensionAPI) {
 						facts = await finishImplement(co, {
 							failure: r.failure,
 							...(r.failedToolCapture && { failedToolCapture: r.failedToolCapture }),
+							provenance: r.provenance,
 							answer: r.output,
 							label: label(r),
 							tools: r.tools,
-							fallbacks: r.fallbackAttempts?.map(
-								(a) =>
-									`${a.model ?? "session model"} @${a.thinking} failed (${a.failure}); next ${a.nextModel ?? "session model"} @${a.nextThinking}`,
-							),
 							stderr: r.stderr,
 						});
 					}
@@ -1947,11 +2465,11 @@ export default function (pi: ExtensionAPI) {
 									ok.filter((o) => o !== r),
 								),
 							);
-							// Keep each original run's explicit/default selection while resuming at its successful candidate.
+							// Each rebuttal remains on the same selected model and thinking level.
 							round2 = await round(
 								"Rebuttal",
 								prompts,
-								ok.map((r) => resumeRun(resolved[round1.indexOf(r)], r)),
+								ok.map((r) => resolved[round1.indexOf(r)]),
 								ok.map((r) => personas[round1.indexOf(r)]),
 							);
 							shown = round1.map((run) => {

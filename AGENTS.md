@@ -1,6 +1,6 @@
-- `GLOBAL_AGENTS.md` is the live policy of every new Pi session and worker; `README.md` explains the setup.
+- `GLOBAL_AGENTS.md` is the live policy of every new Pi session and worker (linked as `~/.pi/agent/AGENTS.md`); `skills/*/` are live user skills (linked under `~/.pi/agent/skills/`). Editing either changes what new or reloaded sessions load.
 - `extensions/delegate.ts` orchestrates delegate jobs, `extensions/delegate-render.ts` renders the TUI, and `extensions/delegate-implement.ts` owns implement checkout/commit lifecycle.
-- Current guides: [`README.md`](README.md), [`docs/delegate.md`](docs/delegate.md), [`docs/setup.md`](docs/setup.md); `docs/plans/` is historical—use guides and code for current behavior.
+- Current guides: [`README.md`](README.md) (install), [`docs/delegate.md`](docs/delegate.md) (delegation and A4 recovery), [`docs/setup.md`](docs/setup.md) (full rig); `docs/plans/` and dated checkpoints are historical—use guides and code for current behavior.
 - Run `./install.sh` only from the live checkout's main session, never from a worktree, temp clone, or worker: it registers this checkout's path in `~/.pi/agent/settings.json`. A pointer to a new installed path needs its link in `install.sh` and an `./install.sh` run first.
-- Done means `npm run check --prefix extensions` passes.
+- A code change is done when `npm run check --prefix extensions` passes.
 - When changing or reviewing code, follow [`docs/coding-standards.md`](docs/coding-standards.md).

@@ -176,7 +176,11 @@ const passed = (job) => {
 	job.check.status = "pass";
 	job.check.runs.push(`pass: ${CHECK}`);
 };
-const ok = { answer: "Added the feature.", label: "[m @high $0.0100 3s]" };
+const ok = (job) => ({
+	answer: "Added the feature.",
+	label: "[m @high $0.0100 3s]",
+	provenance: [{ jobId: job.id, attempt: 1, complete: true, stopFacts: [], toolEffects: [] }],
+});
 
 test("prepare refuses before taking the lock and leaves nothing behind", async () => {
 	const plain = mkdtempSync(join(TEST_HOME, "plain-"));
@@ -227,7 +231,7 @@ test("two takeovers of a dead lock: exactly one wins", async () => {
 	const won = results.filter((r) => r.status === "fulfilled");
 	assert.equal(won.length, 1, results.map((r) => r.reason?.message).join("; "));
 	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} ${won[0].value.id}\n`);
-	await finish(won[0].value, ok);
+	await finish(won[0].value, ok(won[0].value));
 	assert.ok(!existsSync(lockOf(repo)));
 	assert.deepEqual(
 		readdirSync(join(repo, ".git")).filter((n) => n.startsWith("me-pi-implement")),
@@ -243,7 +247,7 @@ test("a lock whose pid is dead is taken over", async () => {
 	writeFileSync(lockOf(repo), `${dead.pid} im6\n`);
 	const job = await prepare(repo, "im91", CHECK);
 	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im91\n`);
-	await finish(job, ok);
+	await finish(job, ok(job));
 	assert.ok(!existsSync(lockOf(repo)));
 });
 
@@ -257,9 +261,10 @@ test("finish: worker commits give the range, a clean tree, no lock, and a 0600 d
 	assert.equal(job.commonDir, realpathSync(join(repo, ".git")));
 	commit(git, repo, "feature.txt");
 	passed(job);
-	const facts = await finish(job, ok);
+	const facts = await finish(job, ok(job));
 	const out = formatHandback(facts);
 	assert.equal(facts.failed, false, out);
+	assert.deepEqual(facts.delivered, { check: "pass", commit: "normal", wip: false, integrity: "clear" });
 	const tip = git("rev-parse", "HEAD");
 	const lines = out.split("\n");
 	assert.equal(lines.length, 2, out);
@@ -277,16 +282,186 @@ test("finish: worker commits give the range, a clean tree, no lock, and a 0600 d
 	assert.ok(!existsSync(job.ghConfigDir));
 });
 
+test("finish withholds acceptance for missing provenance, unknown effects, and denied safety stops", async () => {
+	for (const scenario of [
+		{ name: "missing provenance", missingProvenance: true, stopFacts: [] },
+		{ name: "unknown", effect: "unknown", stopFacts: [] },
+		{
+			name: "denied",
+			effect: "denied",
+			stopFacts: [
+				{
+					owner: "guard",
+					jobId: "im-a2-denied",
+					attempt: 1,
+					toolCallId: "blocked-call",
+					cause: "guard-denial",
+					resource: "guard",
+					effect: "denied",
+				},
+			],
+		},
+	]) {
+		const { repo } = goalFixture();
+		const job = await prepare(repo, `im-a2-${scenario.name}`, CHECK);
+		passed(job);
+		const provenance = {
+			jobId: job.id,
+			attempt: 1,
+			complete: true,
+			stopFacts: scenario.stopFacts,
+			toolEffects: [
+				{
+					owner: "pi-runtime",
+					jobId: job.id,
+					attempt: 1,
+					toolCallId: "blocked-call",
+					toolName: "bash",
+					effect: scenario.effect,
+					replaySafe: false,
+				},
+			],
+		};
+		const facts = await finish(job, {
+			answer: "The worker reports success.",
+			...(!scenario.missingProvenance && { provenance: [provenance] }),
+		});
+		assert.equal(facts.failed, true, scenario.name);
+		assert.deepEqual(facts.delivered, { check: "pass", commit: "none", wip: false, integrity: "clear" });
+		assert.ok(
+			facts.problems.some((problem) => problem.includes("acceptance withheld")),
+			scenario.name,
+		);
+		assert.match(readFileSync(facts.detailsPath, "utf8"), /acceptance withheld/);
+	}
+});
+
+test("finish permits only one correlated completed non-replay-safe Bash failure", async () => {
+	for (const scenario of [
+		{ name: "matching ordinary Bash failure", allowed: true },
+		{ name: "wrong tool", allowed: false, toolName: "read" },
+		{ name: "replay-safe failure", allowed: false, replaySafe: true },
+		{ name: "missing effect", allowed: false, missingEffect: true },
+		{ name: "duplicate effect id", allowed: false, duplicateEffect: true },
+		{ name: "duplicate stop id", allowed: false, duplicateStop: true },
+		{
+			name: "competing guard denial",
+			allowed: false,
+			extraStop: { owner: "guard", cause: "guard-denial", resource: "guard", effect: "denied" },
+		},
+		{
+			name: "competing wrap-up limit",
+			allowed: false,
+			extraStop: { owner: "delegate-parent", cause: "wrap-up-limit", resource: "tool-time", effect: "denied" },
+		},
+		{
+			name: "competing provider retry",
+			allowed: false,
+			extraStop: {
+				owner: "pi-runtime",
+				cause: "provider-retry-classified",
+				resource: "provider",
+				effect: "unknown",
+			},
+		},
+		{ name: "attempt incomplete", allowed: false, incomplete: true },
+	]) {
+		const { repo, git } = goalFixture();
+		const job = await prepare(repo, `im-failure-${scenario.name.replaceAll(" ", "-")}`, CHECK);
+		commit(git, repo, "feature.txt");
+		passed(job);
+		const toolCallId = "ordinary-failure";
+		const attempt = {
+			jobId: job.id,
+			attempt: 1,
+			complete: !scenario.incomplete,
+			stopFacts: [
+				{
+					owner: "delegate-parent",
+					jobId: job.id,
+					attempt: 1,
+					toolCallId,
+					cause: "tool-failure",
+					resource: "tool",
+					effect: "completed",
+				},
+				...(scenario.extraStop
+					? [
+							{
+								jobId: job.id,
+								attempt: 1,
+								toolCallId,
+								...scenario.extraStop,
+							},
+						]
+					: []),
+				...(scenario.duplicateStop
+					? [
+							{
+								owner: "delegate-parent",
+								jobId: job.id,
+								attempt: 1,
+								toolCallId,
+								cause: "tool-failure",
+								resource: "tool",
+								effect: "completed",
+							},
+						]
+					: []),
+			],
+			toolEffects: scenario.missingEffect
+				? []
+				: [
+						{
+							owner: "pi-runtime",
+							jobId: job.id,
+							attempt: 1,
+							toolCallId,
+							toolName: scenario.toolName ?? "bash",
+							effect: "completed",
+							replaySafe: scenario.replaySafe ?? false,
+						},
+						...(scenario.duplicateEffect
+							? [
+									{
+										owner: "pi-runtime",
+										jobId: job.id,
+										attempt: 1,
+										toolCallId,
+										toolName: "bash",
+										effect: "completed",
+										replaySafe: false,
+									},
+								]
+							: []),
+					],
+		};
+		const facts = await finish(job, {
+			answer: "Repaired and verified.",
+			provenance: [attempt],
+		});
+		assert.equal(facts.failed, !scenario.allowed, scenario.name);
+		assert.equal(facts.delivered.commit, "normal", scenario.name);
+		assert.equal(facts.delivered.check, "pass", scenario.name);
+		if (!scenario.allowed)
+			assert.ok(
+				facts.problems.some((problem) => problem.includes("acceptance withheld")),
+				scenario.name,
+			);
+	}
+});
+
 test("finish commits leftovers as WIP on the branch with hooks off; odd reasons stay on one line", async () => {
 	const { repo, git } = goalFixture();
-	const job = await prepare(repo, "im93", CHECK);
 	// A hook that would fail the commit: the WIP commit skips it.
 	git("config", "core.hooksPath", join(repo, "hooks"));
+	const job = await prepare(repo, "im93", CHECK);
 	mkdirSync(join(repo, "hooks"));
 	writeFileSync(join(repo, "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
 	writeFileSync(join(repo, "a.txt"), "changed\n");
 	const facts = await finish(job, { failure: "stopped:\nline two" });
 	assert.ok(facts.wip, formatHandback(facts));
+	assert.deepEqual(facts.delivered, { check: "none", commit: "none", wip: true, integrity: "clear" });
 	assert.equal(git("log", "-1", "--format=%s"), "WIP(delegate im93): stopped:");
 	assert.equal(git("rev-parse", "--abbrev-ref", "HEAD"), "goal/x");
 	assert.equal(git("status", "--porcelain"), "");
@@ -304,8 +479,10 @@ test("finish: a switched branch is ✗ with no WIP", async () => {
 	git("switch", "-q", "main");
 	writeFileSync(join(repo, "x.txt"), "x\n");
 	passed(job);
-	const facts = await finish(job, ok);
+	const facts = await finish(job, ok(job));
 	assert.equal(facts.wip, undefined);
+	assert.deepEqual(facts.delivered, { check: "pass", commit: "none", wip: false, integrity: "tripped" });
+	assert.ok(facts.stopFacts.some((fact) => fact.owner === "implement" && fact.cause === "integrity-tripwire"));
 	assert.match(formatHandback(facts), /^✗ HEAD moved: now refs\/heads\/main, not goal\/x; no WIP commit$/m);
 	assert.equal(git("status", "--porcelain"), "?? x.txt");
 	assert.ok(!existsSync(lockOf(repo)));
@@ -369,8 +546,13 @@ test("finish flags a reset below the base, a merge commit, an old commit, a move
 		const job = await prepare(f.repo, "im95", CHECK);
 		change(f);
 		passed(job);
-		const facts = await finish(job, ok);
+		const facts = await finish(job, ok(job));
 		assert.equal(facts.failed, true, name);
+		assert.equal(facts.delivered.integrity, "tripped", name);
+		assert.ok(
+			facts.stopFacts.some((fact) => fact.owner === "implement" && fact.cause === "integrity-tripwire"),
+			name,
+		);
 		assert.match(formatHandback(facts), new RegExp(`^✗ .*${error.source}`, "m"), name);
 	}
 	rmSync(join(process.env.PI_CODING_AGENT_DIR, "settings.json"), { force: true });
@@ -384,11 +566,33 @@ test("finish never throws; git timeouts become problems and the lock is released
 		GIT_LIMITS.timeoutMs = saved;
 	});
 	GIT_LIMITS.timeoutMs = 1;
-	const facts = await finish(job, ok);
+	const facts = await finish(job, ok(job));
 	GIT_LIMITS.timeoutMs = saved;
 	assert.equal(facts.failed, true);
+	assert.equal(facts.delivered.integrity, "unknown");
 	assert.match(formatHandback(facts), /timed out after 1 ms/);
 	assert.ok(!existsSync(lockOf(repo)));
+});
+
+test("terminal WIP is not delivered, while a normal commit resolves prior WIP", async (t) => {
+	for (const scenario of ["unchanged", "worker-wip", "resolved"])
+		await t.test(scenario, async () => {
+			const { repo, git } = goalFixture();
+			if (scenario !== "worker-wip") {
+				writeFileSync(join(repo, "a.txt"), "half\n");
+				git("commit", "-qam", "WIP(delegate earlier): stopped");
+			}
+			const job = await prepare(repo, `im-wip-${scenario}`, CHECK);
+			if (scenario !== "unchanged") {
+				writeFileSync(join(repo, "a.txt"), "done\n");
+				git("commit", "-qam", scenario === "worker-wip" ? "WIP(delegate worker): stopped" : "feat: resolve WIP");
+			}
+			passed(job);
+			const facts = await finish(job, ok(job));
+			assert.equal(facts.failed, scenario !== "resolved", scenario);
+			assert.equal(facts.delivered.wip, scenario !== "resolved", scenario);
+			assert.equal(facts.delivered.commit, scenario === "resolved" ? "normal" : "none", scenario);
+		});
 });
 
 test("prepare notes a WIP HEAD from an earlier attempt", async () => {
@@ -397,7 +601,7 @@ test("prepare notes a WIP HEAD from an earlier attempt", async () => {
 	git("commit", "-qam", "WIP(delegate im1): stopped: cancelled");
 	const job = await prepare(repo, "im97", CHECK);
 	assert.equal(job.wipHead, true);
-	await finish(job, ok);
+	await finish(job, ok(job));
 });
 
 const facts = (over = {}) => ({
@@ -503,6 +707,7 @@ test("details and handback redact worker text and escape control characters", as
 	job.check.runs.push(`pass: ${job.check.command}`);
 	const facts = await finish(job, {
 		answer: `AWS_SECRET_ACCESS_KEY='answer-fake-secret' \u001b[2J`,
+		provenance: [{ jobId: job.id, attempt: 1, complete: true, stopFacts: [], toolEffects: [] }],
 		failedToolCapture: {
 			status: "unavailable",
 			warning: `capture unavailable: GITHUB_TOKEN="warning-fake-secret"`,

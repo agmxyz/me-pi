@@ -6,17 +6,31 @@
  * outside build and temp directories.
  * With a UI it asks for confirmation; without one (print mode) it blocks.
  * `/guard on|off` toggles it for the current session; every session starts on.
- * The `## Approval` policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
+ * The Approval policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
  */
 
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+export const GUARD_STOP_EVENT = "me-pi:guard-stop";
+
+export interface GuardStopEvent {
+	owner: "guard";
+	jobId: string;
+	attempt: number;
+	toolCallId: string;
+	cause: "guard-denial";
+	resource: "guard";
+	effect: "denied";
+}
+
+// Shell options accepted by installer matching and shell `-c` command-position recognition.
+const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 // A command position: start of line/command, after `;`, `&`, `|`, `(`, `{`, `` ` ``, `$(`, a shell keyword
 // (`then`, `do`, `else`), a wrapper with its options (`env -i`, `xargs -0`, `sudo`, `nohup`, `time`, `exec`,
 // `rtk [proxy]`, `command`), `eval`, `find -exec`, or a shell's `-c` (`bash -lc`, `zsh -c`), plus optional
 // `NAME=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as `grep 'git push'` from matching.
-const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
+const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
 // `git` global options (`-C dir`, `-c k=v`, `--git-dir=...`) before the subcommand.
 const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
 // Rest of the same command (stops at a command separator).
@@ -167,8 +181,10 @@ export function classify(
 const GH_COMMAND = new RegExp(`${AT_COMMAND}gh(?![\\w.-])`);
 const PI_COMMAND = new RegExp(`${AT_COMMAND}pi\\s+(install|remove|uninstall|update|config)(?![\\w-])`);
 // `./install.sh`, `/abs/install.sh`, `sh|bash|zsh [opts] install.sh`, or `.`/`source install.sh`; not `install.test.sh`.
+// A simple shell `-n install.sh` invocation only parses syntax, so don't classify that filename as an execution.
+const INSTALL_SYNTAX_CHECK = String.raw`(?:ba|z)?sh\s+-n\s+(?:[\w.~-]*\/)*install\.sh(?![\w.-])`;
 const INSTALL_SH = new RegExp(
-	`${AT_COMMAND}(?:(?:(?:ba|z)?sh|source|\\.)\\s+(?:-\\w+\\s+)*(?:[\\w.~-]*\\/)*)?install\\.sh(?![\\w.-])`,
+	`${AT_COMMAND}(?!${INSTALL_SYNTAX_CHECK})(?:(?:(?:ba|z)?sh|source|\\.)\\s+(?:${SHELL_OPTION}\\s+)*(?:[\\w.~-]*\\/)*)?install\\.sh(?![\\w.-])`,
 );
 // `git config` forms that only read.
 const CONFIG_READS = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope"]);
@@ -302,12 +318,27 @@ export default function (pi: ExtensionAPI) {
 		const command = String((event.input as { command?: unknown }).command ?? "");
 		const risk = classify(command, () => branchIn(ctx.cwd));
 		if (!risk) return undefined;
-		if (!ctx.hasUI)
-			return {
-				block: true,
-				reason: `Blocked (${risk}): needs explicit user approval; no UI to confirm.`,
-			};
+		const block = (reason: string) => {
+			if (process.env.ME_PI_RUN === "1") {
+				const jobId = process.env.ME_PI_DELEGATE_JOB_ID;
+				const attempt = Number(process.env.ME_PI_DELEGATE_ATTEMPT);
+				if (jobId && Number.isSafeInteger(attempt) && attempt > 0 && event.toolCallId) {
+					const fact: GuardStopEvent = {
+						owner: "guard",
+						jobId,
+						attempt,
+						toolCallId: event.toolCallId,
+						cause: "guard-denial",
+						resource: "guard",
+						effect: "denied",
+					};
+					pi.events.emit(GUARD_STOP_EVENT, fact);
+				}
+			}
+			return { block: true, reason };
+		};
+		if (!ctx.hasUI) return block(`Blocked (${risk}): needs explicit user approval; no UI to confirm.`);
 		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command);
-		return ok ? undefined : { block: true, reason: `Blocked by user (${risk}).` };
+		return ok ? undefined : block(`Blocked by user (${risk}).`);
 	});
 }

@@ -50,8 +50,6 @@ export interface RunView {
 	output: string;
 	outDir?: string;
 	files?: string[];
-	fallbacks?: string[];
-	fallbackMessage?: string;
 }
 
 /** The renderer's part of the tool details: the stage, and the runs shown in it. */
@@ -75,7 +73,6 @@ export interface ActivityWidgetRow {
 	thinking: string;
 	startedAt: number;
 	lastTool?: string;
-	fallbacks: number;
 	stage: "Workers" | "Rebuttal";
 	persona: Persona;
 }
@@ -103,9 +100,8 @@ export function activityWidget(rows: () => readonly ActivityWidgetRow[], theme: 
 				const workerId = row.workerCount > 1 ? `${id}#${row.worker}` : id;
 				const elapsed = Math.max(0, Math.floor((Date.now() - row.startedAt) / 1000));
 				const stage = row.stage === "Rebuttal" ? fg("warning", " R2") : "";
-				const fallback = row.fallbacks > 0 ? fg("warning", " ↻") : "";
 				const phrase = row.persona.phrase ? ` · ${fg("dim", row.persona.phrase)}` : "";
-				const tail = `${fg("dim", `@${thinking} ${elapsed}s`)}${fallback}${tool ? ` · ${fg("toolTitle", tool)}` : ""}${phrase}`;
+				const tail = `${fg("dim", `@${thinking} ${elapsed}s`)}${tool ? ` · ${fg("toolTitle", tool)}` : ""}${phrase}`;
 				return `${fg("warning", row.persona.emoji)} ${fg("accent", workerId)} ${fg("muted", role)}${stage} ${fg("accent", model)} ${tail}`;
 			});
 			const overflow = current.length - shown.length;
@@ -172,10 +168,7 @@ function icon(run: RunView, fg: Fg): string {
 function runHeader(run: RunView, fg: Fg): string {
 	const web = run.web ? " web" : "";
 	const files = run.files ? ` · ${run.files.length} file${run.files.length === 1 ? "" : "s"}` : "";
-	const fallbacks = run.fallbacks?.length
-		? ` · ${run.fallbacks.length} fallback${run.fallbacks.length === 1 ? "" : "s"}`
-		: "";
-	const meta = `@${run.thinking}${web} $${run.cost.toFixed(4)} ${Math.round(run.ms / 1000)}s${files}${fallbacks}`;
+	const meta = `@${run.thinking}${web} $${run.cost.toFixed(4)} ${Math.round(run.ms / 1000)}s${files}`;
 	return `${icon(run, fg)} ${fg("accent", shortModel(run.model))} ${fg("dim", meta)}`;
 }
 
@@ -191,7 +184,7 @@ export function progressLines(view: DelegateView, fg: Fg = plain, expanded = fal
 	const header = fg("toolTitle", view.stage) + (view.web ? fg("muted", " [web]") : "");
 	const runs = view.runs.flatMap((r) => {
 		const phrase = !r.done && r.persona?.phrase ? `· ${r.persona.phrase}` : undefined;
-		const tail = [r.lastTool, r.fallbackMessage && `↻ ${r.fallbackMessage}`, phrase]
+		const tail = [r.lastTool, phrase]
 			.filter(Boolean)
 			.map((text) => fg("dim", text as string))
 			.join(" ");
@@ -259,8 +252,6 @@ export function renderResult(
 	view.runs.forEach((r, i) => {
 		if (i > 0) container.addChild(new Spacer(1));
 		container.addChild(new Lines([runHeader(r, fg)], ellipsis));
-		for (const fallback of r.fallbacks ?? [])
-			container.addChild(new Text(fg("warning", `Fallback: ${fallback}`), 0, 0));
 		const trouble = problem(r);
 		if (trouble) container.addChild(new Text(fg("error", trouble), 0, 0));
 		if (r.output.trim()) container.addChild(new Markdown(r.output.trim(), 0, 0, markdown));

@@ -29,7 +29,6 @@ export interface ActiveWorker {
 	startedAt: number;
 	active: boolean;
 	lastTool?: string;
-	fallbacks: number;
 	persona: Persona;
 }
 
@@ -76,6 +75,7 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 		for (const [name, pool] of [
 			["Scout", set.scout],
 			["Worker", set.worker],
+			...(set.review ? ([["Review", set.review]] as const) : []),
 		] as const) {
 			const models = pool.models.length
 				? pool.models

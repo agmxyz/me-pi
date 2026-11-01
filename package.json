@@ -19,7 +19,8 @@
       "extensions/delegate.ts",
       "extensions/guard.ts",
       "extensions/skill.ts"
-    ]
+    ],
+    "skills": []
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

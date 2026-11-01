@@ -179,12 +179,17 @@ test("workerRisk blocks commands that move an implement worker off its branch or
 		"/abs/install.sh",
 		"x/install.sh",
 		"cd .. && ./install.sh",
+		"bash -- install.sh",
+		"bash --noprofile install.sh",
+		"bash -n install.sh && ./install.sh",
+		"bash -n install.sh && bash install.sh",
+		"bash -n -c './install.sh'",
+		"bash --noprofile -c './install.sh'",
 		"pi install ./x",
 		"pi config",
 		"git symbolic-ref -d HEAD",
 		". ./install.sh",
 		"source install.sh",
-		"bash -n install.sh",
 		"bash <<EOF\n./install.sh\nEOF",
 		"git commit -F - <<EOF && git push\nmsg\nEOF",
 		"git switch other",
@@ -220,6 +225,9 @@ test("workerRisk blocks commands that move an implement worker off its branch or
 		'git commit -m "merge and stash notes"',
 		"git tag v1",
 		"cat install.sh",
+		"bash -n install.sh",
+		"bash -n install.sh test/install.test.sh",
+		"bash -n ./install.sh && cmp -s README.md <(git show HEAD:README.md)",
 		"pi --version",
 		"git symbolic-ref -q HEAD",
 		"git symbolic-ref --short HEAD",
@@ -309,6 +317,7 @@ test("PROTECTED_BRANCHES is main and master", () => {
 function setup() {
 	let handler;
 	let command;
+	const events = [];
 	registerGuard({
 		on: (_event, h) => {
 			handler = h;
@@ -316,8 +325,9 @@ function setup() {
 		registerCommand: (_name, definition) => {
 			command = definition;
 		},
+		events: { emit: (...event) => events.push(event) },
 	});
-	return { handler, command };
+	return { handler, command, events };
 }
 
 test("confirms with UI, blocks without UI or on refusal", async () => {

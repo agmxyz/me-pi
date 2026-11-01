@@ -14,6 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
+import type { AttemptProvenance, StopFact } from "./delegate-provenance.ts";
 import { PROTECTED_BRANCHES } from "./guard.ts";
 
 const run = promisify(execFile);
@@ -211,9 +212,17 @@ export type Outcome = {
 	// `[model @thinking $cost 12s]`.
 	label?: string;
 	tools?: string[];
-	fallbacks?: string[];
 	stderr?: string;
 	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
+	provenance?: AttemptProvenance[];
+	stopFacts?: StopFact[];
+};
+
+export type DeliveredState = {
+	check: CheckState["status"];
+	commit: "normal" | "none" | "unknown";
+	wip: boolean;
+	integrity: "clear" | "tripped" | "unknown";
 };
 
 export type Facts = {
@@ -232,6 +241,8 @@ export type Facts = {
 	// ✗ lines other than WIP and the check, without the ✗.
 	problems: string[];
 	check: CheckState;
+	delivered: DeliveredState;
+	stopFacts: StopFact[];
 	outcome: Outcome;
 	detailsPath?: string;
 	failed: boolean;
@@ -275,9 +286,27 @@ async function linkLock(lockPath: string, id: string): Promise<void> {
 	}
 }
 
+export class ImplementLockRefusal extends Error {
+	readonly stopFact: StopFact;
+
+	constructor(message: string, jobId: string, toolCallId?: string) {
+		super(message);
+		this.name = "ImplementLockRefusal";
+		this.stopFact = {
+			owner: "implement",
+			jobId,
+			attempt: 1,
+			...(toolCallId ? { toolCallId } : {}),
+			cause: "lock-refusal",
+			resource: "checkout-lock",
+			effect: "denied",
+		};
+	}
+}
+
 // Takes the per-repo lock; a lock whose pid is dead is taken over, a live or unreadable one refuses. A takeover
 // renames the stale lock aside and re-checks it, so two takeovers cannot both win.
-async function takeLock(lockPath: string, id: string, repoRoot: string): Promise<void> {
+async function takeLock(lockPath: string, id: string, repoRoot: string, toolCallId?: string): Promise<void> {
 	for (let attempt = 0; attempt < 3; attempt++) {
 		try {
 			return await linkLock(lockPath, id);
@@ -288,10 +317,12 @@ async function takeLock(lockPath: string, id: string, repoRoot: string): Promise
 		if (content === undefined) continue; // Released meanwhile.
 		const holder = lockHolder(content);
 		if (!holder || isAlive(holder.pid))
-			throw new Error(
+			throw new ImplementLockRefusal(
 				holder
 					? `implement job ${holder.id} (pid ${holder.pid}) is already writing in ${repoRoot}; wait for its handback`
 					: `${lockPath} is unreadable; another implement job may be starting in ${repoRoot}. Remove it only if none runs.`,
+				id,
+				toolCallId,
 			);
 		const aside = `${lockPath}.${process.pid}.${id}.stale`;
 		try {
@@ -305,11 +336,15 @@ async function takeLock(lockPath: string, id: string, repoRoot: string): Promise
 			// Another takeover won between the read and the rename: put its lock back.
 			await link(aside, lockPath).catch(() => {});
 			await rm(aside, { force: true });
-			throw new Error(`another implement job just took the lock in ${repoRoot}; wait for its handback`);
+			throw new ImplementLockRefusal(
+				`another implement job just took the lock in ${repoRoot}; wait for its handback`,
+				id,
+				toolCallId,
+			);
 		}
 		await rm(aside, { force: true });
 	}
-	throw new Error(`could not take ${lockPath}`);
+	throw new ImplementLockRefusal(`could not take ${lockPath}`, id, toolCallId);
 }
 
 async function releaseLock(lockPath: string, id: string): Promise<void> {
@@ -331,7 +366,7 @@ const IN_PROGRESS = [
 ];
 
 /** Refuses, leaving nothing behind, unless `cwd` is a clean checkout on a non-main branch with no job writing in it. */
-export async function prepare(cwd: string, id: string, check: string): Promise<Checkout> {
+export async function prepare(cwd: string, id: string, check: string, toolCallId?: string): Promise<Checkout> {
 	const dirs = await git(cwd, [
 		"rev-parse",
 		"--path-format=absolute",
@@ -353,7 +388,7 @@ export async function prepare(cwd: string, id: string, check: string): Promise<C
 		throw new Error(`implement does not commit on ${branch}; \`git switch -c goal/<slug>\` first`);
 	// The lock first, so a job already writing here is named rather than reported as a dirty tree.
 	const lockPath = join(commonDir, LOCK_NAME);
-	await takeLock(lockPath, id, repoRoot);
+	await takeLock(lockPath, id, repoRoot, toolCallId);
 	try {
 		const busy = IN_PROGRESS.find(([path]) => existsSync(join(gitDir, path)));
 		if (busy) throw new Error(`${busy[1]} is in progress in ${repoRoot}; finish or abort it first`);
@@ -511,6 +546,71 @@ function capped(text: string, max: number): [string[], number] {
 
 const num = (text: string, word: string) => Number(text.match(new RegExp(`(\\d+) ${word}`))?.[1] ?? 0);
 
+function markIntegrity(facts: Facts, state: DeliveredState["integrity"]): void {
+	if (state === "tripped" || facts.delivered.integrity !== "tripped") facts.delivered.integrity = state;
+}
+
+function correlatedCompletedBashFailure(fact: StopFact, attempt: AttemptProvenance, allStopFacts: StopFact[]): boolean {
+	if (
+		fact.owner !== "delegate-parent" ||
+		fact.cause !== "tool-failure" ||
+		fact.resource !== "tool" ||
+		fact.effect !== "completed" ||
+		!fact.toolCallId ||
+		fact.jobId !== attempt.jobId ||
+		fact.attempt !== attempt.attempt
+	)
+		return false;
+	const callId = fact.toolCallId;
+	const stopsForCall = allStopFacts.filter(
+		(stop) =>
+			stop.owner === "delegate-parent" &&
+			stop.cause === "tool-failure" &&
+			stop.jobId === fact.jobId &&
+			stop.attempt === fact.attempt &&
+			stop.toolCallId === callId,
+	);
+	const effectsForCall = attempt.toolEffects.filter(
+		(effect) =>
+			effect.owner === "pi-runtime" &&
+			effect.jobId === fact.jobId &&
+			effect.attempt === fact.attempt &&
+			effect.toolCallId === callId,
+	);
+	return (
+		stopsForCall.length === 1 &&
+		effectsForCall.length === 1 &&
+		effectsForCall[0].toolName === "bash" &&
+		effectsForCall[0].effect === "completed" &&
+		effectsForCall[0].replaySafe === false
+	);
+}
+
+/** A completed Bash failure is diagnostic only when its parent stop/effect pair is unique; other stops and unresolved effects block. */
+function hasUnresolvedProvenance(outcome: Outcome): boolean {
+	const attempts = outcome.provenance ?? [];
+	if (!attempts.length) return true;
+	const allStopFacts = [...(outcome.stopFacts ?? []), ...attempts.flatMap((attempt) => attempt.stopFacts)];
+	const allowedFailures = new Set(
+		attempts.flatMap((attempt) =>
+			attempt.stopFacts
+				.filter((fact) => correlatedCompletedBashFailure(fact, attempt, allStopFacts))
+				.map((fact) => `${fact.jobId}\0${fact.attempt}\0${fact.toolCallId}`),
+		),
+	);
+	const isDiagnostic = (fact: StopFact) =>
+		fact.toolCallId !== undefined &&
+		allowedFailures.has(`${fact.jobId}\0${fact.attempt}\0${fact.toolCallId}`) &&
+		fact.owner === "delegate-parent" &&
+		fact.cause === "tool-failure" &&
+		fact.resource === "tool" &&
+		fact.effect === "completed";
+	return (
+		allStopFacts.some((fact) => !isDiagnostic(fact)) ||
+		attempts.some((attempt) => !attempt.complete || attempt.toolEffects.some((fact) => fact.effect !== "completed"))
+	);
+}
+
 /** Ends a job; never throws. Commits leftovers as WIP on the job's branch, checks the range and tripwires. */
 export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Facts> {
 	const facts: Facts = {
@@ -525,13 +625,31 @@ export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Fact
 		stat: "",
 		problems: [],
 		check: job.check,
+		delivered: { check: job.check.status, commit: "unknown", wip: false, integrity: "unknown" },
+		stopFacts: [...(outcome.stopFacts ?? [])],
 		outcome,
 		failed: true,
 	};
 	try {
 		await finishSteps(job, facts);
 	} catch (err) {
+		markIntegrity(facts, "unknown");
 		facts.problems.push(`finish failed: ${(err as Error).message}`);
+	}
+	if (hasUnresolvedProvenance(outcome))
+		facts.problems.push("provenance/effect state is incomplete or stopped; acceptance withheld");
+	facts.delivered.check = job.check.status;
+	facts.delivered.wip ||= facts.wip !== undefined;
+	if (facts.delivered.integrity === "tripped") {
+		const attempt = outcome.provenance?.at(-1)?.attempt ?? 1;
+		facts.stopFacts.push({
+			owner: "implement",
+			jobId: job.id,
+			attempt,
+			cause: "integrity-tripwire",
+			resource: "integrity",
+			effect: "unknown",
+		});
 	}
 	try {
 		facts.detailsPath = await writeDetails(facts, job.tmpRoot);
@@ -543,32 +661,40 @@ export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Fact
 	facts.failed =
 		Boolean(outcome.failure) ||
 		!outcome.answer?.trim() ||
-		facts.wip !== undefined ||
+		facts.delivered.wip ||
 		facts.problems.length > 0 ||
 		job.check.status !== "pass";
 	return facts;
 }
 
 async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
+	facts.delivered.check = job.check.status;
+	facts.delivered.wip = job.wipHead;
+	facts.delivered.integrity = "clear";
 	// 1. HEAD must still be on the job's branch, or a WIP commit would land elsewhere.
 	const head = await git(job.repoRoot, ["symbolic-ref", "-q", "HEAD"]);
-	if (!head.ok)
+	if (!head.ok) {
+		markIntegrity(facts, head.code === 1 ? "tripped" : "unknown");
 		facts.problems.push(
 			head.code === 1
 				? `HEAD moved: detached, not ${job.branch}; no WIP commit`
 				: `HEAD unreadable: ${head.err || "git symbolic-ref failed"}; no WIP commit`,
 		);
-	else if (head.out.trim() !== job.ref)
+	} else if (head.out.trim() !== job.ref) {
+		markIntegrity(facts, "tripped");
 		facts.problems.push(`HEAD moved: now ${head.out.trim()}, not ${job.branch}; no WIP commit`);
-	else {
+	} else {
 		// 2. Leftovers become one WIP commit; ignored files are not added. Hooks and signing are off: this commit
 		// only saves work, and a worker may have set core.hooksPath.
 		const status = await git(job.repoRoot, ["status", "--porcelain"]);
-		if (!status.ok) facts.problems.push(`git status failed: ${status.err}`);
-		else if (status.out.trim()) {
+		if (!status.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`git status failed: ${status.err}`);
+		} else if (status.out.trim()) {
 			const why = failureLine(facts.outcome.failure) ?? "left uncommitted by the worker";
 			const [files, more] = capped(status.out.replace(/^.{3}/gm, ""), MAX_WIP_FILES);
 			const add = await git(job.repoRoot, ["add", "-A"]);
+			if (!add.ok) markIntegrity(facts, "unknown");
 			const commit = add.ok
 				? await git(job.repoRoot, [
 						"-c",
@@ -582,8 +708,10 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 						`WIP(delegate ${job.id}): ${why}`,
 					])
 				: add;
-			if (!commit.ok) facts.problems.push(`WIP commit failed: ${commit.err}; the tree is left dirty`);
-			else {
+			if (!commit.ok) {
+				markIntegrity(facts, "unknown");
+				facts.problems.push(`WIP commit failed: ${commit.err}; the tree is left dirty`);
+			} else {
 				const sha = await git(job.repoRoot, ["rev-parse", "--short", "HEAD"]);
 				if (!sha.ok) facts.problems.push(`WIP commit made, but its sha is unreadable: ${sha.err}`);
 				facts.wip = { sha: sha.ok ? sha.out.trim() : "(unknown)", reason: why, files: files.map(shown), more };
@@ -592,12 +720,22 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 	}
 	// 3. The range, read from git: it must descend from the base and hold only new, non-merge commits.
 	const tip = await git(job.repoRoot, ["rev-parse", "--verify", "-q", job.ref]);
-	if (!tip.ok) facts.problems.push(`branch ${job.branch} is gone: ${tip.err || "not found"}`);
-	else {
+	if (!tip.ok) {
+		markIntegrity(facts, tip.code === 1 ? "tripped" : "unknown");
+		facts.problems.push(`branch ${job.branch} is gone: ${tip.err || "not found"}`);
+	} else {
 		const sha = tip.out.trim();
 		facts.tip = sha;
-		if (!(await git(job.repoRoot, ["merge-base", "--is-ancestor", job.base, sha])).ok)
+		const subject = await git(job.repoRoot, ["log", "-1", "--format=%s", sha]);
+		if (!subject.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`delivered HEAD subject unreadable: ${subject.err}`);
+		} else facts.delivered.wip = subject.out.trim().startsWith("WIP(delegate");
+		const ancestry = await git(job.repoRoot, ["merge-base", "--is-ancestor", job.base, sha]);
+		if (!ancestry.ok) {
+			markIntegrity(facts, ancestry.code === 1 ? "tripped" : "unknown");
 			facts.problems.push(`${job.branch} no longer descends from the base ${job.base.slice(0, 7)}`);
+		}
 		// `%h %p %ct %s`, NUL-separated: `%p` is one parent, or several for a merge.
 		const log = await git(job.repoRoot, [
 			"log",
@@ -605,7 +743,10 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 			"--format=%h%x00%p%x00%ct%x00%s",
 			`${job.base}..${sha}`,
 		]);
-		if (!log.ok) facts.problems.push(`git log failed: ${log.err}`);
+		if (!log.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`git log failed: ${log.err}`);
+		}
 		const commits = log.out.split("\n").filter(Boolean);
 		const oldest = (job.startedAt - CLOCK_SKEW_MS) / 1000;
 		const merges: string[] = [];
@@ -616,25 +757,41 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 			if (Number(time) < oldest) old.push(hash);
 			return `${hash} ${subject}`;
 		});
-		if (merges.length) facts.problems.push(`merge commit(s) in the range: ${merges.join(", ")}`);
-		if (old.length)
+		if (merges.length) {
+			markIntegrity(facts, "tripped");
+			facts.problems.push(`merge commit(s) in the range: ${merges.join(", ")}`);
+		}
+		if (old.length) {
+			markIntegrity(facts, "tripped");
 			facts.problems.push(`commit(s) older than the job (fast-forward to existing work?): ${old.join(", ")}`);
+		}
 		facts.commits = listed.slice(0, MAX_COMMITS).map(shown);
 		facts.commitCount = listed.length;
+		if (log.ok)
+			facts.delivered.commit = commits.some((line) => !line.split("\0")[3]?.startsWith("WIP(delegate"))
+				? "normal"
+				: "none";
 		const short = await git(job.repoRoot, ["diff", "--shortstat", `${job.base}..${sha}`]);
 		const stat = await git(job.repoRoot, ["diff", "--stat", `${job.base}..${sha}`]);
-		if (!short.ok || !stat.ok) facts.problems.push(`git diff --stat failed: ${short.err || stat.err}`);
+		if (!short.ok || !stat.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`git diff --stat failed: ${short.err || stat.err}`);
+		}
 		facts.files = num(short.out, "files? changed");
 		facts.insertions = num(short.out, "insertions?");
 		facts.deletions = num(short.out, "deletions?");
 		facts.stat = stat.out;
 		// 4. Files Pi loads on /reload: the coordinator reviews them before reloading.
 		const trust = await git(job.repoRoot, ["diff", "--name-only", `${job.base}..${sha}`, "--", ".pi", ".agents"]);
-		if (!trust.ok) facts.problems.push(`Tripwire: git diff .pi .agents failed: ${trust.err}`);
-		else if (trust.out.trim())
+		if (!trust.ok) {
+			markIntegrity(facts, "unknown");
+			facts.problems.push(`Tripwire: git diff .pi .agents failed: ${trust.err}`);
+		} else if (trust.out.trim()) {
+			markIntegrity(facts, "tripped");
 			facts.problems.push(
 				`Tripwire: .pi or .agents changed (${capped(trust.out, 5)[0].map(shown).join(", ")}); review before /reload`,
 			);
+		}
 	}
 	try {
 		const [gitAfter, settingsAfter] = await Promise.all([snapshotGit(job.repoRoot), settingsResources()]);
@@ -643,7 +800,9 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 			...settingsTripwire(job.settingsBefore, settingsAfter),
 		];
 		facts.problems.push(...trips.map((t) => `Tripwire: ${t}`));
+		if (trips.length) markIntegrity(facts, "tripped");
 	} catch (err) {
+		markIntegrity(facts, "unknown");
 		facts.problems.push(`Tripwire: tripwire unavailable: ${(err as Error).message}`);
 	}
 }
@@ -666,6 +825,30 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 		`# ${f.id} ${f.branch} ${f.base.slice(0, 7)}..${f.tip?.slice(0, 7) ?? "(missing)"} ${o.label ?? ""}`.trim(),
 		"",
 		...section(
+			"Delivered state",
+			[
+				`check: ${f.delivered.check}`,
+				`normal commits: ${f.delivered.commit}`,
+				`WIP: ${f.delivered.wip ? "present" : "none"}`,
+				`integrity: ${f.delivered.integrity}`,
+			].join("\n"),
+		),
+		...section(
+			"Stop provenance",
+			[
+				...f.stopFacts.map(
+					(fact) =>
+						`${fact.owner} job=${fact.jobId} attempt=${fact.attempt}${fact.toolCallId ? ` tool=${fact.toolCallId}` : ""} cause=${fact.cause} resource=${fact.resource} effect=${fact.effect}`,
+				),
+				...(f.outcome.provenance ?? []).flatMap((attempt) =>
+					attempt.stopFacts.map(
+						(fact) =>
+							`${fact.owner} job=${fact.jobId} attempt=${fact.attempt}${fact.toolCallId ? ` tool=${fact.toolCallId}` : ""} cause=${fact.cause} resource=${fact.resource} effect=${fact.effect}`,
+					),
+				),
+			].join("\n"),
+		),
+		...section(
 			"Problems",
 			[...(f.wip ? [`WIP ${f.wip.sha} (${f.wip.reason}): ${f.wip.files.join(", ")}`] : []), ...f.problems].join(
 				"\n",
@@ -677,7 +860,6 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 		...section("Failure", o.failure),
 		...section("Answer", o.answer),
 		...section("Tools", o.tools?.join("\n")),
-		...section("Fallbacks", o.fallbacks?.join("\n")),
 		...section("Stderr (tail)", o.stderr),
 		...section(
 			"Failed tool diagnostics",
