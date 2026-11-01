@@ -300,6 +300,8 @@ interface Job extends Role {
 	role: string;
 	output: boolean;
 	jobId: string;
+	// Skills the worker may see and load; undefined means all.
+	skills?: string[];
 	// implement: its checkout job, and whether the main session trusts this project (for `--approve`).
 	implement?: {
 		job: Checkout;
@@ -367,6 +369,30 @@ const workerSystemPrompt = ({ role, answer, implement }: Job, outDir?: string) =
 			: ""
 	}`;
 
+// Policy sections a worker skips, marked in their `## ` heading; a section runs to the next `## ` heading.
+const policySection = (marker: string) =>
+	new RegExp(`^## [^\\n]*\\(${marker}\\)[^\\n]*\\n(?:(?!## )[^\\n]*(?:\\n|$))*`, "gm");
+const COORDINATOR_ONLY = policySection("coordinator only");
+const COORDINATOR_AND_IMPLEMENT = policySection("coordinator and implement only");
+
+/**
+ * Drops from a worker's prompt what it cannot use: coordinator-only policy for every worker, policy for
+ * writers when the worker only reads, and skills outside `skills` (undefined keeps all). Mutates `options`
+ * in place, so the `Skill` tool, which holds the same skills array, serves only what the prompt lists.
+ */
+function scopeWorkerPrompt(
+	options: { contextFiles?: { content: string }[]; skills?: { name: string }[] },
+	{ implement, skills }: { implement: boolean; skills?: string[] },
+) {
+	for (const file of options.contextFiles ?? []) {
+		file.content = file.content.replace(COORDINATOR_ONLY, "");
+		if (!implement) file.content = file.content.replace(COORDINATOR_AND_IMPLEMENT, "");
+	}
+	if (!skills || !options.skills) return;
+	const kept = options.skills.filter((s) => skills.includes(s.name));
+	options.skills.splice(0, options.skills.length, ...kept);
+}
+
 // --- Model pools ----------------------------------------------------------------------------------
 
 export interface ModelEntry {
@@ -386,6 +412,8 @@ export interface ModelSet {
 	scout: ModelPool;
 	worker: ModelPool;
 	review?: ModelPool;
+	/** Skills read-only workers may see and load; omitted means all. `implement` always sees all. */
+	readOnlySkills?: string[];
 }
 
 const defaultModelSet = (): ModelSet => ({
@@ -489,7 +517,8 @@ function validModelSet(raw: any, where: string): ModelSet {
 	if (raw.version === undefined) return legacyModelSet(raw, where);
 	if (raw.version !== 2 && raw.version !== 3)
 		throw new Error(`${where}: unsupported version ${JSON.stringify(raw.version)} (expected 2 or 3)`);
-	const allowed = raw.version === 2 ? ["version", "scout", "worker"] : ["version", "scout", "worker", "review"];
+	const allowed =
+		raw.version === 2 ? ["version", "scout", "worker"] : ["version", "scout", "worker", "review", "readOnlySkills"];
 	const unknown = Object.keys(raw).filter((k) => !allowed.includes(k));
 	if (unknown.length)
 		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: ${allowed.join(", ")})`);
@@ -505,7 +534,15 @@ function validModelSet(raw: any, where: string): ModelSet {
 		scout: validV3Pool(raw.scout, `${where}.scout`, true),
 		worker: validV3Pool(raw.worker, `${where}.worker`, false),
 		...(raw.review !== undefined ? { review: validV3Pool(raw.review, `${where}.review`, false) } : {}),
+		...(raw.readOnlySkills !== undefined ? { readOnlySkills: skillNames(raw.readOnlySkills, where) } : {}),
 	};
+}
+
+function skillNames(value: unknown, where: string): string[] {
+	if (!Array.isArray(value) || value.some((s) => typeof s !== "string" || !s.trim()))
+		throw new Error(`${where}.readOnlySkills must be an array of skill names`);
+	if (new Set(value).size !== value.length) throw new Error(`${where}.readOnlySkills lists a skill twice`);
+	return value;
 }
 
 interface RunSpec {
@@ -944,6 +981,7 @@ function runWorkerAttempt(
 				ME_PI_RUN: "1",
 				ME_PI_ROLE: role,
 				ME_PI_OUTPUT_DIR: result.outDir ?? "",
+				ME_PI_SKILLS: job.skills ? JSON.stringify(job.skills) : "",
 				ME_PI_DELEGATE_JOB_ID: job.jobId,
 				ME_PI_DELEGATE_ATTEMPT: String(attemptIndex),
 				ME_PI_BUDGET: JSON.stringify({
@@ -1897,6 +1935,10 @@ export default function (pi: ExtensionAPI) {
 		let overBudget = 0;
 		let cost = 0;
 		const pendingStopFacts = new Map<string, StopFact[]>();
+		const skills = process.env.ME_PI_SKILLS ? (JSON.parse(process.env.ME_PI_SKILLS) as string[]) : undefined;
+		pi.on("before_agent_start", (event) =>
+			scopeWorkerPrompt(event.systemPromptOptions, { implement: process.env.ME_PI_ROLE === "implement", skills }),
+		);
 		const rememberStop = (toolCallId: unknown, fact: StopFact) => {
 			if (typeof toolCallId !== "string" || !toolCallId || !hasIdentity) return;
 			const facts = pendingStopFacts.get(toolCallId) ?? [];
@@ -2209,6 +2251,7 @@ export default function (pi: ExtensionAPI) {
 				for (const spec of specs)
 					if (spec.model && !configured.has(spec.model)) validateOneOffModel(spec.model, ctx?.modelRegistry);
 				resolved = specs.map((r) => resolveRun(role, r, set, session, ctx?.thinkingLevel));
+				if (role !== "implement") job.skills = set.readOnlySkills;
 			} catch (err: any) {
 				return fail(err.message);
 			}

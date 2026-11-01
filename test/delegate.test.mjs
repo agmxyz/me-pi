@@ -568,6 +568,7 @@ process.stdin.on("end", () => {
     "workerRun=" + (process.env.ME_PI_RUN || ""),
     "prompt=" + JSON.stringify(prompt),
     ...(args.includes("--approve") ? ["approve=yes"] : args.includes("--no-approve") ? ["approve=no"] : []),
+    "skills=" + (process.env.ME_PI_SKILLS || "all"),
   ].join(" "));
 });
 `,
@@ -676,6 +677,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 		ME_PI_OUTPUT_DIR: undefined,
 		ME_PI_BUDGET: undefined,
 		ME_PI_ROLE: undefined,
+		ME_PI_SKILLS: undefined,
 		ME_PI_DELEGATE_JOB_ID: undefined,
 		ME_PI_DELEGATE_ATTEMPT: undefined,
 		ME_PI_TEST_ROOT: REPO_ROOT,
@@ -824,7 +826,12 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.equal(typeof main.tool.renderResult, "function");
 	const worker = setup(t, { env: { ME_PI_RUN: "1" } });
 	assert.equal(worker.tool, undefined, "no nested delegation");
-	assert.deepEqual(Object.keys(worker.handlers).sort(), ["message_end", "tool_call", "tool_execution_end"]);
+	assert.deepEqual(Object.keys(worker.handlers).sort(), [
+		"before_agent_start",
+		"message_end",
+		"tool_call",
+		"tool_execution_end",
+	]);
 });
 
 test("Pi blocked calls are reported on tool_execution_end, not tool_result", async (t) => {
@@ -2314,6 +2321,73 @@ test("/delegate models directs users to edit JSON manually without writing it", 
 	await main.commands.delegate.handler("models", ctx);
 	assert.deepEqual(notes, [[`Edit ${path} to set ordered models and per-model thinking, then run /reload.`, "info"]]);
 	assert.equal(readFileSync(path, "utf8"), original);
+});
+
+const POLICY = [
+	"## Output",
+	"- lead with the result",
+	"## Recovery (coordinator only)",
+	"- coordinator ledger",
+	"",
+	"## Approval (coordinator and implement only)",
+	"- protected actions",
+	"## Secrets",
+	"- never read keys",
+].join("\n");
+
+test("workers drop coordinator-only policy, writer policy unless implement, and unlisted skills", (t) => {
+	const options = () => ({
+		contextFiles: [{ path: "/g/AGENTS.md", content: POLICY }],
+		skills: [{ name: "code-review" }, { name: "tdd" }, { name: "pr" }],
+	});
+	const reader = options();
+	const { skills } = reader;
+	const handlers = setup(t, {
+		env: { ME_PI_RUN: "1", ME_PI_ROLE: "review", ME_PI_SKILLS: JSON.stringify(["code-review", "pr"]) },
+	}).handlers;
+	handlers.before_agent_start({ systemPromptOptions: reader });
+	assert.equal(reader.contextFiles[0].content, "## Output\n- lead with the result\n## Secrets\n- never read keys");
+	assert.deepEqual(
+		reader.skills.map((s) => s.name),
+		["code-review", "pr"],
+	);
+	assert.equal(reader.skills, skills, "filtered in place, so the Skill tool's array matches the prompt");
+
+	const writer = options();
+	setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement" } }).handlers.before_agent_start({
+		systemPromptOptions: writer,
+	});
+	assert.match(writer.contextFiles[0].content, /## Approval \(coordinator and implement only\)\n- protected actions/);
+	assert.doesNotMatch(writer.contextFiles[0].content, /coordinator ledger/);
+	assert.equal(writer.skills.length, 3, "no allowlist keeps every skill");
+});
+
+test("readOnlySkills reaches read-only workers and is validated", async (t) => {
+	const config = {
+		version: 3,
+		scout: { models: [] },
+		worker: { models: [] },
+		readOnlySkills: ["code-review", "pr"],
+	};
+	assert.deepEqual(loadModelSet(join(mkdtempSync(join(TEST_HOME, "cfg-")), "x.json")).readOnlySkills, undefined);
+	const { tool } = setup(t, { config });
+	const res = await run(tool, { role: "review", task: "x" });
+	assert.equal(res.isError, false, text(res));
+	assert.match(text(res), /skills=\["code-review","pr"\]/);
+	const plain = await run(setup(t).tool, { role: "review", task: "x" });
+	assert.match(text(plain), /skills=all/);
+	for (const [value, error] of [
+		["code-review", /readOnlySkills must be an array of skill names/],
+		[["pr", ""], /readOnlySkills must be an array of skill names/],
+		[["pr", "pr"], /readOnlySkills lists a skill twice/],
+	]) {
+		const bad = await run(setup(t, { config: { ...config, readOnlySkills: value } }).tool, {
+			role: "scout",
+			task: "x",
+		});
+		assert.equal(bad.isError, true);
+		assert.match(text(bad), error);
+	}
 });
 
 test("v3 model configs validate per-model thinking", (t) => {

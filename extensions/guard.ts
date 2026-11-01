@@ -6,7 +6,7 @@
  * outside build and temp directories.
  * With a UI it asks for confirmation; without one (print mode) it blocks.
  * `/guard on|off` toggles it for the current session; every session starts on.
- * The `## Approval` policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
+ * The Approval policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
  */
 
 import { spawnSync } from "node:child_process";

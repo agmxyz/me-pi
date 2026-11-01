@@ -9,6 +9,8 @@ The `delegate` tool starts child `pi --mode json -p` workers. A worker sees the 
 - All roles except `implement` are read-only by default. `output: true` adds only the `write` tool, restricted to that worker's fresh private directory under the OS temp directory; the result reports its path. It grants no `edit`, Bash, or writes to other temporary paths. The main session must review and copy any draft it wants to keep.
 - `implement` is the only role that edits the checkout. Its `edit`/`write` paths are restricted to the real checkout, excluding the Git common directory. It requires a clean Git tree on a branch other than `main` or `master`; worker checks block ordinary `gh` and Git push commands. Give it one unchained `check` command; the worker runs it alone, exactly as given, after its final edit, and commits there.
 
+Workers load the same `GLOBAL_AGENTS.md` and repo `AGENTS.md` as the main session, minus policy they cannot use: every worker drops `## ` sections whose heading is marked `(coordinator only)`, and read-only workers also drop those marked `(coordinator and implement only)`. Mark a new policy section the same way when it governs only the coordinator or writers.
+
 Workers cannot delegate; a handback completes only the assigned step. When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires.
 
 ## Choose and close work
@@ -70,6 +72,8 @@ Optional model pools live at `~/.pi/agent/delegate.json`. Without a file, worker
   }
 }
 ```
+
+Optional top-level `readOnlySkills` (v3 only) lists the skills read-only workers see in their prompt and can load with `Skill`, for example `["code-review", "codebase-design", "diagnosing-bugs", "domain-modeling", "research", "writing-for-agents", "pr"]`; without it they see all discovered skills. `implement` always sees all. A listed name that Pi did not discover is ignored.
 
 Replace the example IDs with provider/model IDs available to your Pi installation. Each entry needs a `thinking` value: scout entries accept `low` or `off`; worker and review entries accept `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Optional pool-level `thinking` sets the level for models without a per-model entry; if omitted, the session level is used. `review` is optional: when omitted, `review` calls use the `worker` pool; when configured, it is the default pool for `review` only (`general`, `research`, `challenge`, and `implement` keep using `worker`). Pools are role defaults, not allowlists. Entry order selects the default model but is not a failover sequence: only the first candidate is dispatched.
 

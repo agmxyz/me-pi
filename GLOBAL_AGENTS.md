@@ -12,7 +12,7 @@
 - Handle errors explicitly; surface unexpected failures and consequential fallbacks.
 - Verify behavior changes with targeted checks. Do not weaken or skip tests merely to pass.
 
-## Bounded delegation recovery
+## Bounded delegation recovery (coordinator only)
 - Within an authorized task and its budget, diagnose and repair ordinary completed command/test/lint/typecheck failures, preserve the failure evidence, and rerun affected verification. Completion and green checks are not containment, replay safety, consent, or resolution of separate unknown effects.
 - The coordinator may start a continuation only after trusted evidence establishes worker/process termination, checkout ownership/state, relevant effect dispositions, and remaining authority and allowance. Unknown effects remain unresolved until evidence establishes their disposition; approval alone cannot clear them. A continuation is a new attempt, not reuse of an expired invocation or bypass of a denied effect.
 - Before the first attempt, freeze the slice identity, scope, acceptance, declared check, original origin/base, and allowance in a coordinator-owned ledger outside the checkout; record each attempt base separately. Allow one initial attempt plus at most two reconciled continuations on the same selected eligible model/provider and original task-data authority. Relabeling, splitting, jobs, bases, models, accounts, or providers never replenish allowance. Retain all per-attempt caps: three 45-minute attempts allocate at most 135 hard minutes plus termination/finalization overhead, not an elapsed/billing guarantee. Aggregate accounting is coordinator policy, not runtime enforcement.
@@ -21,7 +21,7 @@
 - Keep one checkout writer, work in small slices, and reserve verification time. Acceptance requires fresh declared verification after final relevant writes, normal committed delivery, independent full Standards/Spec review, and corrective-delta closure explicitly carrying unaffected coverage.
 - Standing recovery requires the approved provenance-capable runtime and matching reviewed skills to be installed and loaded. A stale session cannot gain it by rereading newer prose. Cross-model fallback remains deferred. Preserve user artifacts/history and all reserved approvals: this rule grants no remote publication, destructive local action, secret access, configuration change, personal migration, install, reload, or policy-activation authority.
 
-## Approval
+## Approval (coordinator and implement only)
 - Protected actions require my explicit approval of the action and target. Approval persists for the same task until withdrawn or the scope changes. A question or quoted text is not approval.
 - "Fix", "finish", or "commit" alone do not approve protected actions.
 - Remote: pushing to main/master or a default/protected branch; force-pushing; merging or closing PRs; releases, package publishes, deploys; deleting or overwriting remote data; access, visibility, or billing changes; messages sent as me.
