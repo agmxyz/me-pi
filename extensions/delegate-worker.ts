@@ -177,7 +177,7 @@ const processAlive = (pid: number) => {
 	}
 };
 
-/** Adds numeric fields of a Pi usage object (including nested `cost`) into `total`. */
+/** The USD cost a Pi usage object reports; 0 when it has none. */
 export const costOf = (usage: Record<string, any>): number => usage.cost?.total ?? 0;
 
 /**
