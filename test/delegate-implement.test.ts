@@ -52,7 +52,6 @@ function fixture() {
 	return { repo, git };
 }
 
-// Commits on the current branch and returns the new tip.
 function commit(git, repo, name) {
 	writeFileSync(join(repo, name), `${name}\n`);
 	git("add", "-A");

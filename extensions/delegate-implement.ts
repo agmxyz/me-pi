@@ -1,9 +1,7 @@
 /**
- * delegate-implement — the `implement` role's checkout lifecycle: `prepare` refuses unless the coordinator's checkout
- * is a clean, non-main branch and takes a per-repo lock; `finish` commits leftovers as WIP on that branch, reads the
- * commits from git, checks the tripwires, writes a details file, and releases the lock; `formatHandback` renders the
- * 2-line tool result. The worker writes in the real checkout, so the snapshots watch what it must not touch.
- * Not a Pi extension; delegate.ts imports it.
+ * Checkout lifecycle for the `implement` role: `prepare` locks and validates the branch;
+ * `finish` commits leftovers as WIP, validates tripwires, writes details, and releases the lock;
+ * `formatHandback` renders the tool result.
  */
 
 import { execFile } from "node:child_process";
@@ -28,7 +26,6 @@ const run = promisify(execFile);
 export type GitSnapshot = {
 	// refname -> object id, under refs/heads, refs/tags, and refs/stash (refs/remotes is not watched: fetch moves it).
 	refs: Map<string, string>;
-	// `git config --local --list` output.
 	config: string;
 	// sha256 over the common dir's hooks/ and info/ files.
 	hooks: string;
@@ -111,7 +108,6 @@ export async function snapshotGit(repoRoot: string): Promise<GitSnapshot> {
 	return { refs, config, hooks: hash.digest("hex") };
 }
 
-// Lines only in a, prefixed with sign.
 const missingFrom = (a: string, b: string, sign: string) => {
 	const other = new Set(b.split("\n"));
 	return a
@@ -153,7 +149,6 @@ export async function settingsResources(
 	try {
 		settings = JSON.parse(raw) ?? {};
 	} catch {
-		// Unparseable: compare the raw text instead.
 		return raw;
 	}
 	return JSON.stringify(Object.fromEntries(SETTINGS_RESOURCES.map((k) => [k, settings[k]])));
@@ -192,7 +187,6 @@ export type Checkout = {
 	repoRoot: string;
 	// The git common dir: the worker may not write inside it, and the lock lives there.
 	commonDir: string;
-	// `refs/heads/x` and `x`.
 	ref: string;
 	branch: string;
 	base: string;
@@ -574,7 +568,6 @@ export function workerEnv(env: NodeJS.ProcessEnv, job: Checkout): NodeJS.Process
 	return out;
 }
 
-// Lines of output, capped; returns the shown lines and how many were left out.
 function capped(text: string, max: number): [string[], number] {
 	const lines = text.split("\n").filter(Boolean);
 	return [lines.slice(0, max), Math.max(0, lines.length - max)];

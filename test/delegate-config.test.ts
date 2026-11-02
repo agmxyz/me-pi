@@ -285,7 +285,7 @@ test("review pool selects its first model, reports status, and preserves worker/
 		[SONNET, "high"],
 	]);
 
-	// Exhausting the cap on the first attempt must prevent any review fallback.
+	// Exhausting the cap on the first attempt fails without further attempts.
 	const costMarker = scratch("review-pool-cost-marker");
 	const capped = setup(t, {
 		config,

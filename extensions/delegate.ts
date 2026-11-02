@@ -1,12 +1,8 @@
 /**
- * delegate — runs read-only Pi workers so token-heavy work (searching unread code, docs and web
- * research, reviews, devil's advocate) stays out of the main session, which gets back only the answer.
+ * delegate — runs child Pi workers for token-heavy work (code search, web research, reviews, and isolated edits).
  *
- * Workers are `pi --mode json -p` child processes with read, search, and `Skill` tools (plus web tools for
- * research, challenge, or `web: true`); the main session does every edit, check, and commit. The models
- * come from ordered scout, worker, and optional review pools in ~/.pi/agent/delegate.json. In workers this extension only blocks
- * reads of likely secret paths (see secretPathIn) and, with `output: true`, writes outside the worker's own
- * temp directory (see writeBlockedIn), and blocks tools once the wrap-up budget is spent (see budgetSpent).
+ * Workers run as `pi --mode json -p` child processes with role-scoped tools, model pools,
+ * and internal guardrails (secret-path read blocks, write directory fencing, and wrap-up budgets).
  */
 
 import { spawn } from "node:child_process";
@@ -226,7 +222,6 @@ export function writeBlockedIn(
 	return undefined;
 }
 
-/** Whether a path relative to a directory is the directory itself or outside it. */
 const notStrictlyInside = (rel: string) => !rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 
 // Tasks often name a relative path, which Pi resolves against the project: say where it went and where to write.
@@ -485,7 +480,7 @@ function validV3Pool(raw: any, where: string, scout: boolean): ModelPool {
 	return { models, thinking: poolThinking(raw.thinking, `${where}.thinking`, scout) };
 }
 
-/** The checked v3 set. Other formats (v1 `{ models, default }`, v2 string-list pools) fail with a pointer to the docs. */
+/** Validate the v3 model pool configuration. */
 function validModelSet(raw: any, where: string): ModelSet {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected a JSON object`);
 	if (raw.version !== 3)
@@ -621,7 +616,6 @@ function piCommand(args: string[]): { command: string; args: string[] } {
 export interface RunResult {
 	/** The model and thinking this run was started with (the model id Pi reports may lack the provider). */
 	requested: { model?: string; thinking: string };
-	/** Whether the worker had the web tools. */
 	web: boolean;
 	/** With `output: true`: the worker's own fresh directory, and the files it holds after the run. */
 	outDir?: string;
@@ -2557,7 +2551,6 @@ export default function (pi: ExtensionAPI) {
 						runs: shown.map(({ run, failedRound2: r2 }) =>
 							runView(run, true, r2 && `${r2.failure}${filesLine(r2).replace("\n", "; ")}`),
 						),
-						// implement: branch, range, check, and WIP under the runs.
 						footer:
 							[
 								facts &&
