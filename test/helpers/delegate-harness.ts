@@ -78,6 +78,18 @@ const LUNA = "openai-codex/gpt-6-luna";
 
 const COPILOT = "github-copilot/claude-sonnet-5-5";
 
+// A v3 pool giving every model the same thinking level.
+const pool = (models: string[], thinking: string) => ({
+	models: models.map((model) => ({ model, thinking })),
+	thinking,
+});
+// Scouts get every model at low; workers start with `workerFirst` (default: the last model) at max.
+const modelSet = (models: string[], workerFirst = models.at(-1)) => ({
+	version: 3,
+	scout: pool(models, "low"),
+	worker: pool([workerFirst, ...models.filter((m) => m !== workerFirst)], "max"),
+});
+
 const POOL_SET = {
 	version: 3,
 	scout: {
@@ -147,20 +159,6 @@ import { pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
-const readConfiguredEndpoint = () => {
-  if (!process.env.FAKE_PI_MODELS_PATH) return undefined;
-  const config = JSON.parse(readFileSync(process.env.FAKE_PI_MODELS_PATH, "utf8"));
-  return config.providers?.anthropic?.baseUrl;
-};
-const driftConfiguredEndpoint = () => {
-  if (!process.env.FAKE_PI_DRIFT_ENDPOINT) return;
-  const path = process.env.FAKE_PI_MODELS_PATH;
-  const config = JSON.parse(readFileSync(path, "utf8"));
-  config.providers ??= {};
-  config.providers.anthropic ??= {};
-  config.providers.anthropic.baseUrl = process.env.FAKE_PI_DRIFT_ENDPOINT;
-  writeFileSync(path, JSON.stringify(config));
-};
 const usage = (cost) => ({ input: 10, output: 5, totalTokens: 15, cost: { input: cost / 2, output: cost / 2, total: cost } });
 const emit = (text, { cost = 0.002, stopReason = "stop", errorMessage } = {}) => {
   const selectedModel = flag("--model") || "anthropic/session-default";
@@ -239,7 +237,7 @@ let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
-  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), configuredEndpoint: readConfiguredEndpoint(), approve: args.includes("--approve"), prompt }) + "\\n");
+  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), approve: args.includes("--approve"), prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
   if (mode === "implement-agent-loop") {
     runAgentLoopFixture().catch((error) => { console.error(error); process.exitCode = 1; });
@@ -251,7 +249,6 @@ process.stdin.on("end", () => {
   }
   if (mode === "rate-limit-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     retryable("429 rate_limit_error: too many requests");
-    driftConfiguredEndpoint();
     process.exit(1);
   }
   if (mode === "rate-limit-models" && process.env.FAKE_PI_FAIL_MODELS?.split(",").includes(flag("--model"))) {
@@ -640,26 +637,6 @@ const CTX = {
 
 const text = (res) => res.content.map((c) => c.text).join("\n");
 
-// Legacy scope-shaped input is used to prove that coordinator metadata cannot enable child fallback.
-const fallbackAuthorization = (
-	models,
-	{ authority = "named", taskDataClass = "repository-source", registry = CTX.modelRegistry } = {},
-) => ({
-	authorizationRef: "coordinator-recorded-contract:test-run",
-	authority,
-	taskDataClass,
-	candidates: models.map((modelId) => {
-		const slash = modelId.indexOf("/");
-		const provider = modelId.slice(0, slash);
-		return {
-			model: modelId,
-			provider,
-			destination: registry.find(provider, modelId.slice(slash + 1)).baseUrl,
-			dataClasses: [taskDataClass],
-		};
-	}),
-});
-
 function applyEnv(vars) {
 	for (const [k, v] of Object.entries(vars)) {
 		if (v === undefined) delete process.env[k];
@@ -948,4 +925,4 @@ const implement = (extra = {}) => ({ role: "implement", task: "add a feature", c
 // Resolves once a hang-mode worker has written the file it writes before it waits.
 const workerStarted = (repo) => waitFor(() => existsSync(join(repo, "left.txt")), "the worker to start");
 
-export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, IMPLEMENT_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, WORKER_CONTRACT, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, trackCheck, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, snapshotContent, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, fallbackAuthorization, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals, CHECK, implementRepo, implementEnv, implement, workerStarted };
+export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, IMPLEMENT_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, WORKER_CONTRACT, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, trackCheck, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, snapshotContent, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, pool, modelSet, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals, CHECK, implementRepo, implementEnv, implement, workerStarted };

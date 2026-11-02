@@ -4,9 +4,9 @@ import {
 	bgCtx,
 	CTX,
 	commandCtx,
-	fallbackAuthorization,
 	HAIKU,
 	LUNA,
+	modelSet,
 	OPUS,
 	POOL_SET,
 	run,
@@ -97,7 +97,7 @@ test("each worker keeps one persona across progress, widget rerenders, and the r
 	const draws = [0, 0, 0.99, 0.9];
 	t.mock.method(Math, "random", () => draws.shift() ?? 0.5);
 	const { tool } = setup(t, {
-		config: { models: [HAIKU, OPUS] },
+		config: modelSet([HAIKU, OPUS]),
 		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
 	});
 	const ui = tuiCtx();
@@ -155,7 +155,7 @@ test("a scout worker is an elf in progress and the widget", async (t) => {
 test("the elapsed timer stops between rebuttal rounds and restarts for active rows", async (t) => {
 	const intervals = trackIntervals(t);
 	const { tool } = setup(t, {
-		config: { models: [HAIKU, OPUS] },
+		config: modelSet([HAIKU, OPUS]),
 		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
 	});
 	const ui = tuiCtx();
@@ -207,7 +207,7 @@ test("concurrent foreground calls receive distinct compact widget labels", async
 	assert.equal((await second).isError, false);
 });
 
-test("the TUI widget keeps the first configured candidate after a provider retry", async (t) => {
+test("the TUI widget keeps the first pool model after a provider retry", async (t) => {
 	const { tool } = setup(t, {
 		config: {
 			version: 3,
@@ -223,13 +223,7 @@ test("the TUI widget keeps the first configured candidate after a provider retry
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU },
 	});
 	const ui = tuiCtx();
-	const result = await run(
-		tool,
-		{ role: "review", task: "fallback widget", fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]) },
-		undefined,
-		undefined,
-		ui.ctx,
-	);
+	const result = await run(tool, { role: "review", task: "fallback widget" }, undefined, undefined, ui.ctx);
 	assert.equal(result.isError, true);
 	assert.ok(ui.snapshots.some((snapshot) => snapshot.some((line) => line.includes("claude-haiku-5-5 @high"))));
 	assert.ok(
@@ -238,11 +232,11 @@ test("the TUI widget keeps the first configured candidate after a provider retry
 		),
 		"the disabled fallback never appears as a started worker",
 	);
-	assert.deepEqual(ui.widget(), [], "the final candidate completion hides the widget");
+	assert.deepEqual(ui.widget(), [], "the final completion hides the widget");
 });
 
 test("the TUI widget shows the rebuttal stage", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	const ui = tuiCtx();
 	const result = await run(
 		tool,

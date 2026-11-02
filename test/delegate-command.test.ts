@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { commandCtx, HAIKU, OPUS, POOL_SET, run, setup, statusFor } from "./helpers/delegate-harness.ts";
+import { commandCtx, HAIKU, modelSet, OPUS, POOL_SET, run, setup, statusFor } from "./helpers/delegate-harness.ts";
 
 test("/delegate status shows the stage and only active worker progress", async () => {
 	const active = new Map([
@@ -131,12 +131,12 @@ test("/delegate status: the set with availability, missing tools, running and re
 	assert.match(after, /\nLast 1 calls, \$0\.0020:\n {2}\d\d:\d\d \u2713 general claude-haiku-5-5 \$0\.0020 \d+s$/);
 
 	// A reloaded instance keeps the history.
-	const reloaded = setup(t, { config: { models: [HAIKU, OPUS] }, keepHistory: true });
+	const reloaded = setup(t, { config: modelSet([HAIKU, OPUS]), keepHistory: true });
 	const kept = commandCtx();
 	await reloaded.commands.delegate.handler("", kept.ctx);
 	assert.match(kept.notes[0][0], /\nLast 1 calls, \$0\.0020:/);
 
-	const hanging = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "hang" } });
+	const hanging = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "hang" } });
 	const controller = new AbortController();
 	const pending = run(hanging.tool, { role: "review", task: "x" }, controller.signal);
 	await new Promise((r) => setTimeout(r, 300));
@@ -146,7 +146,7 @@ test("/delegate status: the set with availability, missing tools, running and re
 	controller.abort();
 	await pending;
 
-	const broken = setup(t, { config: { models: [HAIKU], extra: 1 } });
+	const broken = setup(t, { config: { ...modelSet([HAIKU]), extra: 1 } });
 	const bad = commandCtx();
 	await broken.commands.delegate.handler("status", bad.ctx);
 	assert.match(bad.notes[0][0], /\n {2}\u2717 delegate config .*: unknown key\(s\) extra/);
@@ -167,7 +167,7 @@ test("/delegate status without a config names the main session model and thinkin
 });
 
 test("/delegate status keeps the last 20 calls", async (t) => {
-	const main = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const main = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	for (let i = 0; i < 21; i++) await run(main.tool, { task: "x", runs: [{ model: HAIKU }] });
 	const { ctx, notes } = commandCtx();
 	await main.commands.delegate.handler("", ctx);

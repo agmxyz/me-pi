@@ -8,12 +8,10 @@ import { createBashTool } from "@earendil-works/pi-coding-agent";
 import {
 	CHECK,
 	commandCtx,
-	fallbackAuthorization,
 	implement,
 	implementEnv,
 	implementRepo,
 	LUNA,
-	OPUS,
 	POOL_SET,
 	run,
 	scratch,
@@ -669,22 +667,15 @@ test("provider failures without tool failures do not create diagnostic artifacts
 	);
 });
 
-test("implement refuses fallback after a completed non-replay-safe Bash failure and preserves its evidence", async (t) => {
+test("implement preserves evidence of a completed non-replay-safe Bash failure", async (t) => {
 	const tmp = mkdtempSync(join(TEST_HOME, "artifact-job-"));
 	const { tool } = setup(t, {
 		config: POOL_SET,
 		env: implementEnv("implement-fallback-artifacts", { TMPDIR: tmp }),
 	});
-	const result = await run(
-		tool,
-		implement({ fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) }),
-		undefined,
-		undefined,
-		implementRepo().ctx,
-	);
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
 	assert.equal(result.isError, true, text(result));
 	assert.equal(result.details.implement.check.status, "fail");
-	assert.match(result.details.round1[0].fallbackBlockReason, /competing safety stop/);
 	const provenance = result.details.round1[0].provenance[0];
 	assert.ok(provenance.stopFacts.some((fact) => fact.cause === "tool-failure" && fact.effect === "completed"));
 	assert.equal(provenance.toolEffects[0].effect, "completed");

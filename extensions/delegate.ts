@@ -410,7 +410,7 @@ export interface ModelEntry {
 }
 
 export interface ModelPool {
-	/** Ordered candidates; dispatch selects only the first, with cross-model fallback deferred. */
+	/** The first entry is the role default; every entry sets the thinking level when a run names that model. */
 	models: ModelEntry[];
 	/** Thinking for models without an entry (the session model when the pool is empty); omitted means the main session's level. */
 	thinking?: string;
@@ -435,7 +435,7 @@ export function configPath(): string {
 	return process.env.ME_PI_DELEGATE_CONFIG || join(HOME, ".pi", "agent", "delegate.json");
 }
 
-/** A missing file means both pools use the main session's model and thinking. Legacy configs migrate in memory. */
+/** A missing file means both pools use the main session's model and thinking. */
 export function loadModelSet(path = configPath()): ModelSet {
 	if (!existsSync(path)) return defaultModelSet();
 	const where = `delegate config ${path}`;
@@ -446,13 +446,6 @@ export function loadModelSet(path = configPath()): ModelSet {
 		throw new Error(`${where}: ${err?.message ?? err}`);
 	}
 	return validModelSet(raw, where);
-}
-
-function modelIds(value: unknown, where: string): string[] {
-	if (!Array.isArray(value) || value.some((m) => typeof m !== "string" || !m.trim()))
-		throw new Error(`${where} must be an array of model ids like "anthropic/claude-haiku-5-5"`);
-	if (new Set(value).size !== value.length) throw new Error(`${where} lists a model twice`);
-	return value;
 }
 
 function modelEntries(value: unknown, where: string, scout: boolean): ModelEntry[] {
@@ -483,34 +476,6 @@ function poolThinking(value: unknown, where: string, scout: boolean): string {
 	return value as string;
 }
 
-function migratePool(models: string[], thinking: string): ModelEntry[] {
-	return models.map((model) => ({ model, thinking }));
-}
-
-function legacyModelSet(raw: any, where: string): ModelSet {
-	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "default");
-	if (unknown.length) throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: models, default)`);
-	const models = modelIds(raw.models ?? [], `${where}: "models"`);
-	if (raw.default !== undefined && !models.includes(raw.default))
-		throw new Error(`${where}: "default" must be one of "models"`);
-	const workerFirst = raw.default ?? models.at(-1);
-	const workerModels = workerFirst ? [workerFirst, ...models.filter((m: string) => m !== workerFirst)] : [];
-	return {
-		version: 3,
-		scout: { models: migratePool(models, "low"), thinking: "low" },
-		worker: { models: migratePool(workerModels, "max"), thinking: "max" },
-	};
-}
-
-function migrateV2Pool(raw: any, where: string, scout: boolean): ModelPool {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected an object`);
-	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "thinking");
-	if (unknown.length) throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: models, thinking)`);
-	const models = modelIds(raw.models, `${where}.models`);
-	const thinking = poolThinking(raw.thinking, `${where}.thinking`, scout);
-	return { models: migratePool(models, thinking), thinking };
-}
-
 function validV3Pool(raw: any, where: string, scout: boolean): ModelPool {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected an object`);
 	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "thinking");
@@ -520,24 +485,17 @@ function validV3Pool(raw: any, where: string, scout: boolean): ModelPool {
 	return { models, thinking: poolThinking(raw.thinking, `${where}.thinking`, scout) };
 }
 
-/** The checked v3 set; reads v1 `{ models, default }` and v2 pool configs for compatibility. */
+/** The checked v3 set. Other formats (v1 `{ models, default }`, v2 string-list pools) fail with a pointer to the docs. */
 function validModelSet(raw: any, where: string): ModelSet {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected a JSON object`);
-	if (raw.version === undefined) return legacyModelSet(raw, where);
-	if (raw.version !== 2 && raw.version !== 3)
-		throw new Error(`${where}: unsupported version ${JSON.stringify(raw.version)} (expected 2 or 3)`);
-	const allowed =
-		raw.version === 2 ? ["version", "scout", "worker"] : ["version", "scout", "worker", "review", "readOnlySkills"];
+	if (raw.version !== 3)
+		throw new Error(
+			`${where}: unsupported format (version ${JSON.stringify(raw.version ?? null)}); expected "version": 3 with { model, thinking } pool entries. Rewrite it as shown in docs/delegate.md ("Configure model pools").`,
+		);
+	const allowed = ["version", "scout", "worker", "review", "readOnlySkills"];
 	const unknown = Object.keys(raw).filter((k) => !allowed.includes(k));
 	if (unknown.length)
 		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: ${allowed.join(", ")})`);
-	if (raw.version === 2) {
-		return {
-			version: 3,
-			scout: migrateV2Pool(raw.scout, `${where}.scout`, true),
-			worker: migrateV2Pool(raw.worker, `${where}.worker`, false),
-		};
-	}
 	return {
 		version: 3,
 		scout: validV3Pool(raw.scout, `${where}.scout`, true),
@@ -559,19 +517,13 @@ interface RunSpec {
 	thinking?: string;
 }
 
-export interface ResolvedCandidate {
-	model?: string;
-	thinking: string;
-}
-
 export interface ResolvedRun {
-	/** Role selection snapshot; only its first candidate is dispatched. An undefined model means Pi's session model. */
-	candidates: ResolvedCandidate[];
+	/** An undefined model means Pi's session model. */
 	model?: string;
 	thinking: string;
 }
 
-/** Scouts use low/off; all other roles use each candidate's configured thinking level. */
+/** Scouts use low/off; all other roles use the selected model's configured thinking level. */
 export function resolveRun(
 	role: string,
 	run: RunSpec,
@@ -592,26 +544,17 @@ export function resolveRun(
 		return thinking;
 	};
 	const configuredEntries = [...set.scout.models, ...set.worker.models, ...(set.review?.models ?? [])];
-	const candidates = run.model
-		? [
-				{
-					model: run.model,
-					thinking:
-						pool.models.find((entry) => entry.model === run.model)?.thinking ??
-						configuredEntries.find((entry) => entry.model === run.model)?.thinking ??
-						unlisted(),
-				},
-			]
-		: pool.models.length
-			? [...pool.models]
-			: [{ model: sessionModel, thinking: unlisted() }];
-	const withOverrides = candidates.map((candidate) => {
-		const requested = run.thinking ?? candidate.thinking;
-		const thinking = scout ? (requested === "off" ? "off" : "low") : requested;
-		return { ...candidate, thinking };
-	});
-	const first = withOverrides[0];
-	return { candidates: withOverrides, model: first.model, thinking: first.thinking };
+	const selected = run.model
+		? {
+				model: run.model,
+				thinking:
+					pool.models.find((entry) => entry.model === run.model)?.thinking ??
+					configuredEntries.find((entry) => entry.model === run.model)?.thinking ??
+					unlisted(),
+			}
+		: (pool.models[0] ?? { model: sessionModel, thinking: unlisted() });
+	const requested = run.thinking ?? selected.thinking;
+	return { model: selected.model, thinking: scout ? (requested === "off" ? "off" : "low") : requested };
 }
 
 function initialActivity(
@@ -620,17 +563,14 @@ function initialActivity(
 	sessionModel: string | undefined,
 	startedAt: number,
 ): ActiveWorker[] {
-	return runs.map((run, index) => {
-		const candidate = run.candidates[0];
-		return {
-			index: index + 1,
-			model: candidate.model ?? sessionModel ?? "session model",
-			thinking: candidate.thinking,
-			startedAt,
-			active: true,
-			persona: personas[index],
-		};
-	});
+	return runs.map((run, index) => ({
+		index: index + 1,
+		model: run.model ?? sessionModel ?? "session model",
+		thinking: run.thinking,
+		startedAt,
+		active: true,
+		persona: personas[index],
+	}));
 }
 
 // --- Worker process -------------------------------------------------------------------------------
@@ -692,7 +632,6 @@ export interface RunResult {
 	failureClass?: FailureClass;
 	/** Failures of earlier attempts that were retried on the same model as infra failures. */
 	infraRetries?: string[];
-	fallbackBlockReason?: string;
 	provenance?: AttemptProvenance[];
 	toolCallCount?: number;
 	turns: number;
@@ -1520,7 +1459,15 @@ function runWorkerAttempt(
 					resource: "provider",
 					effect: "unknown",
 				});
-				result.fallbackBlockReason = retryRefusalReason(job, run.model, provenance, result, budget);
+				// A budget already spent when Pi classifies a retry is retained as a stop fact, so the attempt is not replayed.
+				const now = Date.now();
+				if (now >= budget.hardDeadline) retainParentFact("hard-timeout", "hard-time");
+				if (now >= budget.toolDeadline) retainParentFact("wrap-up-limit", "tool-time");
+				const spentCost = costOf(result.usage);
+				if (spentCost >= budget.hardCostCapUsd) retainParentFact("hard-cost-limit", "hard-cost");
+				if (spentCost >= budget.toolCostCapUsd) retainParentFact("wrap-up-limit", "tool-cost");
+				if (job.role === "scout" && budget.toolCalls !== null && (result.toolCallCount ?? 0) >= budget.toolCalls)
+					retainParentFact("wrap-up-limit", "tool-calls");
 				return;
 			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
@@ -1596,65 +1543,6 @@ function runWorkerAttempt(
 	});
 }
 
-// Pi's fresh child cannot bind its effective endpoint before task data is sent, so a
-// structured retry can never authorize dispatch of another pool candidate in this release.
-function retryRefusalReason(
-	job: Job,
-	model: string | undefined,
-	provenance: AttemptProvenance,
-	result: RunResult,
-	budget: AttemptBudget,
-): string {
-	if (!model) return "the selected session model has no exact provider/model identity";
-	const slash = model.indexOf("/");
-	if (
-		slash <= 0 ||
-		!provenance.providerRetry ||
-		provenance.providerRetry.provider !== model.slice(0, slash) ||
-		provenance.providerRetry.model !== model.slice(slash + 1)
-	)
-		return "no correlated Pi runtime retry classification is available";
-	if (!provenance.complete) return "attempt provenance is incomplete; replay is refused";
-	if (provenance.stopFacts.some((fact) => fact.cause !== "provider-retry-classified"))
-		return "a competing safety stop prevents replay";
-	if (provenance.toolEffects.some((fact) => !fact.replaySafe || fact.effect !== "completed"))
-		return "tool effects are unknown or unsafe to replay";
-	const retainLimitStop = (cause: StopFact["cause"], resource: StopResource) => {
-		if (
-			!provenance.stopFacts.some(
-				(fact) => fact.owner === "delegate-parent" && fact.cause === cause && fact.resource === resource,
-			)
-		)
-			provenance.stopFacts.push({
-				owner: "delegate-parent",
-				jobId: job.jobId,
-				attempt: provenance.attempt,
-				cause,
-				resource,
-				effect: "unknown",
-			});
-	};
-	const now = Date.now();
-	const hardTimeSpent = now >= budget.hardDeadline;
-	const toolTimeSpent = now >= budget.toolDeadline;
-	if (hardTimeSpent) retainLimitStop("hard-timeout", "hard-time");
-	if (toolTimeSpent) retainLimitStop("wrap-up-limit", "tool-time");
-	if (hardTimeSpent) return "the original hard deadline is spent";
-	if (toolTimeSpent) return "the original tool deadline is spent";
-	const currentCost = costOf(result.usage);
-	const hardCostSpent = currentCost >= budget.hardCostCapUsd;
-	const toolCostSpent = currentCost >= budget.toolCostCapUsd;
-	if (hardCostSpent) retainLimitStop("hard-cost-limit", "hard-cost");
-	if (toolCostSpent) retainLimitStop("wrap-up-limit", "tool-cost");
-	if (hardCostSpent) return "the cumulative hard cost allowance is spent";
-	if (toolCostSpent) return "the cumulative tool cost allowance is spent";
-	if (job.role === "scout" && budget.toolCalls !== null && (result.toolCallCount ?? 0) >= budget.toolCalls) {
-		retainLimitStop("wrap-up-limit", "tool-calls");
-		return "the cumulative scout tool-call allowance is spent";
-	}
-	return "cross-model fallback deferred until child-boundary endpoint enforcement and positive scope/budget tests are available";
-}
-
 function persistFailedToolCapture(
 	job: Checkout,
 	collector: FailedToolArtifactCollector,
@@ -1678,18 +1566,13 @@ async function runWorker(
 	const toolDeadline = start + LIMITS.wrapUpShare * secs * 1000;
 	const hardCostCap = LIMITS.costCapUsd;
 	const toolCostCap = LIMITS.wrapUpShare * hardCostCap;
-	const candidates = Object.freeze(
-		(run.candidates.length ? run.candidates : [{ model: undefined, thinking: run.thinking }]).map((candidate) =>
-			Object.freeze({ ...candidate }),
-		),
-	);
 	let outDir: string | undefined;
 	if (job.output) {
 		try {
 			outDir = mkdtempSync(join(tmpdir(), "me-pi-delegate-out-")); // Mode 0700.
 		} catch (err: any) {
 			return {
-				requested: { model: candidates[0].model, thinking: candidates[0].thinking },
+				requested: { model: run.model, thinking: run.thinking },
 				web: job.web,
 				output: "",
 				failure: `could not create the output directory: ${err?.message ?? err}`,
@@ -1702,7 +1585,7 @@ async function runWorker(
 		}
 	}
 
-	const candidate = Object.freeze({ ...candidates[0] });
+	const selected = Object.freeze({ model: run.model, thinking: run.thinking });
 	const budget: AttemptBudget = {
 		hardDeadline,
 		hardCostCapUsd: hardCostCap,
@@ -1714,7 +1597,7 @@ async function runWorker(
 		runWorkerAttempt(
 			job,
 			prompt,
-			candidate,
+			selected,
 			cwd,
 			signal,
 			onProgress,
@@ -1735,8 +1618,6 @@ async function runWorker(
 		});
 		attempt = mergeAttempts(attempt, next);
 	}
-	if (candidates.length > 1 && attempt.failure && !attempt.provenance?.[0]?.providerRetry)
-		attempt.fallbackBlockReason ??= "Pi runtime supplied no structured retry classification";
 	return attempt;
 }
 
@@ -1855,7 +1736,7 @@ function formatRun(r: RunResult): string {
 	else if (!r.failure) body = `${answer}${filesLine(r)}\n${label(r)}`;
 	else {
 		const partial = r.output.trim() ? `\nPartial answer:\n${cap(r.output.trim(), FAILED_PARTIAL_CAP)}` : "";
-		body = `✗ ${r.failure}${failureClassLine(r)}${r.fallbackBlockReason ? `\nPool fallback not attempted: ${r.fallbackBlockReason}.` : ""}${partial}${filesLine(r)}\n${label(r)}`;
+		body = `✗ ${r.failure}${failureClassLine(r)}${partial}${filesLine(r)}\n${label(r)}`;
 	}
 	return body;
 }
@@ -1928,7 +1809,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Only the first configured candidate is dispatched; cross-model fallback is deferred pending supported child-boundary endpoint enforcement and positive scope/budget tests. Explicit models remain exact. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Only the pool's first model is dispatched; there is no cross-model fallback. Explicit models remain exact. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
@@ -1952,44 +1833,12 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. For several models on the same task, use one entry per model. Not for implement: it uses only the first candidate in the worker pool in delegate.json.",
+					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. For several models on the same task, use one entry per model. Not for implement: it uses the first model in the worker pool in delegate.json.",
 				items: {
 					type: "object",
 					additionalProperties: false,
 					properties: { model, thinking: { type: "string", enum: THINKING_LEVELS } },
 				},
-			},
-			fallbackAuthorization: {
-				type: "object",
-				description:
-					"Coordinator scope intent only; cross-model fallback is deferred until the fresh Pi child can enforce its effective provider endpoint before task data is sent and positive scope/budget tests pass. Supplying this object does not enable fallback or authorize a destination.",
-				additionalProperties: false,
-				properties: {
-					authorizationRef: { type: "string", minLength: 1 },
-					authority: { type: "string", enum: ["named", "adopted-snapshot"] },
-					taskDataClass: { type: "string", minLength: 1 },
-					candidates: {
-						type: "array",
-						minItems: 1,
-						items: {
-							type: "object",
-							additionalProperties: false,
-							properties: {
-								model: { type: "string", minLength: 1 },
-								provider: { type: "string", minLength: 1 },
-								destination: {
-									type: "string",
-									minLength: 1,
-									description:
-										"Requested destination in the coordinator's scope contract. The current runtime does not validate or enforce this value at the child's request boundary.",
-								},
-								dataClasses: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
-							},
-							required: ["model", "provider", "destination", "dataClasses"],
-						},
-					},
-				},
-				required: ["authorizationRef", "authority", "taskDataClass", "candidates"],
 			},
 			output: {
 				type: "boolean",
@@ -2357,7 +2206,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Only the first selected candidate is dispatched; cross-model fallback is deferred until supported child-boundary endpoint enforcement and positive scope/budget tests are available, and explicit models stay exact. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Each run uses one model, the explicit `model` or the role pool's first; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),
@@ -2372,19 +2221,7 @@ export default function (pi: ExtensionAPI) {
 			});
 			const { role = "general", task, web, answer, output, rebuttal, background, check } = params ?? {};
 			const unknown = Object.keys(params ?? {}).filter(
-				(k) =>
-					![
-						"role",
-						"task",
-						"web",
-						"answer",
-						"output",
-						"runs",
-						"rebuttal",
-						"background",
-						"check",
-						"fallbackAuthorization",
-					].includes(k),
+				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal", "background", "check"].includes(k),
 			);
 			if (unknown.length)
 				return fail(
