@@ -2,22 +2,23 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { loadModelSet, resolveModelRef, resolveRun } from "../extensions/delegate-config.ts";
 import {
 	commandCtx,
 	HAIKU,
 	LUNA,
-	loadModelSet,
 	modelSet,
 	OPUS,
 	POLICY,
 	POOL_SET,
-	resolveRun,
+	registryFixture,
 	run,
 	SONNET,
 	scratch,
 	setup,
 	TEST_HOME,
 	text,
+	UNAUTHENTICATED,
 } from "./helpers/delegate-harness.ts";
 
 test("v1 and v2 configs fail with a pointer to the v3 format, and empty pools use the session model", () => {
@@ -243,11 +244,7 @@ test("review pool selects its first model, reports status, and preserves worker/
 	});
 	const { ctx: statusCtx, notes } = commandCtx({ available: [HAIKU, OPUS] });
 	await main.commands.delegate.handler("status", statusCtx);
-	assert.ok(
-		notes[0][0].includes(
-			`Review pool: 1. ${SONNET} (high) ✗ not available (no login or unknown id); 2. ${OPUS} (medium) ✓`,
-		),
-	);
+	assert.ok(notes[0][0].includes(`Review pool: 1. ${SONNET} (high) ✗ unknown model id; 2. ${OPUS} (medium) ✓`));
 
 	const reviewRes = await run(main.tool, {
 		role: "review",
@@ -316,7 +313,7 @@ test("the schema allows exact model IDs outside the configured pools", (t) => {
 	const model = tool.parameters.properties.runs.items.properties.model;
 	assert.equal(model.type, "string");
 	assert.equal(model.enum, undefined);
-	assert.match(model.description, /exact Pi model ID/);
+	assert.match(model.description, /provider\/id, or a bare id/);
 	assert.match(tool.parameters.properties.runs.description, /explicitly named model runs alone and never falls back/i);
 });
 
@@ -391,3 +388,39 @@ test(
 		);
 	},
 );
+
+test("resolveModelRef mirrors Pi's exact --model precedence", () => {
+	const registry = (catalog: string[], available: string[] = catalog) => registryFixture({ catalog, available });
+	const GLM = "z-ai/glm-5.3-flash";
+	const OR = `openrouter/${GLM}`;
+	const NV = `nvidia/${GLM}`;
+	assert.deepEqual(resolveModelRef(HAIKU, registry([HAIKU])), {
+		status: "resolved",
+		model: HAIKU,
+		provider: "anthropic",
+		id: "claude-haiku-5-5",
+		usable: true,
+		authed: true,
+	});
+	assert.equal((resolveModelRef("claude-haiku-5-5", registry([HAIKU])) as any).model, HAIKU, "bare unique id");
+	assert.equal((resolveModelRef(GLM, registry([OR])) as any).model, OR, "slash in a bare id");
+	assert.equal((resolveModelRef(OR, registry([OR])) as any).model, OR, "provider prefix before a slashed id");
+	assert.equal((resolveModelRef(GLM, registry([OR, NV], [OR])) as any).model, OR, "the one usable provider wins");
+	assert.deepEqual(resolveModelRef(GLM, registry([OR, NV])), { status: "ambiguous", candidates: [OR, NV] });
+	const nvidiaAuth = registryFixture({ catalog: [OR, NV], available: [OR], authenticated: ["nvidia"] });
+	assert.equal((resolveModelRef(GLM, nvidiaAuth) as any).model, NV, "Pi's configured-auth tie-break wins");
+	const { hasConfiguredAuth: _, ...olderPi } = registry([OR, NV], [OR]);
+	assert.equal((resolveModelRef(GLM, olderPi) as any).model, OR, "without hasConfiguredAuth, getAvailable decides");
+	assert.deepEqual(resolveModelRef(UNAUTHENTICATED, registry([UNAUTHENTICATED], [])), {
+		status: "resolved",
+		model: UNAUTHENTICATED,
+		provider: "unauthed",
+		id: "model",
+		usable: false,
+		authed: false,
+	});
+	assert.deepEqual(resolveModelRef("anthropic/nope", registry([HAIKU])), { status: "unknown" });
+	assert.deepEqual(resolveModelRef("nope", registry([HAIKU])), { status: "unknown" });
+	assert.equal((resolveModelRef("Anthropic/Claude-HAIKU-5-5", registry([HAIKU])) as any).model, HAIKU);
+	assert.equal((resolveModelRef("Z-AI/GLM-5.3-FLASH", registry([OR])) as any).model, OR);
+});
