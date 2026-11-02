@@ -17,11 +17,12 @@ process.on("exit", () => rmSync(TEST_HOME, { recursive: true, force: true }));
 
 const {
 	default: registerExtension,
-	classifyProviderError,
 	LIMITS,
 	PROMPT_GUIDELINES,
 	PROMPT_SNIPPET,
 } = await import("../../extensions/delegate.ts");
+
+const { classifyProviderError } = await import("../../extensions/delegate-attempt.ts");
 
 const {
 	ROLES,
