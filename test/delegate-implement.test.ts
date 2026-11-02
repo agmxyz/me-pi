@@ -635,16 +635,22 @@ test("finish flags a reset below the base, a merge commit, an old commit, a move
 test("finish never throws; git timeouts become problems and the lock is released", async (t) => {
 	const { repo } = goalFixture();
 	const job = await prepare(repo, "im96", CHECK);
-	const saved = GIT_LIMITS.timeoutMs;
-	t.after(() => {
-		GIT_LIMITS.timeoutMs = saved;
-	});
-	GIT_LIMITS.timeoutMs = 1;
+	// Every git call during finish hangs until the timeout kills it, so no call can win a race against it.
+	const bin = mkdtempSync(join(tmpdir(), "hung-git-"));
+	writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+	const saved = { timeoutMs: GIT_LIMITS.timeoutMs, path: process.env.PATH };
+	const restore = () => {
+		GIT_LIMITS.timeoutMs = saved.timeoutMs;
+		process.env.PATH = saved.path;
+	};
+	t.after(restore);
+	GIT_LIMITS.timeoutMs = 100;
+	process.env.PATH = `${bin}:${saved.path}`;
 	const facts = await finish(job, ok(job));
-	GIT_LIMITS.timeoutMs = saved;
+	restore();
 	assert.equal(facts.failed, true);
 	assert.equal(facts.delivered.integrity, "unknown");
-	assert.match(formatHandback(facts), /timed out after 1 ms/);
+	assert.match(formatHandback(facts), /timed out after 100 ms/);
 	assert.ok(!existsSync(lockOf(repo)));
 });
 
