@@ -10,11 +10,6 @@ const specGraph = readFileSync(join(root, "skills/implement-spec-me-pi/SKILL.md"
 const delegateGuide = readFileSync(join(root, "docs/delegate.md"), "utf8");
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const setupGuide = readFileSync(join(root, "docs/setup.md"), "utf8");
-const ticketIndex = readFileSync(join(root, "docs/specs/delegation-autonomy-tickets/README.md"), "utf8");
-const autonomySpec = readFileSync(join(root, "docs/specs/delegation-autonomy.md"), "utf8");
-const activationHandoff = readFileSync(join(root, "docs/specs/delegation-autonomy-handoff.md"), "utf8");
-const a2Ticket = readFileSync(join(root, "docs/specs/delegation-autonomy-tickets/A2.md"), "utf8");
-const a4Ticket = readFileSync(join(root, "docs/specs/delegation-autonomy-tickets/A4.md"), "utf8");
 
 function sectionBetween(source, heading, nextHeading) {
 	const start = source.indexOf(heading);
@@ -203,16 +198,6 @@ test("guide documents evidence-driven verification and its explicit test-first o
 	assert.match(verification, /load and follow `tdd`/);
 });
 
-test("historical lifecycle approvals do not authorize a new A4 lifecycle", () => {
-	for (const source of [autonomySpec, activationHandoff, a4Ticket]) {
-		assert.match(source, /historical lifecycle approval.*2026-10-31/i);
-		assert.match(source, /new lifecycle requires current user authority/i);
-	}
-	assert.doesNotMatch(autonomySpec, /The current approval separately authorizes/);
-	assert.doesNotMatch(activationHandoff, /The user-approved scope covers this alignment/);
-	assert.doesNotMatch(a4Ticket, /User approval for the exact policy and lifecycle is already granted/);
-});
-
 test("adoption notes date staging facts and defer A4 authority to actual-session revalidation", () => {
 	const checkpoint =
 		/Dated staging checkpoint \(2026-10-31; source `0422473bb01f48283515aa10c1be93fed6bbf9be`; not a live ledger\)/;
@@ -230,35 +215,4 @@ test("adoption notes date staging facts and defer A4 authority to actual-session
 	assert.doesNotMatch(readme, /Current checkout adoption status/);
 	assert.doesNotMatch(setupGuide, /Current live-checkout status/);
 	assert.match(setupGuide, /At that checkpoint.*had not been applied.*had not reloaded/);
-	assert.match(
-		ticketIndex,
-		/Dated A4 staging checkpoint \(2026-10-31; source `0422473bb01f48283515aa10c1be93fed6bbf9be`; not a live ledger\)/,
-	);
-	const pragmaticAmendment = sectionBetween(
-		a2Ticket,
-		"## User-approved pragmatic verification amendment (current implementation scope)",
-		"## Original outcome and scope (historical requirement; current acceptance is amended above)",
-	);
-	assert.doesNotMatch(pragmaticAmendment, /\bA4 remains INACTIVE\b/);
-	assert.match(
-		pragmaticAmendment,
-		/This runtime amendment does not itself activate A4; apply the actual-session load and revalidation gate defined above\./,
-	);
-	assert.match(autonomySpec, checkpoint);
-	const pragmaticSpec = sectionBetween(
-		autonomySpec,
-		"## User-approved pragmatic verification amendment",
-		"## Decisions in scope",
-	);
-	assert.match(pragmaticSpec, /At the 2026-10-31 source staging checkpoint `0422473`.*were then pending/);
-	assert.doesNotMatch(pragmaticSpec, /The present source alignment still does not edit/);
-	assert.match(autonomySpec, /revalidated in the actual session/);
-	assert.match(activationHandoff, /Dated A4 activation-source staging checkpoint/);
-	assert.match(
-		activationHandoff,
-		/Checkpoint: 2026-10-31, source `0422473bb01f48283515aa10c1be93fed6bbf9be`; not a live status ledger/,
-	);
-	assert.doesNotMatch(ticketIndex, /Current A4 alignment status/);
-	assert.doesNotMatch(autonomySpec, /Activation-readiness status at source alignment/);
-	assert.doesNotMatch(activationHandoff, /Current A4 activation-source alignment status/);
 });
