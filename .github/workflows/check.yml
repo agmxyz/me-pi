@@ -36,8 +36,5 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      # Same gate as AGENTS.md; the steps live in package.json. Drop the
-      # runner's GITHUB_* vars so worker-env tests see a developer shell.
-      - run: |
-          unset $(compgen -e GITHUB_)
-          npm run check --prefix extensions
+      # Same gate as AGENTS.md; the steps live in package.json.
+      - run: npm run check --prefix extensions
