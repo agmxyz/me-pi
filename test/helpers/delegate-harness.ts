@@ -24,9 +24,12 @@ const {
 	IMPLEMENT_TOOLS,
 	PROMPT_GUIDELINES,
 	PROMPT_SNIPPET,
+} = await import("../../extensions/delegate.ts");
+
+const {
 	ROLES,
 	WORKER_CONTRACT,
-} = await import("../../extensions/delegate.ts");
+} = await import("../../extensions/delegate-worker.ts");
 
 const {
 	secretPathIn,
