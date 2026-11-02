@@ -495,6 +495,22 @@ process.stdin.on("end", () => {
     emit("Added feature.txt.\\nIMPLEMENT-DIFF-BODY is in the details only");
     process.exit(0);
   }
+  if (mode === "implement-no-effect-failures") {
+    // The piops run's harmless failures: an edit rejected before writing, a failed read, and a fenced write.
+    const jobId = process.env.ME_PI_DELEGATE_JOB_ID;
+    const attempt = Number(process.env.ME_PI_DELEGATE_ATTEMPT);
+    tool("edit", { path: "src/cli.ts" }, true, { toolCallId: "edit-mismatch", result: { content: [{ type: "text", text: "Could not find edits[1] in /repo/src/cli.ts. The oldText must match exactly including all whitespace and newlines." }], details: {} } });
+    tool("read", { path: "missing.txt" }, true, { toolCallId: "read-missing", result: { content: [{ type: "text", text: "ENOENT" }] } });
+    const fence = { owner: "delegate-worker", jobId, attempt, toolCallId: "fenced-write", cause: "worker-fence-denial", resource: "guard", effect: "denied" };
+    tool("write", { path: "/tmp/scratch.ts" }, true, { toolCallId: "fenced-write", result: { content: [{ type: "text", text: "Blocked: /tmp/scratch.ts is outside the checkout." }], details: { __mePiDelegateProvenance: [fence] } } });
+    if (process.env.FAKE_PI_EDIT_WRITE_FAILED) tool("edit", { path: "src/cli.ts" }, true, { toolCallId: "edit-write-failed", result: { content: [{ type: "text", text: "EACCES: permission denied, open 'src/cli.ts'" }] } });
+    writeFileSync("feature.txt", "fixed\\n");
+    git("add", "feature.txt");
+    git("commit", "-q", "-m", "feat: fixture");
+    tool("bash", { command: "npm test" });
+    emit("Implemented despite harmless tool failures.");
+    process.exit(0);
+  }
   if (mode === "implement-dirty") { writeFileSync("left.txt", "x\\n"); tool("bash", { command: "npm test" }); emit("left it uncommitted"); process.exit(0); }
   if (mode === "implement-hang") {
     writeFileSync("left.txt", "x\\n");
@@ -1003,6 +1019,13 @@ test("implement workers' bash calls are checked against the worker-only rules", 
 	assert.equal(installerChain?.block, true);
 	assert.match(installerChain.reason, /install\.sh would change Pi's settings and live links/);
 	assert.equal(await hook(bash("npm test"), { cwd: REPO_ROOT }), undefined);
+	const checked = setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement", ME_PI_CHECK: "npm test" } }).handlers
+		.tool_call;
+	const piped = await checked(bash("npm test 2>&1 | tail -25"), { cwd: REPO_ROOT });
+	assert.equal(piped?.block, true);
+	assert.match(piped.reason, /^Blocked: run `npm test` alone, exactly as given/);
+	assert.equal(await checked(bash("npm test"), { cwd: REPO_ROOT }), undefined);
+	assert.equal(await checked(bash("npm test -- test/a.test.mjs | tail"), { cwd: REPO_ROOT }), undefined);
 	const other = setup(t, { env: { ME_PI_RUN: "1" } }).handlers.tool_call;
 	assert.equal(await other(bash("git push origin x"), { cwd: REPO_ROOT }), undefined);
 });
@@ -4615,6 +4638,37 @@ test("implement: a failed check, an edit after the check, or no check run is ✗
 	});
 	const res = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
 	assert.equal(res.isError, false, text(res));
+});
+
+test("implement accepts a handback whose only failures had no effect", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-no-effect-failures", { FAKE_PI_EDIT_WRITE_FAILED: undefined }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, false, text(result));
+	assert.equal(result.details.implement.check.status, "pass");
+	const [attempt] = result.details.implement.outcome.provenance;
+	assert.deepEqual(
+		attempt.toolEffects.map(({ toolCallId, effect }) => [toolCallId, effect]),
+		[
+			["edit-mismatch", "not-started"],
+			["read-missing", "completed"],
+			["fenced-write", "denied"],
+			["t1", "completed"],
+		],
+	);
+	assert.deepEqual(
+		attempt.stopFacts.map(({ toolCallId, cause }) => [toolCallId, cause]),
+		[["fenced-write", "worker-fence-denial"]],
+	);
+	const details = readFileSync(result.details.implement.detailsPath, "utf8");
+	assert.doesNotMatch(details, /acceptance withheld/);
+	assert.doesNotMatch(details, /edit-mismatch|read-missing/);
+
+	process.env.FAKE_PI_EDIT_WRITE_FAILED = "1";
+	const unknown = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(unknown.isError, true, "an edit failure without a known pre-write cause stays unknown");
+	assert.match(text(unknown), /acceptance withheld/);
 });
 
 test("implement: a worker that moves another branch trips the ref tripwire", async (t) => {

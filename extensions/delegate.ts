@@ -36,6 +36,7 @@ import {
 import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
 	type Checkout,
+	checkInCompound,
 	type Facts,
 	finish as finishImplement,
 	formatHandback,
@@ -903,6 +904,19 @@ export function trackCheck(
 		stale("successful edit/write after the last check");
 }
 
+// Read-only tools: a call, even a failed one, has no side effects.
+const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "Skill"]);
+
+// Pi's edit tool throws these before it writes the file (core/tools/edit.js and edit-diff.js).
+const EDIT_REJECTED_BEFORE_WRITE =
+	/^(?:Could not find (?:the exact text|edits\[\d+\]) in |Found \d+ occurrences of |(?:edits\[\d+\]\.)?oldText must not be empty in |No changes made to |edits\[\d+\] and edits\[\d+\] overlap in |Could not edit file: |Edit tool input is invalid\.)/;
+
+/** A failed read-only tool call, or an edit its tool rejected before writing, had no effect. */
+function failedWithoutEffect(toolName: string, result: unknown): boolean {
+	if (READ_ONLY_TOOLS.has(toolName)) return true;
+	return toolName === "edit" && EDIT_REJECTED_BEFORE_WRITE.test(toolResultText(eventRecord(result)) ?? "");
+}
+
 function toolLabel(name: string): string {
 	const label = name
 		.replace(/[^A-Za-z0-9_-]+/g, "_")
@@ -1010,7 +1024,6 @@ function runWorkerAttempt(
 		const contradictorySuccesses: string[] = [];
 		let omittedContradictorySuccesses = 0;
 		let latestAssistantError: { provider: string; model: string; api: string } | undefined;
-		const replaySafeReadTools = new Set(["read", "grep", "find", "ls", "Skill"]);
 
 		let termTimer: NodeJS.Timeout | undefined;
 		let progressTimer: NodeJS.Timeout | undefined;
@@ -1244,11 +1257,27 @@ function runWorkerAttempt(
 					(exitCode as number) >= 1 &&
 					(exitCode as number) <= 127 &&
 					!provenance.stopFacts.some((stopFact) => stopFact.toolCallId === toolCallId);
+				const noEffect =
+					!denied &&
+					!completedBashFailure &&
+					!stopped &&
+					!ownerFacts.length &&
+					fact?.toolCallId === toolCallId &&
+					fact.toolName === toolName &&
+					failedWithoutEffect(toolName, event.result);
 				if (fact) {
-					fact.effect = denied ? "denied" : completedBashFailure ? "completed" : "unknown";
-					fact.replaySafe = false;
+					fact.effect = denied
+						? "denied"
+						: completedBashFailure
+							? "completed"
+							: noEffect
+								? READ_ONLY_TOOLS.has(toolName)
+									? "completed"
+									: "not-started"
+								: "unknown";
+					fact.replaySafe = noEffect && READ_ONLY_TOOLS.has(toolName);
 				}
-				if (!denied)
+				if (!denied && !noEffect)
 					provenance.stopFacts.push({
 						owner: "delegate-parent",
 						jobId: job.jobId,
@@ -1274,7 +1303,7 @@ function runWorkerAttempt(
 						});
 				} else {
 					fact.effect = "completed";
-					fact.replaySafe = replaySafeReadTools.has(fact.toolName);
+					fact.replaySafe = READ_ONLY_TOOLS.has(fact.toolName);
 				}
 			} else {
 				provenance.complete = false;
@@ -2017,8 +2046,17 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 			if (event.toolName === "bash" && process.env.ME_PI_ROLE === "implement") {
-				const risk = workerRisk(String((event.input as { command?: unknown }).command ?? ""));
+				const command = String((event.input as { command?: unknown }).command ?? "");
+				const risk = workerRisk(command);
 				if (risk) return recordBlock(`Blocked: ${risk}; list it as BLOCKED.`, "worker-fence-denial", "guard");
+				// A piped or chained check reports another command's exit status, so it would not count as the check.
+				const check = process.env.ME_PI_CHECK;
+				if (check && checkInCompound(command, check, ctx.cwd))
+					return recordBlock(
+						`Blocked: run \`${check}\` alone, exactly as given, so its exit status counts (no pipe, chain, or redirect). Use focused commands for partial output.`,
+						"worker-fence-denial",
+						"guard",
+					);
 			}
 			const secret = secretPathIn(event.toolName, event.input, ctx.cwd);
 			if (secret)
