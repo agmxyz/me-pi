@@ -226,7 +226,7 @@ test("workers cannot name secret paths in read, grep, find, or ls", async (t) =>
 	const home = homedir();
 	const dir = mkdtempSync(join(TEST_HOME, "secrets-"));
 	writeFileSync(join(dir, "notes.txt"), "x");
-	// Both targets are missing in the fixture HOME: a dangling link must still be blocked by where it points.
+	// Both targets are missing under the real HOME (only links in TEST_HOME are created): a dangling link must still be blocked by where it points.
 	symlinkSync(join(home, ".ssh", "id_ed25519"), join(dir, "innocent-link"));
 	symlinkSync(join(home, ".ssh", "me-pi-test-nonexistent-key"), join(dir, "plain-link"));
 	symlinkSync("plain-link", join(dir, "relative-link"));
