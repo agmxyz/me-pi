@@ -1,6 +1,6 @@
 {
   "name": "me-pi",
-  "description": "A setup and extensions for the Pi coding agent",
+  "description": "Bounded subagents for the Pi coding agent: worker processes with hard limits, fixed roles, and checked commits",
   "license": "MIT",
   "repository": "https://github.com/0bmario/me-pi",
   "keywords": [

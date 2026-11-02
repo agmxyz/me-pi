@@ -4,29 +4,46 @@
 
 Bounded subagents for the [Pi](https://github.com/earendil-works/pi) coding agent. No worktrees, no sandbox, no agent files.
 
-Your main session hands bounded work (a lookup, a review, research, a scoped change) to a separate worker process and gets back only the answer. Its context stays clean, and it keeps every decision. Workers run in your checkout under hard limits; changes land as commits on your branch.
+Your main session hands bounded work (a lookup, a review, research, a scoped change) to a separate worker process and gets back only the answer. Workers see only the brief, run under hard time and cost limits, and are killed as a process group when they overrun. `implement` edits your real checkout on a feature branch, and its ✓ means the check you declared passed on exactly what it delivered.
+
+```text
+you ─► main Pi session (decides, verifies)
+          │ delegate { role, task, check? }
+          ▼
+       pi --mode json -p --no-session --no-mcp   (own process group, role tools, deadline)
+          │
+          ▼
+       short answer   or   ✓ im1 fix/timeout a1b2c3d..e4f5a6b: 1 commit; check pass
+```
 
 ## Why me-pi
 
-- **Small surface.** One `delegate` tool, one `/delegate` command, no agent files to write. Works with zero config.
-- **Six fixed roles:** `scout`, `general`, `review`, `research`, `challenge`, `implement`. Each has its own tools and answer shape; only `implement` edits your project.
+- **Small surface.** One `delegate` tool, one `/delegate` command, six built-in roles. Works with zero config.
 - **Follows your workflow.** Workers load your own `AGENTS.md` and skills. Add `(coordinator only)` to a `## ` heading and workers skip that section.
-- **Real processes, not threads.** Each worker is a separate `pi --mode json -p --no-session --no-mcp` process in its own process group; a timeout or cancel kills the whole group, including anything it spawned.
-- **`implement` delivers commits.** It works on your feature branch, runs the check you give it, and commits. A pass counts only for the exact checkout content it ran on: any later edit marks it stale. Interrupted work is saved as a `WIP` commit.
-- **Bounded by default.** Time and cost limits per worker, at most four at once, and worker file reads of secret paths (`.env*`, keys, `~/.ssh`, `~/.pi/agent/auth.json`) blocked.
-- **Model pools.** A cheap model for scouts, a stronger one for workers or reviews, set in one JSON file.
+- **One writer, verified commits.** `implement` takes a per-repo lock, needs a clean feature branch, runs your check, and commits. A pass counts only for the exact checkout content it ran on; any later edit marks it stale. Leftover work is saved as a visible `WIP` commit.
+- **Bounded by default.** Hard time limits (5 / 15 / 45 min), a $5 per-run cap on Pi's estimated cost, at most four workers per Pi session.
+- **No blind retries.** Provider hiccups are retried on the same model only when the attempt did nothing but reads; anything with unknown side effects is reported, not replayed.
+- **Model pools.** A cheap model for scouts, a stronger one for workers or reviews, in one JSON file.
+
+| Role | Can | Answers with |
+| --- | --- | --- |
+| `scout` | read, grep, find, ls | 1–3 sentences with `path:line`, or `not-found` |
+| `general` | same | what the task asks for |
+| `review` | same | severity-ranked `path:line` findings |
+| `research` / `challenge` | same + web | sources and conflicts / up to 5 challenges and a verdict |
+| `implement` | same + edit, write, bash | commits on your branch, check status |
 
 Also included: `guard` (asks before risky bash such as force pushes, `git reset --hard`, recursive `rm`) and `Skill` (lets Pi load an already-discovered skill by name).
 
 ## Install
 
-Requires Pi 1.5.0 (CI runs against it).
+Requires Pi 1.5.0 (CI runs against it) on macOS or Linux.
 
 ```sh
 pi install git:github.com/0bmario/me-pi
 ```
 
-Restart Pi or run `/reload`, then check with `/delegate status`.
+Restart Pi or run `/reload`, then check with `/delegate status`. Try it, no config needed: *"Have a scout find where this repo parses CLI flags, with path:line evidence."*
 
 Optional model pools in `~/.pi/agent/delegate.json` (without it, workers use your session's model):
 
@@ -50,15 +67,17 @@ To skip `guard`, replace the `git:github.com/0bmario/me-pi` entry in `~/.pi/agen
 }
 ```
 
+Without `guard`, `implement` workers also lose its blocks on recursive `rm`, `git reset --hard`, and force pushes.
+
 ## Use
 
-Ask Pi in plain language:
+Ask Pi in plain language. A typical change:
 
-- "Have a scout find where the retry policy lives, with path:line evidence."
-- "Get a review of the diff in /tmp/change.diff for correctness."
-- "Research how other CLIs handle config migrations." / "Challenge this plan."
-- "Implement the parser fix on this branch; check with `npm test`." (`implement` always needs a check command.)
-- Add "in the background" for long jobs.
+1. "Scout where session timeouts are configured." → a `path:line` answer.
+2. `git switch -c fix/timeout`, then "Implement a 30 s default timeout; check with `npm test`." → `✓ im1 fix/timeout …: 1 commit; check pass`.
+3. "Review the diff of `main...fix/timeout` for correctness." → severity-ranked findings. Fix, re-review, open the PR yourself.
+
+Also: "Research how other CLIs handle config migrations", "Challenge this plan", and "…in the background" for long jobs.
 
 | Command | Does |
 | --- | --- |
@@ -67,12 +86,14 @@ Ask Pi in plain language:
 | `/delegate cancel <id>` | cancel a background job |
 | `/guard on` / `/guard off` | toggle guard for this session |
 
-Roles, limits, model pools and recovery: [docs/delegate.md](docs/delegate.md).
+Background jobs end on `/reload` or when Pi exits. Roles, limits, model pools and recovery: [docs/delegate.md](docs/delegate.md).
 
 ## Safety
 
 - Not a sandbox. Extensions and workers run with your OS permissions; `guard` and the fences are guardrails, not security boundaries.
-- `implement` edits and commits in your real checkout. It needs a clean tree on a non-`main`/`master` branch and blocks `git push`; review what it hands back.
+- Worker file-read tools refuse common secret paths (`.env*`, keys, `~/.ssh`, `~/.pi/agent/auth.json`); `implement`'s bash is not path-fenced.
+- `implement` edits and commits in your real checkout, with Git remotes and `gh` cut off. ✓ means your check exited 0 on the delivered content, not that the code is right; review what it hands back.
+- The recovery rules in [docs/delegate.md](docs/delegate.md) are guidance for the main session, not runtime enforcement.
 - me-pi itself sends nothing anywhere; workers talk only to your configured model providers, plus fetched pages when web tools are on.
 
 ## Uninstall
