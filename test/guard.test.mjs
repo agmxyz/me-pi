@@ -241,7 +241,13 @@ test("workerRisk blocks commands that move an implement worker off its branch or
 	}
 });
 
-test("git in a fresh mktemp repo passes; leaving it or pointing git elsewhere does not", () => {
+test("an implement worker's git in a fresh mktemp repo passes; leaving it or pointing git elsewhere does not", (t) => {
+	const role = process.env.ME_PI_ROLE;
+	t.after(() => {
+		if (role === undefined) delete process.env.ME_PI_ROLE;
+		else process.env.ME_PI_ROLE = role;
+	});
+	process.env.ME_PI_ROLE = "implement";
 	const fresh = [
 		'DIR=$(mktemp -d) && cd "$DIR" && git init -q source && cd source && git config user.email t@example.com && git remote add origin "$DIR/origin.git" && git push origin HEAD',
 		"D=$(mktemp -d -t hooks); cd $D; git init -q --bare origin.git && git clone -q origin.git work && cd work && git push",
@@ -260,8 +266,14 @@ test("git in a fresh mktemp repo passes; leaving it or pointing git elsewhere do
 		'DIR=$(mktemp -d) && cd "$DIR" && DIR=/repo && cd "$DIR" && git push',
 		'DIR=$(mktemp -d) && cd "$DIR" && cd "$HOME" && git config user.name x',
 		'cd "$DIR" && git config user.name x',
+		'V=$(mktemp -d) && cd "$V" && cd - && git push --force origin main',
+		'V=$(mktemp -d) && cd "$V" && cd && cd fun/me-pi && git push --force origin main',
+		'V=$(mktemp -d) && cd "$V" && pushd work && popd && git config user.name x',
+		'V=$(mktemp -d ./t.XXXX) && cd "$V" && git config user.name x',
 	])
 		assert.ok(workerRisk(command), command);
+	delete process.env.ME_PI_ROLE;
+	assert.ok(classify(fresh[2], onMain), "the main session's guard never exempts temp repos");
 });
 
 test("gitTreeWrite names checkout-writing git subcommands and passes reads", () => {

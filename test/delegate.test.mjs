@@ -4710,7 +4710,12 @@ test("provider errors are classified as infra, account, or model/task", () => {
 		"401 Unauthorized",
 	])
 		assert.equal(classifyProviderError(message), "account", message);
-	for (const message of ["invalid request: tool schema rejected", "", undefined])
+	for (const message of [
+		"invalid request: tool schema rejected",
+		"400 invalid_request_error: max_tokens: 550 > 512",
+		"",
+		undefined,
+	])
 		assert.equal(classifyProviderError(message), "model/task", String(message));
 });
 

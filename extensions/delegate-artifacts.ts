@@ -73,17 +73,7 @@ type TextList = { state: "provided" | "not-provided"; items: ArtifactText[]; omi
 type ArtifactReference = { kind: "full-output-path" | "child-diagnostic"; value: ArtifactText };
 
 /** Why a tool call failed, as the parent read it from owner facts and the tool's result; `unknown` claims nothing. */
-export type FailedToolDisposition =
-	| "budget-blocked"
-	| "guard-denied"
-	| "blocked"
-	| "timeout"
-	| "nonzero-exit"
-	| "edit-rejected"
-	| "read-failed"
-	| "unknown";
-
-const DISPOSITIONS = new Set<FailedToolDisposition>([
+const DISPOSITIONS = [
 	"budget-blocked",
 	"guard-denied",
 	"blocked",
@@ -92,7 +82,8 @@ const DISPOSITIONS = new Set<FailedToolDisposition>([
 	"edit-rejected",
 	"read-failed",
 	"unknown",
-]);
+] as const;
+export type FailedToolDisposition = (typeof DISPOSITIONS)[number];
 
 export type FailedToolCallInput = {
 	attemptIndex?: number;
@@ -665,7 +656,7 @@ function makeEntry(
 	}
 
 	const entry: FailedToolArtifactEntry = {
-		disposition: DISPOSITIONS.has(input.disposition as FailedToolDisposition)
+		disposition: (DISPOSITIONS as readonly unknown[]).includes(input.disposition)
 			? (input.disposition as FailedToolDisposition)
 			: "unknown",
 		attempt: { index: attemptIndex, requestedModel },

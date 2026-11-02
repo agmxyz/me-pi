@@ -704,9 +704,9 @@ export interface RunResult {
 }
 
 const ACCOUNT_LIMIT =
-	/usage limit|quota|insufficient|billing|out of budget|available balance|key limit|credits?\b|\b40[13]\b|unauthori[sz]ed|forbidden|invalid api key/i;
+	/usage limit|quota|insufficient[_ ](?:quota|credits|funds|balance)|billing|out of budget|available balance|key limit|(?:^|HTTP\s*|status(?:\s*code)?\s*:?\s*)40[13]\b|unauthori[sz]ed|invalid api key/i;
 const INFRA_FAILURE =
-	/\b(?:408|409|425|429|5\d\d)\b|overloaded|rate.?limit|too many requests|service.?(?:is.?)?(?:temporarily.?)?unavailable|server.?error|internal.?error|upstream|provider.?returned|network|connection|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|socket hang up|timed? ?out|timeout|stream ended|ended without|terminated/i;
+	/(?:^|HTTP\s*|status(?:\s*code)?\s*:?\s*|code\s*:?\s*)(?:408|409|425|429|5\d\d)\b|overloaded|rate.?limit|too many requests|service.?(?:is.?)?(?:temporarily.?)?unavailable|server.?error|internal.?error|upstream|provider.?returned|network|connection|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|socket hang up|timed? ?out|timeout|stream ended|ended without|terminated/i;
 
 export function classifyProviderError(message: string | undefined): FailureClass {
 	if (!message) return "model/task";

@@ -148,13 +148,18 @@ function withoutMessages(command: string): string {
 
 // `V=$(mktemp -d …) && cd "$V"` opening a command: its git commands then run in a fresh temp repo.
 const FRESH_TEMP_REPO =
-	/^\s*(\w+)=\$\(mktemp -d[^()$\x60;&|]*\)\s*(?:&&|;)\s*cd\s+(?:"\$\{?\1\}?"|\$\{?\1\}?)\s*(?:&&|;)/;
-// What could take git out of it: any other expansion, an absolute, home, or `..` path, or a git-dir override.
+	/^\s*(\w+)=\$\(mktemp -d(?:\s+-t\s+[\w.-]+)?\s*\)\s*(?:&&|;)\s*cd\s+(?:"\$\{?\1\}?"|\$\{?\1\}?)\s*(?:&&|;)/;
+// What could take git out of it: any other expansion, an absolute, home, or `..` path, a `cd` that is not one plain
+// relative path (bare `cd`, `cd -`), `popd`, or a git-dir override.
 const LEAVES_TEMP =
-	/[$\x60~]|(?:^|[\s=:"'(])(?:\/|\.\.(?:[/\s"')]|$))|(?:^|\s)(?:-C|--git-dir|--work-tree)\b|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|CONFIG\w*|NAMESPACE)=/;
+	/[$\x60~]|(?:^|[\s=:"'(])(?:\/|\.\.(?:[/\s"')]|$))|(?:^|[;&|(\s])(?:cd|pushd)(?![\w-])(?!\s+["']?[\w.][^\s;&|]*)|(?:^|[;&|(\s])popd(?![\w-])|(?:^|\s)(?:-C|--git-dir|--work-tree)\b|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|CONFIG\w*|NAMESPACE)=/;
 
-/** Whether every git command in `command` runs in the fresh temp repo it opens with; reassigning the variable or a path that could leave it keeps the git rules. */
+/**
+ * Whether every git command in `command` runs in the fresh temp repo it opens with; reassigning the variable or a path
+ * that could leave it keeps the git rules. Only implement workers get this: their git remote protocols are cut.
+ */
 function inFreshTempRepo(command: string): boolean {
+	if (process.env.ME_PI_ROLE !== "implement") return false;
 	const fresh = FRESH_TEMP_REPO.exec(command);
 	if (!fresh) return false;
 	const name = fresh[1];
