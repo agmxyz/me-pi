@@ -350,8 +350,8 @@ test("PROTECTED_BRANCHES is main and master", () => {
 });
 
 function setup() {
-	let handler;
-	let command;
+	let handler: any;
+	let command: any;
 	const events = [];
 	registerGuard({
 		on: (_event, h) => {

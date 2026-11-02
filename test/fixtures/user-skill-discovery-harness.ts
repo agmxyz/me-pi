@@ -42,10 +42,7 @@ for (const name of ["implement-me-pi", "implement-spec-me-pi"]) {
 }
 
 for (const name of ["implement", "implement-spec"]) {
-	assert.equal(
-		byName.get(name).filePath,
-		join(process.env.HOME, ".agents", "skills", name, "SKILL.md"),
-	);
+	assert.equal(byName.get(name).filePath, join(process.env.HOME, ".agents", "skills", name, "SKILL.md"));
 }
 
 assert.equal(existsSync(join(cwd, ".agents", "skills")), false);

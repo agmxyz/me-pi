@@ -206,7 +206,7 @@ NODE
   rm -f "$NPM_MARKER"
   for project in "$@"; do
     HOME="$home" PI_CODING_AGENT_DIR="$agent_dir" PATH="$TEST_PATH" \
-      node "$SOURCE_REPO/test/fixtures/user-skill-discovery-harness.mjs" "$project" $mode || { status=1; break; }
+      node "$SOURCE_REPO/test/fixtures/user-skill-discovery-harness.ts" "$project" $mode || { status=1; break; }
   done
   cp "$backup" "$settings"
   rm -f "$backup"

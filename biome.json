@@ -29,6 +29,6 @@
 		"lineWidth": 120
 	},
 	"files": {
-		"includes": ["extensions/*.ts", "test/*.mjs"]
+		"includes": ["extensions/*.ts", "test/*.ts", "test/fixtures/*.ts"]
 	}
 }

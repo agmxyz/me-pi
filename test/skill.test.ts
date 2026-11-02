@@ -19,7 +19,7 @@ function skillFile(name, frontmatter, body) {
 
 // Register against a fake Pi; `start(skills)` fires before_agent_start with Pi's discovered skills.
 function setup() {
-	let tool;
+	let tool: any;
 	const handlers = {};
 	registerSkill({
 		on: (event, handler) => {
