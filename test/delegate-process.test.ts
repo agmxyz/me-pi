@@ -97,7 +97,7 @@ test("term-then-kill sends SIGTERM, then SIGKILL after termGraceMs", async () =>
 		`process.on("SIGTERM", () => console.log(JSON.stringify({ term: true })));
 		console.log(JSON.stringify({ ready: true }));
 		setInterval(() => {}, 1000);`,
-		{ termGraceMs: 150 },
+		{ termGraceMs: 500 },
 	);
 	const onReady = setInterval(() => {
 		if (r.records.length) {
@@ -107,7 +107,7 @@ test("term-then-kill sends SIGTERM, then SIGKILL after termGraceMs", async () =>
 	}, 5);
 	const started = Date.now();
 	const { code } = await r.exit;
-	assert.ok(Date.now() - started >= 150);
+	assert.ok(Date.now() - started >= 500);
 	assert.equal(code, null);
 	assert.deepEqual(r.records, [{ ready: true }, { term: true }]);
 });
