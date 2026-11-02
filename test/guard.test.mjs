@@ -245,7 +245,7 @@ test("git in a fresh mktemp repo passes; leaving it or pointing git elsewhere do
 	const fresh = [
 		'DIR=$(mktemp -d) && cd "$DIR" && git init -q source && cd source && git config user.email t@example.com && git remote add origin "$DIR/origin.git" && git push origin HEAD',
 		"D=$(mktemp -d -t hooks); cd $D; git init -q --bare origin.git && git clone -q origin.git work && cd work && git push",
-		'T=$(mktemp -d) && cd "${T}" && git init -q && git commit -q --allow-empty -m x && git reset --hard',
+		`T=$(mktemp -d) && cd "\${T}" && git init -q && git commit -q --allow-empty -m x && git reset --hard`,
 	];
 	for (const command of fresh) {
 		assert.equal(workerRisk(command), undefined, command);
