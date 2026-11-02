@@ -26,9 +26,12 @@ const {
 	PROMPT_SNIPPET,
 	ROLES,
 	WORKER_CONTRACT,
+} = await import("../../extensions/delegate.ts");
+
+const {
 	secretPathIn,
 	writeBlockedIn,
-} = await import("../../extensions/delegate.ts");
+} = await import("../../extensions/delegate-fence.ts");
 
 const {
 	loadModelSet,

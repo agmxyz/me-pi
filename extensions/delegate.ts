@@ -11,17 +11,15 @@ import { randomUUID } from "node:crypto";
 import {
 	appendFileSync,
 	existsSync,
-	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
-	realpathSync,
 	statSync,
 	writeFileSync,
 	writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type ArtifactWriteResult,
@@ -34,7 +32,6 @@ import {
 	canonicalModel,
 	configPath,
 	configuredModels,
-	HOME,
 	loadModelSet,
 	type ModelSet,
 	type ResolvedRun,
@@ -44,6 +41,15 @@ import {
 	validateOneOffModel,
 } from "./delegate-config.ts";
 import {
+	commandDir,
+	realpathOr,
+	realTarget,
+	secretPathIn,
+	UNICODE_SPACES,
+	within,
+	writeBlockedIn,
+} from "./delegate-fence.ts";
+import {
 	type Checkout,
 	checkInCompound,
 	type Facts,
@@ -52,7 +58,6 @@ import {
 	ImplementLockRefusal,
 	nextImplementId,
 	prepare as prepareImplement,
-	realpathOr,
 	trackCheck,
 	workerEnv,
 } from "./delegate-implement.ts";
@@ -137,117 +142,6 @@ export const LOCAL_TOOLS = "read,grep,find,ls,Skill";
 export const WEB_TOOLS = `${LOCAL_TOOLS},web_search,fetch_content,get_search_content`;
 // implement edits, runs commands, and commits, in the coordinator's checkout; never with web tools.
 export const IMPLEMENT_TOOLS = `${LOCAL_TOOLS},edit,write,bash`;
-
-// --- Secret paths (enforced inside workers) -------------------------------------------------------
-
-// Paths that commonly hold credentials. Workers are blocked from naming them in read/grep/find/ls;
-// a broad search over a parent directory can still match inside them, so this narrows, not seals.
-const HOME_SECRETS = [
-	".ssh",
-	".gnupg",
-	".aws",
-	".azure",
-	".kube",
-	".docker/config.json",
-	".config/gh",
-	".config/gcloud",
-];
-// Both the home path and its resolved form, lowercased: macOS and Windows filesystems ignore case.
-const SECRET_PATHS = [...new Set([HOME, realpathOr(HOME)])].flatMap((home) =>
-	[...HOME_SECRETS, ".pi/agent/auth.json"].map((p) => join(home, p).toLowerCase()),
-);
-// Credential files by name, anywhere; public keys and example files are not secret.
-const SECRET_NAMES =
-	/^(?:\.env(?:rc|\..+)?|\.netrc|\.npmrc|\.pypirc|\.git-credentials|id_(?:rsa|dsa|ecdsa|ed25519)\S*|.+\.(?:pem|key|p12|pfx))$/;
-const NOT_SECRET = /\.(?:example|sample|template|pub)$/;
-// A glob (grep's `glob`, find's `pattern`) that names a secret file or directory, such as `**/.env*`.
-const SECRET_GLOB =
-	/(?:^|[/{,*])(?:\.env|\.ssh|\.gnupg|\.aws|\.netrc|\.npmrc|\.pypirc|\.git-credentials|id_(?:rsa|dsa|ecdsa|ed25519)|auth\.json)|\.(?:pem|key|p12|pfx)(?:$|[},])/i;
-
-function isSecretPath(path: string): boolean {
-	const lower = path.toLowerCase();
-	const name = basename(lower);
-	if (SECRET_NAMES.test(name) && !NOT_SECRET.test(name)) return true;
-	return SECRET_PATHS.some((p) => lower === p || lower.startsWith(`${p}/`));
-}
-
-/** The secret path or glob a worker's read/grep/find/ls call names (also after symlinks), if any. */
-export function secretPathIn(toolName: string, input: unknown, cwd: string): string | undefined {
-	if (!["read", "grep", "find", "ls"].includes(toolName)) return undefined;
-	const fields = (input ?? {}) as { path?: unknown; glob?: unknown; pattern?: unknown };
-	const glob = toolName === "grep" ? fields.glob : toolName === "find" ? fields.pattern : undefined;
-	if (typeof glob === "string" && SECRET_GLOB.test(glob)) return glob;
-	if (typeof fields.path !== "string" || !fields.path.trim()) return undefined;
-	const given = fields.path.trim().replace(/^@/, "");
-	const absolute = resolve(cwd, given === "~" || given.startsWith("~/") ? join(HOME, given.slice(1)) : given);
-	return [absolute, realpathOr(absolute)].find(isSecretPath);
-}
-
-// --- Draft output (enforced inside workers) -------------------------------------------------------
-
-/** The resolved path of a missing file: its nearest existing ancestor with symlinks resolved, plus the rest. */
-// Undefined when an existing entry cannot be resolved, such as a dangling symlink that a write would follow.
-function realTarget(absolute: string): string | undefined {
-	let dir = absolute;
-	const rest: string[] = [];
-	const exists = (p: string) => {
-		try {
-			return Boolean(lstatSync(p));
-		} catch {
-			return false;
-		}
-	};
-	while (!exists(dir) && dirname(dir) !== dir) {
-		rest.unshift(basename(dir));
-		dir = dirname(dir);
-	}
-	try {
-		return join(realpathSync.native(dir), ...rest);
-	} catch {
-		return undefined;
-	}
-}
-
-// Pi turns these into plain spaces before it resolves a path (normalizePath).
-const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
-
-/**
- * Why a worker's write/edit call is blocked, or undefined when its path is inside `outDir` and not inside `denyDir`
- * (implement: the git common dir). `~` and `file:` paths are refused rather than expanded, so this check cannot
- * resolve them differently from Pi.
- */
-export function writeBlockedIn(
-	toolName: string,
-	input: unknown,
-	cwd: string,
-	outDir?: string,
-	denyDir?: string,
-): string | undefined {
-	if (toolName !== "write" && toolName !== "edit") return undefined;
-	if (!outDir) return "delegated workers cannot write files without `output: true`";
-	const path = (input as { path?: unknown } | undefined)?.path;
-	if (typeof path !== "string" || !path) return "no path";
-	const given = path.replace(UNICODE_SPACES, " ").replace(/^@/, "");
-	if (/^(?:~|file:)/i.test(given)) return `use an absolute path inside ${outDir}, not ${path}`;
-	const target = realTarget(resolve(cwd, given));
-	if (!target) return `${path} cannot be resolved`;
-	const inside = relative(realpathOr(outDir), target);
-	if (notStrictlyInside(inside))
-		return isAbsolute(given) ? `${path} is outside ${outDir}` : relativeHint(path, target, outDir, given);
-	const denied = denyDir && relative(realpathOr(denyDir), target);
-	if (denied !== undefined && (denied === "" || !notStrictlyInside(denied)))
-		return `${path} is inside the git directory ${denyDir}`;
-	return undefined;
-}
-
-const notStrictlyInside = (rel: string) => !rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
-
-// Tasks often name a relative path, which Pi resolves against the project: say where it went and where to write.
-function relativeHint(path: string, target: string, outDir: string, given: string): string {
-	const suggested = join(outDir, given);
-	const hint = notStrictlyInside(relative(outDir, suggested)) ? "" : `; write to ${suggested} instead`;
-	return `${path} resolves to ${target}, outside ${outDir}${hint}`;
-}
 
 // --- Wrap-up budget (enforced inside workers) ------------------------------------------------------
 
@@ -1484,21 +1378,6 @@ const processAlive = (pid: number) => {
 	} catch (err: any) {
 		return err?.code !== "ESRCH";
 	}
-};
-
-// `git -C <dir>` or a leading `cd <dir> &&|;`: where a command runs, if it says.
-const TARGET_DIR = /\bgit\s+-C\s+("[^"]*"|'[^']*'|\S+)|^\s*(?:cd|pushd)\s+("[^"]*"|'[^']*'|\S+)\s*(?:&&|;)/;
-function commandDir(command: string, cwd: string): string | undefined {
-	const m = command.match(TARGET_DIR);
-	const dir = (m?.[1] ?? m?.[2])?.replace(/^["']|["']$/g, "");
-	if (dir === undefined) return undefined;
-	const absolute = resolve(cwd, dir === "~" || dir.startsWith("~/") ? join(HOME, dir.slice(1)) : dir);
-	return realTarget(absolute) ?? absolute;
-}
-
-const within = (root: string, target: string) => {
-	const rel = relative(realpathOr(root), target);
-	return rel === "" || !notStrictlyInside(rel);
 };
 
 const SPEND_WARN_SHARE = 0.8;
