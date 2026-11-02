@@ -166,7 +166,7 @@ test("unlisted models use role defaults or independent thinking overrides withou
 	);
 });
 
-test("an explicit thinking override applies to the first selected pool candidate", async (t) => {
+test("an explicit thinking override applies to the first pool model", async (t) => {
 	const marker = scratch("thinking-fallback-marker");
 	const config = {
 		version: 3,
@@ -351,7 +351,7 @@ test("Pi's retry classifier separates transient availability from quota and bill
 	assert.equal(isRetryableAssistantError({ stopReason: "stop", errorMessage: "429 rate_limit_error" }), false);
 });
 
-test("first-only dispatch reports the first candidate's worker cost", async (t) => {
+test("first-only dispatch reports the first pool model's worker cost", async (t) => {
 	const marker = scratch("fallback-cost-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -383,7 +383,7 @@ test("first-only dispatch reports the first candidate's worker cost", async (t) 
 	);
 });
 
-test("default dispatch keeps the first candidate's configured thinking level", async (t) => {
+test("default dispatch keeps the first pool model's configured thinking level", async (t) => {
 	const marker = scratch("per-model-thinking-marker");
 	const { tool } = setup(t, {
 		config: {

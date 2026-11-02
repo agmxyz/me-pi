@@ -1459,7 +1459,15 @@ function runWorkerAttempt(
 					resource: "provider",
 					effect: "unknown",
 				});
-				retainSpentBudgetFacts(job, provenance, result, budget);
+				// A budget already spent when Pi classifies a retry is retained as a stop fact, so the attempt is not replayed.
+				const now = Date.now();
+				if (now >= budget.hardDeadline) retainParentFact("hard-timeout", "hard-time");
+				if (now >= budget.toolDeadline) retainParentFact("wrap-up-limit", "tool-time");
+				const spentCost = costOf(result.usage);
+				if (spentCost >= budget.hardCostCapUsd) retainParentFact("hard-cost-limit", "hard-cost");
+				if (spentCost >= budget.toolCostCapUsd) retainParentFact("wrap-up-limit", "tool-cost");
+				if (job.role === "scout" && budget.toolCalls !== null && (result.toolCallCount ?? 0) >= budget.toolCalls)
+					retainParentFact("wrap-up-limit", "tool-calls");
 				return;
 			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
@@ -1535,38 +1543,6 @@ function runWorkerAttempt(
 	});
 }
 
-// A budget already spent when Pi classifies a retry is retained as a stop fact, so the attempt is not replayed.
-function retainSpentBudgetFacts(
-	job: Job,
-	provenance: AttemptProvenance,
-	result: RunResult,
-	budget: AttemptBudget,
-): void {
-	const retainLimitStop = (cause: StopFact["cause"], resource: StopResource) => {
-		if (
-			!provenance.stopFacts.some(
-				(fact) => fact.owner === "delegate-parent" && fact.cause === cause && fact.resource === resource,
-			)
-		)
-			provenance.stopFacts.push({
-				owner: "delegate-parent",
-				jobId: job.jobId,
-				attempt: provenance.attempt,
-				cause,
-				resource,
-				effect: "unknown",
-			});
-	};
-	const now = Date.now();
-	if (now >= budget.hardDeadline) retainLimitStop("hard-timeout", "hard-time");
-	if (now >= budget.toolDeadline) retainLimitStop("wrap-up-limit", "tool-time");
-	const currentCost = costOf(result.usage);
-	if (currentCost >= budget.hardCostCapUsd) retainLimitStop("hard-cost-limit", "hard-cost");
-	if (currentCost >= budget.toolCostCapUsd) retainLimitStop("wrap-up-limit", "tool-cost");
-	if (job.role === "scout" && budget.toolCalls !== null && (result.toolCallCount ?? 0) >= budget.toolCalls)
-		retainLimitStop("wrap-up-limit", "tool-calls");
-}
-
 function persistFailedToolCapture(
 	job: Checkout,
 	collector: FailedToolArtifactCollector,
@@ -1609,7 +1585,7 @@ async function runWorker(
 		}
 	}
 
-	const candidate = Object.freeze({ model: run.model, thinking: run.thinking });
+	const selected = Object.freeze({ model: run.model, thinking: run.thinking });
 	const budget: AttemptBudget = {
 		hardDeadline,
 		hardCostCapUsd: hardCostCap,
@@ -1621,7 +1597,7 @@ async function runWorker(
 		runWorkerAttempt(
 			job,
 			prompt,
-			candidate,
+			selected,
 			cwd,
 			signal,
 			onProgress,
@@ -2230,7 +2206,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Only the first selected candidate is dispatched; cross-model fallback is deferred until supported child-boundary endpoint enforcement and positive scope/budget tests are available, and explicit models stay exact. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Each run uses one model, the explicit `model` or the role pool's first; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),

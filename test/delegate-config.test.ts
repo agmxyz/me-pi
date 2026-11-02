@@ -213,7 +213,7 @@ test("v3 model configs validate per-model thinking", (t) => {
 	});
 });
 
-test("review pool selects its first candidate, reports status, and preserves worker/scout behavior", async (t) => {
+test("review pool selects its first model, reports status, and preserves worker/scout behavior", async (t) => {
 	const marker = scratch("review-pool-marker");
 	const config = {
 		version: 3,

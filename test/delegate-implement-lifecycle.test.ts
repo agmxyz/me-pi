@@ -96,6 +96,29 @@ test("an infra failure without effects is retried on the same model; effects or 
 	assert.equal(readFileSync(process.env.FAKE_PI_COUNTER, "utf8"), "1");
 });
 
+test("a provider retry after the cost cap is spent records a stop and is not retried on the same model", async (t) => {
+	const marker = scratch("spent-budget-retry-marker");
+	const launches = () => readFileSync(marker, "utf8").trim().split("\n").length;
+	const { tool } = setup(t, {
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: OPUS, FAKE_PI_MARKER: marker },
+		limits: { infraRetryDelaysMs: [1, 1] },
+	});
+	const control = await run(tool, { role: "scout", task: "look", runs: [{ model: OPUS }] });
+	assert.equal(control.isError, true);
+	assert.equal(launches(), 3, "with budget left, the infra failure is retried on the same model");
+
+	rmSync(marker);
+	Object.assign(LIMITS, { costCapUsd: 0.002 });
+	const spent = await run(tool, { role: "scout", task: "look", runs: [{ model: OPUS }] });
+	assert.equal(spent.isError, true);
+	assert.equal(launches(), 1, "a spent cost cap stops the same-model retry");
+	const [r] = spent.details.round1;
+	assert.equal(r.infraRetries, undefined);
+	assert.ok(
+		r.provenance[0].stopFacts.some((fact) => fact.owner === "delegate-parent" && fact.resource === "tool-cost"),
+	);
+});
+
 test("implement retries an infra failure without effects inside the same job, and not after a Bash effect", async (t) => {
 	const counter = () => join(mkdtempSync(join(TEST_HOME, "infra-")), "runs");
 	const { tool } = setup(t, {
@@ -396,8 +419,8 @@ test("implement refuses runs[].model and runs[].thinking: it uses the worker poo
 	assert.ok(!existsSync(lock), "successful run releases the lock");
 });
 
-test("implement dispatches only the first worker pool candidate", async (t) => {
-	const marker = scratch("implement-first-candidate-marker");
+test("implement dispatches only the first worker pool model", async (t) => {
+	const marker = scratch("implement-first-model-marker");
 	const { tool } = setup(t, {
 		config: POOL_SET,
 		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker }),
@@ -435,8 +458,8 @@ test("implement gets its own time limit; the wrap-up deadline is 80% of it", asy
 	assert.ok(budget.deadline >= before + 2700 * 800 && budget.deadline <= Date.now() + 2700 * 800);
 });
 
-test("implement sends --approve only to its first trusted candidate", async (t) => {
-	const marker = scratch("implement-approved-first-candidate-marker");
+test("implement sends --approve only to its first trusted pool model", async (t) => {
+	const marker = scratch("implement-approved-first-model-marker");
 	const { tool } = setup(t, {
 		config: POOL_SET,
 		env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker }),
@@ -447,11 +470,7 @@ test("implement sends --approve only to its first trusted candidate", async (t) 
 	const launches = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.equal(launches.length, 1);
 	assert.equal(launches[0].model, LUNA);
-	assert.equal(
-		launches[0].approve,
-		true,
-		"the coordinator's trust decision still applies to the selected first candidate",
-	);
+	assert.equal(launches[0].approve, true, "the coordinator's trust decision still applies to the first pool model");
 });
 
 test("implement workers cannot write inside the git dir and stop when their coordinator is gone", async (t) => {

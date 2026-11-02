@@ -637,8 +637,6 @@ const CTX = {
 
 const text = (res) => res.content.map((c) => c.text).join("\n");
 
-
-
 function applyEnv(vars) {
 	for (const [k, v] of Object.entries(vars)) {
 		if (v === undefined) delete process.env[k];

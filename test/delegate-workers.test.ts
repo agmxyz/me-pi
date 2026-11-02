@@ -231,7 +231,7 @@ test("several runs answer the same task in parallel; usage is summed", async (t)
 	assert.equal(res.usage.cost.total, 0.004);
 });
 
-test("default-origin rebuttals retain exact candidates without cross-model fallback", async (t) => {
+test("default-origin rebuttals keep exact models without cross-model fallback", async (t) => {
 	const config = {
 		version: 3,
 		scout: { models: [], thinking: "low" },

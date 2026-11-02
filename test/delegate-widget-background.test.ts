@@ -207,7 +207,7 @@ test("concurrent foreground calls receive distinct compact widget labels", async
 	assert.equal((await second).isError, false);
 });
 
-test("the TUI widget keeps the first configured candidate after a provider retry", async (t) => {
+test("the TUI widget keeps the first pool model after a provider retry", async (t) => {
 	const { tool } = setup(t, {
 		config: {
 			version: 3,
@@ -232,7 +232,7 @@ test("the TUI widget keeps the first configured candidate after a provider retry
 		),
 		"the disabled fallback never appears as a started worker",
 	);
-	assert.deepEqual(ui.widget(), [], "the final candidate completion hides the widget");
+	assert.deepEqual(ui.widget(), [], "the final completion hides the widget");
 });
 
 test("the TUI widget shows the rebuttal stage", async (t) => {
