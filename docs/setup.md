@@ -2,8 +2,6 @@
 
 `./install.sh` adopts the author's full me-pi rig across all Pi sessions. A package-only install ([README](../README.md)) needs none of it: it loads the extensions declared in `package.json`, and `pi.skills: []` intentionally keeps the package's conventional skill source directory out of package discovery.
 
-**A4 activation gate:** At use time, verify the currently governing policy, supported provenance-capable runtime, matching reviewed skills loaded in the actual session, and every lifecycle prerequisite by revalidating that session. Neither installer success nor resource discovery establishes standing authority. The steps below describe effects for adopters, not live adoption status.
-
 Run `./install.sh` only from the live checkout's main session, never a worktree, temp clone, or worker. It requires `pi` on `PATH` and changes personal Pi resources that apply across sessions and projects:
 
 - Links this checkout's `GLOBAL_AGENTS.md` to `~/.pi/agent/AGENTS.md` only when that destination is absent; every Pi session that reads it then uses this policy. An existing file or different link is left unchanged and causes the installer to report an error.

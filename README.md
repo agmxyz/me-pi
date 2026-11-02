@@ -30,7 +30,7 @@ This is the complete `packages` property shape, not a complete settings file. Me
 
 A package install loads only the declared extensions. It does not install the global `GLOBAL_AGENTS.md` policy, delegate model pools, or the repo's skills: `pi.skills: []` intentionally keeps the package's conventional skill sources out of package discovery. The optional author `./install.sh` adopts the full rig for all Pi sessions (global policy link, user-level `implement-me-pi` and `implement-spec-me-pi` skills, `pi-web-access`, and more); read [Full rig setup](docs/setup.md) before choosing it.
 
-**A4 activation gate:** Standing recovery depends on the currently governing policy, supported provenance-capable runtime, and matching reviewed skills being installed and loaded, with every lifecycle gate revalidated in the actual session using them. This README is not a live status ledger; verify the current session before relying on A4. Gate and envelope: [delegate guide](docs/delegate.md#standing-bounded-coordinator-recovery--load-gated); dated adoption evidence: [setup guide](docs/setup.md).
+The coordinator may repair ordinary completed failures and run at most two continuations within an authorized task; see [delegate recovery](docs/delegate.md#bounded-coordinator-recovery).
 
 ## Extensions and everyday use
 
