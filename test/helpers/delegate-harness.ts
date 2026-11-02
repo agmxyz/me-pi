@@ -28,7 +28,6 @@ const {
 	WORKER_CONTRACT,
 	secretPathIn,
 	writeBlockedIn,
-	trackCheck,
 } = await import("../../extensions/delegate.ts");
 
 const {
@@ -44,7 +43,7 @@ const { progressLines } = await import("../../extensions/delegate-render.ts");
 
 const { registerDelegateCommand } = await import("../../extensions/delegate-command.ts");
 
-const { snapshotContent } = await import("../../extensions/delegate-implement.ts");
+const { snapshotContent, trackCheck } = await import("../../extensions/delegate-implement.ts");
 
 const DEFAULT_LIMITS = { ...LIMITS };
 
