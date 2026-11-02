@@ -50,11 +50,10 @@ import {
 	finish as finishImplement,
 	formatHandback,
 	ImplementLockRefusal,
-	isCheckRun,
 	nextImplementId,
 	prepare as prepareImplement,
 	realpathOr,
-	snapshotContent,
+	trackCheck,
 	workerEnv,
 } from "./delegate-implement.ts";
 import {
@@ -538,69 +537,6 @@ type CapturedToolCall = {
 	startedAt: number;
 	rawArgsCommand?: string;
 };
-
-/** Updates check freshness from completed worker tool events; only a passing declared check establishes a baseline. */
-export function trackCheck(
-	job: Checkout,
-	calls: Map<string, { tool: string; command: string }>,
-	event: { toolCallId?: unknown; isError?: unknown; result?: unknown },
-	cwd: string,
-): void {
-	const call = calls.get(String(event.toolCallId));
-	if (!call) return;
-	calls.delete(String(event.toolCallId));
-	const { check } = job;
-	const stale = (reason: string, detail?: string) => {
-		check.status = "stale";
-		check.staleReason = reason;
-		job.contentBaseline = undefined;
-		if (detail) check.runs.push(`stale: ${detail}`);
-	};
-	if (call.tool === "bash") {
-		if (isCheckRun(call.command, check.command, cwd)) {
-			job.contentBaseline = undefined;
-			delete check.staleReason;
-			const exitCode = bashExitCode(event.result);
-			if (event.isError === true || (exitCode !== undefined && exitCode !== 0)) {
-				check.status = "fail";
-				check.runs.push(`fail: ${call.command}`);
-				return;
-			}
-			if (event.isError !== false || exitCode !== 0) {
-				stale(
-					"declared Bash check result lacks a canonical successful exit status",
-					`status unavailable or contradictory: ${call.command}`,
-				);
-				return;
-			}
-			try {
-				job.contentBaseline = snapshotContent(job.repoRoot);
-				check.status = "pass";
-				check.runs.push(`pass: ${call.command}`);
-			} catch (err) {
-				const message = (err as Error).message;
-				stale("checkout content could not be verified after the check", `content snapshot unavailable: ${message}`);
-			}
-		} else if (check.status === "pass") {
-			try {
-				if (job.contentBaseline === undefined) {
-					stale("checkout content could not be verified after the last check", "content baseline unavailable");
-					return;
-				}
-				if (snapshotContent(job.repoRoot) !== job.contentBaseline)
-					stale("checkout content changed after the last check");
-			} catch (err) {
-				stale(
-					"checkout content could not be verified after the last check",
-					`content snapshot unavailable: ${(err as Error).message}`,
-				);
-			}
-		}
-		return;
-	}
-	if ((call.tool === "edit" || call.tool === "write") && !event.isError && check.status !== "none")
-		stale("successful edit/write after the last check");
-}
 
 function toolLabel(name: string): string {
 	const label = name

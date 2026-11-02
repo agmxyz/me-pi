@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { runToolCall } from "@earendil-works/pi-agent-core";
 import { createBashTool } from "@earendil-works/pi-coding-agent";
+import { trackCheck } from "../extensions/delegate-implement.ts";
 import {
 	CHECK,
 	commandCtx,
@@ -19,7 +20,6 @@ import {
 	snapshotContent,
 	TEST_HOME,
 	text,
-	trackCheck,
 	trackIntervals,
 	tuiCtx,
 	waitFor,
