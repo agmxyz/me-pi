@@ -1,7 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { FailedToolArtifactCollector } from "./delegate-artifacts.ts";
+import {
+	ENV_ATTEMPT,
+	ENV_BUDGET,
+	ENV_CHECK,
+	ENV_DENY_DIR,
+	ENV_JOB_ID,
+	ENV_OUTPUT_DIR,
+	ENV_PARENT,
+	ENV_ROLE,
+	ENV_RUN,
+	ENV_SKILLS,
+} from "./delegate-env.ts";
 import { secretPathIn, writeBlockedIn } from "./delegate-fence.ts";
-import { type Checkout, checkInCompound } from "./delegate-implement.ts";
+import { type Checkout, checkInCompound, workerEnv } from "./delegate-implement.ts";
 import {
 	eventRecord,
 	isStopFact,
@@ -57,6 +69,84 @@ export function budgetResource(
 	if (now >= budget.deadline) return "tool-time";
 	if (cost >= budget.cost) return "tool-cost";
 	return undefined;
+}
+
+// --- Launch (coordinator side) and environment (worker side) ---------------------------------------
+
+// `Skill` is extensions/skill.ts; web tools are pi-web-access's. Names not installed are ignored by pi.
+export const LOCAL_TOOLS = "read,grep,find,ls,Skill";
+// Only research and challenge get the network unless a call sets `web`: a worker reading an untrusted
+// diff or page with both local reads and web tools could be steered into sending file contents out.
+export const WEB_TOOLS = `${LOCAL_TOOLS},web_search,fetch_content,get_search_content`;
+// implement edits, runs commands, and commits, in the coordinator's checkout; never with web tools.
+export const IMPLEMENT_TOOLS = `${LOCAL_TOOLS},edit,write,bash`;
+
+/** One attempt's launch inputs: the model and thinking, the output directory, its index, and its wrap-up budget. */
+export interface WorkerAttempt {
+	run: { model?: string; thinking: string };
+	outDir: string | undefined;
+	attemptIndex: number;
+	budget: Budget;
+	// implement only: mirror the main session's project trust (`--approve`).
+	approve?: boolean;
+}
+
+/** The pi arguments and environment the coordinator spawns a worker with; `base` is the coordinator's env. */
+export function workerLaunch(
+	job: Job,
+	{ run, outDir, attemptIndex, budget, approve = false }: WorkerAttempt,
+	base: NodeJS.ProcessEnv = process.env,
+): { args: string[]; env: NodeJS.ProcessEnv } {
+	const { implement, web } = job;
+	const tools = implement ? IMPLEMENT_TOOLS : `${web ? WEB_TOOLS : LOCAL_TOOLS}${outDir ? ",write" : ""}`;
+	const args = ["--mode", "json", "-p", "--no-session", "--no-mcp", "--tools", tools];
+	// JSON mode cannot ask about trust: mirror the main session's, when safe.
+	if (implement) args.push(approve ? "--approve" : "--no-approve");
+	args.push("--thinking", run.thinking, "--append-system-prompt", workerSystemPrompt(job, outDir));
+	if (run.model) args.push("--model", run.model);
+	const env: NodeJS.ProcessEnv = {
+		...base,
+		[ENV_RUN]: "1",
+		[ENV_ROLE]: job.role,
+		[ENV_OUTPUT_DIR]: outDir ?? "",
+		[ENV_SKILLS]: job.skills ? JSON.stringify(job.skills) : "",
+		[ENV_JOB_ID]: job.jobId,
+		[ENV_ATTEMPT]: String(attemptIndex),
+		[ENV_BUDGET]: JSON.stringify(budget),
+	};
+	// implement overrides the role and output directory and adds its fences.
+	return { args, env: implement ? workerEnv(env, implement.job) : env };
+}
+
+/** What a worker's hooks read from the environment the coordinator set. */
+export interface WorkerEnv {
+	implement: boolean;
+	outputDir: string | undefined;
+	denyDir: string | undefined;
+	// The coordinator's pid (implement only); NaN when unset.
+	parent: number;
+	check: string | undefined;
+	// Skills the worker may see; undefined means all.
+	skills: string[] | undefined;
+	jobId: string;
+	attempt: number;
+	budget: Budget | undefined;
+}
+
+/** Reads the worker protocol; a malformed ME_PI_BUDGET throws (see parseBudget). */
+export function readWorkerEnv(env: NodeJS.ProcessEnv = process.env): WorkerEnv {
+	const skills = env[ENV_SKILLS];
+	return {
+		implement: env[ENV_ROLE] === "implement",
+		outputDir: env[ENV_OUTPUT_DIR],
+		denyDir: env[ENV_DENY_DIR],
+		parent: Number(env[ENV_PARENT]),
+		check: env[ENV_CHECK],
+		skills: skills ? (JSON.parse(skills) as string[]) : undefined,
+		jobId: env[ENV_JOB_ID] ?? "",
+		attempt: Number(env[ENV_ATTEMPT]),
+		budget: parseBudget(env[ENV_BUDGET]),
+	};
 }
 
 // --- Roles and contract ---------------------------------------------------------------------------
@@ -185,18 +275,13 @@ export const costOf = (usage: Record<string, any>): number => usage.cost?.total 
  * block, the output-directory write block, and for `implement` the worker-only bash rules and the orphan stop.
  */
 export function registerWorker(pi: ExtensionAPI): void {
-	const budget = parseBudget(process.env.ME_PI_BUDGET);
-	const jobId = process.env.ME_PI_DELEGATE_JOB_ID ?? "";
-	const attempt = Number(process.env.ME_PI_DELEGATE_ATTEMPT);
+	const { budget, jobId, attempt, skills, implement, parent, check, outputDir, denyDir } = readWorkerEnv();
 	const hasIdentity = Boolean(jobId) && Number.isSafeInteger(attempt) && attempt > 0;
 	let calls = 0;
 	let overBudget = 0;
 	let cost = 0;
 	const pendingStopFacts = new Map<string, StopFact[]>();
-	const skills = process.env.ME_PI_SKILLS ? (JSON.parse(process.env.ME_PI_SKILLS) as string[]) : undefined;
-	pi.on("before_agent_start", (event) =>
-		scopeWorkerPrompt(event.systemPromptOptions, { implement: process.env.ME_PI_ROLE === "implement", skills }),
-	);
+	pi.on("before_agent_start", (event) => scopeWorkerPrompt(event.systemPromptOptions, { implement, skills }));
 	const rememberStop = (toolCallId: unknown, fact: StopFact) => {
 		if (typeof toolCallId !== "string" || !toolCallId || !hasIdentity) return;
 		const facts = pendingStopFacts.get(toolCallId) ?? [];
@@ -260,7 +345,6 @@ export function registerWorker(pi: ExtensionAPI): void {
 			return { block: true, reason, terminate };
 		};
 		// An implement worker whose coordinator died would keep writing in a checkout nobody watches.
-		const parent = Number(process.env.ME_PI_PARENT);
 		if (parent > 0 && (process.ppid === 1 || !processAlive(parent)))
 			return recordBlock("Blocked: the coordinator is gone; stop now.", "coordinator-lost", "coordination", true);
 		const nextCall = ++calls;
@@ -274,12 +358,11 @@ export function registerWorker(pi: ExtensionAPI): void {
 				++overBudget > MAX_BLOCKED_OVER_BUDGET,
 			);
 		}
-		if (event.toolName === "bash" && process.env.ME_PI_ROLE === "implement") {
+		if (event.toolName === "bash" && implement) {
 			const command = String((event.input as { command?: unknown }).command ?? "");
 			const risk = workerRisk(command);
 			if (risk) return recordBlock(`Blocked: ${risk}; list it as BLOCKED.`, "worker-fence-denial", "guard");
 			// A piped, chained, or re-argued check reports another command's exit status, so it would not count as the check.
-			const check = process.env.ME_PI_CHECK;
 			if (check && checkInCompound(command, check, ctx.cwd))
 				return recordBlock(
 					`Blocked: run \`${check}\` alone, exactly as given, so its exit status counts (no pipe, chain, redirect, or extra flags). Use focused commands for partial output.`,
@@ -294,13 +377,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 				"worker-fence-denial",
 				"guard",
 			);
-		const write = writeBlockedIn(
-			event.toolName,
-			event.input,
-			ctx.cwd,
-			process.env.ME_PI_OUTPUT_DIR,
-			process.env.ME_PI_DENY_DIR,
-		);
+		const write = writeBlockedIn(event.toolName, event.input, ctx.cwd, outputDir, denyDir);
 		if (write) return recordBlock(`Blocked: ${write}.`, "worker-fence-denial", "guard");
 		return undefined;
 	});

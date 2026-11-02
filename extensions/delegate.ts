@@ -50,7 +50,6 @@ import {
 	nextImplementId,
 	prepare as prepareImplement,
 	trackCheck,
-	workerEnv,
 } from "./delegate-implement.ts";
 import {
 	type AttemptProvenance,
@@ -85,15 +84,7 @@ import {
 	renderCall,
 	renderResult,
 } from "./delegate-render.ts";
-import {
-	type Budget,
-	costOf,
-	type Job,
-	ROLE_NAMES,
-	ROLES,
-	registerWorker,
-	workerSystemPrompt,
-} from "./delegate-worker.ts";
+import { costOf, type Job, ROLE_NAMES, ROLES, registerWorker, workerLaunch } from "./delegate-worker.ts";
 import { gitTreeWrite } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
@@ -134,14 +125,6 @@ const ANSWER_CAP = 12 * 1024;
 const FAILED_PARTIAL_CAP = 4 * 1024;
 // A call's `answer` replaces the role's answer format; the cap keeps it a format, not a second task.
 const MAX_FORMAT = 400;
-
-// `Skill` is extensions/skill.ts; web tools are pi-web-access's. Names not installed are ignored by pi.
-export const LOCAL_TOOLS = "read,grep,find,ls,Skill";
-// Only research and challenge get the network unless a call sets `web`: a worker reading an untrusted
-// diff or page with both local reads and web tools could be steered into sending file contents out.
-export const WEB_TOOLS = `${LOCAL_TOOLS},web_search,fetch_content,get_search_content`;
-// implement edits, runs commands, and commits, in the coordinator's checkout; never with web tools.
-export const IMPLEMENT_TOOLS = `${LOCAL_TOOLS},edit,write,bash`;
 
 const MAX_LISTED = 50;
 
@@ -300,7 +283,7 @@ function runWorkerAttempt(
 	approve = false,
 ): Promise<RunResult> {
 	const start = Date.now();
-	const { role, web } = job;
+	const { web } = job;
 	const provenance: AttemptProvenance = {
 		jobId: job.jobId,
 		attempt: attemptIndex,
@@ -322,12 +305,13 @@ function runWorkerAttempt(
 		ms: 0,
 	};
 	const { implement } = job;
-	const tools = implement ? IMPLEMENT_TOOLS : `${web ? WEB_TOOLS : LOCAL_TOOLS}${result.outDir ? ",write" : ""}`;
-	const args = ["--mode", "json", "-p", "--no-session", "--no-mcp", "--tools", tools];
-	// JSON mode cannot ask about trust: mirror the main session's, when safe.
-	if (implement) args.push(approve ? "--approve" : "--no-approve");
-	args.push("--thinking", run.thinking, "--append-system-prompt", workerSystemPrompt(job, result.outDir));
-	if (run.model) args.push("--model", run.model);
+	const launch = workerLaunch(job, {
+		run,
+		outDir: result.outDir,
+		attemptIndex,
+		budget: { tools: budget.toolCalls, deadline: budget.toolDeadline, cost: budget.toolCostCapUsd },
+		approve,
+	});
 	const timeoutMs = Math.max(0, budget.hardDeadline - start);
 
 	return new Promise((done) => {
@@ -346,26 +330,13 @@ function runWorkerAttempt(
 				failure: sessionEnded ? "session ended before start" : "cancelled before start",
 			});
 		}
-		const { command, args: argv } = piCommand(args);
+		const { command, args: argv } = piCommand(launch.args);
 		// Detached: the worker leads its own process group, so one SIGKILL stops its children too.
 		const proc = spawn(command, argv, {
 			cwd,
 			detached: true,
 			stdio: ["pipe", "pipe", "pipe"],
-			env: ((env) => (implement ? workerEnv(env, implement.job) : env))({
-				...process.env,
-				ME_PI_RUN: "1",
-				ME_PI_ROLE: role,
-				ME_PI_OUTPUT_DIR: result.outDir ?? "",
-				ME_PI_SKILLS: job.skills ? JSON.stringify(job.skills) : "",
-				ME_PI_DELEGATE_JOB_ID: job.jobId,
-				ME_PI_DELEGATE_ATTEMPT: String(attemptIndex),
-				ME_PI_BUDGET: JSON.stringify({
-					tools: budget.toolCalls,
-					deadline: budget.toolDeadline,
-					cost: budget.toolCostCapUsd,
-				} satisfies Budget),
-			}),
+			env: launch.env,
 		});
 		const pid = proc.pid;
 		const groups = liveGroups();

@@ -19,9 +19,6 @@ const {
 	default: registerExtension,
 	classifyProviderError,
 	LIMITS,
-	LOCAL_TOOLS,
-	WEB_TOOLS,
-	IMPLEMENT_TOOLS,
 	PROMPT_GUIDELINES,
 	PROMPT_SNIPPET,
 } = await import("../../extensions/delegate.ts");
@@ -29,6 +26,9 @@ const {
 const {
 	ROLES,
 	WORKER_CONTRACT,
+	LOCAL_TOOLS,
+	WEB_TOOLS,
+	IMPLEMENT_TOOLS,
 } = await import("../../extensions/delegate-worker.ts");
 
 const {
