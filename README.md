@@ -1,56 +1,128 @@
 # me-pi
 
-`me-pi` is a Pi package with three extensions: `delegate` for isolated worker sessions, `guard` for confirmation on risky bash, and `Skill` for loading discovered skills by name.
-The main Pi session stays responsible for decisions; delegated work gets its own task and returns an answer without filling the main context with its reading.
+[![check](https://github.com/0bmario/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/0bmario/me-pi/actions/workflows/check.yml)
 
-## Install for Pi
+Bounded subagents for the [Pi](https://github.com/earendil-works/pi) coding agent. No worktrees, no sandbox, no agent files.
 
-Install the package from Git:
+Your main session hands bounded work (a lookup, a review, research, a scoped change) to a separate worker process and gets back only the answer. Workers see only the brief, run under hard time and cost limits, and are killed as a process group when they overrun. `implement` edits your real checkout on a feature branch, and its ✓ means the check you declared passed on exactly what it delivered.
+
+```text
+you ─► main Pi session (decides, verifies)
+          │ delegate { role, task, check? }
+          ▼
+       pi --mode json -p --no-session --no-mcp   (own process group, role tools, deadline)
+          │
+          ▼
+       short answer   or   ✓ im1 fix/timeout a1b2c3d..e4f5a6b: 1 commit; check pass
+```
+
+## Why me-pi
+
+- **Small surface.** One `delegate` tool, one `/delegate` command, six built-in roles. Works with zero config.
+- **Follows your workflow.** Workers load your own `AGENTS.md` and skills. Add `(coordinator only)` to a `## ` heading and workers skip that section.
+- **One writer, verified commits.** `implement` takes a per-repo lock, needs a clean feature branch, runs your check, and commits. A pass counts only for the exact checkout content it ran on; any later edit marks it stale. Leftover work is saved as a visible `WIP` commit.
+- **Bounded by default.** Hard time limits (5 / 15 / 45 min), a $5 per-run cap on Pi's estimated cost, at most four workers per Pi session.
+- **No blind retries.** Provider hiccups are retried on the same model only when the attempt did nothing but reads; anything with unknown side effects is reported, not replayed.
+- **Model pools.** A cheap model for scouts, a stronger one for workers or reviews, in one JSON file.
+
+| Role | Can | Answers with |
+| --- | --- | --- |
+| `scout` | read, grep, find, ls | 1–3 sentences with `path:line`, or `not-found` |
+| `general` | same | what the task asks for |
+| `review` | same | severity-ranked `path:line` findings |
+| `research` / `challenge` | same + web | sources and conflicts / up to 5 challenges and a verdict |
+| `implement` | same + edit, write, bash | commits on your branch, check status |
+
+Also included: `guard` (asks before risky bash such as force pushes, `git reset --hard`, recursive `rm`) and `Skill` (lets Pi load an already-discovered skill by name).
+
+## Install
+
+Requires Pi 1.5.0 (CI runs against it) on macOS or Linux.
 
 ```sh
 pi install git:github.com/0bmario/me-pi
 ```
 
-Pi must be installed and able to access the repository. After changing package settings, use `/reload` or restart Pi to load the updated extensions. `/reload` ends active background delegate jobs, so wait for them first.
+Restart Pi or run `/reload`, then check with `/delegate status`. Try it, no config needed: *"Have a scout find where this repo parses CLI flags, with path:line evidence."*
 
-To load **only `delegate`**, configure its package filter in your personal Pi settings (usually `~/.pi/agent/settings.json`):
+Optional model pools in `~/.pi/agent/delegate.json` (without it, workers use your session's model):
+
+```json
+{
+  "version": 3,
+  "scout": { "models": [{ "model": "provider/fast-model", "thinking": "low" }] },
+  "worker": { "models": [{ "model": "provider/strong-model", "thinking": "medium" }] },
+  "review": { "models": [{ "model": "provider/other-strong-model", "thinking": "high" }] }
+}
+```
+
+`scout` serves scouts, `review` serves reviews, and `worker` serves every other role. `review` is optional and falls back to `worker`; a different model there gives you a second opinion on the work it reviews.
+
+`research` and `challenge` need web tools: `pi install npm:pi-web-access`.
+
+To skip `guard`, replace the `git:github.com/0bmario/me-pi` entry in `~/.pi/agent/settings.json` with a filter (keep `skill.ts`: workers use it to load skills):
 
 ```json
 {
   "packages": [
-    {
-      "source": "git:github.com/0bmario/me-pi",
-      "extensions": ["extensions/delegate.ts"]
-    }
+    { "source": "git:github.com/0bmario/me-pi", "extensions": ["extensions/delegate.ts", "extensions/skill.ts"] }
   ]
 }
 ```
 
-This is the complete `packages` property shape, not a complete settings file. Merge the entry into your existing `packages` array and preserve other settings and entries; if the package is already listed, replace only its declaration with the filtered object. The filter selects one extension entrypoint, while its imported helper modules remain part of the package. It does not activate the separate `guard` or `Skill` extensions. Do not copy `extensions/delegate.ts` alone: it imports sibling modules from this package.
+Without `guard`, `implement` workers also lose its blocks on recursive `rm`, `git reset --hard`, and force pushes.
 
-A package install loads only the declared extensions. It does not install the global `GLOBAL_AGENTS.md` policy, delegate model pools, or the repo's skills: `pi.skills: []` intentionally keeps the package's conventional skill sources out of package discovery. The optional author `./install.sh` adopts the full rig for all Pi sessions (global policy link, user-level `implement-me-pi` and `implement-spec-me-pi` skills, `pi-web-access`, and more); read [Full rig setup](docs/setup.md) before choosing it.
+## Use
 
-The coordinator may repair ordinary completed failures and run at most two continuations within an authorized task; see [delegate recovery](docs/delegate.md#bounded-coordinator-recovery).
+Ask Pi in plain language. A typical change:
 
-## Extensions and everyday use
+1. "Scout where session timeouts are configured." → a `path:line` answer.
+2. `git switch -c fix/timeout`, then "Implement a 30 s default timeout; check with `npm test`." → `✓ im1 fix/timeout …: 1 commit; check pass`.
+3. "Review the diff of `main...fix/timeout` for correctness." → severity-ranked findings. Fix, re-review, open the PR yourself.
 
-- **`delegate`** registers a model-callable tool. Ask Pi to “have a scout find where the retry policy is implemented and return path-and-line evidence,” “review this saved diff for correctness,” or “challenge this plan.” See the [delegate guide](docs/delegate.md) for roles, model pools, status and cancellation, limits, and recovery.
-- **`guard`** starts enabled and asks before matching risky bash commands; without an interactive UI it blocks them. Use `/guard on` or `/guard off` to toggle it for the current session. It is a pattern-based safety net, not a command parser or sandbox.
-- **`Skill`** lets Pi load a named skill that Pi has already discovered. It does not install or bundle skills.
+Also: "Research how other CLIs handle config migrations", "Challenge this plan", and "…in the background" for long jobs.
+
+| Command | Does |
+| --- | --- |
+| `/delegate status` | running jobs, recent calls, model resolution |
+| `/delegate models` | config path |
+| `/delegate cancel <id>` | cancel a background job |
+| `/guard on` / `/guard off` | toggle guard for this session |
+
+Background jobs end on `/reload` or when Pi exits. Roles, limits, model pools and recovery: [docs/delegate.md](docs/delegate.md).
 
 ## Safety
 
-Pi extensions and delegated workers run with Pi's operating-system permissions and are not a sandbox; guard and worker checks are limits, not security boundaries. `implement` edits, runs commands, and commits in your real checkout, so use it only on a clean, non-`main`/`master` branch and review its handback. Read [safety and recovery](docs/delegate.md#safety-and-recovery) before enabling write-capable work.
+- Not a sandbox. Extensions and workers run with your OS permissions; `guard` and the fences are guardrails, not security boundaries.
+- Worker file-read tools refuse common secret paths (`.env*`, keys, `~/.ssh`, `~/.pi/agent/auth.json`); `implement`'s bash is not path-fenced.
+- `implement` edits and commits in your real checkout, with Git remotes and `gh` cut off. ✓ means your check exited 0 on the delivered content, not that the code is right; review what it hands back.
+- The recovery rules in [docs/delegate.md](docs/delegate.md) are guidance for the main session, not runtime enforcement.
+- me-pi itself sends nothing anywhere; workers talk only to your configured model providers, plus fetched pages when web tools are on.
 
-## Development
-
-Pi is required to install and use the extensions; package behavior is verified against Pi 1.3.0. Development requires Node.js ≥22.19.
+## Uninstall
 
 ```sh
-npm ci                            # once, and after package-lock.json changes
-npm run check                     # read-only lint, typecheck, tests, installer smoke test, diff check
-npm run check --prefix extensions # compatibility/acceptance command; forwards to the root check
-npm run fix                       # apply available Biome formatting/lint fixes
+pi remove git:github.com/0bmario/me-pi
+rm ~/.pi/agent/delegate.json   # if you created it
 ```
 
-Pi's [package docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) describe package sources, filters, and settings scope.
+## Author's full setup
+
+From a clone, `./install.sh` installs my personal rig machine-wide (global policy, skills, extras). You don't need it for the package. What it does and how to undo it: [docs/setup.md](docs/setup.md).
+
+## Contributing
+
+Node ≥22.19.
+
+```sh
+npm ci
+npm run check                    # lint, typecheck, tests, installer test
+npm run fix                      # apply Biome fixes
+node --test test/guard.test.ts   # one test file
+```
+
+Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR. Good first issues: [#35](https://github.com/0bmario/me-pi/issues/35), [#40](https://github.com/0bmario/me-pi/issues/40).
+
+## License
+
+[MIT](LICENSE)
