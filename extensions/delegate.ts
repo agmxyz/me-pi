@@ -792,6 +792,7 @@ export default function (pi: ExtensionAPI) {
 				updateActivityWidget(ctx, ended);
 				// Tracked through the shutdown-time finish: session_shutdown snapshots `running` once, so the finish
 				// for a session that ended during prepare must be part of the same promise.
+				let released = false;
 				const preparing = (async () => {
 					const prepared = await prepareImplement(
 						ctx?.cwd ?? process.cwd(),
@@ -799,7 +800,10 @@ export default function (pi: ExtensionAPI) {
 						check.trim(),
 						String(_id),
 					);
-					if (ended.aborted) await finishImplement(prepared, { failure: "stopped: session ended" });
+					if (ended.aborted) {
+						released = true;
+						await finishImplement(prepared, { failure: "stopped: session ended" });
+					}
 					return prepared;
 				})();
 				const settled = preparing.then(
@@ -821,6 +825,16 @@ export default function (pi: ExtensionAPI) {
 				}
 				// From here the lock is held: the widget update for the closed slot runs inside runImplementJob.
 				if (ended.aborted) {
+					// The session ended after prepare's own check: release the checkout here, tracked for shutdown.
+					if (!released) {
+						const finishing = finishImplement(co, { failure: "stopped: session ended" }).then(() => {});
+						running.add(finishing);
+						try {
+							await finishing;
+						} finally {
+							running.delete(finishing);
+						}
+					}
 					updateActivityWidget(ctx, ended);
 					return fail("stopped: session ended");
 				}
@@ -1045,8 +1059,9 @@ export default function (pi: ExtensionAPI) {
 					updateActivityWidget(ctx, ended);
 				}
 			};
-			// implement: finish always runs, even when the activity setup throws; `writing` is cleared after it.
-			const start = (
+			// implement: finish always runs, even when the activity setup throws; `writing` is set before the first await
+			// (so it holds before a background start message returns) and cleared only after finish has settled.
+			const start = async (
 				key: string,
 				signal: AbortSignal,
 				onUpdate: ((u: any) => void) | undefined,
@@ -1056,29 +1071,29 @@ export default function (pi: ExtensionAPI) {
 			) => {
 				const prepared = co;
 				if (!prepared) return call(key, signal, onUpdate, displayId, jobId);
-				return runImplementJob(
-					prepared,
-					async (end) => {
-						writing.set(prepared.repoRoot, writer);
-						try {
+				writing.set(prepared.repoRoot, writer);
+				try {
+					return await runImplementJob(
+						prepared,
+						async (end) => {
 							updateActivityWidget(ctx, ended);
 							return await call(key, signal, onUpdate, displayId, jobId, end);
-						} finally {
-							writing.delete(prepared.repoRoot);
-						}
-					},
-					(err: any) => {
-						// A worker still running would keep writing while finish commits; stop its group first.
-						for (const pid of job.implement?.pids ?? []) killGroup(pid);
-						const failedToolCapture = job.implement
-							? persistFailedToolCapture(prepared, job.implement.artifacts)
-							: undefined;
-						return {
-							failure: `delegate error: ${err?.message ?? err}`,
-							...(failedToolCapture && { failedToolCapture }),
-						};
-					},
-				);
+						},
+						(err: any) => {
+							// A worker still running would keep writing while finish commits; stop its group first.
+							for (const pid of job.implement?.pids ?? []) killGroup(pid);
+							const failedToolCapture = job.implement
+								? persistFailedToolCapture(prepared, job.implement.artifacts)
+								: undefined;
+							return {
+								failure: `delegate error: ${err?.message ?? err}`,
+								...(failedToolCapture && { failedToolCapture }),
+							};
+						},
+					);
+				} finally {
+					writing.delete(prepared.repoRoot);
+				}
 			};
 			// implement: session_shutdown waits for the whole call, so finish commits WIP and releases the lock.
 			const tracked = <T>(p: Promise<T>): Promise<T> => {
