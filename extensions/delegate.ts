@@ -6,18 +6,8 @@
  * and internal guardrails (secret-path read blocks, write directory fencing, and wrap-up budgets).
  */
 
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import {
-	appendFileSync,
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	statSync,
-	writeFileSync,
-	writeSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -52,6 +42,7 @@ import {
 	prepare as prepareImplement,
 	trackCheck,
 } from "./delegate-implement.ts";
+import { killGroup, startWorkerProcess } from "./delegate-process.ts";
 import {
 	type AttemptProvenance,
 	bashExitCode,
@@ -160,40 +151,12 @@ function initialActivity(
 
 // --- Worker process -------------------------------------------------------------------------------
 
-// Live worker process groups, shared by reloaded module instances, killed when the main process exits.
-const GROUPS_KEY = Symbol.for("me-pi.delegate.groups");
 const HISTORY_KEY = Symbol.for("me-pi.delegate.history");
 const SPEND_KEY = Symbol.for("me-pi.delegate.background-spend");
 // Background job ids (bg<n>) count here, across /reload, so ids never repeat within one Pi process.
 const JOB_COUNT_KEY = Symbol.for("me-pi.delegate.job-count");
 // The abort reason of a session shutdown (/reload, /new, /resume, /fork, handoff, exit).
 const SESSION_ENDED = "session ended";
-function liveGroups(): Set<number> {
-	const shared = globalThis as any;
-	if (!shared[GROUPS_KEY]) {
-		const groups = new Set<number>();
-		shared[GROUPS_KEY] = groups;
-		// Runs inside process.on("exit"): synchronous only, so warnings go straight to fd 2.
-		process.on("exit", () => {
-			for (const pid of groups) {
-				const failure = killGroup(pid);
-				if (failure) writeSync(2, `delegate: ${failure}\n`);
-			}
-		});
-	}
-	return shared[GROUPS_KEY];
-}
-
-/** SIGKILLs a worker's process group; returns an error message, or undefined when killed or gone. */
-function killGroup(pid: number): string | undefined {
-	try {
-		process.kill(-pid, "SIGKILL");
-	} catch (err: any) {
-		if (err?.code !== "ESRCH") return `SIGKILL to worker group ${pid} failed: ${err?.message ?? err}`;
-	}
-	return undefined;
-}
-
 function piCommand(args: string[]): { command: string; args: string[] } {
 	if (process.env.PI_BIN) return { command: process.env.PI_BIN, args };
 	const script = process.argv[1];
@@ -332,22 +295,34 @@ function runWorkerAttempt(
 			});
 		}
 		const { command, args: argv } = piCommand(launch.args);
-		// Detached: the worker leads its own process group, so one SIGKILL stops its children too.
-		const proc = spawn(command, argv, {
-			cwd,
-			detached: true,
-			stdio: ["pipe", "pipe", "pipe"],
+		const proc = startWorkerProcess({
+			command,
+			args: argv,
 			env: launch.env,
+			cwd,
+			// The prompt goes on stdin: no argv size limit, and a leading "-" or "@" is not parsed as an option.
+			stdin: prompt,
+			exitGraceMs: LIMITS.exitGraceMs,
+			termGraceMs: LIMITS.termGraceMs,
+			onRecord: (event) => processEvent(event),
+			onMalformed: () => {
+				provenance.complete = false;
+				implement?.artifacts.noteAnomaly("malformed-event"); // pi prints JSON lines in this mode.
+			},
+			onStderr: (chunk) => {
+				result.stderr = (result.stderr + chunk).slice(-4096);
+			},
+			onKillFailure: (failure) => {
+				result.stderr += `\ndelegate: ${failure}`;
+			},
+			onExit: (code, problem) => finish(code, problem),
 		});
 		const pid = proc.pid;
-		const groups = liveGroups();
-		if (pid !== undefined) groups.add(pid);
 		if (pid !== undefined) implement?.pids.add(pid);
 		let stopped: string | undefined;
 		let providerErrorClass: FailureClass | undefined;
 		let finished = false;
 		let lastStopReason: string | undefined;
-		let buffer = "";
 		const calls = new Map<string, { tool: string; command: string }>();
 		const captureCalls = new Map<string, CapturedToolCall[]>();
 		const anonymousCaptureCalls: CapturedToolCall[] = [];
@@ -359,7 +334,6 @@ function runWorkerAttempt(
 		let omittedContradictorySuccesses = 0;
 		let latestAssistantError: { provider: string; model: string; api: string } | undefined;
 
-		let termTimer: NodeJS.Timeout | undefined;
 		let progressTimer: NodeJS.Timeout | undefined;
 		let progressPending = false;
 		const clearProgressTimer = () => {
@@ -678,35 +652,18 @@ function runWorkerAttempt(
 			if (finished || stopped || pid === undefined) return;
 			stopped = reason;
 			if (fact) provenance.stopFacts.push(fact);
-			if (implement) {
-				// Pi's print mode handles SIGTERM by stopping its bash commands, which run in their own groups.
-				try {
-					process.kill(-pid, "SIGTERM");
-				} catch {}
-				termTimer = setTimeout(() => {
-					const failure = killGroup(pid);
-					if (failure) result.stderr += `\ndelegate: ${failure}`;
-				}, LIMITS.termGraceMs);
-				return;
-			}
-			const failure = killGroup(pid);
-			if (failure) result.stderr += `\ndelegate: ${failure}`;
+			// implement: Pi's print mode handles SIGTERM by stopping its bash commands, which run in their own groups.
+			proc.stop(implement ? "term-then-kill" : "kill");
 		};
 		const finish = (code: number | null, problem?: string) => {
 			if (finished) return;
-			if (buffer.trim()) processLine(buffer);
 			flushUnclosedCalls();
 			flushUnknownToolEffects();
 			flushProgress();
 			finished = true;
 			clearProgressTimer();
 			clearTimeout(timer);
-			clearTimeout(exitTimer);
-			clearTimeout(termTimer);
 			signal.removeEventListener("abort", onAbort);
-			proc.stdout.destroy();
-			proc.stderr.destroy();
-			if (pid !== undefined) groups.delete(pid);
 			if (pid !== undefined) implement?.pids.delete(pid);
 			result.ms = Date.now() - start;
 			// Derive the child's own tail before appending delegate diagnostics; appended text must not become the
@@ -741,21 +698,7 @@ function runWorkerAttempt(
 			if (result.failure) result.failureClass = (!stopped && !problem && providerErrorClass) || "model/task";
 			done(result);
 		};
-		const processLine = (line: string) => {
-			if (finished) return;
-			let event: any;
-			try {
-				event = JSON.parse(line);
-			} catch {
-				provenance.complete = false;
-				implement?.artifacts.noteAnomaly("malformed-event");
-				return; // Not a usable event (pi prints JSON lines in this mode).
-			}
-			if (!event || typeof event !== "object" || Array.isArray(event)) {
-				provenance.complete = false;
-				implement?.artifacts.noteAnomaly("malformed-event");
-				return;
-			}
+		const processEvent = (event: any) => {
 			if (event.type === "tool_execution_start") startToolEffect(event);
 			if (event.type === "tool_execution_update") observeToolEffectUpdate(event);
 			if (event.type === "tool_execution_end") endToolEffect(event);
@@ -860,7 +803,6 @@ function runWorkerAttempt(
 			() => stop(`timeout after ${timeoutMs / 1000}s`, parentFact("hard-timeout", "hard-time")),
 			timeoutMs,
 		);
-		let exitTimer: NodeJS.Timeout | undefined;
 		// A session shutdown aborts with SESSION_ENDED; /delegate cancel and the turn's abort are a cancel.
 		const onAbort = () =>
 			stop(
@@ -868,31 +810,6 @@ function runWorkerAttempt(
 				parentFact(signal.reason === SESSION_ENDED ? "session-ended" : "cancelled", "cancellation"),
 			);
 		signal.addEventListener("abort", onAbort, { once: true });
-
-		proc.stdout.setEncoding("utf8");
-		proc.stderr.setEncoding("utf8");
-		proc.stdout.on("data", (chunk: string) => {
-			buffer += chunk;
-			const lines = buffer.split("\n");
-			buffer = lines.pop() ?? "";
-			for (const line of lines) if (line.trim()) processLine(line);
-		});
-		proc.stderr.on("data", (chunk: string) => {
-			if (!finished) result.stderr = (result.stderr + chunk).slice(-4096);
-		});
-		proc.stdin.on("error", () => {}); // EPIPE when the worker dies before reading; exit reports why.
-		// The prompt goes on stdin: no argv size limit, and a leading "-" or "@" is not parsed as an option.
-		proc.stdin.end(prompt);
-		proc.on("exit", (code) => {
-			// Leftover children in the group are killed; a process outside it may still hold the pipes.
-			if (pid !== undefined) killGroup(pid);
-			exitTimer = setTimeout(
-				() => finish(code, "worker exited but its output pipes stayed open"),
-				LIMITS.exitGraceMs,
-			);
-		});
-		proc.on("close", (code) => finish(code));
-		proc.on("error", (err) => finish(null, `could not start pi: ${err.message}`));
 	});
 }
 
