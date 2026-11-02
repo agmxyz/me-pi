@@ -50,6 +50,8 @@ import {
 } from "./delegate-implement.ts";
 import {
 	type AttemptProvenance,
+	type FailureClass,
+	failureClassLine,
 	isProviderRetryFact,
 	isStopFact,
 	type ProviderRetryFact,
@@ -84,6 +86,8 @@ export const LIMITS = {
 	// before a hard limit kills it without one.
 	scoutToolCalls: 60,
 	wrapUpShare: 0.8,
+	// Same-model retries of an infra failure that had no effects, one per delay; they share the job's limits.
+	infraRetryDelaysMs: [15_000, 60_000],
 };
 const MAX_RUNS = 4;
 const HISTORY_SIZE = 20;
@@ -681,6 +685,9 @@ export interface RunResult {
 	model?: string;
 	output: string;
 	failure?: string;
+	failureClass?: FailureClass;
+	/** Failures of earlier attempts that were retried on the same model as infra failures. */
+	infraRetries?: string[];
 	fallbackBlockReason?: string;
 	provenance?: AttemptProvenance[];
 	toolCallCount?: number;
@@ -690,6 +697,17 @@ export interface RunResult {
 	stderr: string;
 	ms: number;
 	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
+}
+
+const ACCOUNT_LIMIT =
+	/usage limit|quota|insufficient|billing|out of budget|available balance|key limit|credits?\b|\b40[13]\b|unauthori[sz]ed|forbidden|invalid api key/i;
+const INFRA_FAILURE =
+	/\b(?:408|409|425|429|5\d\d)\b|overloaded|rate.?limit|too many requests|service.?(?:is.?)?(?:temporarily.?)?unavailable|server.?error|internal.?error|upstream|provider.?returned|network|connection|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|socket hang up|timed? ?out|timeout|stream ended|ended without|terminated/i;
+
+export function classifyProviderError(message: string | undefined): FailureClass {
+	if (!message) return "model/task";
+	if (ACCOUNT_LIMIT.test(message)) return "account";
+	return INFRA_FAILURE.test(message) ? "infra" : "model/task";
 }
 
 /** Adds numeric fields of a Pi usage object (including nested `cost`) into `total`. */
@@ -1010,6 +1028,7 @@ function runWorkerAttempt(
 		if (pid !== undefined) groups.add(pid);
 		if (pid !== undefined) implement?.pids.add(pid);
 		let stopped: string | undefined;
+		let providerErrorClass: FailureClass | undefined;
 		let finished = false;
 		let lastStopReason: string | undefined;
 		let buffer = "";
@@ -1402,6 +1421,8 @@ function runWorkerAttempt(
 			else if (code !== 0) result.failure = `exit ${code}: ${result.failure ?? (lastStderr || "no error message")}`;
 			else if (!result.failure)
 				result.failure = result.output.trim() ? "worker ended without a final answer" : "worker produced no answer";
+			// Our own stops (limits, cancellation) are never infra, whatever the provider said before them.
+			if (result.failure) result.failureClass = (!stopped && !problem && providerErrorClass) || "model/task";
 			done(result);
 		};
 		const processLine = (line: string) => {
@@ -1494,6 +1515,7 @@ function runWorkerAttempt(
 				typeof msg.api === "string"
 					? { provider: msg.provider, model: msg.model, api: msg.api }
 					: undefined;
+			providerErrorClass = msg.stopReason === "error" ? classifyProviderError(msg.errorMessage) : undefined;
 			const bad = ["error", "aborted", "length"].includes(msg.stopReason);
 			result.failure = bad ? msg.errorMessage || `model stopped: ${msg.stopReason}` : undefined;
 			// Keep a final "stop" reply even over cap. For continuing replies, retain every spent dimension before
@@ -1664,21 +1686,81 @@ async function runWorker(
 		toolCostCapUsd: toolCostCap,
 		toolCalls: job.role === "scout" ? LIMITS.scoutToolCalls : null,
 	};
-	const attempt = await runWorkerAttempt(
-		job,
-		prompt,
-		candidate,
-		cwd,
-		signal,
-		onProgress,
-		outDir,
-		budget,
-		1,
-		job.implement?.trusted === true,
-	);
+	const runAttempt = (index: number, attemptBudget: AttemptBudget) =>
+		runWorkerAttempt(
+			job,
+			prompt,
+			candidate,
+			cwd,
+			signal,
+			onProgress,
+			outDir,
+			attemptBudget,
+			index,
+			job.implement?.trusted === true,
+		);
+	let attempt = await runAttempt(1, budget);
+	for (const delayMs of LIMITS.infraRetryDelaysMs) {
+		if (!infraRetryable(attempt) || Date.now() + delayMs >= budget.toolDeadline) break;
+		if (!(await sleepUnlessAborted(delayMs, signal))) break;
+		const spent = costOf(attempt.usage);
+		const next = await runAttempt((attempt.provenance?.length ?? 0) + 1, {
+			...budget,
+			hardCostCapUsd: budget.hardCostCapUsd - spent,
+			toolCostCapUsd: budget.toolCostCapUsd - spent,
+		});
+		attempt = mergeAttempts(attempt, next);
+	}
 	if (candidates.length > 1 && attempt.failure && !attempt.provenance?.[0]?.providerRetry)
 		attempt.fallbackBlockReason ??= "Pi runtime supplied no structured retry classification";
 	return attempt;
+}
+
+/**
+ * An infra failure is retried on the same model only when its attempt is fully accounted for and did nothing but
+ * replay-safe reads; the only stop allowed is Pi's own exhausted retry. Any write, Bash call, or other stop keeps it.
+ */
+function infraRetryable(r: RunResult): boolean {
+	const last = r.provenance?.at(-1);
+	return (
+		r.failureClass === "infra" &&
+		last !== undefined &&
+		last.complete &&
+		last.stopFacts.every((fact) => fact.cause === "provider-retry-classified") &&
+		last.toolEffects.every((fact) => fact.effect === "completed" && fact.replaySafe)
+	);
+}
+
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<boolean> {
+	if (signal.aborted) return Promise.resolve(false);
+	return new Promise((done) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			done(true);
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			done(false);
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/** The latest attempt's result, with every attempt's provenance, usage, time, and tool history. */
+function mergeAttempts(previous: RunResult, next: RunResult): RunResult {
+	const usage = {};
+	addUsage(usage, previous.usage);
+	addUsage(usage, next.usage);
+	return {
+		...next,
+		infraRetries: [...(previous.infraRetries ?? []), previous.failure ?? "infra failure"],
+		provenance: [...(previous.provenance ?? []), ...(next.provenance ?? [])],
+		toolCallCount: (previous.toolCallCount ?? 0) + (next.toolCallCount ?? 0),
+		turns: previous.turns + next.turns,
+		usage,
+		tools: [...previous.tools, ...next.tools].slice(-MAX_TOOL_HISTORY),
+		ms: previous.ms + next.ms,
+	};
 }
 
 // --- Result formatting ----------------------------------------------------------------------------
@@ -1749,7 +1831,7 @@ function formatRun(r: RunResult): string {
 	else if (!r.failure) body = `${answer}${filesLine(r)}\n${label(r)}`;
 	else {
 		const partial = r.output.trim() ? `\nPartial answer:\n${cap(r.output.trim(), FAILED_PARTIAL_CAP)}` : "";
-		body = `✗ ${r.failure}${r.fallbackBlockReason ? `\nPool fallback not attempted: ${r.fallbackBlockReason}.` : ""}${partial}${filesLine(r)}\n${label(r)}`;
+		body = `✗ ${r.failure}${failureClassLine(r)}${r.fallbackBlockReason ? `\nPool fallback not attempted: ${r.fallbackBlockReason}.` : ""}${partial}${filesLine(r)}\n${label(r)}`;
 	}
 	return body;
 }
@@ -2477,6 +2559,8 @@ export default function (pi: ExtensionAPI) {
 							: undefined;
 						facts = await finishImplement(co, {
 							failure: r.failure,
+							failureClass: r.failureClass,
+							infraRetries: r.infraRetries,
 							...(r.failedToolCapture && { failedToolCapture: r.failedToolCapture }),
 							provenance: r.provenance,
 							answer: r.output,

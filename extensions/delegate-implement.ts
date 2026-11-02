@@ -14,7 +14,13 @@ import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
-import type { AttemptProvenance, StopFact, ToolEffectFact } from "./delegate-provenance.ts";
+import {
+	type AttemptProvenance,
+	type FailureClass,
+	failureClassLine,
+	type StopFact,
+	type ToolEffectFact,
+} from "./delegate-provenance.ts";
 import { PROTECTED_BRANCHES } from "./guard.ts";
 
 const run = promisify(execFile);
@@ -216,6 +222,9 @@ export type Outcome = {
 	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
 	provenance?: AttemptProvenance[];
 	stopFacts?: StopFact[];
+	failureClass?: FailureClass;
+	// Failures retried on the same model as infra failures before this outcome.
+	infraRetries?: string[];
 };
 
 export type DeliveredState = {
@@ -891,7 +900,8 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 		...section(`Commits (${f.commitCount}, oldest first)`, f.commits.join("\n")),
 		...section("Diffstat", f.stat),
 		...section(`Check \`${f.check.command}\`: ${f.check.status}`, checkHistory.join("\n") || "(not run)"),
-		...section("Failure", o.failure),
+		...section("Failure", o.failure && `${o.failure}${failureClassLine(o)}`),
+		...section("Infra retries", o.infraRetries?.map(shown).join("\n")),
 		...section("Answer", o.answer),
 		...section("Tools", o.tools?.join("\n")),
 		...section("Stderr (tail)", o.stderr),
@@ -950,7 +960,7 @@ export function formatHandback(f: Facts): string {
 	}
 	if (blocked.length > MAX_BLOCKED) out.push(`+${blocked.length - MAX_BLOCKED} more BLOCKED in details`);
 	const failure = failureLine(o.failure);
-	if (failure) out.push(`✗ ${shown(failure)}`);
+	if (failure) out.push(`✗ ${shown(failure)}${failureClassLine(o)}`);
 	if (f.wip) {
 		const files = f.wip.files.join(", ") + (f.wip.more ? `, … ${f.wip.more} more` : "");
 		// The reason is the failure line above when there is one.

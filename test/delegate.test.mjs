@@ -27,6 +27,7 @@ process.on("exit", () => rmSync(TEST_HOME, { recursive: true, force: true }));
 
 const {
 	default: registerExtension,
+	classifyProviderError,
 	LIMITS,
 	LOCAL_TOOLS,
 	WEB_TOOLS,
@@ -120,7 +121,7 @@ const FAKE_BIN = join(TEST_HOME, "fake-pi.mjs");
 writeFileSync(
 	FAKE_BIN,
 	`#!/usr/bin/env node
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -495,6 +496,25 @@ process.stdin.on("end", () => {
     emit("Added feature.txt.\\nIMPLEMENT-DIFF-BODY is in the details only");
     process.exit(0);
   }
+  if (mode === "infra-flaky") {
+    // Fails the first FAKE_PI_INFRA_FAILS runs with FAKE_PI_ERROR, counting runs in FAKE_PI_COUNTER.
+    const runs = (existsSync(process.env.FAKE_PI_COUNTER) ? Number(readFileSync(process.env.FAKE_PI_COUNTER, "utf8")) : 0) + 1;
+    writeFileSync(process.env.FAKE_PI_COUNTER, String(runs));
+    if (runs <= Number(process.env.FAKE_PI_INFRA_FAILS)) {
+      tool("read", { path: "README.md" });
+      if (process.env.FAKE_PI_INFRA_EFFECT) tool("bash", { command: "printf effect > effect.txt" });
+      emit("", { stopReason: "error", errorMessage: process.env.FAKE_PI_ERROR });
+      process.exit(1);
+    }
+    if (process.env.ME_PI_ROLE === "implement") {
+      writeFileSync("feature.txt", "fixed\\n");
+      git("add", "feature.txt");
+      git("commit", "-q", "-m", "feat: fixture");
+      tool("bash", { command: "npm test" });
+    }
+    emit("Answered after run " + runs + ".");
+    process.exit(0);
+  }
   if (mode === "implement-no-effect-failures") {
     // The piops run's harmless failures: an edit rejected before writing, a failed read, and a fenced write.
     const jobId = process.env.ME_PI_DELEGATE_JOB_ID;
@@ -724,7 +744,8 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 		if (!Object.hasOwn(saved, k)) saved[k] = process.env[k];
 	}
 	applyEnv(vars);
-	Object.assign(LIMITS, limits);
+	// Same-model infra retries are off unless a test asks for them: other tests classify the first attempt.
+	Object.assign(LIMITS, { infraRetryDelaysMs: [] }, limits);
 	const tools = {};
 	const handlers = {};
 	const registeredHandlers = new Map();
@@ -4638,6 +4659,82 @@ test("implement: a failed check, an edit after the check, or no check run is ✗
 	});
 	const res = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
 	assert.equal(res.isError, false, text(res));
+});
+
+test("provider errors are classified as infra, account, or model/task", () => {
+	for (const message of [
+		"Upstream error from OpenInference: Upstream returned HTTP 409",
+		"Request timed out",
+		"fetch failed: ECONNRESET",
+		"503 Service Unavailable",
+		"429 rate_limit_error: too many requests",
+	])
+		assert.equal(classifyProviderError(message), "infra", message);
+	for (const message of [
+		"403 Key limit exceeded (total limit)",
+		"429 quota exceeded for this project",
+		"insufficient_quota: check your plan",
+		"401 Unauthorized",
+	])
+		assert.equal(classifyProviderError(message), "account", message);
+	for (const message of ["invalid request: tool schema rejected", "", undefined])
+		assert.equal(classifyProviderError(message), "model/task", String(message));
+});
+
+test("an infra failure without effects is retried on the same model; effects or account limits are not", async (t) => {
+	const counter = () => join(mkdtempSync(join(TEST_HOME, "infra-")), "runs");
+	const { tool } = setup(t, {
+		env: { FAKE_PI_MODE: "infra-flaky", FAKE_PI_INFRA_FAILS: "2", FAKE_PI_ERROR: "Upstream returned HTTP 409" },
+		limits: { infraRetryDelaysMs: [1, 1] },
+	});
+	process.env.FAKE_PI_COUNTER = counter();
+	const retried = await run(tool, { role: "scout", task: "look" });
+	assert.equal(retried.isError, false, text(retried));
+	assert.match(text(retried), /Answered after run 3\./);
+	const [r] = retried.details.round1;
+	assert.deepEqual(r.infraRetries, ["exit 1: Upstream returned HTTP 409", "exit 1: Upstream returned HTTP 409"]);
+	assert.deepEqual(
+		r.provenance.map((p) => p.attempt),
+		[1, 2, 3],
+	);
+
+	process.env.FAKE_PI_COUNTER = counter();
+	process.env.FAKE_PI_INFRA_FAILS = "5";
+	const exhausted = await run(tool, { role: "scout", task: "look" });
+	assert.equal(exhausted.isError, true);
+	assert.match(text(exhausted), /^Failure class: infra \(provider or network, not the task\); retried 2× on the same model\.$/m);
+	assert.equal(readFileSync(process.env.FAKE_PI_COUNTER, "utf8"), "3");
+
+	process.env.FAKE_PI_COUNTER = counter();
+	process.env.FAKE_PI_ERROR = "403 Key limit exceeded (total limit)";
+	const account = await run(tool, { role: "scout", task: "look" });
+	assert.match(text(account), /^Failure class: account \(quota, key, or billing limit\); BLOCKER: retrying cannot help\.$/m);
+	assert.equal(readFileSync(process.env.FAKE_PI_COUNTER, "utf8"), "1");
+});
+
+test("implement retries an infra failure without effects inside the same job, and not after a Bash effect", async (t) => {
+	const counter = () => join(mkdtempSync(join(TEST_HOME, "infra-")), "runs");
+	const { tool } = setup(t, {
+		env: implementEnv("infra-flaky", {
+			FAKE_PI_INFRA_FAILS: "1",
+			FAKE_PI_ERROR: "Request timed out",
+			FAKE_PI_INFRA_EFFECT: undefined,
+			FAKE_PI_COUNTER: counter(),
+		}),
+		limits: { infraRetryDelaysMs: [1, 1] },
+	});
+	const retried = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(retried.isError, false, text(retried));
+	assert.equal(text(retried).split("\n").length, 2, text(retried));
+	const details = readFileSync(retried.details.implement.detailsPath, "utf8");
+	assert.match(details, /## Infra retries\n\nexit 1: Request timed out\n/);
+
+	process.env.FAKE_PI_COUNTER = counter();
+	process.env.FAKE_PI_INFRA_EFFECT = "1";
+	const kept = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(kept.isError, true);
+	assert.equal(readFileSync(process.env.FAKE_PI_COUNTER, "utf8"), "1", "a Bash effect prevents the retry");
+	assert.match(text(kept), /^Failure class: infra \(provider or network, not the task\)\.$/m);
 });
 
 test("implement accepts a handback whose only failures had no effect", async (t) => {
