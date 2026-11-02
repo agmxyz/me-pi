@@ -40,6 +40,7 @@ import {
 	THINKING_LEVELS,
 	validateOneOffModel,
 } from "./delegate-config.ts";
+import { isWorkerProcess } from "./delegate-env.ts";
 import { commandDir, realpathOr, realTarget, UNICODE_SPACES, within } from "./delegate-fence.ts";
 import {
 	type Checkout,
@@ -1243,7 +1244,7 @@ function coordinatorStatus(pi: ExtensionAPI): (cost: number) => void {
 export default function (pi: ExtensionAPI) {
 	// Workers never get the tool, so delegation cannot nest; they only get the wrap-up budget, the secret-path
 	// block, the output-directory write block, and for `implement` the worker-only bash rules and the orphan stop.
-	if (process.env.ME_PI_RUN) {
+	if (isWorkerProcess()) {
 		registerWorker(pi);
 		return;
 	}

@@ -11,6 +11,7 @@ import {
 	ENV_ROLE,
 	ENV_RUN,
 	ENV_SKILLS,
+	isImplementWorker,
 } from "./delegate-env.ts";
 import { secretPathIn, writeBlockedIn } from "./delegate-fence.ts";
 import { type Checkout, checkInCompound, workerEnv } from "./delegate-implement.ts";
@@ -137,7 +138,7 @@ export interface WorkerEnv {
 export function readWorkerEnv(env: NodeJS.ProcessEnv = process.env): WorkerEnv {
 	const skills = env[ENV_SKILLS];
 	return {
-		implement: env[ENV_ROLE] === "implement",
+		implement: isImplementWorker(env),
 		outputDir: env[ENV_OUTPUT_DIR],
 		denyDir: env[ENV_DENY_DIR],
 		parent: Number(env[ENV_PARENT]),

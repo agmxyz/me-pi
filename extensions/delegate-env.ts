@@ -11,3 +11,9 @@ export const ENV_SKILLS = "ME_PI_SKILLS";
 export const ENV_JOB_ID = "ME_PI_DELEGATE_JOB_ID";
 export const ENV_ATTEMPT = "ME_PI_DELEGATE_ATTEMPT";
 export const ENV_BUDGET = "ME_PI_BUDGET";
+
+/** Whether this process is a delegated worker; the coordinator always sets ME_PI_RUN to "1". */
+export const isWorkerProcess = (env: NodeJS.ProcessEnv = process.env) => env[ENV_RUN] === "1";
+
+/** Whether this process is an implement worker. */
+export const isImplementWorker = (env: NodeJS.ProcessEnv = process.env) => env[ENV_ROLE] === "implement";
