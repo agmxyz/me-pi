@@ -143,7 +143,6 @@ function registryFixture({
 	const authProviders = new Set(authenticated ?? availableModels.map((m) => m.provider));
 	return {
 		getAll: () => models,
-		find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
 		getAvailable: () => availableModels,
 		hasConfiguredAuth: (candidate) => authProviders.has(candidate.provider),
 		isUsingOAuth: (candidate) => oauthProviders.includes(candidate.provider),

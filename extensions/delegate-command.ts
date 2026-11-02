@@ -1,7 +1,7 @@
 // /delegate command: status (default), models config path, and cancel <id>.
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { type ModelSet, resolveModelRef } from "./delegate-config.ts";
+import { isModelRefRegistry, type ModelSet, resolveModelRef } from "./delegate-config.ts";
 import { type Persona, shortModel as short } from "./delegate-render.ts";
 
 export interface CallRecord {
@@ -58,9 +58,11 @@ const seconds = (ms: number) => `${Math.round(ms / 1000)}s`;
 const clock = (at: number) => new Date(at).toTimeString().slice(0, 5);
 
 function refState(ref: string, ctx: ExtensionCommandContext): string {
+	if (!isModelRefRegistry(ctx.modelRegistry)) return "? cannot check (Pi's model registry lacks lookup)";
 	const result = resolveModelRef(ref, ctx.modelRegistry);
 	if (result.status === "unknown") return "\u2717 unknown model id";
 	if (result.status === "ambiguous") return `\u2717 ambiguous: ${result.candidates.join(", ")}; write provider/id`;
+	if (!result.usable && result.authed) return `\u2717 not available (logged in to ${result.provider})`;
 	if (!result.usable) return `\u2717 not logged in (${result.provider})`;
 	return result.model === ref ? "\u2713" : `\u2713 \u2192 ${result.model}`;
 }

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const HOME = homedir();
+export const HOME = homedir();
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -177,14 +177,16 @@ interface CatalogModel {
 export interface ModelRefRegistry {
 	getAll(): readonly CatalogModel[];
 	getAvailable(): readonly CatalogModel[];
+	/** Pi's provider-level auth check; older Pi lacks it. */
+	hasConfiguredAuth?(model: CatalogModel): boolean;
 }
 
 export type ModelRefResolution =
-	| { status: "resolved"; model: string; provider: string; id: string; usable: boolean }
+	| { status: "resolved"; model: string; provider: string; id: string; usable: boolean; authed: boolean }
 	| { status: "ambiguous"; candidates: string[] }
 	| { status: "unknown" };
 
-const isModelRefRegistry = (value: unknown): value is ModelRefRegistry =>
+export const isModelRefRegistry = (value: unknown): value is ModelRefRegistry =>
 	!!value &&
 	typeof (value as ModelRefRegistry).getAll === "function" &&
 	typeof (value as ModelRefRegistry).getAvailable === "function";
@@ -199,7 +201,11 @@ export function resolveModelRef(ref: string, registry: ModelRefRegistry): ModelR
 	const available = registry.getAvailable();
 	if (!Array.isArray(all) || !Array.isArray(available))
 		throw new Error("Pi's model registry returned an invalid model list");
-	const usable = (provider: string) => available.some((m) => m.provider === provider);
+	// Pi breaks ties by provider-level configured auth (model-resolver.js `hasConfiguredAuth`).
+	const authed = (m: CatalogModel) =>
+		typeof registry.hasConfiguredAuth === "function"
+			? registry.hasConfiguredAuth(m) === true
+			: available.some((a) => a.provider === m.provider);
 	const lower = text.toLowerCase();
 	const raw = all.filter((m) => m.id.toLowerCase() === lower);
 	let named: CatalogModel | undefined;
@@ -224,13 +230,14 @@ export function resolveModelRef(ref: string, registry: ModelRefRegistry): ModelR
 		provider: m.provider,
 		id: m.id,
 		usable: available.some((a) => a.provider === m.provider && a.id === m.id),
+		authed: authed(m),
 	});
 	if (candidates.length === 0) return { status: "unknown" };
 	if (new Set(candidates.map((m) => m.provider)).size === 1) return resolved(candidates[0]);
-	if (named && usable(named.provider)) return resolved(named);
-	const usableOthers = others.filter((m) => usable(m.provider));
-	if (usableOthers.length === 1) return resolved(usableOthers[0]);
-	if (usableOthers.length === 0 && named) return resolved(named);
+	if (named && authed(named)) return resolved(named);
+	const authedOthers = others.filter(authed);
+	if (authedOthers.length === 1) return resolved(authedOthers[0]);
+	if (authedOthers.length === 0 && named) return resolved(named);
 	return { status: "ambiguous", candidates: candidates.map((m) => `${m.provider}/${m.id}`) };
 }
 
@@ -240,6 +247,8 @@ export function validateOneOffModel(ref: string, registry: unknown): void {
 		throw new Error(`cannot validate model ${JSON.stringify(ref)}: Pi's model registry lacks catalog/auth lookup`);
 	const result = resolveModelRef(ref, registry);
 	if (result.status !== "resolved") throw new Error(unresolvedMessage(ref, result));
+	if (!result.usable && result.authed)
+		throw new Error(`model ${JSON.stringify(ref)} is unavailable: Pi does not list it as available`);
 	if (!result.usable)
 		throw new Error(
 			`model ${JSON.stringify(ref)} is unauthenticated: Pi lists no usable login for provider ${JSON.stringify(result.provider)}`,
@@ -258,11 +267,13 @@ function unresolvedMessage(
 
 /**
  * Canonical `provider/id` for a configured or one-off ref, so workers and retry correlation agree with Pi.
- * Without a registry (tests) refs pass through unchanged.
+ * Without a registry, or for an unknown ref (Pi may still accept a custom id or `:thinking` suffix), the ref
+ * passes through unchanged; an ambiguous ref fails as it would in Pi.
  */
 export function canonicalModel(ref: string, registry: unknown): string {
 	if (!isModelRefRegistry(registry)) return ref;
 	const result = resolveModelRef(ref, registry);
+	if (result.status === "unknown") return ref;
 	if (result.status !== "resolved") throw new Error(unresolvedMessage(ref, result, ` in ${configPath()}`));
 	return result.model;
 }

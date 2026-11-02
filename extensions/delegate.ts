@@ -20,7 +20,7 @@ import {
 	writeFileSync,
 	writeSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -36,6 +36,7 @@ import {
 	canonicalModel,
 	configPath,
 	configuredModels,
+	HOME,
 	loadModelSet,
 	type ModelSet,
 	type ResolvedRun,
@@ -134,7 +135,6 @@ export const IMPLEMENT_TOOLS = `${LOCAL_TOOLS},edit,write,bash`;
 
 // Paths that commonly hold credentials. Workers are blocked from naming them in read/grep/find/ls;
 // a broad search over a parent directory can still match inside them, so this narrows, not seals.
-const HOME = homedir();
 const HOME_SECRETS = [
 	".ssh",
 	".gnupg",

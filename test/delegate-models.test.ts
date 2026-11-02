@@ -229,6 +229,22 @@ test("one-off models must be exact catalog IDs with usable authentication", asyn
 	);
 	assert.equal(unsupported.isError, true);
 	assert.match(text(unsupported), /model registry lacks catalog\/auth lookup/);
+	const loggedIn = await run(
+		tool,
+		{ role: "review", task: "x", runs: [{ model: UNAUTHENTICATED }] },
+		undefined,
+		undefined,
+		{
+			...CTX,
+			modelRegistry: registryFixture({
+				catalog: [...REGISTRY_MODELS, UNAUTHENTICATED],
+				available: REGISTRY_MODELS,
+				authenticated: ["unauthed"],
+			}),
+		},
+	);
+	assert.equal(loggedIn.isError, true);
+	assert.match(text(loggedIn), /model "unauthed\/[^"]+" is unavailable: Pi does not list it as available/);
 	assert.equal(existsSync(marker), false, "invalid or unverifiable models never spawn a worker");
 });
 
@@ -264,25 +280,36 @@ test("bare model refs resolve like Pi: one-off validation, canonical --model, an
 	assert.deepEqual(launches(), [ONE_OFF], "a bare unique one-off ref is accepted and canonicalized");
 });
 
-test("a configured ref that is unknown or ambiguous fails the call naming the config", async (t) => {
+test("a configured ref that is unknown passes through; an ambiguous one fails naming the config", async (t) => {
 	const marker = scratch("bad-config-ref-marker");
 	const context = {
 		...CTX,
 		modelRegistry: registryFixture({ catalog: [...REGISTRY_MODELS, "a/shared", "b/shared"] }),
 	};
-	for (const [model, error] of [
-		["missing/model", /unknown model "missing\/model" in .*delegate.*\.json/],
-		["shared", /ambiguous model "shared" in .*: matches a\/shared, b\/shared; write provider\/id/],
-	]) {
-		const { tool } = setup(t, {
-			config: { version: 3, scout: pool([LUNA], "low"), worker: pool([model], "high") },
-			env: { FAKE_PI_MARKER: marker },
-		});
-		const res = await run(tool, { role: "review", task: "x" }, undefined, undefined, context);
-		assert.equal(res.isError, true, model);
-		assert.match(text(res), error);
-	}
-	assert.equal(existsSync(marker), false);
+	const unknown = setup(t, {
+		config: { version: 3, scout: pool([LUNA], "low"), worker: pool(["missing/model"], "high") },
+		env: { FAKE_PI_MARKER: marker },
+	});
+	const passed = await run(unknown.tool, { role: "review", task: "x" }, undefined, undefined, context);
+	assert.equal(passed.isError, false, text(passed));
+	assert.deepEqual(
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model),
+		["missing/model"],
+		"Pi decides whether an unknown configured ref is a custom id",
+	);
+
+	writeFileSync(marker, "");
+	const ambiguous = setup(t, {
+		config: { version: 3, scout: pool([LUNA], "low"), worker: pool(["shared"], "high") },
+		env: { FAKE_PI_MARKER: marker },
+	});
+	const res = await run(ambiguous.tool, { role: "review", task: "x" }, undefined, undefined, context);
+	assert.equal(res.isError, true);
+	assert.match(text(res), /ambiguous model "shared" in .*: matches a\/shared, b\/shared; write provider\/id/);
+	assert.equal(readFileSync(marker, "utf8"), "");
 });
 
 test("an unlisted model never falls back to the configured pool", async (t) => {

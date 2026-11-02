@@ -7,7 +7,10 @@ import {
 	modelSet,
 	OPUS,
 	POOL_SET,
+	pool,
+	registryFixture,
 	run,
+	SONNET,
 	setup,
 	statusFor,
 	UNAUTHENTICATED,
@@ -191,6 +194,33 @@ test("/delegate models directs users to edit JSON manually without writing it", 
 	await main.commands.delegate.handler("models", ctx);
 	assert.deepEqual(notes, [[`Edit ${path} to set ordered models and per-model thinking, then run /reload.`, "info"]]);
 	assert.equal(readFileSync(path, "utf8"), original);
+});
+
+test("/delegate status tells logged-in-but-unavailable from not logged in", async (t) => {
+	const main = setup(t, {
+		config: { version: 3, scout: pool([HAIKU], "low"), worker: pool([UNAUTHENTICATED], "high") },
+	});
+	const { ctx, notes } = commandCtx({ catalog: [HAIKU, UNAUTHENTICATED], available: [HAIKU] });
+	ctx.modelRegistry = registryFixture({
+		catalog: [HAIKU, UNAUTHENTICATED],
+		available: [HAIKU],
+		authenticated: ["anthropic", "unauthed"],
+	});
+	await main.commands.delegate.handler("status", ctx);
+	assert.ok(
+		notes[0][0].includes(`1. ${UNAUTHENTICATED} (high) \u2717 not available (logged in to unauthed)`),
+		notes[0][0],
+	);
+});
+
+test("/delegate status without registry lookup marks each entry unchecked", async (t) => {
+	const main = setup(t, { config: { version: 3, scout: pool([HAIKU], "low"), worker: pool([SONNET], "high") } });
+	const { ctx, notes } = commandCtx();
+	ctx.modelRegistry = {};
+	await main.commands.delegate.handler("status", ctx);
+	const cannot = "? cannot check (Pi's model registry lacks lookup)";
+	assert.ok(notes[0][0].includes(`Scout pool: 1. ${HAIKU} (low) ${cannot}\n`), notes[0][0]);
+	assert.ok(notes[0][0].includes(`Worker pool: 1. ${SONNET} (high) ${cannot}`), notes[0][0]);
 });
 
 test("/delegate status shows what each model ref resolves to", async (t) => {

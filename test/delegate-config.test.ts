@@ -400,18 +400,24 @@ test("resolveModelRef mirrors Pi's exact --model precedence", () => {
 		provider: "anthropic",
 		id: "claude-haiku-5-5",
 		usable: true,
+		authed: true,
 	});
 	assert.equal((resolveModelRef("claude-haiku-5-5", registry([HAIKU])) as any).model, HAIKU, "bare unique id");
 	assert.equal((resolveModelRef(GLM, registry([OR])) as any).model, OR, "slash in a bare id");
 	assert.equal((resolveModelRef(OR, registry([OR])) as any).model, OR, "provider prefix before a slashed id");
 	assert.equal((resolveModelRef(GLM, registry([OR, NV], [OR])) as any).model, OR, "the one usable provider wins");
 	assert.deepEqual(resolveModelRef(GLM, registry([OR, NV])), { status: "ambiguous", candidates: [OR, NV] });
+	const nvidiaAuth = registryFixture({ catalog: [OR, NV], available: [OR], authenticated: ["nvidia"] });
+	assert.equal((resolveModelRef(GLM, nvidiaAuth) as any).model, NV, "Pi's configured-auth tie-break wins");
+	const { hasConfiguredAuth: _, ...olderPi } = registry([OR, NV], [OR]);
+	assert.equal((resolveModelRef(GLM, olderPi) as any).model, OR, "without hasConfiguredAuth, getAvailable decides");
 	assert.deepEqual(resolveModelRef(UNAUTHENTICATED, registry([UNAUTHENTICATED], [])), {
 		status: "resolved",
 		model: UNAUTHENTICATED,
 		provider: "unauthed",
 		id: "model",
 		usable: false,
+		authed: false,
 	});
 	assert.deepEqual(resolveModelRef("anthropic/nope", registry([HAIKU])), { status: "unknown" });
 	assert.deepEqual(resolveModelRef("nope", registry([HAIKU])), { status: "unknown" });
