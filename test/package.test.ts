@@ -16,7 +16,7 @@ test("the root manifest declares only the three public Pi extensions", () => {
 	assert.equal(root.license, "MIT");
 	assert.equal(root.repository, "https://github.com/0bmario/me-pi");
 	assert.deepEqual(root.keywords, ["pi-package"]);
-	assert.equal(root.devDependencies["@earendil-works/pi-coding-agent"], "1.3.0");
+	assert.equal(root.devDependencies["@earendil-works/pi-coding-agent"], "1.5.0");
 	assert.deepEqual(root.pi, {
 		extensions: ["extensions/delegate.ts", "extensions/guard.ts", "extensions/skill.ts"],
 		skills: [],

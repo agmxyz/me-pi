@@ -4,7 +4,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runToolCall } from "@earendil-works/pi-agent-core";
-import { Type } from "@earendil-works/pi-ai";
 import {
 	applyEnv,
 	HAIKU,
@@ -123,7 +122,7 @@ test("Pi blocked calls are reported on tool_execution_end, not tool_result", asy
 		name: "bash",
 		label: "Bash",
 		description: "Run a shell command",
-		parameters: Type.Object({ command: Type.String() }),
+		parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
 		execute: async () => {
 			executed = true;
 			return { content: [], details: {} };
@@ -186,7 +185,7 @@ test("Pi transports delegate-worker wrap-up denials on tool_execution_end", asyn
 		name: "read",
 		label: "Read",
 		description: "Read a file",
-		parameters: Type.Object({ path: Type.String() }),
+		parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
 		execute: async () => ({ content: [], details: {} }),
 	};
 	const toolCall = { id: "budget-blocked-call", name: "read", arguments: { path: "README.md" } };

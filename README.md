@@ -2,9 +2,9 @@
 
 [![check](https://github.com/0bmario/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/0bmario/me-pi/actions/workflows/check.yml)
 
-Lean subagents for the [Pi](https://github.com/earendil-works/pi) coding agent.
+Subagents for the [Pi](https://github.com/earendil-works/pi) coding agent, without the framework.
 
-Your main Pi session hands bounded work (lookups, reviews, research, a scoped implementation) to an isolated worker and gets back only the answer. Its own context stays clean, and it stays the one making decisions. I built it because the subagent packages I tried felt bloated; I wanted one tool that fits my workflow instead of a framework to configure.
+Your main session hands bounded work (a lookup, a review, research, a scoped change) to an isolated worker and gets back only the answer. Its context stays clean, and it keeps every decision. No agent files, no workflow DSL: one tool, sensible roles, hard limits, and changes that land as commits on your branch.
 
 ## Why me-pi
 
@@ -19,7 +19,7 @@ Also included: `guard` (asks before risky bash such as force pushes, `git reset 
 
 ## Install
 
-Requires Pi (tested against 1.3.0, used daily on 1.5.0).
+Requires Pi 1.5.0 (CI runs against it).
 
 ```sh
 pi install git:github.com/0bmario/me-pi
