@@ -139,7 +139,7 @@ export interface AttemptLedger {
 	parentFact(cause: StopFact["cause"], resource: StopResource, effect?: StopFact["effect"]): StopFact;
 	/** Stops the worker once, unless the attempt already stopped or finished. */
 	stop(reason: string, fact?: StopFact): void;
-	/** Flushes unclosed calls, unknown effects, and pending progress; later records and stops are ignored. */
+	/** Flushes unclosed calls, unknown effects, and pending progress; later stops are ignored (records are not guarded, as before). */
 	close(): void;
 	/** Derives the failure and its class from the exit and the events seen; call after `close`. */
 	settle(code: number | null, problem?: string): RunResult;
