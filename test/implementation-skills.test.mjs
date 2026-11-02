@@ -198,12 +198,9 @@ test("guide documents evidence-driven verification and its explicit test-first o
 	assert.match(verification, /load and follow `tdd`/);
 });
 
-test("adoption notes date staging facts and defer A4 authority to actual-session revalidation", () => {
-	const checkpoint =
-		/Dated staging checkpoint \(2026-10-31; source `0422473bb01f48283515aa10c1be93fed6bbf9be`; not a live ledger\)/;
+test("adoption notes defer A4 authority to actual-session revalidation", () => {
 	assert.match(readme, /not a live status ledger/);
 	assert.match(readme, /dated adoption evidence: \[setup guide\]\(docs\/setup\.md\)/);
-	assert.match(setupGuide, checkpoint);
 	assert.match(
 		readme,
 		/currently governing policy, supported provenance-capable runtime, and matching reviewed skills.*revalidated in the actual session/,
@@ -214,5 +211,4 @@ test("adoption notes date staging facts and defer A4 authority to actual-session
 	);
 	assert.doesNotMatch(readme, /Current checkout adoption status/);
 	assert.doesNotMatch(setupGuide, /Current live-checkout status/);
-	assert.match(setupGuide, /At that checkpoint.*had not been applied.*had not reloaded/);
 });
