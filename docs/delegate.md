@@ -107,7 +107,7 @@ A failed run names its class when the provider's final error explains it: `Failu
 
 Cancellation is not rollback. If an `implement` run stops with uncommitted non-ignored changes, the extension may save them in a `WIP(delegate …)` commit on the job branch; a moved branch can prevent that save. Check the handback's branch, commit range, `check` status, and any `Details:` path; inspect the checkout before continuing. A follow-up `implement` recognizes a WIP commit from an earlier attempt and is asked to finish it first.
 
-A `Tripwire` reports that watched shared state changed; it does not restore anything. Stop and inspect the handback and details file before proceeding. Tripwires cover pre-existing Git refs other than the job branch, local Git config other than upstream-tracking entries, files under Git `hooks/` and `info/`, and Pi package, extension, skill, prompt, and theme settings. Treat a failed check, WIP, or tripwire as incomplete work; do not assume the worker rolled back changes.
+A `Tripwire` reports that watched shared state changed; it does not restore anything. Stop and inspect the handback and details file before proceeding. Tripwires cover pre-existing Git refs other than the job branch, local Git config other than upstream-tracking entries, files under Git `hooks/` and `info/`, and Pi package, extension, skill, prompt, and theme settings. Treat a failed check, WIP, or tripwire as incomplete work; do not assume the worker rolled back changes. A handback that adds new top-level directories or dot-paths (`.tmp/`, `repro-app/`, `.repro.mts`) lists them with `⚠ new top-level paths`; these are often scratch files, so confirm the task asked for them before accepting.
 
 ### Failure provenance
 

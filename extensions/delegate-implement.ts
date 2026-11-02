@@ -170,6 +170,7 @@ const COUNT_KEY = Symbol.for("me-pi.delegate.implement-count");
 const MAX_COMMITS = 20;
 const MAX_WIP_FILES = 20;
 const MAX_BLOCKED = 3;
+const MAX_NEW_TOP_LEVEL = 5;
 const FIRST_LINE_CAP = 200;
 
 export function nextImplementId(): string {
@@ -247,6 +248,8 @@ export type Facts = {
 	deletions: number;
 	stat: string;
 	wip?: { sha: string; reason: string; files: string[]; more: number };
+	// Top-level directories (`dir/`) and dot-paths the range added: often scratch the task did not ask for.
+	newTopLevel?: string[];
 	// ✗ lines other than WIP and the check, without the ✗.
 	problems: string[];
 	check: CheckState;
@@ -824,6 +827,17 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 		facts.insertions = num(short.out, "insertions?");
 		facts.deletions = num(short.out, "deletions?");
 		facts.stat = stat.out;
+		const added = await git(job.repoRoot, ["diff", "--name-only", "--diff-filter=A", `${job.base}..${sha}`]);
+		const existing = await git(job.repoRoot, ["ls-tree", "--name-only", job.base]);
+		if (added.ok && existing.ok) {
+			const had = new Set(existing.out.split("\n"));
+			const tops = added.out
+				.split("\n")
+				.filter(Boolean)
+				.map((path) => (path.includes("/") ? `${path.split("/")[0]}/` : path))
+				.filter((top) => !had.has(top.replace(/\/$/, "")) && (top.endsWith("/") || top.startsWith(".")));
+			facts.newTopLevel = [...new Set(tops)].sort();
+		}
 		// 4. Files Pi loads on /reload: the coordinator reviews them before reloading.
 		const trust = await git(job.repoRoot, ["diff", "--name-only", `${job.base}..${sha}`, "--", ".pi", ".agents"]);
 		if (!trust.ok) {
@@ -898,6 +912,7 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 			),
 		),
 		...section(`Commits (${f.commitCount}, oldest first)`, f.commits.join("\n")),
+		...section("New top-level paths", f.newTopLevel?.map(shown).join("\n")),
 		...section("Diffstat", f.stat),
 		...section(`Check \`${f.check.command}\`: ${f.check.status}`, checkHistory.join("\n") || "(not run)"),
 		...section("Failure", o.failure && `${o.failure}${failureClassLine(o)}`),
@@ -957,6 +972,12 @@ export function formatHandback(f: Facts): string {
 		const warning = `⚠ ${shown(o.failedToolCapture.warning)}`;
 		if (f.failed) out.push(warning);
 		else out[1] = `${out[1]} ${warning}`;
+	}
+	if (f.newTopLevel?.length) {
+		const [paths, more] = capped(f.newTopLevel.join("\n"), MAX_NEW_TOP_LEVEL);
+		const note = `⚠ new top-level paths: ${paths.map(shown).join(", ")}${more ? `, … ${more} more` : ""}; confirm the task asked for them`;
+		if (f.failed) out.push(note);
+		else out[1] = `${out[1]} ${note}`;
 	}
 	if (blocked.length > MAX_BLOCKED) out.push(`+${blocked.length - MAX_BLOCKED} more BLOCKED in details`);
 	const failure = failureLine(o.failure);

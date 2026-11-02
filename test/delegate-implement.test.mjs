@@ -283,6 +283,37 @@ test("finish: worker commits give the range, a clean tree, no lock, and a 0600 d
 	assert.ok(!existsSync(job.ghConfigDir));
 });
 
+test("finish flags new top-level directories and dot-paths, which are often scratch", async () => {
+	const { repo, git } = goalFixture();
+	const job = await prepare(repo, "im-scratch", CHECK);
+	mkdirSync(join(repo, ".tmp"));
+	mkdirSync(join(repo, "daily-app"));
+	writeFileSync(join(repo, ".tmp", "clock-test.ts"), "x\n");
+	writeFileSync(join(repo, "daily-app", "index.ts"), "x\n");
+	writeFileSync(join(repo, ".repro-loop.mts"), "x\n");
+	commit(git, repo, "feature.txt");
+	passed(job);
+	const facts = await finish(job, ok(job));
+	assert.deepEqual(facts.newTopLevel, [".repro-loop.mts", ".tmp/", "daily-app/"]);
+	assert.equal(facts.failed, false);
+	const lines = formatHandback(facts).split("\n");
+	assert.equal(lines.length, 2);
+	assert.match(
+		lines[1],
+		/ ⚠ new top-level paths: \.repro-loop\.mts, \.tmp\/, daily-app\/; confirm the task asked for them$/,
+	);
+	assert.match(
+		readFileSync(facts.detailsPath, "utf8"),
+		/## New top-level paths\n\n\.repro-loop\.mts\n\.tmp\/\ndaily-app\//,
+	);
+
+	const plain = goalFixture();
+	const next = await prepare(plain.repo, "im-no-scratch", CHECK);
+	commit(plain.git, plain.repo, "feature.txt");
+	passed(next);
+	assert.deepEqual((await finish(next, ok(next))).newTopLevel, []);
+});
+
 test("finish withholds acceptance for missing provenance, unknown effects, and uncorrelated denials", async () => {
 	const denial = (jobId) => ({
 		owner: "guard",
