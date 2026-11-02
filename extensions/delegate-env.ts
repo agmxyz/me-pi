@@ -17,3 +17,10 @@ export const isWorkerProcess = (env: NodeJS.ProcessEnv = process.env) => env[ENV
 
 /** Whether this process is an implement worker. */
 export const isImplementWorker = (env: NodeJS.ProcessEnv = process.env) => env[ENV_ROLE] === "implement";
+
+/** A worker's job identity, or undefined unless the job id is non-empty and the attempt a positive safe integer. */
+export function workerIdentity(env: NodeJS.ProcessEnv = process.env): { jobId: string; attempt: number } | undefined {
+	const jobId = env[ENV_JOB_ID];
+	const attempt = Number(env[ENV_ATTEMPT]);
+	return jobId && Number.isSafeInteger(attempt) && attempt > 0 ? { jobId, attempt } : undefined;
+}

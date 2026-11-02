@@ -7,7 +7,7 @@
 
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ENV_ATTEMPT, ENV_JOB_ID, isImplementWorker, isWorkerProcess } from "./delegate-env.ts";
+import { isImplementWorker, isWorkerProcess, workerIdentity } from "./delegate-env.ts";
 
 export const GUARD_STOP_EVENT = "me-pi:guard-stop";
 
@@ -336,13 +336,11 @@ export default function (pi: ExtensionAPI) {
 		if (!risk) return undefined;
 		const block = (reason: string) => {
 			if (isWorkerProcess()) {
-				const jobId = process.env[ENV_JOB_ID];
-				const attempt = Number(process.env[ENV_ATTEMPT]);
-				if (jobId && Number.isSafeInteger(attempt) && attempt > 0 && event.toolCallId) {
+				const identity = workerIdentity();
+				if (identity && event.toolCallId) {
 					const fact: GuardStopEvent = {
 						owner: "guard",
-						jobId,
-						attempt,
+						...identity,
 						toolCallId: event.toolCallId,
 						cause: "guard-denial",
 						resource: "guard",

@@ -76,8 +76,7 @@ test("workerLaunch builds a scout's read-only args and protocol env", () => {
 	assert.equal(read.implement, false);
 	assert.deepEqual(read.skills, ["pr"]);
 	assert.deepEqual(read.budget, BUDGET);
-	assert.equal(read.jobId, "job-1");
-	assert.equal(read.attempt, 2);
+	assert.deepEqual(read.identity, { jobId: "job-1", attempt: 2 });
 });
 
 test("workerLaunch gives implement its tools, trust flag, and fenced env", () => {
