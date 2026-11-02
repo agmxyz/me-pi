@@ -6,7 +6,6 @@ import test from "node:test";
 import {
 	CTX,
 	FAKE_BIN,
-	fallbackAuthorization,
 	HAIKU,
 	IMPLEMENT_TOOLS,
 	LOCAL_TOOLS,
@@ -259,7 +258,6 @@ test("default-origin rebuttals retain exact candidates without cross-model fallb
 		task: "check fallback across rebuttal rounds",
 		runs: [{}, {}],
 		rebuttal: true,
-		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET, OPUS]),
 	});
 	assert.equal(defaultResult.isError, true, text(defaultResult));
 	assert.deepEqual(

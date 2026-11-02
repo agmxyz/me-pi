@@ -1917,38 +1917,6 @@ function buildSchema() {
 					properties: { model, thinking: { type: "string", enum: THINKING_LEVELS } },
 				},
 			},
-			fallbackAuthorization: {
-				type: "object",
-				description:
-					"Coordinator scope intent only; cross-model fallback is deferred until the fresh Pi child can enforce its effective provider endpoint before task data is sent and positive scope/budget tests pass. Supplying this object does not enable fallback or authorize a destination.",
-				additionalProperties: false,
-				properties: {
-					authorizationRef: { type: "string", minLength: 1 },
-					authority: { type: "string", enum: ["named", "adopted-snapshot"] },
-					taskDataClass: { type: "string", minLength: 1 },
-					candidates: {
-						type: "array",
-						minItems: 1,
-						items: {
-							type: "object",
-							additionalProperties: false,
-							properties: {
-								model: { type: "string", minLength: 1 },
-								provider: { type: "string", minLength: 1 },
-								destination: {
-									type: "string",
-									minLength: 1,
-									description:
-										"Requested destination in the coordinator's scope contract. The current runtime does not validate or enforce this value at the child's request boundary.",
-								},
-								dataClasses: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
-							},
-							required: ["model", "provider", "destination", "dataClasses"],
-						},
-					},
-				},
-				required: ["authorizationRef", "authority", "taskDataClass", "candidates"],
-			},
 			output: {
 				type: "boolean",
 				description:
@@ -2330,19 +2298,7 @@ export default function (pi: ExtensionAPI) {
 			});
 			const { role = "general", task, web, answer, output, rebuttal, background, check } = params ?? {};
 			const unknown = Object.keys(params ?? {}).filter(
-				(k) =>
-					![
-						"role",
-						"task",
-						"web",
-						"answer",
-						"output",
-						"runs",
-						"rebuttal",
-						"background",
-						"check",
-						"fallbackAuthorization",
-					].includes(k),
+				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal", "background", "check"].includes(k),
 			);
 			if (unknown.length)
 				return fail(

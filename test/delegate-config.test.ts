@@ -4,7 +4,6 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	commandCtx,
-	fallbackAuthorization,
 	HAIKU,
 	LUNA,
 	loadModelSet,
@@ -255,7 +254,6 @@ test("review pool selects its first candidate, reports status, and preserves wor
 	const reviewRes = await run(main.tool, {
 		role: "review",
 		task: "check review pool",
-		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS]),
 	});
 	assert.equal(reviewRes.isError, false, text(reviewRes));
 	assert.equal(reviewRes.details.round1[0].requested.model, SONNET);
@@ -299,7 +297,6 @@ test("review pool selects its first candidate, reports status, and preserves wor
 	const cappedRes = await run(capped.tool, {
 		role: "review",
 		task: "budget shared",
-		fallbackAuthorization: fallbackAuthorization([SONNET, OPUS]),
 	});
 	assert.equal(cappedRes.isError, true);
 	const costStops = cappedRes.details.round1[0].provenance[0].stopFacts;
@@ -323,7 +320,6 @@ test("the schema allows exact model IDs outside the configured pools", (t) => {
 	assert.equal(model.enum, undefined);
 	assert.match(model.description, /exact Pi model ID/);
 	assert.match(tool.parameters.properties.runs.description, /explicitly named model runs alone and never falls back/i);
-	assert.match(tool.parameters.properties.fallbackAuthorization.description, /does not enable fallback/);
 });
 
 test(

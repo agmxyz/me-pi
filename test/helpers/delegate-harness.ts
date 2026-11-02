@@ -652,25 +652,7 @@ const CTX = {
 
 const text = (res) => res.content.map((c) => c.text).join("\n");
 
-// Legacy scope-shaped input is used to prove that coordinator metadata cannot enable child fallback.
-const fallbackAuthorization = (
-	models,
-	{ authority = "named", taskDataClass = "repository-source", registry = CTX.modelRegistry } = {},
-) => ({
-	authorizationRef: "coordinator-recorded-contract:test-run",
-	authority,
-	taskDataClass,
-	candidates: models.map((modelId) => {
-		const slash = modelId.indexOf("/");
-		const provider = modelId.slice(0, slash);
-		return {
-			model: modelId,
-			provider,
-			destination: registry.find(provider, modelId.slice(slash + 1)).baseUrl,
-			dataClasses: [taskDataClass],
-		};
-	}),
-});
+
 
 function applyEnv(vars) {
 	for (const [k, v] of Object.entries(vars)) {
@@ -960,4 +942,4 @@ const implement = (extra = {}) => ({ role: "implement", task: "add a feature", c
 // Resolves once a hang-mode worker has written the file it writes before it waits.
 const workerStarted = (repo) => waitFor(() => existsSync(join(repo, "left.txt")), "the worker to start");
 
-export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, IMPLEMENT_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, WORKER_CONTRACT, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, trackCheck, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, snapshotContent, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, pool, modelSet, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, fallbackAuthorization, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals, CHECK, implementRepo, implementEnv, implement, workerStarted };
+export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, IMPLEMENT_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, WORKER_CONTRACT, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, trackCheck, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, snapshotContent, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, pool, modelSet, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals, CHECK, implementRepo, implementEnv, implement, workerStarted };

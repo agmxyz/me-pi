@@ -8,12 +8,10 @@ import { createBashTool } from "@earendil-works/pi-coding-agent";
 import {
 	CHECK,
 	commandCtx,
-	fallbackAuthorization,
 	implement,
 	implementEnv,
 	implementRepo,
 	LUNA,
-	OPUS,
 	POOL_SET,
 	run,
 	scratch,
@@ -675,13 +673,7 @@ test("implement refuses fallback after a completed non-replay-safe Bash failure 
 		config: POOL_SET,
 		env: implementEnv("implement-fallback-artifacts", { TMPDIR: tmp }),
 	});
-	const result = await run(
-		tool,
-		implement({ fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) }),
-		undefined,
-		undefined,
-		implementRepo().ctx,
-	);
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
 	assert.equal(result.isError, true, text(result));
 	assert.equal(result.details.implement.check.status, "fail");
 	assert.match(result.details.round1[0].fallbackBlockReason, /competing safety stop/);

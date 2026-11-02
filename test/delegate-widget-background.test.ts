@@ -4,7 +4,6 @@ import {
 	bgCtx,
 	CTX,
 	commandCtx,
-	fallbackAuthorization,
 	HAIKU,
 	LUNA,
 	modelSet,
@@ -224,13 +223,7 @@ test("the TUI widget keeps the first configured candidate after a provider retry
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU },
 	});
 	const ui = tuiCtx();
-	const result = await run(
-		tool,
-		{ role: "review", task: "fallback widget", fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]) },
-		undefined,
-		undefined,
-		ui.ctx,
-	);
+	const result = await run(tool, { role: "review", task: "fallback widget" }, undefined, undefined, ui.ctx);
 	assert.equal(result.isError, true);
 	assert.ok(ui.snapshots.some((snapshot) => snapshot.some((line) => line.includes("claude-haiku-5-5 @high"))));
 	assert.ok(

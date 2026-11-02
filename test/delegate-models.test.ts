@@ -5,7 +5,6 @@ import test from "node:test";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import {
 	CTX,
-	fallbackAuthorization,
 	HAIKU,
 	LUNA,
 	ONE_OFF,
@@ -54,7 +53,6 @@ test("dispatch stays first-only when a parent snapshot cannot bind a later child
 		{
 			role: "review",
 			task: "do not send this task to a later child with a changed endpoint",
-			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET], { registry }),
 		},
 		undefined,
 		undefined,
@@ -286,7 +284,6 @@ test("an explicit thinking override applies to the first selected pool candidate
 		role: "review",
 		task: "x",
 		runs: [{ thinking: "medium" }],
-		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 	});
 	assert.equal(res.isError, true, text(res));
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
@@ -401,7 +398,6 @@ test("a rate-limited worker does not fall back through its pool", async (t) => {
 	const res = await run(tool, {
 		role: "review",
 		task: "x",
-		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 	});
 	assert.equal(res.isError, true, text(res));
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
@@ -434,7 +430,6 @@ test("quota and usage-limit failures do not fall through an authorized pool", as
 		const res = await run(tool, {
 			role: "review",
 			task: "x",
-			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 		});
 		assert.equal(res.isError, true, error);
 		assert.equal(res.details.round1[0].requested.model, HAIKU, error);
@@ -475,7 +470,6 @@ test("first-only dispatch reports the first candidate's worker cost", async (t) 
 	const res = await run(tool, {
 		role: "review",
 		task: "x",
-		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET, OPUS], { authority: "adopted-snapshot" }),
 	});
 	assert.equal(res.isError, true);
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
@@ -508,12 +502,7 @@ test("default dispatch keeps the first candidate's configured thinking level", a
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker },
 	});
 	const progress = [];
-	const res = await run(
-		tool,
-		{ role: "review", task: "x", fallbackAuthorization: fallbackAuthorization([LUNA, OPUS]) },
-		undefined,
-		(update) => progress.push(update),
-	);
+	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
 	assert.equal(res.isError, true, text(res));
 	assert.ok(
 		progress.some(
@@ -546,7 +535,6 @@ test("model-unavailable errors without structured retry evidence fail closed", a
 	const res = await run(tool, {
 		role: "research",
 		task: "x",
-		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 	});
 	assert.equal(res.isError, true, text(res));
 	assert.deepEqual(
@@ -557,54 +545,6 @@ test("model-unavailable errors without structured retry evidence fail closed", a
 		[HAIKU],
 	);
 	assert.match(text(res), /no structured retry classification/);
-});
-
-test("an adopted scope and later config changes cannot enable cross-model fallback", async (t) => {
-	const marker = scratch("adopted-snapshot-frozen-marker");
-	const { tool } = setup(t, {
-		config: {
-			version: 3,
-			scout: pool([LUNA], "low"),
-			worker: pool([HAIKU, SONNET, OPUS], "max"),
-		},
-		env: {
-			FAKE_PI_MODE: "rate-limit-models",
-			FAKE_PI_FAIL_MODELS: `${HAIKU},${SONNET}`,
-			FAKE_PI_MARKER: marker,
-		},
-	});
-	// Even a valid-looking adopted scope does not enable fallback at the fresh child boundary.
-	const authorization = fallbackAuthorization([HAIKU, SONNET], { authority: "adopted-snapshot" });
-	const pending = run(tool, {
-		role: "review",
-		task: "use the adopted recorded snapshot, not later config",
-		fallbackAuthorization: authorization,
-	});
-	const opusScope = fallbackAuthorization([OPUS]).candidates[0];
-	authorization.candidates.push(opusScope);
-	authorization.candidates[1].provider = "changed-provider";
-	authorization.candidates[1].destination = "https://changed.invalid";
-	authorization.candidates[1].dataClasses[0] = "public";
-	writeFileSync(
-		process.env.ME_PI_DELEGATE_CONFIG,
-		JSON.stringify({
-			version: 3,
-			scout: pool([LUNA], "low"),
-			worker: pool([HAIKU, OPUS, ONE_OFF], "max"),
-		}),
-	);
-
-	const res = await pending;
-	assert.equal(res.isError, true, text(res));
-	assert.equal(res.details.round1[0].requested.model, HAIKU);
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
-	assert.deepEqual(
-		readFileSync(marker, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line).model),
-		[HAIKU],
-	);
 });
 
 test("configuration and authorization added after dispatch cannot start another child", async (t) => {
@@ -627,7 +567,6 @@ test("configuration and authorization added after dispatch cannot start another 
 			worker: pool([HAIKU, SONNET, OPUS], "max"),
 		}),
 	);
-	params.fallbackAuthorization = fallbackAuthorization([HAIKU, SONNET, OPUS]);
 	const res = await pending;
 	assert.equal(res.isError, true, text(res));
 	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
@@ -637,40 +576,6 @@ test("configuration and authorization added after dispatch cannot start another 
 			.split("\n")
 			.map((line) => JSON.parse(line).model),
 		[HAIKU],
-	);
-});
-
-test("named, adopted, or mismatched scope metadata cannot enable fallback", async (t) => {
-	const marker = scratch("scope-metadata-no-fallback-marker");
-	const { tool } = setup(t, {
-		config: {
-			version: 3,
-			scout: pool([LUNA], "low"),
-			worker: pool([HAIKU, SONNET], "max"),
-		},
-		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
-	});
-	const validNamed = fallbackAuthorization([HAIKU, SONNET]);
-	const validAdopted = fallbackAuthorization([HAIKU, SONNET], { authority: "adopted-snapshot" });
-	const mismatched = fallbackAuthorization([HAIKU, SONNET]);
-	mismatched.candidates[1].destination = "https://other.invalid";
-	for (const [name, authorization] of [
-		["named", validNamed],
-		["adopted", validAdopted],
-		["mismatched destination", mismatched],
-	]) {
-		const res = await run(tool, { role: "review", task: name, fallbackAuthorization: authorization });
-		assert.equal(res.isError, true, name);
-		assert.equal(res.details.round1[0].requested.model, HAIKU, name);
-		assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/, name);
-	}
-	assert.deepEqual(
-		readFileSync(marker, "utf8")
-			.trim()
-			.split("\n")
-			.map(JSON.parse)
-			.map((call) => call.model),
-		[HAIKU, HAIKU, HAIKU],
 	);
 });
 
@@ -697,7 +602,6 @@ test("fallback fails closed on malformed evidence, shell 429s, prior effects, an
 		const res = await run(tool, {
 			role: "review",
 			task: mode,
-			fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 		});
 		assert.equal(res.isError, true, mode);
 		assert.match(res.details.round1[0].fallbackBlockReason, reason, mode);
@@ -766,7 +670,6 @@ test("fallback keeps the original tool deadline and retains a competing guard de
 	const deadline = await run(delayed.tool, {
 		role: "review",
 		task: "original tool deadline",
-		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 	});
 	assert.equal(deadline.isError, true, text(deadline));
 	assert.match(deadline.details.round1[0].fallbackBlockReason, /original tool deadline/);
@@ -792,7 +695,6 @@ test("fallback keeps the original tool deadline and retains a competing guard de
 	const stopped = await run(competing.tool, {
 		role: "review",
 		task: "competing safety cause",
-		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 	});
 	assert.equal(stopped.isError, true, text(stopped));
 	const stopFacts = stopped.details.round1[0].provenance[0].stopFacts;
@@ -822,7 +724,6 @@ test("fallback preserves the cumulative scout tool-call allowance", async (t) =>
 	const res = await run(tool, {
 		role: "scout",
 		task: "shared scout call limit",
-		fallbackAuthorization: fallbackAuthorization([HAIKU, SONNET]),
 	});
 	assert.equal(res.isError, true, text(res));
 	assert.match(res.details.round1[0].fallbackBlockReason, /cumulative scout tool-call allowance is spent/);

@@ -90,7 +90,6 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge", "implement"]);
 	assert.equal(properties.check.type, "string");
 	assert.match(properties.check.description, /one unchained command/);
-	assert.match(properties.fallbackAuthorization.description, /cross-model fallback is deferred/);
 	assert.match(properties.check.description, /runs it alone, exactly as given, after its final edit/);
 	assert.equal(properties.branch, undefined);
 	assert.equal(properties.web.type, "boolean");
