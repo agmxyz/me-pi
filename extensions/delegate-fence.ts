@@ -11,6 +11,11 @@ export function realpathOr(path: string): string {
 	}
 }
 
+/** `~` and `~/…` under HOME; every other form (`~user/…`, `a/~/b`) as given. */
+export function expandHome(path: string): string {
+	return path === "~" || path.startsWith("~/") ? join(HOME, path.slice(1)) : path;
+}
+
 // --- Secret paths (enforced inside workers) -------------------------------------------------------
 
 // Paths that commonly hold credentials. Workers are blocked from naming them in read/grep/find/ls;
@@ -52,7 +57,7 @@ export function secretPathIn(toolName: string, input: unknown, cwd: string): str
 	if (typeof glob === "string" && SECRET_GLOB.test(glob)) return glob;
 	if (typeof fields.path !== "string" || !fields.path.trim()) return undefined;
 	const given = fields.path.trim().replace(/^@/, "");
-	const absolute = resolve(cwd, given === "~" || given.startsWith("~/") ? join(HOME, given.slice(1)) : given);
+	const absolute = resolve(cwd, expandHome(given));
 	return [absolute, realpathOr(absolute)].find(isSecretPath);
 }
 
@@ -128,7 +133,7 @@ export function commandDir(command: string, cwd: string): string | undefined {
 	const m = command.match(TARGET_DIR);
 	const dir = (m?.[1] ?? m?.[2])?.replace(/^["']|["']$/g, "");
 	if (dir === undefined) return undefined;
-	const absolute = resolve(cwd, dir === "~" || dir.startsWith("~/") ? join(HOME, dir.slice(1)) : dir);
+	const absolute = resolve(cwd, expandHome(dir));
 	return realTarget(absolute) ?? absolute;
 }
 
