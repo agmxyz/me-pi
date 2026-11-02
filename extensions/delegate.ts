@@ -410,7 +410,7 @@ export interface ModelEntry {
 }
 
 export interface ModelPool {
-	/** Ordered candidates; dispatch selects only the first, with cross-model fallback deferred. */
+	/** The first entry is the role default; every entry sets the thinking level when a run names that model. */
 	models: ModelEntry[];
 	/** Thinking for models without an entry (the session model when the pool is empty); omitted means the main session's level. */
 	thinking?: string;
@@ -517,19 +517,13 @@ interface RunSpec {
 	thinking?: string;
 }
 
-export interface ResolvedCandidate {
-	model?: string;
-	thinking: string;
-}
-
 export interface ResolvedRun {
-	/** Role selection snapshot; only its first candidate is dispatched. An undefined model means Pi's session model. */
-	candidates: ResolvedCandidate[];
+	/** An undefined model means Pi's session model. */
 	model?: string;
 	thinking: string;
 }
 
-/** Scouts use low/off; all other roles use each candidate's configured thinking level. */
+/** Scouts use low/off; all other roles use the selected model's configured thinking level. */
 export function resolveRun(
 	role: string,
 	run: RunSpec,
@@ -550,26 +544,17 @@ export function resolveRun(
 		return thinking;
 	};
 	const configuredEntries = [...set.scout.models, ...set.worker.models, ...(set.review?.models ?? [])];
-	const candidates = run.model
-		? [
-				{
-					model: run.model,
-					thinking:
-						pool.models.find((entry) => entry.model === run.model)?.thinking ??
-						configuredEntries.find((entry) => entry.model === run.model)?.thinking ??
-						unlisted(),
-				},
-			]
-		: pool.models.length
-			? [...pool.models]
-			: [{ model: sessionModel, thinking: unlisted() }];
-	const withOverrides = candidates.map((candidate) => {
-		const requested = run.thinking ?? candidate.thinking;
-		const thinking = scout ? (requested === "off" ? "off" : "low") : requested;
-		return { ...candidate, thinking };
-	});
-	const first = withOverrides[0];
-	return { candidates: withOverrides, model: first.model, thinking: first.thinking };
+	const selected = run.model
+		? {
+				model: run.model,
+				thinking:
+					pool.models.find((entry) => entry.model === run.model)?.thinking ??
+					configuredEntries.find((entry) => entry.model === run.model)?.thinking ??
+					unlisted(),
+			}
+		: (pool.models[0] ?? { model: sessionModel, thinking: unlisted() });
+	const requested = run.thinking ?? selected.thinking;
+	return { model: selected.model, thinking: scout ? (requested === "off" ? "off" : "low") : requested };
 }
 
 function initialActivity(
@@ -578,17 +563,14 @@ function initialActivity(
 	sessionModel: string | undefined,
 	startedAt: number,
 ): ActiveWorker[] {
-	return runs.map((run, index) => {
-		const candidate = run.candidates[0];
-		return {
-			index: index + 1,
-			model: candidate.model ?? sessionModel ?? "session model",
-			thinking: candidate.thinking,
-			startedAt,
-			active: true,
-			persona: personas[index],
-		};
-	});
+	return runs.map((run, index) => ({
+		index: index + 1,
+		model: run.model ?? sessionModel ?? "session model",
+		thinking: run.thinking,
+		startedAt,
+		active: true,
+		persona: personas[index],
+	}));
 }
 
 // --- Worker process -------------------------------------------------------------------------------
@@ -1608,18 +1590,13 @@ async function runWorker(
 	const toolDeadline = start + LIMITS.wrapUpShare * secs * 1000;
 	const hardCostCap = LIMITS.costCapUsd;
 	const toolCostCap = LIMITS.wrapUpShare * hardCostCap;
-	const candidates = Object.freeze(
-		(run.candidates.length ? run.candidates : [{ model: undefined, thinking: run.thinking }]).map((candidate) =>
-			Object.freeze({ ...candidate }),
-		),
-	);
 	let outDir: string | undefined;
 	if (job.output) {
 		try {
 			outDir = mkdtempSync(join(tmpdir(), "me-pi-delegate-out-")); // Mode 0700.
 		} catch (err: any) {
 			return {
-				requested: { model: candidates[0].model, thinking: candidates[0].thinking },
+				requested: { model: run.model, thinking: run.thinking },
 				web: job.web,
 				output: "",
 				failure: `could not create the output directory: ${err?.message ?? err}`,
@@ -1632,7 +1609,7 @@ async function runWorker(
 		}
 	}
 
-	const candidate = Object.freeze({ ...candidates[0] });
+	const candidate = Object.freeze({ model: run.model, thinking: run.thinking });
 	const budget: AttemptBudget = {
 		hardDeadline,
 		hardCostCapUsd: hardCostCap,
@@ -1856,7 +1833,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Only the first configured candidate is dispatched; cross-model fallback is deferred pending supported child-boundary endpoint enforcement and positive scope/budget tests. Explicit models remain exact. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Only the pool's first model is dispatched; there is no cross-model fallback. Explicit models remain exact. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
@@ -1880,7 +1857,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. For several models on the same task, use one entry per model. Not for implement: it uses only the first candidate in the worker pool in delegate.json.",
+					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. For several models on the same task, use one entry per model. Not for implement: it uses the first model in the worker pool in delegate.json.",
 				items: {
 					type: "object",
 					additionalProperties: false,

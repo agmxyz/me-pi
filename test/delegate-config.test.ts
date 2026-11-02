@@ -38,12 +38,10 @@ test("v1 and v2 configs fail with a pointer to the v3 format, and empty pools us
 	const empty = loadModelSet(join(TEST_HOME, "nope.json"));
 	assert.deepEqual(resolveRun("scout", {}, empty, "x/session", "off"), {
 		model: "x/session",
-		candidates: [{ model: "x/session", thinking: "off" }],
 		thinking: "off",
 	});
 	assert.deepEqual(resolveRun("review", { model: "y/m" }, empty, "x/session", "medium"), {
 		model: "y/m",
-		candidates: [{ model: "y/m", thinking: "medium" }],
 		thinking: "medium",
 	});
 	assert.throws(() => resolveRun("review", {}, empty, "x/session"), /main session's thinking level is unknown/);

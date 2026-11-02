@@ -21,41 +21,29 @@ import {
 	UNAUTHENTICATED,
 } from "./helpers/delegate-harness.ts";
 
-test("model pools resolve per-model thinking, ordered candidates, and independent overrides", () => {
+test("model pools resolve per-model thinking, the first pool model, and independent overrides", () => {
 	assert.deepEqual(resolveRun("scout", {}, POOL_SET), {
 		model: LUNA,
-		candidates: [
-			{ model: LUNA, thinking: "off" },
-			{ model: HAIKU, thinking: "off" },
-		],
 		thinking: "off",
 	});
 	assert.deepEqual(resolveRun("review", {}, POOL_SET), {
 		model: LUNA,
-		candidates: [
-			{ model: LUNA, thinking: "max" },
-			{ model: OPUS, thinking: "max" },
-		],
 		thinking: "max",
 	});
 	assert.deepEqual(resolveRun("research", { model: OPUS, thinking: "high" }, POOL_SET), {
 		model: OPUS,
-		candidates: [{ model: OPUS, thinking: "high" }],
 		thinking: "high",
 	});
 	assert.deepEqual(resolveRun("review", { model: HAIKU }, POOL_SET), {
 		model: HAIKU,
-		candidates: [{ model: HAIKU, thinking: "off" }],
 		thinking: "off",
 	});
 	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, POOL_SET), {
 		model: ONE_OFF,
-		candidates: [{ model: ONE_OFF, thinking: "max" }],
 		thinking: "max",
 	});
 	assert.deepEqual(resolveRun("review", { model: ONE_OFF, thinking: "low" }, POOL_SET), {
 		model: ONE_OFF,
-		candidates: [{ model: ONE_OFF, thinking: "low" }],
 		thinking: "low",
 	});
 	const perModelSet = {
@@ -70,38 +58,26 @@ test("model pools resolve per-model thinking, ordered candidates, and independen
 	};
 	assert.deepEqual(resolveRun("review", { model: OPUS }, perModelSet), {
 		model: OPUS,
-		candidates: [{ model: OPUS, thinking: "low" }],
 		thinking: "low",
 	});
 	assert.deepEqual(resolveRun("review", { thinking: "medium" }, perModelSet), {
 		model: HAIKU,
-		candidates: [
-			{ model: HAIKU, thinking: "medium" },
-			{ model: OPUS, thinking: "medium" },
-		],
 		thinking: "medium",
 	});
 	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, perModelSet), {
 		model: ONE_OFF,
-		candidates: [{ model: ONE_OFF, thinking: "medium" }],
 		thinking: "medium",
 	});
 	assert.deepEqual(resolveRun("scout", { thinking: "high" }, POOL_SET), {
 		model: LUNA,
-		candidates: [
-			{ model: LUNA, thinking: "low" },
-			{ model: HAIKU, thinking: "low" },
-		],
 		thinking: "low",
 	});
 	assert.deepEqual(resolveRun("scout", { model: ONE_OFF, thinking: "off" }, POOL_SET), {
 		model: ONE_OFF,
-		candidates: [{ model: ONE_OFF, thinking: "off" }],
 		thinking: "off",
 	});
 	assert.deepEqual(resolveRun("scout", { model: ONE_OFF, thinking: "high" }, POOL_SET), {
 		model: ONE_OFF,
-		candidates: [{ model: ONE_OFF, thinking: "low" }],
 		thinking: "low",
 	});
 	const withReviewPool = {
@@ -116,42 +92,27 @@ test("model pools resolve per-model thinking, ordered candidates, and independen
 	};
 	assert.deepEqual(resolveRun("review", {}, withReviewPool), {
 		model: OPUS,
-		candidates: [
-			{ model: OPUS, thinking: "high" },
-			{ model: SONNET, thinking: "medium" },
-		],
 		thinking: "high",
 	});
 	assert.deepEqual(resolveRun("general", {}, withReviewPool), {
 		model: LUNA,
-		candidates: [
-			{ model: LUNA, thinking: "max" },
-			{ model: OPUS, thinking: "max" },
-		],
 		thinking: "max",
 	});
 	assert.deepEqual(resolveRun("research", {}, withReviewPool), {
 		model: LUNA,
-		candidates: [
-			{ model: LUNA, thinking: "max" },
-			{ model: OPUS, thinking: "max" },
-		],
 		thinking: "max",
 	});
 	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, withReviewPool), {
 		model: ONE_OFF,
-		candidates: [{ model: ONE_OFF, thinking: "low" }],
 		thinking: "low",
 	});
 	// An exact model absent from review keeps existing cross-pool precedence (scout before worker).
 	assert.deepEqual(resolveRun("review", { model: LUNA }, withReviewPool), {
 		model: LUNA,
-		candidates: [{ model: LUNA, thinking: "off" }],
 		thinking: "off",
 	});
 	assert.deepEqual(resolveRun("review", { model: LUNA, thinking: "max" }, withReviewPool), {
 		model: LUNA,
-		candidates: [{ model: LUNA, thinking: "max" }],
 		thinking: "max",
 	});
 });
