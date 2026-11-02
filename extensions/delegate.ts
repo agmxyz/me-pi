@@ -363,6 +363,8 @@ export const implementContract = (job: Checkout) =>
 		`- You work in the coordinator's checkout on \`${job.branch}\`; the coordinator waits. Never switch, merge, stash, reset, or rewrite history.`,
 		`- Run \`${job.check.command}\` alone, exactly as given, after your last edit. Commit passing steps (subject plus a why body), never with \`--no-verify\` or \`--amend\`. Leave failing work uncommitted: it is committed as WIP. Delete tracked directories with \`git rm -r\`.`,
 		"- You cannot push, use `gh`, run `git worktree`, reach git remotes, write inside the git directory, run `./install.sh` or `pi install|remove|update|config`, or change files under `~/.pi`. If the task or repo instructions need one, list it as BLOCKED.",
+		"- While iterating, give each focused test run a per-test timeout (e.g. `node --test --test-timeout=30000 <file>`) so a hang costs seconds; run the full check at the end.",
+		"- Keep scratch and repro files out of commits: create them under `$TMPDIR` with Bash (`write` and `edit` reach only the checkout), or delete them before committing; leftovers are swept into WIP.",
 		"- Stop any background process you start before you answer. Paths that may hold secrets are blocked.",
 	]);
 
