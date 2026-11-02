@@ -44,7 +44,9 @@ import {
 	formatHandback,
 	ImplementLockRefusal,
 	nextImplementId,
+	type Outcome,
 	prepare as prepareImplement,
+	runImplementJob,
 } from "./delegate-implement.ts";
 import { killGroup, startWorkerProcess } from "./delegate-process.ts";
 import { failureClassLine } from "./delegate-provenance.ts";
@@ -790,6 +792,7 @@ export default function (pi: ExtensionAPI) {
 				updateActivityWidget(ctx, ended);
 				// Tracked through the shutdown-time finish: session_shutdown snapshots `running` once, so the finish
 				// for a session that ended during prepare must be part of the same promise.
+				let released = false;
 				const preparing = (async () => {
 					const prepared = await prepareImplement(
 						ctx?.cwd ?? process.cwd(),
@@ -797,7 +800,10 @@ export default function (pi: ExtensionAPI) {
 						check.trim(),
 						String(_id),
 					);
-					if (ended.aborted) await finishImplement(prepared, { failure: "stopped: session ended" });
+					if (ended.aborted) {
+						released = true;
+						await finishImplement(prepared, { failure: "stopped: session ended" });
+					}
 					return prepared;
 				})();
 				const settled = preparing.then(
@@ -808,6 +814,7 @@ export default function (pi: ExtensionAPI) {
 				try {
 					co = await preparing;
 				} catch (err: any) {
+					updateActivityWidget(ctx, ended);
 					return fail(
 						err?.message ?? String(err),
 						err instanceof ImplementLockRefusal ? { stopFacts: [err.stopFact] } : {},
@@ -815,9 +822,22 @@ export default function (pi: ExtensionAPI) {
 				} finally {
 					running.delete(settled);
 					active.delete(slot);
-					updateActivityWidget(ctx, ended);
 				}
-				if (ended.aborted) return fail("stopped: session ended");
+				// From here the lock is held: the widget update for the closed slot runs inside runImplementJob.
+				if (ended.aborted) {
+					// The session ended after prepare's own check: release the checkout here, tracked for shutdown.
+					if (!released) {
+						const finishing = finishImplement(co, { failure: "stopped: session ended" }).then(() => {});
+						running.add(finishing);
+						try {
+							await finishing;
+						} finally {
+							running.delete(finishing);
+						}
+					}
+					updateActivityWidget(ctx, ended);
+					return fail("stopped: session ended");
+				}
 				job.jobId = co.id;
 				job.implement = {
 					job: co,
@@ -835,6 +855,7 @@ export default function (pi: ExtensionAPI) {
 				onUpdate: ((u: any) => void) | undefined,
 				displayId?: string,
 				jobId?: string,
+				end?: (outcome: Outcome) => Promise<Facts>,
 			) => {
 				const start = Date.now();
 				active.set(key, {
@@ -846,9 +867,9 @@ export default function (pi: ExtensionAPI) {
 					workers: initialActivity(resolved, personas, session, start),
 					stage: "Workers",
 				});
-				updateActivityWidget(ctx, ended);
 				let facts: Facts | undefined;
 				try {
+					updateActivityWidget(ctx, ended);
 					const cwd = ctx?.cwd ?? process.cwd();
 					const round = async (
 						stage: Exclude<DelegateView["stage"], "Done">,
@@ -912,35 +933,19 @@ export default function (pi: ExtensionAPI) {
 						);
 					};
 
-					let round1: RunResult[];
-					try {
-						round1 = await round(
-							"Workers",
-							resolved.map(() => prompt),
-							resolved,
-							personas,
-						);
-					} catch (err: any) {
-						if (co) {
-							// A worker still running would keep writing while finish commits; stop its group first.
-							for (const pid of job.implement?.pids ?? []) killGroup(pid);
-							const failedToolCapture = job.implement
-								? persistFailedToolCapture(co, job.implement.artifacts)
-								: undefined;
-							facts = await finishImplement(co, {
-								failure: `delegate error: ${err?.message ?? err}`,
-								...(failedToolCapture && { failedToolCapture }),
-							});
-						}
-						throw new Error(`${err?.message ?? err}${facts ? `\n${formatHandback(facts)}` : ""}`);
-					}
+					const round1 = await round(
+						"Workers",
+						resolved.map(() => prompt),
+						resolved,
+						personas,
+					);
 					// implement: the worker's failure or stop reason names the WIP commit.
-					if (co) {
+					if (co && end) {
 						const r = round1[0];
 						r.failedToolCapture = job.implement
 							? persistFailedToolCapture(co, job.implement.artifacts)
 							: undefined;
-						facts = await finishImplement(co, {
+						facts = await end({
 							failure: r.failure,
 							failureClass: r.failureClass,
 							infraRetries: r.infraRetries,
@@ -1052,7 +1057,42 @@ export default function (pi: ExtensionAPI) {
 				} finally {
 					active.delete(key);
 					updateActivityWidget(ctx, ended);
-					if (co) writing.delete(co.repoRoot);
+				}
+			};
+			// implement: finish always runs, even when the activity setup throws; `writing` is set before the first await
+			// (so it holds before a background start message returns) and cleared only after finish has settled.
+			const start = async (
+				key: string,
+				signal: AbortSignal,
+				onUpdate: ((u: any) => void) | undefined,
+				displayId: string | undefined,
+				jobId: string | undefined,
+				writer: string,
+			) => {
+				const prepared = co;
+				if (!prepared) return call(key, signal, onUpdate, displayId, jobId);
+				writing.set(prepared.repoRoot, writer);
+				try {
+					return await runImplementJob(
+						prepared,
+						async (end) => {
+							updateActivityWidget(ctx, ended);
+							return await call(key, signal, onUpdate, displayId, jobId, end);
+						},
+						(err: any) => {
+							// A worker still running would keep writing while finish commits; stop its group first.
+							for (const pid of job.implement?.pids ?? []) killGroup(pid);
+							const failedToolCapture = job.implement
+								? persistFailedToolCapture(prepared, job.implement.artifacts)
+								: undefined;
+							return {
+								failure: `delegate error: ${err?.message ?? err}`,
+								...(failedToolCapture && { failedToolCapture }),
+							};
+						},
+					);
+				} finally {
+					writing.delete(prepared.repoRoot);
 				}
 			};
 			// implement: session_shutdown waits for the whole call, so finish commits WIP and releases the lock.
@@ -1067,15 +1107,13 @@ export default function (pi: ExtensionAPI) {
 				return p;
 			};
 			if (!background) {
-				if (co) writing.set(co.repoRoot, co.id);
 				const signal = toolSignal ? AbortSignal.any([toolSignal, ended]) : ended;
-				return tracked(call(callKey, signal, onUpdate, foregroundId));
+				return tracked(start(callKey, signal, onUpdate, foregroundId, undefined, co?.id ?? ""));
 			}
 
 			// The turn's abort does not stop a background job; /delegate cancel and session shutdown do.
 			shared[JOB_COUNT_KEY] = (shared[JOB_COUNT_KEY] ?? 0) + 1;
 			const id = `bg${shared[JOB_COUNT_KEY]}`;
-			if (co) writing.set(co.repoRoot, id);
 			const controller = new AbortController();
 			jobs.set(id, controller);
 			statusUi = ctx?.ui;
@@ -1093,7 +1131,7 @@ export default function (pi: ExtensionAPI) {
 					{ triggerTurn: !controller.signal.aborted, deliverAs: "followUp" },
 				);
 			};
-			tracked(call(callKey, AbortSignal.any([controller.signal, ended]), undefined, undefined, id))
+			tracked(start(callKey, AbortSignal.any([controller.signal, ended]), undefined, undefined, id, id))
 				.then((result: any) => {
 					spend.cost += costOf(result.usage ?? {});
 					deliver(result.content.map((c: any) => c.text).join("\n"), result.details, Boolean(result.isError));

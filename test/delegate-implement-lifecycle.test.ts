@@ -16,6 +16,7 @@ import test from "node:test";
 import {
 	bgCtx,
 	CHECK,
+	CTX,
 	classifyProviderError,
 	commandCtx,
 	implement,
@@ -516,6 +517,90 @@ test("implement: a session that ends during prepare leaves no job, lock, or mess
 	assert.equal(res.isError, true);
 	assert.equal(text(res), "stopped: session ended");
 	assert.equal(messages.length, 0);
+});
+
+// The activity widget is set after prepare took the lock; a throw there must still finish the job.
+test("implement: a widget that throws after prepare still finishes the job, releases the lock, and clears writing", async (t) => {
+	const { tool, handlers, messages } = setup(t, { env: implementEnv("implement-commit") });
+	const hook = handlers.tool_call;
+	for (const background of [false, true]) {
+		const { repo, lock } = implementRepo();
+		let sets = 0;
+		const ui = {
+			setStatus: () => {},
+			setWidget: (_key, content) => {
+				// Function contents only (clears pass undefined): 1 is prepare's slot, 2 the job's activity inside `call`.
+				if (typeof content === "function" && ++sets === 2) throw new Error("widget broke");
+			},
+		};
+		const ctx = { ...CTX, mode: "tui", ui, cwd: repo, isProjectTrusted: () => false };
+		if (background) {
+			await run(tool, implement({ background: true }), undefined, undefined, ctx);
+			await waitFor(() => messages.length === 1, "the failed job's report");
+			assert.match(
+				messages[0].message.content,
+				/^Background delegate job bg\d+ failed:\n\n✗ widget broke\n✗ im\d+ goal\/x /,
+			);
+			assert.match(messages[0].message.content, /^✗ delegate error: widget broke$/m);
+		} else {
+			await assert.rejects(run(tool, implement(), undefined, undefined, ctx), (err: any) => {
+				assert.match(err.message, /^widget broke\n✗ im\d+ goal\/x /);
+				assert.match(err.message, /^✗ delegate error: widget broke$/m);
+				return true;
+			});
+		}
+		assert.ok(!existsSync(lock), `lock released (background: ${background})`);
+		assert.equal(
+			await hook({ toolName: "edit", input: { path: join(repo, "sub", "a.txt") } }, { cwd: repo }),
+			undefined,
+		);
+	}
+});
+
+// The fence must hold until finish has committed WIP; lifting it earlier lets main-session edits into that commit.
+test("implement: writing stays set until finish completes after a throw", async (t) => {
+	const { tool, handlers, messages } = setup(t, { env: implementEnv("implement-commit") });
+	const hook = handlers.tool_call;
+	for (const background of [false, true]) {
+		const { repo, lock } = implementRepo();
+		let thrown = false;
+		let sets = 0;
+		const ui = {
+			setStatus: () => {},
+			setWidget: (_key, content) => {
+				if (typeof content === "function" && ++sets === 2) {
+					thrown = true;
+					throw new Error("widget broke");
+				}
+			},
+		};
+		const ctx = { ...CTX, mode: "tui", ui, cwd: repo, isProjectTrusted: () => false };
+		let settled = false;
+		const call = background
+			? run(tool, implement({ background: true }), undefined, undefined, ctx).then(() =>
+					waitFor(() => messages.length === 1, "the failed job's report"),
+				)
+			: run(tool, implement(), undefined, undefined, ctx).catch(() => {});
+		call.finally(() => {
+			settled = true;
+		});
+		let observed = 0;
+		const edit = { toolName: "edit", input: { path: join(repo, "sub", "a.txt") } };
+		while (!settled) {
+			if (thrown && existsSync(lock)) {
+				observed++;
+				const verdict = await hook(edit, { cwd: repo });
+				if (existsSync(lock))
+					assert.equal(verdict?.block, true, `edit blocked while finish runs (background: ${background})`);
+			}
+			await new Promise((r) => setImmediate(r));
+		}
+		await call;
+		assert.ok(observed > 0, "finish was observed running");
+		assert.ok(!existsSync(lock));
+		assert.equal(await hook(edit, { cwd: repo }), undefined);
+		messages.length = 0;
+	}
 });
 
 test("implement: parallel calls at the cap cannot both pass it while preparing", async (t) => {
