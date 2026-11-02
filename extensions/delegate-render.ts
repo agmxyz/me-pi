@@ -1,5 +1,6 @@
 /**
  * TUI rendering for delegate: call preview, live progress, and collapsed/expanded Markdown results.
+ * The model never sees this; it gets the tool's text content. Every line is cut to the terminal width.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";

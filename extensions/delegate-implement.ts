@@ -1,7 +1,8 @@
 /**
  * Checkout lifecycle for the `implement` role: `prepare` locks and validates the branch;
  * `finish` commits leftovers as WIP, validates tripwires, writes details, and releases the lock;
- * `formatHandback` renders the tool result.
+ * `formatHandback` renders the tool result. The worker writes in the real checkout, so the
+ * snapshots watch what it must not touch.
  */
 
 import { execFile } from "node:child_process";

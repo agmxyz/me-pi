@@ -1,8 +1,10 @@
 /**
- * skill — a `Skill` tool that loads Pi-discovered skill instructions by name.
+ * skill — a `Skill` tool that loads a skill's instructions by name.
  *
- * Matches the Claude Code `Skill` tool interface so cross-agent skills work without modification.
- * Discovered skills come from `before_agent_start`; model-disabled skills are refused.
+ * Pi has no Skill tool: it lists skills in the system prompt and expects the model to `read`
+ * the SKILL.md file. This tool is named `Skill` (not `skill`) to match the wording those skills
+ * use, letting them work without modification. It serves Pi-discovered skills from
+ * `before_agent_start`; model-disabled skills are refused.
  */
 
 import { readFileSync } from "node:fs";
@@ -10,7 +12,8 @@ import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent";
 
 const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
 
-// Escape XML entities so skill metadata cannot break out of the wrapper tag.
+// Same escaping Pi applies to skill metadata in the system prompt, so a crafted name or path
+// cannot break out of the wrapper tag.
 function escapeXml(text: string): string {
 	return text
 		.replace(/&/g, "&amp;")

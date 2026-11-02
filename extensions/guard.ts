@@ -1,6 +1,8 @@
 /**
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
- * Asks with UI, blocks in print mode. Pattern-matching net, not a full shell parser.
+ * With a UI it asks for confirmation; without one (print mode) it blocks.
+ * `/guard on|off` toggles it for the current session; every session starts on.
+ * The Approval policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
  */
 
 import { spawnSync } from "node:child_process";
@@ -49,6 +51,7 @@ const DISPOSABLE = new RegExp(
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
 export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
 
+// Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`).
 function wordsOf(args: string): string[] {
 	return args
 		.split(/\s+/)

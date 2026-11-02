@@ -533,7 +533,8 @@ test("implement: parallel calls at the cap cannot both pass it while preparing",
 	await waitFor(() => messages.length === 2, "both cancelled reports");
 });
 
-// Verify every job above removed its gh config dir across TEST_HOME and alternate TMPDIRs.
+// Last: every job above, refused, failed, cancelled, or stopped by shutdown, removed its gh config dir. Scans TEST_HOME
+// and alternate TMPDIRs; the harness repeats this sweep after every delegate file.
 test("no gh config dir outlives its job", () => {
 	const roots = [
 		TEST_HOME,

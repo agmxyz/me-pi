@@ -12,6 +12,7 @@ import {
 import { isAbsolute, join } from "node:path";
 
 // maxDiagnosticsPerCall is also reused in delegate.ts as the cap on contradictory Bash success diagnostics.
+// Anomaly record-cap counts whole-record omissions; aggregate-cap counts per-list and whole-artifact fitting.
 export const FAILED_TOOL_ARTIFACT_LIMITS = {
 	maxFailedCalls: 100,
 	maxUnmatchedStarts: 100,

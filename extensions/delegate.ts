@@ -1,5 +1,6 @@
 /**
- * delegate — runs child Pi workers for token-heavy work (code search, web research, reviews, and isolated edits).
+ * delegate — runs child Pi workers for token-heavy work (code search, web research, reviews, and
+ * branch-scoped edits in the coordinator's checkout).
  *
  * Workers run as `pi --mode json -p` child processes with role-scoped tools, model pools,
  * and internal guardrails (secret-path read blocks, write directory fencing, and wrap-up budgets).
@@ -480,7 +481,6 @@ function validV3Pool(raw: any, where: string, scout: boolean): ModelPool {
 	return { models, thinking: poolThinking(raw.thinking, `${where}.thinking`, scout) };
 }
 
-/** Validate the v3 model pool configuration. */
 function validModelSet(raw: any, where: string): ModelSet {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected a JSON object`);
 	if (raw.version !== 3)
@@ -988,7 +988,6 @@ function runWorkerAttempt(
 		let finished = false;
 		let lastStopReason: string | undefined;
 		let buffer = "";
-		// Check tracking keeps its original call map and semantics; artifact correlation is separate and failure-only.
 		const calls = new Map<string, { tool: string; command: string }>();
 		const captureCalls = new Map<string, CapturedToolCall[]>();
 		const anonymousCaptureCalls: CapturedToolCall[] = [];
@@ -1895,7 +1894,6 @@ function commandDir(command: string, cwd: string): string | undefined {
 	return realTarget(absolute) ?? absolute;
 }
 
-// Whether target is root or inside it; both resolved.
 const within = (root: string, target: string) => {
 	const rel = relative(realpathOr(root), target);
 	return rel === "" || !notStrictlyInside(rel);
