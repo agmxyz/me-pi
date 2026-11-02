@@ -2,16 +2,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { loadModelSet, resolveRun } from "../extensions/delegate-config.ts";
 import {
 	commandCtx,
 	HAIKU,
 	LUNA,
-	loadModelSet,
 	modelSet,
 	OPUS,
 	POLICY,
 	POOL_SET,
-	resolveRun,
 	run,
 	SONNET,
 	scratch,

@@ -1,7 +1,7 @@
 // /delegate command: status (default), models config path, and cancel <id>.
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { ModelSet } from "./delegate.ts";
+import type { ModelSet } from "./delegate-config.ts";
 import { type Persona, shortModel as short } from "./delegate-render.ts";
 
 export interface CallRecord {

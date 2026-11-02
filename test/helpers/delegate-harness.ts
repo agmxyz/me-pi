@@ -26,12 +26,15 @@ const {
 	PROMPT_SNIPPET,
 	ROLES,
 	WORKER_CONTRACT,
-	loadModelSet,
-	resolveRun,
 	secretPathIn,
 	writeBlockedIn,
 	trackCheck,
 } = await import("../../extensions/delegate.ts");
+
+const {
+	loadModelSet,
+	resolveRun,
+} = await import("../../extensions/delegate-config.ts");
 
 const { default: registerGuard } = await import("../../extensions/guard.ts");
 
