@@ -844,6 +844,37 @@ test("multiple setups restore the original environment after child cleanup, incl
 	assert.equal(Object.hasOwn(process.env, later), false, "later key is deleted, not stringified");
 });
 
+test("opt-in coordinator status logs a provider-error stop and announces spend before the budget runs out", async (t) => {
+	const log = join(mkdtempSync(join(TEST_HOME, "status-")), "status.log");
+	const notes = [];
+	const ctx = { ui: { notify: (text, level) => notes.push([level, text]) } };
+	const { handlers, tool } = setup(t, { env: { ME_PI_STATUS_LOG: log, ME_PI_SPEND_BUDGET_USD: "0.01" } });
+	const assistant = (cost, extra = {}) => ({
+		message: { role: "assistant", stopReason: "stop", usage: { cost: { total: cost } }, ...extra },
+	});
+	await handlers.message_end(assistant(0.005), ctx);
+	await handlers.agent_settled({ aborted: false }, ctx);
+	assert.equal(existsSync(log), false, "an ordinary turn writes nothing");
+	await handlers.message_end(assistant(0.0035), ctx);
+	await run(tool, { role: "scout", task: "look" });
+	await handlers.message_end(
+		assistant(0, { stopReason: "error", errorMessage: "403 Key limit exceeded (total limit)" }),
+		ctx,
+	);
+	await handlers.agent_settled({ aborted: false }, ctx);
+	const lines = readFileSync(log, "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => line.replace(/^\S+ /, ""));
+	assert.deepEqual(lines, [
+		"WARNING: estimated spend $0.01 of the $0.01 budget",
+		"BUDGET: estimated spend $0.01 of the $0.01 budget reached; stop starting work",
+		"STOPPED: account: 403 Key limit exceeded (total limit) (BLOCKER: needs the user)",
+	]);
+	assert.equal(statSync(log).mode & 0o777, 0o600);
+	assert.equal(notes.length, 3);
+});
+
 test("registers delegate in the main session; workers get only the secret-path block", (t) => {
 	const main = setup(t);
 	assert.ok(main.tool);
@@ -4702,13 +4733,19 @@ test("an infra failure without effects is retried on the same model; effects or 
 	process.env.FAKE_PI_INFRA_FAILS = "5";
 	const exhausted = await run(tool, { role: "scout", task: "look" });
 	assert.equal(exhausted.isError, true);
-	assert.match(text(exhausted), /^Failure class: infra \(provider or network, not the task\); retried 2× on the same model\.$/m);
+	assert.match(
+		text(exhausted),
+		/^Failure class: infra \(provider or network, not the task\); retried 2× on the same model\.$/m,
+	);
 	assert.equal(readFileSync(process.env.FAKE_PI_COUNTER, "utf8"), "3");
 
 	process.env.FAKE_PI_COUNTER = counter();
 	process.env.FAKE_PI_ERROR = "403 Key limit exceeded (total limit)";
 	const account = await run(tool, { role: "scout", task: "look" });
-	assert.match(text(account), /^Failure class: account \(quota, key, or billing limit\); BLOCKER: retrying cannot help\.$/m);
+	assert.match(
+		text(account),
+		/^Failure class: account \(quota, key, or billing limit\); BLOCKER: retrying cannot help\.$/m,
+	);
 	assert.equal(readFileSync(process.env.FAKE_PI_COUNTER, "utf8"), "1");
 });
 

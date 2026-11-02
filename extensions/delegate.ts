@@ -12,6 +12,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+	appendFileSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -2034,6 +2035,58 @@ const within = (root: string, target: string) => {
 	return rel === "" || !notStrictlyInside(rel);
 };
 
+const SPEND_WARN_SHARE = 0.8;
+
+/**
+ * Opt-in status for an external supervisor, which cannot see the coordinator's pane: `ME_PI_STATUS_LOG` gets one
+ * line when a coordinator turn ends on a provider error (after Pi's own retries), and `ME_PI_SPEND_BUDGET_USD` warns,
+ * there and in the UI, when the session's estimated spend (coordinator turns plus delegate workers) passes 80% and
+ * then 100% of it. Pi-reported cost is an estimate, not the provider's counter. Returns the worker-spend sink.
+ */
+function coordinatorStatus(pi: ExtensionAPI): (cost: number) => void {
+	const path = process.env.ME_PI_STATUS_LOG;
+	const budget = Number(process.env.ME_PI_SPEND_BUDGET_USD);
+	if (!path && !(budget > 0)) return () => {};
+	let ui: Pick<ExtensionContext["ui"], "notify"> | undefined;
+	const report = (line: string, level: "warning" | "error") => {
+		const text = line.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 500);
+		if (path)
+			try {
+				appendFileSync(path, `${new Date().toISOString()} ${text}\n`, { mode: 0o600 });
+			} catch (err) {
+				ui?.notify(`delegate: status log not written: ${(err as Error).message}`, "error");
+			}
+		ui?.notify(text, level);
+	};
+	let spent = 0;
+	let announced = 0;
+	const addSpend = (cost: number) => {
+		spent += cost;
+		if (!(budget > 0)) return;
+		const level = spent >= budget ? 2 : spent >= SPEND_WARN_SHARE * budget ? 1 : 0;
+		if (level <= announced) return;
+		announced = level;
+		const amounts = `estimated spend $${spent.toFixed(2)} of the $${budget.toFixed(2)} budget`;
+		report(level === 2 ? `BUDGET: ${amounts} reached; stop starting work` : `WARNING: ${amounts}`, "warning");
+	};
+	let providerError: string | undefined;
+	pi.on("message_end", (event, ctx) => {
+		ui = ctx?.ui;
+		const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string; usage?: any };
+		if (msg?.role !== "assistant") return;
+		addSpend(costOf(msg.usage ?? {}));
+		providerError = msg.stopReason === "error" ? msg.errorMessage || "provider error" : undefined;
+	});
+	pi.on("agent_settled", (event) => {
+		const error = providerError;
+		providerError = undefined;
+		if (!error || event.aborted || !path) return;
+		const kind = classifyProviderError(error);
+		report(`STOPPED: ${kind}: ${error}${kind === "account" ? " (BLOCKER: needs the user)" : ""}`, "error");
+	});
+	return addSpend;
+}
+
 export default function (pi: ExtensionAPI) {
 	// Workers never get the tool, so delegation cannot nest; they only get the wrap-up budget, the secret-path
 	// block, the output-directory write block, and for `implement` the worker-only bash rules and the orphan stop.
@@ -2159,6 +2212,7 @@ export default function (pi: ExtensionAPI) {
 		});
 		return;
 	}
+	const addSpend = coordinatorStatus(pi);
 	let shutdown = new AbortController();
 	const running = new Set<Promise<unknown>>();
 	// For /delegate status: calls running now, and the last HISTORY_SIZE finished calls.
@@ -2610,6 +2664,7 @@ export default function (pi: ExtensionAPI) {
 					const all = [...round1, ...round2];
 					const cost = all.reduce((sum, r) => sum + costOf(r.usage), 0);
 					const range = facts && `${facts.base.slice(0, 7)}..${facts.tip?.slice(0, 7) ?? "?"}`;
+					addSpend(cost);
 					history.push({
 						at: Date.now(),
 						role,
