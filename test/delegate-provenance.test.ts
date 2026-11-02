@@ -132,6 +132,7 @@ test("toolResultText joins text parts and ignores the rest", () => {
 	assert.equal(toolResultText(text(long)), long, "no truncation at this layer");
 });
 
+// Pins known behavior: the first exit-code alias is recorded even when bashStatuses would veto it (#35).
 test("failedToolResult extracts bash fields with first-field fallbacks", () => {
 	assert.deepEqual(failedToolResult(undefined, "bash"), {});
 	assert.deepEqual(
