@@ -51,9 +51,12 @@ Optional model pools in `~/.pi/agent/delegate.json` (without it, workers use you
 {
   "version": 3,
   "scout": { "models": [{ "model": "provider/fast-model", "thinking": "low" }] },
-  "worker": { "models": [{ "model": "provider/strong-model", "thinking": "medium" }] }
+  "worker": { "models": [{ "model": "provider/strong-model", "thinking": "medium" }] },
+  "review": { "models": [{ "model": "provider/other-strong-model", "thinking": "high" }] }
 }
 ```
+
+`scout` serves scouts, `review` serves reviews, and `worker` serves every other role. `review` is optional and falls back to `worker`; a different model there gives you a second opinion on the work it reviews.
 
 `research` and `challenge` need web tools: `pi install npm:pi-web-access`.
 
