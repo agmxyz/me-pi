@@ -2,9 +2,9 @@
 
 [![check](https://github.com/0bmario/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/0bmario/me-pi/actions/workflows/check.yml)
 
-Subagents for the [Pi](https://github.com/earendil-works/pi) coding agent, without the framework.
+Bounded subagents for the [Pi](https://github.com/earendil-works/pi) coding agent. No worktrees, no sandbox, no agent files.
 
-Your main session hands bounded work (a lookup, a review, research, a scoped change) to an isolated worker and gets back only the answer. Its context stays clean, and it keeps every decision. No agent files, no workflow DSL: one tool, sensible roles, hard limits, and changes that land as commits on your branch.
+Your main session hands bounded work (a lookup, a review, research, a scoped change) to a separate worker process and gets back only the answer. Its context stays clean, and it keeps every decision. Workers run in your checkout under hard limits; changes land as commits on your branch.
 
 ## Why me-pi
 
