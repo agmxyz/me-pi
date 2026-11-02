@@ -7,12 +7,13 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
+import { realpathOr } from "./delegate-fence.ts";
 import {
 	type AttemptProvenance,
 	bashExitCode,
@@ -442,15 +443,6 @@ const normalized = (command: string) =>
 		.replace(/\s+/g, " ")
 		.replace(/^rtk /, "")
 		.replace(/ ?2>&1$/, "");
-
-/** A path through its symlinks (macOS /tmp is /private/tmp), or as given when it does not exist. */
-export function realpathOr(path: string): string {
-	try {
-		return realpathSync.native(path);
-	} catch {
-		return path; // Missing path: nothing to resolve; the tool reports it.
-	}
-}
 
 /** Hashes checkout content without Git metadata, length-prefixing every path, kind, mode, and payload field. */
 export function snapshotContent(repoRoot: string): string {
