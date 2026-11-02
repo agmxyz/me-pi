@@ -650,7 +650,6 @@ export interface RunResult {
 	failureClass?: FailureClass;
 	/** Failures of earlier attempts that were retried on the same model as infra failures. */
 	infraRetries?: string[];
-	fallbackBlockReason?: string;
 	provenance?: AttemptProvenance[];
 	toolCallCount?: number;
 	turns: number;
@@ -1478,7 +1477,7 @@ function runWorkerAttempt(
 					resource: "provider",
 					effect: "unknown",
 				});
-				result.fallbackBlockReason = retryRefusalReason(job, run.model, provenance, result, budget);
+				retainSpentBudgetFacts(job, provenance, result, budget);
 				return;
 			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") return;
@@ -1554,29 +1553,13 @@ function runWorkerAttempt(
 	});
 }
 
-// Pi's fresh child cannot bind its effective endpoint before task data is sent, so a
-// structured retry can never authorize dispatch of another pool candidate in this release.
-function retryRefusalReason(
+// A budget already spent when Pi classifies a retry is retained as a stop fact, so the attempt is not replayed.
+function retainSpentBudgetFacts(
 	job: Job,
-	model: string | undefined,
 	provenance: AttemptProvenance,
 	result: RunResult,
 	budget: AttemptBudget,
-): string {
-	if (!model) return "the selected session model has no exact provider/model identity";
-	const slash = model.indexOf("/");
-	if (
-		slash <= 0 ||
-		!provenance.providerRetry ||
-		provenance.providerRetry.provider !== model.slice(0, slash) ||
-		provenance.providerRetry.model !== model.slice(slash + 1)
-	)
-		return "no correlated Pi runtime retry classification is available";
-	if (!provenance.complete) return "attempt provenance is incomplete; replay is refused";
-	if (provenance.stopFacts.some((fact) => fact.cause !== "provider-retry-classified"))
-		return "a competing safety stop prevents replay";
-	if (provenance.toolEffects.some((fact) => !fact.replaySafe || fact.effect !== "completed"))
-		return "tool effects are unknown or unsafe to replay";
+): void {
 	const retainLimitStop = (cause: StopFact["cause"], resource: StopResource) => {
 		if (
 			!provenance.stopFacts.some(
@@ -1593,24 +1576,13 @@ function retryRefusalReason(
 			});
 	};
 	const now = Date.now();
-	const hardTimeSpent = now >= budget.hardDeadline;
-	const toolTimeSpent = now >= budget.toolDeadline;
-	if (hardTimeSpent) retainLimitStop("hard-timeout", "hard-time");
-	if (toolTimeSpent) retainLimitStop("wrap-up-limit", "tool-time");
-	if (hardTimeSpent) return "the original hard deadline is spent";
-	if (toolTimeSpent) return "the original tool deadline is spent";
+	if (now >= budget.hardDeadline) retainLimitStop("hard-timeout", "hard-time");
+	if (now >= budget.toolDeadline) retainLimitStop("wrap-up-limit", "tool-time");
 	const currentCost = costOf(result.usage);
-	const hardCostSpent = currentCost >= budget.hardCostCapUsd;
-	const toolCostSpent = currentCost >= budget.toolCostCapUsd;
-	if (hardCostSpent) retainLimitStop("hard-cost-limit", "hard-cost");
-	if (toolCostSpent) retainLimitStop("wrap-up-limit", "tool-cost");
-	if (hardCostSpent) return "the cumulative hard cost allowance is spent";
-	if (toolCostSpent) return "the cumulative tool cost allowance is spent";
-	if (job.role === "scout" && budget.toolCalls !== null && (result.toolCallCount ?? 0) >= budget.toolCalls) {
+	if (currentCost >= budget.hardCostCapUsd) retainLimitStop("hard-cost-limit", "hard-cost");
+	if (currentCost >= budget.toolCostCapUsd) retainLimitStop("wrap-up-limit", "tool-cost");
+	if (job.role === "scout" && budget.toolCalls !== null && (result.toolCallCount ?? 0) >= budget.toolCalls)
 		retainLimitStop("wrap-up-limit", "tool-calls");
-		return "the cumulative scout tool-call allowance is spent";
-	}
-	return "cross-model fallback deferred until child-boundary endpoint enforcement and positive scope/budget tests are available";
 }
 
 function persistFailedToolCapture(
@@ -1693,8 +1665,6 @@ async function runWorker(
 		});
 		attempt = mergeAttempts(attempt, next);
 	}
-	if (candidates.length > 1 && attempt.failure && !attempt.provenance?.[0]?.providerRetry)
-		attempt.fallbackBlockReason ??= "Pi runtime supplied no structured retry classification";
 	return attempt;
 }
 
@@ -1813,7 +1783,7 @@ function formatRun(r: RunResult): string {
 	else if (!r.failure) body = `${answer}${filesLine(r)}\n${label(r)}`;
 	else {
 		const partial = r.output.trim() ? `\nPartial answer:\n${cap(r.output.trim(), FAILED_PARTIAL_CAP)}` : "";
-		body = `✗ ${r.failure}${failureClassLine(r)}${r.fallbackBlockReason ? `\nPool fallback not attempted: ${r.fallbackBlockReason}.` : ""}${partial}${filesLine(r)}\n${label(r)}`;
+		body = `✗ ${r.failure}${failureClassLine(r)}${partial}${filesLine(r)}\n${label(r)}`;
 	}
 	return body;
 }

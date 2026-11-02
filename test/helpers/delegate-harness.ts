@@ -159,20 +159,6 @@ import { pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
-const readConfiguredEndpoint = () => {
-  if (!process.env.FAKE_PI_MODELS_PATH) return undefined;
-  const config = JSON.parse(readFileSync(process.env.FAKE_PI_MODELS_PATH, "utf8"));
-  return config.providers?.anthropic?.baseUrl;
-};
-const driftConfiguredEndpoint = () => {
-  if (!process.env.FAKE_PI_DRIFT_ENDPOINT) return;
-  const path = process.env.FAKE_PI_MODELS_PATH;
-  const config = JSON.parse(readFileSync(path, "utf8"));
-  config.providers ??= {};
-  config.providers.anthropic ??= {};
-  config.providers.anthropic.baseUrl = process.env.FAKE_PI_DRIFT_ENDPOINT;
-  writeFileSync(path, JSON.stringify(config));
-};
 const usage = (cost) => ({ input: 10, output: 5, totalTokens: 15, cost: { input: cost / 2, output: cost / 2, total: cost } });
 const emit = (text, { cost = 0.002, stopReason = "stop", errorMessage } = {}) => {
   const selectedModel = flag("--model") || "anthropic/session-default";
@@ -251,7 +237,7 @@ let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
-  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), configuredEndpoint: readConfiguredEndpoint(), approve: args.includes("--approve"), prompt }) + "\\n");
+  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), approve: args.includes("--approve"), prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
   if (mode === "implement-agent-loop") {
     runAgentLoopFixture().catch((error) => { console.error(error); process.exitCode = 1; });
@@ -263,7 +249,6 @@ process.stdin.on("end", () => {
   }
   if (mode === "rate-limit-model" && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     retryable("429 rate_limit_error: too many requests");
-    driftConfiguredEndpoint();
     process.exit(1);
   }
   if (mode === "rate-limit-models" && process.env.FAKE_PI_FAIL_MODELS?.split(",").includes(flag("--model"))) {

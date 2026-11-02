@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import {
@@ -18,66 +17,9 @@ import {
 	SONNET,
 	scratch,
 	setup,
-	TEST_HOME,
 	text,
 	UNAUTHENTICATED,
 } from "./helpers/delegate-harness.ts";
-
-test("dispatch stays first-only when a parent snapshot cannot bind a later child's endpoint", async (t) => {
-	const marker = scratch("fallback-child-endpoint-marker");
-	const modelsPath = join(mkdtempSync(join(TEST_HOME, "child-models-")), "models.json");
-	const registry = registryFixture();
-	const parentDestination = registry.find("anthropic", "claude-sonnet-5-5").baseUrl;
-	writeFileSync(modelsPath, JSON.stringify({ providers: { anthropic: { baseUrl: parentDestination } } }));
-	let credentialResolutionCalls = 0;
-	registry.getApiKeyAndHeaders = () => {
-		credentialResolutionCalls++;
-		throw new Error("credential resolution must not be called");
-	};
-	const { tool } = setup(t, {
-		config: {
-			version: 3,
-			scout: pool([LUNA], "low"),
-			worker: pool([HAIKU, SONNET], "max"),
-		},
-		env: {
-			FAKE_PI_MODE: "rate-limit-model",
-			FAKE_PI_FAIL_MODEL: HAIKU,
-			FAKE_PI_MARKER: marker,
-			FAKE_PI_MODELS_PATH: modelsPath,
-			FAKE_PI_DRIFT_ENDPOINT: "https://child-config-changed.invalid/v1",
-		},
-	});
-	const result = await run(
-		tool,
-		{
-			role: "review",
-			task: "do not send this task to a later child with a changed endpoint",
-		},
-		undefined,
-		undefined,
-		{ ...CTX, modelRegistry: registry },
-	);
-	assert.equal(result.isError, true);
-	assert.match(
-		result.details.round1[0].fallbackBlockReason,
-		/cross-model fallback deferred.*child-boundary endpoint enforcement/,
-	);
-	assert.equal(result.details.round1[0].requested.model, HAIKU);
-	assert.equal(result.details.round1[0].provenance[0].providerRetry.owner, "pi-runtime");
-	assert.equal(result.details.round1[0].provenance[0].providerRetry.sourceEvent, "auto_retry_start");
-	const launches = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
-	assert.equal(launches.length, 1, "no next Pi child was spawned after the child config drifted");
-	assert.equal(launches[0].model, HAIKU);
-	assert.equal(launches[0].configuredEndpoint, parentDestination, "the first child observed the parent snapshot URL");
-	assert.match(launches[0].prompt, /do not send this task to a later child/);
-	assert.equal(
-		JSON.parse(readFileSync(modelsPath, "utf8")).providers.anthropic.baseUrl,
-		"https://child-config-changed.invalid/v1",
-		"the config a later child would load changed after the parent snapshot",
-	);
-	assert.equal(credentialResolutionCalls, 0);
-});
 
 test("model pools resolve per-model thinking, ordered candidates, and independent overrides", () => {
 	assert.deepEqual(resolveRun("scout", {}, POOL_SET), {
@@ -288,7 +230,6 @@ test("an explicit thinking override applies to the first selected pool candidate
 	assert.equal(res.isError, true, text(res));
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
 	assert.equal(res.details.round1[0].requested.thinking, "medium");
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -401,8 +342,6 @@ test("a rate-limited worker does not fall back through its pool", async (t) => {
 	});
 	assert.equal(res.isError, true, text(res));
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
-	assert.match(text(res), /Pool fallback not attempted: cross-model fallback deferred/);
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(
 		calls.map((call) => [call.model, call.thinking]),
@@ -411,7 +350,7 @@ test("a rate-limited worker does not fall back through its pool", async (t) => {
 	assert.equal(res.usage.cost.total, 0.002);
 });
 
-test("quota and usage-limit failures do not fall through an authorized pool", async (t) => {
+test("quota and usage-limit failures do not fall through the pool", async (t) => {
 	// One setup, so its env restore runs once; each case only swaps the error text.
 	const { tool } = setup(t, {
 		config: {
@@ -433,7 +372,6 @@ test("quota and usage-limit failures do not fall through an authorized pool", as
 		});
 		assert.equal(res.isError, true, error);
 		assert.equal(res.details.round1[0].requested.model, HAIKU, error);
-		assert.match(res.details.round1[0].fallbackBlockReason, /no structured retry classification/);
 	}
 });
 
@@ -473,7 +411,6 @@ test("first-only dispatch reports the first candidate's worker cost", async (t) 
 	});
 	assert.equal(res.isError, true);
 	assert.equal(res.details.round1[0].requested.model, HAIKU);
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.equal(res.usage.cost.total, 0.002);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
@@ -519,7 +456,6 @@ test("default dispatch keeps the first candidate's configured thinking level", a
 	);
 	assert.equal(res.details.round1[0].requested.model, LUNA);
 	assert.equal(res.details.round1[0].requested.thinking, "max");
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 });
 
 test("model-unavailable errors without structured retry evidence fail closed", async (t) => {
@@ -544,10 +480,9 @@ test("model-unavailable errors without structured retry evidence fail closed", a
 			.map((line) => JSON.parse(line).model),
 		[HAIKU],
 	);
-	assert.match(text(res), /no structured retry classification/);
 });
 
-test("configuration and authorization added after dispatch cannot start another child", async (t) => {
+test("configuration changed after dispatch cannot start another child", async (t) => {
 	const marker = scratch("late-fallback-authorization-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -569,7 +504,6 @@ test("configuration and authorization added after dispatch cannot start another 
 	);
 	const res = await pending;
 	assert.equal(res.isError, true, text(res));
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()
@@ -579,21 +513,21 @@ test("configuration and authorization added after dispatch cannot start another 
 	);
 });
 
-test("fallback fails closed on malformed evidence, shell 429s, prior effects, and blocked calls", async (t) => {
+test("attempt provenance records malformed evidence, shell 429s, prior effects, and blocked calls", async (t) => {
 	const config = {
 		version: 3,
 		scout: pool([LUNA], "low"),
 		worker: pool([HAIKU, SONNET], "max"),
 	};
 	const cases = [
-		["malformed-retry", /no structured retry classification/, "no-retry"],
-		["shell-429", /no structured retry classification/, "tool-failure"],
-		["partial-result-then-retry", /competing safety stop/, "partial-result-unknown"],
-		["tool-then-retry", /tool effects are unknown or unsafe/, "completed-unsafe"],
-		["start-then-retry", /tool effects are unknown or unsafe/, "unmatched-unknown"],
-		["blocked-owner-event", /no structured retry classification/, "guard-denial"],
+		["malformed-retry", "no-retry"],
+		["shell-429", "tool-failure"],
+		["partial-result-then-retry", "partial-result-unknown"],
+		["tool-then-retry", "completed-unsafe"],
+		["start-then-retry", "unmatched-unknown"],
+		["blocked-owner-event", "guard-denial"],
 	];
-	for (const [mode, reason, kind] of cases) {
+	for (const [mode, kind] of cases) {
 		const marker = scratch(`fallback-${mode}-marker`);
 		const { tool } = setup(t, {
 			config,
@@ -604,7 +538,6 @@ test("fallback fails closed on malformed evidence, shell 429s, prior effects, an
 			task: mode,
 		});
 		assert.equal(res.isError, true, mode);
-		assert.match(res.details.round1[0].fallbackBlockReason, reason, mode);
 		assert.deepEqual(
 			readFileSync(marker, "utf8")
 				.trim()
@@ -650,7 +583,7 @@ test("fallback fails closed on malformed evidence, shell 429s, prior effects, an
 	}
 });
 
-test("fallback keeps the original tool deadline and retains a competing guard denial", async (t) => {
+test("a retry after the tool deadline retains the deadline stop and a competing guard denial", async (t) => {
 	const delayedMarker = scratch("fallback-deadline-marker");
 	const config = {
 		version: 3,
@@ -672,7 +605,6 @@ test("fallback keeps the original tool deadline and retains a competing guard de
 		task: "original tool deadline",
 	});
 	assert.equal(deadline.isError, true, text(deadline));
-	assert.match(deadline.details.round1[0].fallbackBlockReason, /original tool deadline/);
 	assert.ok(
 		deadline.details.round1[0].provenance[0].stopFacts.some(
 			(fact) => fact.cause === "wrap-up-limit" && fact.resource === "tool-time",
@@ -710,7 +642,7 @@ test("fallback keeps the original tool deadline and retains a competing guard de
 	);
 });
 
-test("fallback preserves the cumulative scout tool-call allowance", async (t) => {
+test("a retry after the scout tool-call allowance retains the tool-call stop", async (t) => {
 	const marker = scratch("fallback-scout-call-limit-marker");
 	const { tool } = setup(t, {
 		config: {
@@ -726,7 +658,6 @@ test("fallback preserves the cumulative scout tool-call allowance", async (t) =>
 		task: "shared scout call limit",
 	});
 	assert.equal(res.isError, true, text(res));
-	assert.match(res.details.round1[0].fallbackBlockReason, /cumulative scout tool-call allowance is spent/);
 	const provenance = res.details.round1[0].provenance[0];
 	assert.equal(res.details.round1[0].toolCallCount, 1);
 	assert.deepEqual(

@@ -406,7 +406,6 @@ test("implement dispatches only the first worker pool candidate", async (t) => {
 	const res = await run(tool, implement(), undefined, undefined, ctx);
 	assert.equal(res.isError, true);
 	assert.equal(res.details.round1[0].requested.model, LUNA);
-	assert.match(res.details.round1[0].fallbackBlockReason, /cross-model fallback deferred/);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
 			.trim()

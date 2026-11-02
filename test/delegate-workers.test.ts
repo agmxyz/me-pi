@@ -267,7 +267,6 @@ test("default-origin rebuttals retain exact candidates without cross-model fallb
 			[HAIKU, "high"],
 		],
 	);
-	assert.ok(defaultResult.details.round2.every((r) => /cross-model fallback deferred/.test(r.fallbackBlockReason)));
 
 	const explicitMarker = scratch("explicit-rebuttal-no-fallback-marker");
 	process.env.FAKE_PI_MARKER = explicitMarker;
