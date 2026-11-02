@@ -778,7 +778,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 			listeners.push(h);
 			registeredHandlers.set(event, listeners);
 			handlers[event] = async (...args) => {
-				let result;
+				let result: any;
 				for (const listener of listeners) {
 					const next = await listener(...args);
 					if (next !== undefined) result = next;
@@ -2715,7 +2715,7 @@ test(
 			},
 			env: { FAKE_PI_MODE: "tool-activity" },
 		});
-		let resolveActivity;
+		let resolveActivity: any;
 		const updates = [];
 		const firstActivity = new Promise((resolve) => {
 			resolveActivity = resolve;
@@ -3343,7 +3343,7 @@ function tuiCtx() {
 	const updates = [];
 	const requests = [];
 	const snapshots = [];
-	let component;
+	let component: any;
 	const tui = {
 		requestRender: () => {
 			requests.push(Date.now());

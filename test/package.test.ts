@@ -33,7 +33,7 @@ test("the package check uses read-only lint and formatter writes are explicit", 
 	assert.equal(root.scripts.fix, "biome check --error-on-warnings --write .");
 
 	const repository = fileURLToPath(new URL("../", import.meta.url));
-	const fixture = join(repository, "test", `package-lint-fixture-${randomUUID()}.mjs`);
+	const fixture = join(repository, "test", `package-lint-fixture-${randomUUID()}.ts`);
 	const bytes = Buffer.from("const value={answer:42}\n");
 	writeFileSync(fixture, bytes);
 	try {
