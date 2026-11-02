@@ -28,8 +28,6 @@ import {
 	boundedCallId,
 	FAILED_TOOL_ARTIFACT_LIMITS,
 	FailedToolArtifactCollector,
-	type FailedToolCallInput,
-	type FailedToolDisposition,
 } from "./delegate-artifacts.ts";
 import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
@@ -61,11 +59,21 @@ import {
 } from "./delegate-implement.ts";
 import {
 	type AttemptProvenance,
+	bashExitCode,
+	bashStatuses,
+	type EventRecord,
+	eventField,
+	eventRecord,
+	eventText,
 	type FailureClass,
+	failedToolResult,
+	failedWithoutEffect,
 	failureClassLine,
+	failureDisposition,
 	isProviderRetryFact,
 	isStopFact,
 	type ProviderRetryFact,
+	READ_ONLY_TOOLS,
 	type StopFact,
 	type StopResource,
 	TOOL_PROVENANCE_DETAIL_KEY,
@@ -531,127 +539,6 @@ type CapturedToolCall = {
 	rawArgsCommand?: string;
 };
 
-type EventRecord = Record<string, any>;
-
-function eventRecord(value: unknown): EventRecord | undefined {
-	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as EventRecord) : undefined;
-}
-
-function eventText(record: EventRecord | undefined, key: string): string | undefined {
-	const value = record?.[key];
-	return typeof value === "string" ? value : undefined;
-}
-
-function eventField(record: EventRecord | undefined, key: string): { present: boolean; value?: unknown } {
-	if (!record || !Object.hasOwn(record, key)) return { present: false };
-	return { present: true, value: record[key] };
-}
-
-function firstEventField(...fields: { present: boolean; value?: unknown }[]): { present: boolean; value?: unknown } {
-	return fields.find((field) => field.present) ?? { present: false };
-}
-
-// Only the canonical status authorizes completion; known aliases can veto it, never replace it.
-function bashStatuses(resultValue: unknown): { exitCode?: number; diagnostics: string[] } {
-	const result = eventRecord(resultValue);
-	const structured = eventRecord(result?.structuredContent);
-	const details = eventRecord(result?.details);
-	const fields = [
-		["structuredContent.exit_code", eventField(structured, "exit_code")],
-		["structuredContent.exitCode", eventField(structured, "exitCode")],
-		["details.exit_code", eventField(details, "exit_code")],
-		["details.exitCode", eventField(details, "exitCode")],
-		["exit_code", eventField(result, "exit_code")],
-		["exitCode", eventField(result, "exitCode")],
-	] as const;
-	const canonical = fields[0][1].value;
-	const valid =
-		fields[0][1].present &&
-		Number.isSafeInteger(canonical) &&
-		fields
-			.slice(1)
-			.every(([, field]) => !field.present || (Number.isSafeInteger(field.value) && field.value === canonical));
-	return {
-		...(valid ? { exitCode: canonical as number } : {}),
-		diagnostics: fields
-			.filter(([, field]) => field.present)
-			.map(([name, field]) => {
-				const value = field.value;
-				if (typeof value === "number") return `${name}=${value}`;
-				// Only short numeric strings are useful status evidence; never serialize arbitrary metadata.
-				if (typeof value === "string")
-					return `${name}=string:${value.length <= 3 && /^\d+$/.test(value) ? value : "[REDACTED]"}`;
-				if (typeof value === "boolean" || value === null) return `${name}=${String(value)}`;
-				return `${name}=${typeof value}`;
-			}),
-	};
-}
-
-function bashExitCode(resultValue: unknown): number | undefined {
-	return bashStatuses(resultValue).exitCode;
-}
-
-function toolResultText(result: EventRecord | undefined): string | undefined {
-	if (!Array.isArray(result?.content)) return undefined;
-	const text = result.content.flatMap((part: unknown) => {
-		const item = eventRecord(part);
-		return item?.type === "text" && typeof item.text === "string" ? [item.text] : [];
-	});
-	return text.length ? text.join("\n") : undefined;
-}
-
-function failedToolResult(resultValue: unknown, toolName: string | undefined): FailedToolCallInput["result"] {
-	const result = eventRecord(resultValue);
-	const structured = eventRecord(result?.structuredContent);
-	const details = eventRecord(result?.details);
-	const content = toolResultText(result);
-	const structuredOutput =
-		eventText(structured, "output") ?? eventText(result, "output") ?? eventText(details, "output");
-	const exitCode = firstEventField(
-		eventField(structured, "exit_code"),
-		eventField(structured, "exitCode"),
-		eventField(details, "exit_code"),
-		eventField(details, "exitCode"),
-		eventField(result, "exit_code"),
-		eventField(result, "exitCode"),
-	);
-	const structuredContent = eventField(result, "structuredContent");
-	const summary = eventField(structured, "summary");
-	const diagnostic = firstEventField(eventField(result, "childDiagnostics"), eventField(details, "childDiagnostics"));
-	const diagnosticReferences = firstEventField(
-		eventField(result, "childDiagnosticReferences"),
-		eventField(details, "childDiagnosticReferences"),
-	);
-	const fullOutputPath = firstEventField(
-		eventField(structured, "full_output_path"),
-		eventField(structured, "fullOutputPath"),
-		eventField(result, "full_output_path"),
-		eventField(result, "fullOutputPath"),
-		eventField(details, "full_output_path"),
-		eventField(details, "fullOutputPath"),
-	);
-	const error = firstEventField(
-		eventField(result, "error"),
-		eventField(structured, "error"),
-		eventField(details, "error"),
-	);
-	const summaryValue = summary.present ? summary.value : structuredContent.present ? structuredContent.value : content;
-	return {
-		...(exitCode.present ? { exitCode: exitCode.value as number } : {}),
-		...(structuredOutput !== undefined || content !== undefined ? { outputText: structuredOutput ?? content } : {}),
-		...(error.present ? { error: error.value as string } : {}),
-		...(diagnostic.present ? { childDiagnostics: diagnostic.value as string | readonly string[] } : {}),
-		...(toolName === "bash" && bashStatuses(resultValue).diagnostics.length
-			? { statusDiagnostics: bashStatuses(resultValue).diagnostics }
-			: {}),
-		...(fullOutputPath.present ? { fullOutputPath: fullOutputPath.value as string } : {}),
-		...(diagnosticReferences.present
-			? { childDiagnosticReferences: diagnosticReferences.value as readonly string[] }
-			: {}),
-		...(toolName !== "bash" && summaryValue !== undefined ? { summary: summaryValue } : {}),
-	};
-}
-
 /** Updates check freshness from completed worker tool events; only a passing declared check establishes a baseline. */
 export function trackCheck(
 	job: Checkout,
@@ -713,38 +600,6 @@ export function trackCheck(
 	}
 	if ((call.tool === "edit" || call.tool === "write") && !event.isError && check.status !== "none")
 		stale("successful edit/write after the last check");
-}
-
-// Read-only tools: a call, even a failed one, has no side effects.
-const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "Skill"]);
-
-// Pi's edit tool throws these before it writes the file (core/tools/edit.js and edit-diff.js).
-const EDIT_REJECTED_BEFORE_WRITE =
-	/^(?:Could not find (?:the exact text|edits\[\d+\]) in |Found \d+ occurrences of |(?:edits\[\d+\]\.)?oldText must not be empty in |No changes made to |edits\[\d+\] and edits\[\d+\] overlap in |Could not edit file: |Edit tool input is invalid\.)/;
-
-/** A failed read-only tool call, or an edit its tool rejected before writing, had no effect. */
-function failedWithoutEffect(toolName: string, result: unknown): boolean {
-	if (READ_ONLY_TOOLS.has(toolName)) return true;
-	return toolName === "edit" && EDIT_REJECTED_BEFORE_WRITE.test(toolResultText(eventRecord(result)) ?? "");
-}
-
-/** Names a failed call's cause for the failed-tools artifact, so readers need not infer it from the output text. */
-function failureDisposition(toolName: string | undefined, resultValue: unknown): FailedToolDisposition {
-	const result = eventRecord(resultValue);
-	const marker = eventRecord(result?.details)?.[TOOL_PROVENANCE_DETAIL_KEY];
-	const causes = Array.isArray(marker) ? marker.filter(isStopFact).map((fact) => fact.cause) : [];
-	if (causes.includes("wrap-up-limit")) return "budget-blocked";
-	if (causes.includes("guard-denial") || causes.includes("worker-fence-denial")) return "guard-denied";
-	if (causes.length) return "blocked";
-	if (!toolName) return "unknown";
-	if (toolName === "bash") {
-		const exitCode = bashExitCode(resultValue);
-		if (exitCode === 124 || /Command timed out after \d+ seconds/.test(toolResultText(result) ?? ""))
-			return "timeout";
-		return exitCode !== undefined && exitCode !== 0 ? "nonzero-exit" : "unknown";
-	}
-	if (!failedWithoutEffect(toolName, resultValue)) return "unknown";
-	return toolName === "edit" ? "edit-rejected" : "read-failed";
 }
 
 function toolLabel(name: string): string {
