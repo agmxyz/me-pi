@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 User entry: `/skill:implement-me-pi` followed by one ticket, issue, or task, its repository, and any execution constraints. This skill owns one task; it does not schedule a ticket graph.
 
-The coordinator owns decisions, scope, acceptance, and review. The implement worker writes, runs the declared check, and commits before the coordinator's independent review. This is commit-before-review, unlike Matt's original `implement` skill's review-before-commit order. Workers cannot delegate or ask the user questions. These entrypoints are user-invoked; do not invoke the separate graph skill through `Skill`.
+The coordinator owns decisions, scope, acceptance, and review. The implement worker writes, runs the declared check, and commits before the coordinator's independent review. This is commit-before-review, unlike the usual review-before-commit order. Workers cannot delegate or ask the user questions. These entrypoints are user-invoked; do not invoke the separate graph skill through `Skill`.
 
 ## 1. Establish the execution contract
 

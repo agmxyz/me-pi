@@ -29,6 +29,6 @@
 		"lineWidth": 120
 	},
 	"files": {
-		"includes": ["extensions/*.ts", "test/*.mjs", "!extensions/rtk.ts", "!extensions/interactive-shell.ts"]
+		"includes": ["extensions/*.ts", "test/*.mjs"]
 	}
 }

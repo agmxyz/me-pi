@@ -11,7 +11,7 @@ Install the package from Git:
 pi install git:github.com/0bmario/me-pi
 ```
 
-Pi must be installed and able to access the repository. The GitHub repository is private, so Git authentication/access must be available to Pi; GitHub transport has not been tested. After changing package settings, use `/reload` or restart Pi to load the updated extensions. `/reload` ends active background delegate jobs, so wait for them first.
+Pi must be installed and able to access the repository. After changing package settings, use `/reload` or restart Pi to load the updated extensions. `/reload` ends active background delegate jobs, so wait for them first.
 
 To load **only `delegate`**, configure its package filter in your personal Pi settings (usually `~/.pi/agent/settings.json`):
 

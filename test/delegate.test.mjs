@@ -516,7 +516,7 @@ process.stdin.on("end", () => {
     process.exit(0);
   }
   if (mode === "implement-no-effect-failures") {
-    // The piops run's harmless failures: an edit rejected before writing, a failed read, and a fenced write.
+    // Harmless failures: an edit rejected before writing, a failed read, and a fenced write.
     const jobId = process.env.ME_PI_DELEGATE_JOB_ID;
     const attempt = Number(process.env.ME_PI_DELEGATE_ATTEMPT);
     tool("edit", { path: "src/cli.ts" }, true, { toolCallId: "edit-mismatch", result: { content: [{ type: "text", text: "Could not find edits[1] in /repo/src/cli.ts. The oldText must match exactly including all whitespace and newlines." }], details: {} } });
