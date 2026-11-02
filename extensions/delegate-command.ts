@@ -1,13 +1,9 @@
-/**
- * `/delegate` command: `status` (the default) shows per-model pool settings, availability, running workers,
- * and recent runs; `models` prints the config path for manual editing; `cancel <id>` stops a background job.
- */
+// /delegate command: status (default), models config path, and cancel <id>.
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ModelSet } from "./delegate.ts";
 import { type Persona, shortModel as short } from "./delegate-render.ts";
 
-/** One finished delegate call, kept for `/delegate status`. */
 export interface CallRecord {
 	at: number;
 	role: string;
@@ -15,13 +11,12 @@ export interface CallRecord {
 	cost: number;
 	ms: number;
 	failed: boolean;
-	/** implement: `branch base..tip`, the check's state, and whether finish made a WIP commit. */
+	// implement: range ("branch base..tip"), check status, and WIP flag.
 	range?: string;
 	check?: string;
 	wip?: boolean;
 }
 
-/** A delegate call that is running now. */
 export interface ActiveWorker {
 	index: number;
 	model: string;
@@ -36,11 +31,8 @@ export interface ActiveCall {
 	role: string;
 	models: string[];
 	start: number;
-	/** The background job id, for /delegate cancel. */
 	job?: string;
-	/** Compact foreground/preparation label for the activity widget. */
 	displayId?: string;
-	/** Current per-worker activity, kept on the existing active-call record. */
 	workers?: ActiveWorker[];
 	stage?: "Workers" | "Rebuttal";
 }
@@ -50,7 +42,6 @@ export interface CommandDeps {
 	loadModelSet: () => ModelSet;
 	history: CallRecord[];
 	active: Map<string, ActiveCall>;
-	/** Stops a background job; returns what happened. */
 	cancel: (id: string) => string;
 }
 
@@ -66,7 +57,6 @@ const SUBCOMMANDS = ["status", "models", "cancel"];
 const seconds = (ms: number) => `${Math.round(ms / 1000)}s`;
 const clock = (at: number) => new Date(at).toTimeString().slice(0, 5);
 
-/** The status report, one line per fact. */
 export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps: CommandDeps): string[] {
 	const lines = [`Model pools: ${deps.configPath()}`];
 	try {

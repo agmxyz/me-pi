@@ -534,8 +534,7 @@ test("implement: parallel calls at the cap cannot both pass it while preparing",
 });
 
 // Last: every job above, refused, failed, cancelled, or stopped by shutdown, removed its gh config dir. Scans TEST_HOME
-// and any alternate TMPDIRs (missing-tmp, the not-a-dir blocker's parent). Those alternates are now set by scout/worker
-// tests in other files, which never create gh config dirs; the harness repeats this sweep after every delegate file.
+// and alternate TMPDIRs; the harness repeats this sweep after every delegate file.
 test("no gh config dir outlives its job", () => {
 	const roots = [
 		TEST_HOME,

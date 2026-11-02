@@ -1,9 +1,5 @@
 /**
- * guard — safety net for irreversible bash commands that GLOBAL_AGENTS.md reserves for the user:
- * pushes to main/master, force pushes, history rewrites (`commit --amend`, `rebase`, `filter-*`),
- * `git reset --hard`, `git clean -f`, discarding changes (`git checkout --`/`.`/`-f`, `git restore`
- * of the working tree, `git switch -f`, `git stash drop|clear`), `git branch -D`, and recursive `rm`
- * outside build and temp directories.
+ * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
  * With a UI it asks for confirmation; without one (print mode) it blocks.
  * `/guard on|off` toggles it for the current session; every session starts on.
  * The Approval policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
@@ -55,7 +51,7 @@ const DISPOSABLE = new RegExp(
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
 export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
 
-// Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`, `main"`).
+// Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`).
 function wordsOf(args: string): string[] {
 	return args
 		.split(/\s+/)
@@ -197,9 +193,7 @@ export function classify(
 	return undefined;
 }
 
-// Worker-only rules for the delegate `implement` role: commands that move its checkout off the job's branch, pull in
-// other history, or reach shared state (refs, the common dir's config, remotes, GitHub, Pi's settings).
-// Always blocked, no prompt.
+// Worker-only implement rules: commands that leave the branch or touch shared state are always blocked.
 const GH_COMMAND = new RegExp(`${AT_COMMAND}gh(?![\\w.-])`);
 const PI_COMMAND = new RegExp(`${AT_COMMAND}pi\\s+(install|remove|uninstall|update|config)(?![\\w-])`);
 // `./install.sh`, `/abs/install.sh`, `sh|bash|zsh [opts] install.sh`, or `.`/`source install.sh`; not `install.test.sh`.
@@ -300,7 +294,6 @@ const TREE_WRITES = new Set([
 	"symbolic-ref",
 ]);
 
-// The first git subcommand in `command` that writes the checkout (`"commit"`), or undefined.
 export function gitTreeWrite(command: string): string | undefined {
 	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
 		// `git stash list|show` only read.

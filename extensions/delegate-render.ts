@@ -1,7 +1,6 @@
 /**
- * TUI rendering for the delegate tool: a one-line call preview, live progress, and a collapsed result
- * (one line per run) that expands to the answers as Markdown. The model never sees this; it gets the
- * tool's text content. Every line is cut to the terminal width.
+ * TUI rendering for delegate: call preview, live progress, and collapsed/expanded Markdown results.
+ * The model never sees this; it gets the tool's text content. Every line is cut to the terminal width.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -31,9 +30,7 @@ export function pickPersona(role: string, random: () => number = Math.random): P
 // Views from older sessions carry no persona.
 const DEFAULT_PERSONA: Persona = { emoji: "🧑‍🍳", phrase: "" };
 
-/** One worker run as the renderer shows it. */
 export interface RunView {
-	/** Shown while the run is active. */
 	persona?: Persona;
 	model: string;
 	thinking: string;
@@ -52,7 +49,6 @@ export interface RunView {
 	files?: string[];
 }
 
-/** The renderer's part of the tool details: the stage, and the runs shown in it. */
 export interface DelegateView {
 	stage: "Workers" | "Rebuttal" | "Done";
 	web: boolean;
@@ -126,7 +122,6 @@ function truncationEllipsis(theme: Theme, context?: RenderStatus): string | unde
 	return theme.bg(background, "...");
 }
 
-/** Lines cut to the width when drawn. */
 class Lines implements Component {
 	private readonly lines: string[];
 	private readonly ellipsis: string | undefined;
@@ -145,13 +140,11 @@ class Lines implements Component {
 
 /** `anthropic/claude-haiku-5-5` as `claude-haiku-5-5`. */
 export const shortModel = (model: string) => model.split("/").pop() ?? model;
-// The first line with text, skipping code fences.
 const firstLine = (text: string) =>
 	text
 		.split("\n")
 		.map((l) => l.trim())
 		.find((l) => l && !l.startsWith("```")) ?? "";
-// Collapsed results without a view show this many lines.
 const FALLBACK_LINES = 5;
 // A collapsed preview is plain text: drop bold and code marks and a heading's leading #s.
 const plainPreview = (text: string) =>
@@ -172,7 +165,6 @@ function runHeader(run: RunView, fg: Fg): string {
 	return `${icon(run, fg)} ${fg("accent", shortModel(run.model))} ${fg("dim", meta)}`;
 }
 
-/** What went wrong with a run, or undefined. */
 function problem(run: RunView): string | undefined {
 	if (run.failure) return run.failure;
 	if (run.round2Failure) return `round 2 failed: ${run.round2Failure} (round-1 answer kept)`;
@@ -203,7 +195,6 @@ export function renderCall(args: any, theme: Theme, context?: RenderStatus): Com
 		.join(", ");
 	const badges = [args?.web === true && "web", args?.rebuttal && "rebuttal", args?.output && "output"].filter(Boolean);
 	const task = firstLine(typeof args?.task === "string" ? args.task : "...");
-	// implement: the check that must pass.
 	const check = typeof args?.check === "string" ? ` ${fg("muted", `check \`${firstLine(args.check)}\``)}` : "";
 	const line =
 		`${theme.bold(fg("toolTitle", "delegate"))} ${fg("accent", args?.role ?? "general")} ${fg("muted", models)}` +
@@ -223,8 +214,7 @@ export function renderResult(
 	const ellipsis = truncationEllipsis(theme, context);
 	const view: DelegateView | undefined = result.details?.view;
 	if (!view) {
-		// Refused calls and results from older versions carry no view: show the text, wrapped, and
-		// only its first lines when collapsed.
+		// Calls without a view: show wrapped text, capped to FALLBACK_LINES when collapsed.
 		const lines = result.content
 			.map((c) => c.text ?? "")
 			.join("\n")

@@ -11,15 +11,8 @@ import {
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
-/**
- * Caps by scope: `maxTextBytes` bounds one text field or summary-node byte budget; `maxFailedCalls` and
- * `maxUnmatchedStarts` bound retained records; `maxArtifactBytes` bounds the whole written artifact;
- * `maxReferencesPerCall` and `maxReferenceBytes` bound one record's childReferences list and each reference;
- * `maxDiagnosticsPerCall` bounds one record's childDiagnostics list and is also reused in delegate.ts as the
- * attempt-wide cap on contradictory Bash success diagnostics. The module-local `MAX_CALL_ID_BYTES` bounds a
- * tool-call ID independently of these artifact caps. Anomaly `record-cap` counts whole-record omissions at the
- * collector's limits; `aggregate-cap` counts per-record list omissions and whole-artifact fitting.
- */
+// maxDiagnosticsPerCall is also reused in delegate.ts as the cap on contradictory Bash success diagnostics.
+// Anomaly record-cap counts whole-record omissions; aggregate-cap counts per-list and whole-artifact fitting.
 export const FAILED_TOOL_ARTIFACT_LIMITS = {
 	maxFailedCalls: 100,
 	maxUnmatchedStarts: 100,
@@ -436,8 +429,7 @@ function fitArtifact(artifact: FailedToolArtifact): FailedToolArtifact {
 	artifact.capture.truncated = true;
 	artifact.capture.anomalies["aggregate-cap"]++;
 
-	// Payload-free metadata is bounded by the entry, ID, and reference-count limits. If needed, shed
-	// optional child records before failed-call provenance, then record every omitted item.
+	// Shed optional child records before failed-call provenance to fit the artifact limit.
 	const size = () => Buffer.byteLength(encoded(), "utf8");
 	for (let i = artifact.entries.length - 1; size() > FAILED_TOOL_ARTIFACT_LIMITS.maxArtifactBytes && i >= 0; i--) {
 		const entry = artifact.entries[i];
@@ -782,7 +774,7 @@ export class FailedToolArtifactCollector {
 		this.jobId = redactSensitiveText(jobId).slice(0, MAX_JOB_ID_BYTES);
 	}
 
-	/** Add a call only when its actual end event says isError: true; returns false for successes or capped records. */
+	/** Add a failed tool call (isError: true); returns false for successes or capped records. */
 	record(input: FailedToolCallInput): boolean {
 		const record = asRecord(input);
 		if (!record || field(record, "isError").value !== true) return false;

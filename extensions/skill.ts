@@ -1,20 +1,10 @@
 /**
  * skill — a `Skill` tool that loads a skill's instructions by name.
  *
- * Why this exists:
- * - Many skills are written for Claude Code and say "call the Skill tool with <name>" (for
- *   example `implement` → `tdd`, `code-review`). Pi has no Skill tool: it lists skills in the
- *   system prompt and expects the model to `read` the SKILL.md file.
- * - Measured on the `implement` skill (one run per variant): without this tool, neither the main
- *   session nor a delegated worker loaded `tdd` or `code-review`, and the worker reported them as
- *   `BLOCKED: Skill call unavailable`. A system-prompt rule ("read the SKILL.md instead") was
- *   ignored by the worker. With this tool, the worker loaded both skills by itself.
- * - It lets those skills work as written, without rewriting them for Pi.
- *
- * The tool is named `Skill` (not `skill`) to match the wording those skills use. It serves only
- * the skills Pi already discovered for this run (from `before_agent_start`), so discovery, trust,
- * and settings stay Pi's. Skills with `disable-model-invocation: true` are refused, as in Claude
- * Code: the user starts them with `/skill:<name>`.
+ * Pi has no Skill tool: it lists skills in the system prompt and expects the model to `read`
+ * the SKILL.md file. This tool is named `Skill` (not `skill`) to match the wording those skills
+ * use, letting them work without modification. It serves Pi-discovered skills from
+ * `before_agent_start`; model-disabled skills are refused.
  */
 
 import { readFileSync } from "node:fs";
