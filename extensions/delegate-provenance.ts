@@ -136,3 +136,19 @@ export function isProviderRetryFact(value: unknown): value is ProviderRetryFact 
 		(fact.retry as number) > 0
 	);
 }
+
+/**
+ * What a provider error says about the failure, never about effects: `infra` (provider HTTP/transport trouble),
+ * `account` (quota, key, or billing limit; retrying cannot help), or `model/task`.
+ */
+export type FailureClass = "infra" | "account" | "model/task";
+
+/** Names an infra or account failure and any same-model retries; a model/task failure needs no extra line. */
+export function failureClassLine(r: { failureClass?: FailureClass; infraRetries?: string[] }): string {
+	const retries = r.infraRetries?.length ?? 0;
+	const retried = retries ? `; retried ${retries}× on the same model` : "";
+	if (r.failureClass === "infra") return `\nFailure class: infra (provider or network, not the task)${retried}.`;
+	if (r.failureClass === "account")
+		return `\nFailure class: account (quota, key, or billing limit)${retried}; BLOCKER: retrying cannot help.`;
+	return retries ? `\nFailure class: model/task${retried} after infra failures.` : "";
+}

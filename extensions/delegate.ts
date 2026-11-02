@@ -12,6 +12,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+	appendFileSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -32,10 +33,12 @@ import {
 	FAILED_TOOL_ARTIFACT_LIMITS,
 	FailedToolArtifactCollector,
 	type FailedToolCallInput,
+	type FailedToolDisposition,
 } from "./delegate-artifacts.ts";
 import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
 	type Checkout,
+	checkInCompound,
 	type Facts,
 	finish as finishImplement,
 	formatHandback,
@@ -49,6 +52,8 @@ import {
 } from "./delegate-implement.ts";
 import {
 	type AttemptProvenance,
+	type FailureClass,
+	failureClassLine,
 	isProviderRetryFact,
 	isStopFact,
 	type ProviderRetryFact,
@@ -83,6 +88,8 @@ export const LIMITS = {
 	// before a hard limit kills it without one.
 	scoutToolCalls: 60,
 	wrapUpShare: 0.8,
+	// Same-model retries of an infra failure that had no effects, one per delay; they share the job's limits.
+	infraRetryDelaysMs: [15_000, 60_000],
 };
 const MAX_RUNS = 4;
 const HISTORY_SIZE = 20;
@@ -357,6 +364,8 @@ export const implementContract = (job: Checkout) =>
 		`- You work in the coordinator's checkout on \`${job.branch}\`; the coordinator waits. Never switch, merge, stash, reset, or rewrite history.`,
 		`- Run \`${job.check.command}\` alone, exactly as given, after your last edit. Commit passing steps (subject plus a why body), never with \`--no-verify\` or \`--amend\`. Leave failing work uncommitted: it is committed as WIP. Delete tracked directories with \`git rm -r\`.`,
 		"- You cannot push, use `gh`, run `git worktree`, reach git remotes, write inside the git directory, run `./install.sh` or `pi install|remove|update|config`, or change files under `~/.pi`. If the task or repo instructions need one, list it as BLOCKED.",
+		"- While iterating, give each focused test run a per-test timeout (e.g. `node --test --test-timeout=30000 <file>`) so a hang costs seconds; run the full check at the end.",
+		"- Keep scratch and repro files out of commits: create them under `$TMPDIR` with Bash (`write` and `edit` reach only the checkout), or delete them before committing; leftovers are swept into WIP.",
 		"- Stop any background process you start before you answer. Paths that may hold secrets are blocked.",
 	]);
 
@@ -680,6 +689,9 @@ export interface RunResult {
 	model?: string;
 	output: string;
 	failure?: string;
+	failureClass?: FailureClass;
+	/** Failures of earlier attempts that were retried on the same model as infra failures. */
+	infraRetries?: string[];
 	fallbackBlockReason?: string;
 	provenance?: AttemptProvenance[];
 	toolCallCount?: number;
@@ -689,6 +701,17 @@ export interface RunResult {
 	stderr: string;
 	ms: number;
 	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
+}
+
+const ACCOUNT_LIMIT =
+	/usage limit|quota|insufficient[_ ](?:quota|credits|funds|balance)|billing|out of budget|available balance|key limit|(?:^|HTTP\s*|status(?:\s*code)?\s*:?\s*)40[13]\b|unauthori[sz]ed|invalid api key/i;
+const INFRA_FAILURE =
+	/(?:^|HTTP\s*|status(?:\s*code)?\s*:?\s*|code\s*:?\s*)(?:408|409|425|429|5\d\d)\b|overloaded|rate.?limit|too many requests|service.?(?:is.?)?(?:temporarily.?)?unavailable|server.?error|internal.?error|upstream|provider.?returned|network|connection|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|socket hang up|timed? ?out|timeout|stream ended|ended without|terminated/i;
+
+export function classifyProviderError(message: string | undefined): FailureClass {
+	if (!message) return "model/task";
+	if (ACCOUNT_LIMIT.test(message)) return "account";
+	return INFRA_FAILURE.test(message) ? "infra" : "model/task";
 }
 
 /** Adds numeric fields of a Pi usage object (including nested `cost`) into `total`. */
@@ -903,6 +926,38 @@ export function trackCheck(
 		stale("successful edit/write after the last check");
 }
 
+// Read-only tools: a call, even a failed one, has no side effects.
+const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "Skill"]);
+
+// Pi's edit tool throws these before it writes the file (core/tools/edit.js and edit-diff.js).
+const EDIT_REJECTED_BEFORE_WRITE =
+	/^(?:Could not find (?:the exact text|edits\[\d+\]) in |Found \d+ occurrences of |(?:edits\[\d+\]\.)?oldText must not be empty in |No changes made to |edits\[\d+\] and edits\[\d+\] overlap in |Could not edit file: |Edit tool input is invalid\.)/;
+
+/** A failed read-only tool call, or an edit its tool rejected before writing, had no effect. */
+function failedWithoutEffect(toolName: string, result: unknown): boolean {
+	if (READ_ONLY_TOOLS.has(toolName)) return true;
+	return toolName === "edit" && EDIT_REJECTED_BEFORE_WRITE.test(toolResultText(eventRecord(result)) ?? "");
+}
+
+/** Names a failed call's cause for the failed-tools artifact, so readers need not infer it from the output text. */
+function failureDisposition(toolName: string | undefined, resultValue: unknown): FailedToolDisposition {
+	const result = eventRecord(resultValue);
+	const marker = eventRecord(result?.details)?.[TOOL_PROVENANCE_DETAIL_KEY];
+	const causes = Array.isArray(marker) ? marker.filter(isStopFact).map((fact) => fact.cause) : [];
+	if (causes.includes("wrap-up-limit")) return "budget-blocked";
+	if (causes.includes("guard-denial") || causes.includes("worker-fence-denial")) return "guard-denied";
+	if (causes.length) return "blocked";
+	if (!toolName) return "unknown";
+	if (toolName === "bash") {
+		const exitCode = bashExitCode(resultValue);
+		if (exitCode === 124 || /Command timed out after \d+ seconds/.test(toolResultText(result) ?? ""))
+			return "timeout";
+		return exitCode !== undefined && exitCode !== 0 ? "nonzero-exit" : "unknown";
+	}
+	if (!failedWithoutEffect(toolName, resultValue)) return "unknown";
+	return toolName === "edit" ? "edit-rejected" : "read-failed";
+}
+
 function toolLabel(name: string): string {
 	const label = name
 		.replace(/[^A-Za-z0-9_-]+/g, "_")
@@ -996,6 +1051,7 @@ function runWorkerAttempt(
 		if (pid !== undefined) groups.add(pid);
 		if (pid !== undefined) implement?.pids.add(pid);
 		let stopped: string | undefined;
+		let providerErrorClass: FailureClass | undefined;
 		let finished = false;
 		let lastStopReason: string | undefined;
 		let buffer = "";
@@ -1010,7 +1066,6 @@ function runWorkerAttempt(
 		const contradictorySuccesses: string[] = [];
 		let omittedContradictorySuccesses = 0;
 		let latestAssistantError: { provider: string; model: string; api: string } | undefined;
-		const replaySafeReadTools = new Set(["read", "grep", "find", "ls", "Skill"]);
 
 		let termTimer: NodeJS.Timeout | undefined;
 		let progressTimer: NodeJS.Timeout | undefined;
@@ -1113,6 +1168,7 @@ function runWorkerAttempt(
 				cwd: typeof event.cwd === "string" ? event.cwd : cwd,
 				rawArgsCommand: call?.rawArgsCommand,
 				effectiveCommand,
+				disposition: failureDisposition(call?.toolName ?? endedToolName, event.result),
 				isError: true,
 				result: failedToolResult(event.result, call?.toolName ?? endedToolName),
 			});
@@ -1244,11 +1300,27 @@ function runWorkerAttempt(
 					(exitCode as number) >= 1 &&
 					(exitCode as number) <= 127 &&
 					!provenance.stopFacts.some((stopFact) => stopFact.toolCallId === toolCallId);
+				const noEffect =
+					!denied &&
+					!completedBashFailure &&
+					!stopped &&
+					!ownerFacts.length &&
+					fact?.toolCallId === toolCallId &&
+					fact.toolName === toolName &&
+					failedWithoutEffect(toolName, event.result);
 				if (fact) {
-					fact.effect = denied ? "denied" : completedBashFailure ? "completed" : "unknown";
-					fact.replaySafe = false;
+					fact.effect = denied
+						? "denied"
+						: completedBashFailure
+							? "completed"
+							: noEffect
+								? READ_ONLY_TOOLS.has(toolName)
+									? "completed"
+									: "not-started"
+								: "unknown";
+					fact.replaySafe = noEffect && READ_ONLY_TOOLS.has(toolName);
 				}
-				if (!denied)
+				if (!denied && !noEffect)
 					provenance.stopFacts.push({
 						owner: "delegate-parent",
 						jobId: job.jobId,
@@ -1274,7 +1346,7 @@ function runWorkerAttempt(
 						});
 				} else {
 					fact.effect = "completed";
-					fact.replaySafe = replaySafeReadTools.has(fact.toolName);
+					fact.replaySafe = READ_ONLY_TOOLS.has(fact.toolName);
 				}
 			} else {
 				provenance.complete = false;
@@ -1373,6 +1445,8 @@ function runWorkerAttempt(
 			else if (code !== 0) result.failure = `exit ${code}: ${result.failure ?? (lastStderr || "no error message")}`;
 			else if (!result.failure)
 				result.failure = result.output.trim() ? "worker ended without a final answer" : "worker produced no answer";
+			// Our own stops (limits, cancellation) are never infra, whatever the provider said before them.
+			if (result.failure) result.failureClass = (!stopped && !problem && providerErrorClass) || "model/task";
 			done(result);
 		};
 		const processLine = (line: string) => {
@@ -1465,6 +1539,7 @@ function runWorkerAttempt(
 				typeof msg.api === "string"
 					? { provider: msg.provider, model: msg.model, api: msg.api }
 					: undefined;
+			providerErrorClass = msg.stopReason === "error" ? classifyProviderError(msg.errorMessage) : undefined;
 			const bad = ["error", "aborted", "length"].includes(msg.stopReason);
 			result.failure = bad ? msg.errorMessage || `model stopped: ${msg.stopReason}` : undefined;
 			// Keep a final "stop" reply even over cap. For continuing replies, retain every spent dimension before
@@ -1635,21 +1710,81 @@ async function runWorker(
 		toolCostCapUsd: toolCostCap,
 		toolCalls: job.role === "scout" ? LIMITS.scoutToolCalls : null,
 	};
-	const attempt = await runWorkerAttempt(
-		job,
-		prompt,
-		candidate,
-		cwd,
-		signal,
-		onProgress,
-		outDir,
-		budget,
-		1,
-		job.implement?.trusted === true,
-	);
+	const runAttempt = (index: number, attemptBudget: AttemptBudget) =>
+		runWorkerAttempt(
+			job,
+			prompt,
+			candidate,
+			cwd,
+			signal,
+			onProgress,
+			outDir,
+			attemptBudget,
+			index,
+			job.implement?.trusted === true,
+		);
+	let attempt = await runAttempt(1, budget);
+	for (const delayMs of LIMITS.infraRetryDelaysMs) {
+		if (!infraRetryable(attempt) || Date.now() + delayMs >= budget.toolDeadline) break;
+		if (!(await sleepUnlessAborted(delayMs, signal))) break;
+		const spent = costOf(attempt.usage);
+		const next = await runAttempt((attempt.provenance?.length ?? 0) + 1, {
+			...budget,
+			hardCostCapUsd: budget.hardCostCapUsd - spent,
+			toolCostCapUsd: budget.toolCostCapUsd - spent,
+		});
+		attempt = mergeAttempts(attempt, next);
+	}
 	if (candidates.length > 1 && attempt.failure && !attempt.provenance?.[0]?.providerRetry)
 		attempt.fallbackBlockReason ??= "Pi runtime supplied no structured retry classification";
 	return attempt;
+}
+
+/**
+ * An infra failure is retried on the same model only when its attempt is fully accounted for and did nothing but
+ * replay-safe reads; the only stop allowed is Pi's own exhausted retry. Any write, Bash call, or other stop keeps it.
+ */
+function infraRetryable(r: RunResult): boolean {
+	const last = r.provenance?.at(-1);
+	return (
+		r.failureClass === "infra" &&
+		last !== undefined &&
+		last.complete &&
+		last.stopFacts.every((fact) => fact.cause === "provider-retry-classified") &&
+		last.toolEffects.every((fact) => fact.effect === "completed" && fact.replaySafe)
+	);
+}
+
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<boolean> {
+	if (signal.aborted) return Promise.resolve(false);
+	return new Promise((done) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			done(true);
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			done(false);
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/** The latest attempt's result, with every attempt's provenance, usage, time, and tool history. */
+function mergeAttempts(previous: RunResult, next: RunResult): RunResult {
+	const usage = {};
+	addUsage(usage, previous.usage);
+	addUsage(usage, next.usage);
+	return {
+		...next,
+		infraRetries: [...(previous.infraRetries ?? []), previous.failure ?? "infra failure"],
+		provenance: [...(previous.provenance ?? []), ...(next.provenance ?? [])],
+		toolCallCount: (previous.toolCallCount ?? 0) + (next.toolCallCount ?? 0),
+		turns: previous.turns + next.turns,
+		usage,
+		tools: [...previous.tools, ...next.tools].slice(-MAX_TOOL_HISTORY),
+		ms: previous.ms + next.ms,
+	};
 }
 
 // --- Result formatting ----------------------------------------------------------------------------
@@ -1720,7 +1855,7 @@ function formatRun(r: RunResult): string {
 	else if (!r.failure) body = `${answer}${filesLine(r)}\n${label(r)}`;
 	else {
 		const partial = r.output.trim() ? `\nPartial answer:\n${cap(r.output.trim(), FAILED_PARTIAL_CAP)}` : "";
-		body = `✗ ${r.failure}${r.fallbackBlockReason ? `\nPool fallback not attempted: ${r.fallbackBlockReason}.` : ""}${partial}${filesLine(r)}\n${label(r)}`;
+		body = `✗ ${r.failure}${failureClassLine(r)}${r.fallbackBlockReason ? `\nPool fallback not attempted: ${r.fallbackBlockReason}.` : ""}${partial}${filesLine(r)}\n${label(r)}`;
 	}
 	return body;
 }
@@ -1923,6 +2058,58 @@ const within = (root: string, target: string) => {
 	return rel === "" || !notStrictlyInside(rel);
 };
 
+const SPEND_WARN_SHARE = 0.8;
+
+/**
+ * Opt-in status for an external supervisor, which cannot see the coordinator's pane: `ME_PI_STATUS_LOG` gets one
+ * line when a coordinator turn ends on a provider error (after Pi's own retries), and `ME_PI_SPEND_BUDGET_USD` warns,
+ * there and in the UI, when the session's estimated spend (coordinator turns plus delegate workers) passes 80% and
+ * then 100% of it. Pi-reported cost is an estimate, not the provider's counter. Returns the worker-spend sink.
+ */
+function coordinatorStatus(pi: ExtensionAPI): (cost: number) => void {
+	const path = process.env.ME_PI_STATUS_LOG;
+	const budget = Number(process.env.ME_PI_SPEND_BUDGET_USD);
+	if (!path && !(budget > 0)) return () => {};
+	let ui: Pick<ExtensionContext["ui"], "notify"> | undefined;
+	const report = (line: string, level: "warning" | "error") => {
+		const text = line.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 500);
+		if (path)
+			try {
+				appendFileSync(path, `${new Date().toISOString()} ${text}\n`, { mode: 0o600 });
+			} catch (err) {
+				ui?.notify(`delegate: status log not written: ${(err as Error).message}`, "error");
+			}
+		ui?.notify(text, level);
+	};
+	let spent = 0;
+	let announced = 0;
+	const addSpend = (cost: number) => {
+		spent += cost;
+		if (!(budget > 0)) return;
+		const level = spent >= budget ? 2 : spent >= SPEND_WARN_SHARE * budget ? 1 : 0;
+		if (level <= announced) return;
+		announced = level;
+		const amounts = `estimated spend $${spent.toFixed(2)} of the $${budget.toFixed(2)} budget`;
+		report(level === 2 ? `BUDGET: ${amounts} reached; stop starting work` : `WARNING: ${amounts}`, "warning");
+	};
+	let providerError: string | undefined;
+	pi.on("message_end", (event, ctx) => {
+		ui = ctx?.ui;
+		const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string; usage?: any };
+		if (msg?.role !== "assistant") return;
+		addSpend(costOf(msg.usage ?? {}));
+		providerError = msg.stopReason === "error" ? msg.errorMessage || "provider error" : undefined;
+	});
+	pi.on("agent_settled", (event) => {
+		const error = providerError;
+		providerError = undefined;
+		if (!error || event.aborted || !path) return;
+		const kind = classifyProviderError(error);
+		report(`STOPPED: ${kind}: ${error}${kind === "account" ? " (BLOCKER: needs the user)" : ""}`, "error");
+	});
+	return addSpend;
+}
+
 export default function (pi: ExtensionAPI) {
 	// Workers never get the tool, so delegation cannot nest; they only get the wrap-up budget, the secret-path
 	// block, the output-directory write block, and for `implement` the worker-only bash rules and the orphan stop.
@@ -2017,8 +2204,17 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 			if (event.toolName === "bash" && process.env.ME_PI_ROLE === "implement") {
-				const risk = workerRisk(String((event.input as { command?: unknown }).command ?? ""));
+				const command = String((event.input as { command?: unknown }).command ?? "");
+				const risk = workerRisk(command);
 				if (risk) return recordBlock(`Blocked: ${risk}; list it as BLOCKED.`, "worker-fence-denial", "guard");
+				// A piped, chained, or re-argued check reports another command's exit status, so it would not count as the check.
+				const check = process.env.ME_PI_CHECK;
+				if (check && checkInCompound(command, check, ctx.cwd))
+					return recordBlock(
+						`Blocked: run \`${check}\` alone, exactly as given, so its exit status counts (no pipe, chain, redirect, or extra flags). Use focused commands for partial output.`,
+						"worker-fence-denial",
+						"guard",
+					);
 			}
 			const secret = secretPathIn(event.toolName, event.input, ctx.cwd);
 			if (secret)
@@ -2039,6 +2235,7 @@ export default function (pi: ExtensionAPI) {
 		});
 		return;
 	}
+	const addSpend = coordinatorStatus(pi);
 	let shutdown = new AbortController();
 	const running = new Set<Promise<unknown>>();
 	// For /delegate status: calls running now, and the last HISTORY_SIZE finished calls.
@@ -2439,6 +2636,8 @@ export default function (pi: ExtensionAPI) {
 							: undefined;
 						facts = await finishImplement(co, {
 							failure: r.failure,
+							failureClass: r.failureClass,
+							infraRetries: r.infraRetries,
 							...(r.failedToolCapture && { failedToolCapture: r.failedToolCapture }),
 							provenance: r.provenance,
 							answer: r.output,
@@ -2488,6 +2687,7 @@ export default function (pi: ExtensionAPI) {
 					const all = [...round1, ...round2];
 					const cost = all.reduce((sum, r) => sum + costOf(r.usage), 0);
 					const range = facts && `${facts.base.slice(0, 7)}..${facts.tip?.slice(0, 7) ?? "?"}`;
+					addSpend(cost);
 					history.push({
 						at: Date.now(),
 						role,

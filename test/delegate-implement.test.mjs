@@ -20,6 +20,7 @@ import test from "node:test";
 const {
 	finish,
 	GIT_LIMITS,
+	checkInCompound,
 	formatHandback,
 	gitTripwires,
 	isCheckRun,
@@ -282,28 +283,59 @@ test("finish: worker commits give the range, a clean tree, no lock, and a 0600 d
 	assert.ok(!existsSync(job.ghConfigDir));
 });
 
-test("finish withholds acceptance for missing provenance, unknown effects, and denied safety stops", async () => {
+test("finish flags new top-level directories and dot-paths, which are often scratch", async () => {
+	const { repo, git } = goalFixture();
+	const job = await prepare(repo, "im-scratch", CHECK);
+	mkdirSync(join(repo, ".tmp"));
+	mkdirSync(join(repo, "daily-app"));
+	writeFileSync(join(repo, ".tmp", "clock-test.ts"), "x\n");
+	writeFileSync(join(repo, "daily-app", "index.ts"), "x\n");
+	writeFileSync(join(repo, ".repro-loop.mts"), "x\n");
+	commit(git, repo, "feature.txt");
+	passed(job);
+	const facts = await finish(job, ok(job));
+	assert.deepEqual(facts.newTopLevel, [".repro-loop.mts", ".tmp/", "daily-app/"]);
+	assert.equal(facts.failed, false);
+	const lines = formatHandback(facts).split("\n");
+	assert.equal(lines.length, 2);
+	assert.match(
+		lines[1],
+		/ ⚠ new top-level paths: \.repro-loop\.mts, \.tmp\/, daily-app\/; confirm the task asked for them$/,
+	);
+	assert.match(
+		readFileSync(facts.detailsPath, "utf8"),
+		/## New top-level paths\n\n\.repro-loop\.mts\n\.tmp\/\ndaily-app\//,
+	);
+
+	const plain = goalFixture();
+	const next = await prepare(plain.repo, "im-no-scratch", CHECK);
+	commit(plain.git, plain.repo, "feature.txt");
+	passed(next);
+	assert.deepEqual((await finish(next, ok(next))).newTopLevel, []);
+});
+
+test("finish withholds acceptance for missing provenance, unknown effects, and uncorrelated denials", async () => {
+	const denial = (jobId) => ({
+		owner: "guard",
+		jobId,
+		attempt: 1,
+		toolCallId: "blocked-call",
+		cause: "guard-denial",
+		resource: "guard",
+		effect: "denied",
+	});
 	for (const scenario of [
 		{ name: "missing provenance", missingProvenance: true, stopFacts: [] },
 		{ name: "unknown", effect: "unknown", stopFacts: [] },
+		{ name: "denied without its owner fact", effect: "denied", stopFacts: [] },
 		{
-			name: "denied",
-			effect: "denied",
-			stopFacts: [
-				{
-					owner: "guard",
-					jobId: "im-a2-denied",
-					attempt: 1,
-					toolCallId: "blocked-call",
-					cause: "guard-denial",
-					resource: "guard",
-					effect: "denied",
-				},
-			],
+			name: "denial of a completed call",
+			effect: "completed",
+			stopFacts: [denial("im-a2-denial-of-a-completed-call")],
 		},
 	]) {
 		const { repo } = goalFixture();
-		const job = await prepare(repo, `im-a2-${scenario.name}`, CHECK);
+		const job = await prepare(repo, `im-a2-${scenario.name.replaceAll(" ", "-")}`, CHECK);
 		passed(job);
 		const provenance = {
 			jobId: job.id,
@@ -334,6 +366,49 @@ test("finish withholds acceptance for missing provenance, unknown effects, and d
 		);
 		assert.match(readFileSync(facts.detailsPath, "utf8"), /acceptance withheld/);
 	}
+});
+
+test("finish accepts no-effect tool failures: guard or fence denials and edits rejected before writing", async () => {
+	const { repo, git } = goalFixture();
+	const job = await prepare(repo, "im-no-effect", CHECK);
+	commit(git, repo, "feature.txt");
+	passed(job);
+	const effect = (toolCallId, toolName, effect) => ({
+		owner: "pi-runtime",
+		jobId: job.id,
+		attempt: 1,
+		toolCallId,
+		toolName,
+		effect,
+		replaySafe: false,
+	});
+	const denied = (owner, cause) => ({
+		owner,
+		jobId: job.id,
+		attempt: 1,
+		toolCallId: `${owner}-call`,
+		cause,
+		resource: "guard",
+		effect: "denied",
+	});
+	const facts = await finish(job, {
+		answer: "Implemented.",
+		provenance: [
+			{
+				jobId: job.id,
+				attempt: 1,
+				complete: true,
+				stopFacts: [denied("guard", "guard-denial"), denied("delegate-worker", "worker-fence-denial")],
+				toolEffects: [
+					effect("guard-call", "bash", "denied"),
+					effect("delegate-worker-call", "write", "denied"),
+					effect("edit-call", "edit", "not-started"),
+				],
+			},
+		],
+	});
+	assert.equal(facts.failed, false, facts.problems.join("\n"));
+	assert.deepEqual(facts.problems, []);
 });
 
 test("finish permits only one correlated completed non-replay-safe Bash failure", async () => {
@@ -749,6 +824,31 @@ test("isCheckRun: one leading cd to the job cwd counts; any other cd or chain do
 		`cd . || ${check}`,
 	])
 		assert.equal(isCheckRun(c, check, cwd), false, c);
+});
+
+test("checkInCompound: the declared check inside a pipe, chain, or redirect, or with only extra flags, but not alone or with file targets", () => {
+	const check = "npm run check";
+	const cwd = TEST_HOME;
+	for (const c of [
+		`${check} 2>&1 | tail -25`,
+		`cd ${cwd} && ${check} 2>&1 | tail -20`,
+		`${check}; echo "exit $?"`,
+		`npm run lint && ${check}`,
+		`${check} > /tmp/out.txt 2>&1`,
+		`rtk ${check} | head`,
+		`${check} -- --test-timeout=60000`,
+		`${check} -- --test-timeout=60000 | tail`,
+	])
+		assert.equal(checkInCompound(c, check, cwd), true, c);
+	for (const c of [
+		check,
+		`cd ${cwd} && ${check}`,
+		`${check} 2>&1`,
+		`${check} -- test/a.test.mjs`,
+		"npm run check:types | tail",
+		"node --test test/a.test.mjs | tail",
+	])
+		assert.equal(checkInCompound(c, check, cwd), false, c);
 });
 
 test("isCheckRun: a cd through a symlink to the job cwd counts", () => {

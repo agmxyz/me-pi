@@ -146,12 +146,34 @@ function withoutMessages(command: string): string {
 		);
 }
 
+// `V=$(mktemp -d …) && cd "$V"` opening a command: its git commands then run in a fresh temp repo.
+const FRESH_TEMP_REPO =
+	/^\s*(\w+)=\$\(mktemp -d(?:\s+-t\s+[\w.-]+)?\s*\)\s*(?:&&|;)\s*cd\s+(?:"\$\{?\1\}?"|\$\{?\1\}?)\s*(?:&&|;)/;
+// What could take git out of it: any other expansion, an absolute, home, or `..` path, a `cd` that is not one plain
+// relative path (bare `cd`, `cd -`), `popd`, or a git-dir override.
+const LEAVES_TEMP =
+	/[$\x60~]|(?:^|[\s=:"'(])(?:\/|\.\.(?:[/\s"')]|$))|(?:^|[;&|(\s])(?:cd|pushd)(?![\w-])(?!\s+["']?[\w.][^\s;&|]*)|(?:^|[;&|(\s])popd(?![\w-])|(?:^|\s)(?:-C|--git-dir|--work-tree)\b|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|CONFIG\w*|NAMESPACE)=/;
+
+/**
+ * Whether every git command in `command` runs in the fresh temp repo it opens with; reassigning the variable or a path
+ * that could leave it keeps the git rules. Only implement workers get this: their git remote protocols are cut.
+ */
+function inFreshTempRepo(command: string): boolean {
+	if (process.env.ME_PI_ROLE !== "implement") return false;
+	const fresh = FRESH_TEMP_REPO.exec(command);
+	if (!fresh) return false;
+	const name = fresh[1];
+	const rest = command.slice(fresh[0].length);
+	if (new RegExp(`\\b${name}=`).test(rest)) return false;
+	return !LEAVES_TEMP.test(rest.replace(new RegExp(`"\\$\\{?${name}\\}?"|\\$\\{?${name}\\}?(?!\\w)`, "g"), "TEMP"));
+}
+
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
 ): string | undefined {
 	command = withoutMessages(command);
-	const gitCommands = [...command.matchAll(GIT_COMMAND)];
+	const gitCommands = inFreshTempRepo(command) ? [] : [...command.matchAll(GIT_COMMAND)];
 	// The session's branch is read before the command runs, so it says nothing about the target after
 	// `cd`, `git checkout`/`switch`, or `git -C`/`--git-dir`/`--work-tree`.
 	const branchMayChange = CD.test(command) || gitCommands.some(([, , sub]) => sub === "checkout" || sub === "switch");
@@ -238,7 +260,7 @@ function workerGitRisk(sub: string, words: string[]): string | undefined {
 
 export function workerRisk(command: string): string | undefined {
 	command = withoutMessages(command);
-	for (const [, , sub, args] of command.matchAll(GIT_COMMAND)) {
+	for (const [, , sub, args] of inFreshTempRepo(command) ? [] : command.matchAll(GIT_COMMAND)) {
 		const risk = workerGitRisk(sub, wordsOf(args));
 		if (risk) return risk;
 	}

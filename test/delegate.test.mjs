@@ -27,6 +27,7 @@ process.on("exit", () => rmSync(TEST_HOME, { recursive: true, force: true }));
 
 const {
 	default: registerExtension,
+	classifyProviderError,
 	LIMITS,
 	LOCAL_TOOLS,
 	WEB_TOOLS,
@@ -120,7 +121,7 @@ const FAKE_BIN = join(TEST_HOME, "fake-pi.mjs");
 writeFileSync(
 	FAKE_BIN,
 	`#!/usr/bin/env node
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -495,6 +496,42 @@ process.stdin.on("end", () => {
     emit("Added feature.txt.\\nIMPLEMENT-DIFF-BODY is in the details only");
     process.exit(0);
   }
+  if (mode === "infra-flaky") {
+    // Fails the first FAKE_PI_INFRA_FAILS runs with FAKE_PI_ERROR, counting runs in FAKE_PI_COUNTER.
+    const runs = (existsSync(process.env.FAKE_PI_COUNTER) ? Number(readFileSync(process.env.FAKE_PI_COUNTER, "utf8")) : 0) + 1;
+    writeFileSync(process.env.FAKE_PI_COUNTER, String(runs));
+    if (runs <= Number(process.env.FAKE_PI_INFRA_FAILS)) {
+      tool("read", { path: "README.md" });
+      if (process.env.FAKE_PI_INFRA_EFFECT) tool("bash", { command: "printf effect > effect.txt" });
+      emit("", { stopReason: "error", errorMessage: process.env.FAKE_PI_ERROR });
+      process.exit(1);
+    }
+    if (process.env.ME_PI_ROLE === "implement") {
+      writeFileSync("feature.txt", "fixed\\n");
+      git("add", "feature.txt");
+      git("commit", "-q", "-m", "feat: fixture");
+      tool("bash", { command: "npm test" });
+    }
+    emit("Answered after run " + runs + ".");
+    process.exit(0);
+  }
+  if (mode === "implement-no-effect-failures") {
+    // The piops run's harmless failures: an edit rejected before writing, a failed read, and a fenced write.
+    const jobId = process.env.ME_PI_DELEGATE_JOB_ID;
+    const attempt = Number(process.env.ME_PI_DELEGATE_ATTEMPT);
+    tool("edit", { path: "src/cli.ts" }, true, { toolCallId: "edit-mismatch", result: { content: [{ type: "text", text: "Could not find edits[1] in /repo/src/cli.ts. The oldText must match exactly including all whitespace and newlines." }], details: {} } });
+    tool("read", { path: "missing.txt" }, true, { toolCallId: "read-missing", result: { content: [{ type: "text", text: "ENOENT" }] } });
+    const fence = { owner: "delegate-worker", jobId, attempt, toolCallId: "fenced-write", cause: "worker-fence-denial", resource: "guard", effect: "denied" };
+    tool("write", { path: "/tmp/scratch.ts" }, true, { toolCallId: "fenced-write", result: { content: [{ type: "text", text: "Blocked: /tmp/scratch.ts is outside the checkout." }], details: { __mePiDelegateProvenance: [fence] } } });
+    tool("bash", { command: "timeout 1 node --test" }, true, { toolCallId: "timed-out", result: { structuredContent: { exit_code: 124 } } });
+    if (process.env.FAKE_PI_EDIT_WRITE_FAILED) tool("edit", { path: "src/cli.ts" }, true, { toolCallId: "edit-write-failed", result: { content: [{ type: "text", text: "EACCES: permission denied, open 'src/cli.ts'" }] } });
+    writeFileSync("feature.txt", "fixed\\n");
+    git("add", "feature.txt");
+    git("commit", "-q", "-m", "feat: fixture");
+    tool("bash", { command: "npm test" });
+    emit("Implemented despite harmless tool failures.");
+    process.exit(0);
+  }
   if (mode === "implement-dirty") { writeFileSync("left.txt", "x\\n"); tool("bash", { command: "npm test" }); emit("left it uncommitted"); process.exit(0); }
   if (mode === "implement-hang") {
     writeFileSync("left.txt", "x\\n");
@@ -708,7 +745,8 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 		if (!Object.hasOwn(saved, k)) saved[k] = process.env[k];
 	}
 	applyEnv(vars);
-	Object.assign(LIMITS, limits);
+	// Same-model infra retries are off unless a test asks for them: other tests classify the first attempt.
+	Object.assign(LIMITS, { infraRetryDelaysMs: [] }, limits);
 	const tools = {};
 	const handlers = {};
 	const registeredHandlers = new Map();
@@ -805,6 +843,37 @@ test("multiple setups restore the original environment after child cleanup, incl
 		assert.equal(process.env[key], value, `${key} restored after child cleanup`);
 	}
 	assert.equal(Object.hasOwn(process.env, later), false, "later key is deleted, not stringified");
+});
+
+test("opt-in coordinator status logs a provider-error stop and announces spend before the budget runs out", async (t) => {
+	const log = join(mkdtempSync(join(TEST_HOME, "status-")), "status.log");
+	const notes = [];
+	const ctx = { ui: { notify: (text, level) => notes.push([level, text]) } };
+	const { handlers, tool } = setup(t, { env: { ME_PI_STATUS_LOG: log, ME_PI_SPEND_BUDGET_USD: "0.01" } });
+	const assistant = (cost, extra = {}) => ({
+		message: { role: "assistant", stopReason: "stop", usage: { cost: { total: cost } }, ...extra },
+	});
+	await handlers.message_end(assistant(0.005), ctx);
+	await handlers.agent_settled({ aborted: false }, ctx);
+	assert.equal(existsSync(log), false, "an ordinary turn writes nothing");
+	await handlers.message_end(assistant(0.0035), ctx);
+	await run(tool, { role: "scout", task: "look" });
+	await handlers.message_end(
+		assistant(0, { stopReason: "error", errorMessage: "403 Key limit exceeded (total limit)" }),
+		ctx,
+	);
+	await handlers.agent_settled({ aborted: false }, ctx);
+	const lines = readFileSync(log, "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => line.replace(/^\S+ /, ""));
+	assert.deepEqual(lines, [
+		"WARNING: estimated spend $0.01 of the $0.01 budget",
+		"BUDGET: estimated spend $0.01 of the $0.01 budget reached; stop starting work",
+		"STOPPED: account: 403 Key limit exceeded (total limit) (BLOCKER: needs the user)",
+	]);
+	assert.equal(statSync(log).mode & 0o777, 0o600);
+	assert.equal(notes.length, 3);
 });
 
 test("registers delegate in the main session; workers get only the secret-path block", (t) => {
@@ -1003,6 +1072,17 @@ test("implement workers' bash calls are checked against the worker-only rules", 
 	assert.equal(installerChain?.block, true);
 	assert.match(installerChain.reason, /install\.sh would change Pi's settings and live links/);
 	assert.equal(await hook(bash("npm test"), { cwd: REPO_ROOT }), undefined);
+	const checked = setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement", ME_PI_CHECK: "npm test" } }).handlers
+		.tool_call;
+	const piped = await checked(bash("npm test 2>&1 | tail -25"), { cwd: REPO_ROOT });
+	assert.equal(piped?.block, true);
+	assert.match(piped.reason, /^Blocked: run `npm test` alone, exactly as given/);
+	assert.equal(await checked(bash("npm test"), { cwd: REPO_ROOT }), undefined);
+	assert.equal(await checked(bash("npm test -- test/a.test.mjs | tail"), { cwd: REPO_ROOT }), undefined);
+	assert.match(
+		(await checked(bash("npm test -- --test-timeout=60000"), { cwd: REPO_ROOT })).reason,
+		/^Blocked: run `npm test` alone/,
+	);
 	const other = setup(t, { env: { ME_PI_RUN: "1" } }).handlers.tool_call;
 	assert.equal(await other(bash("git push origin x"), { cwd: REPO_ROOT }), undefined);
 });
@@ -4340,6 +4420,7 @@ test("implement captures failed declared checks and non-Bash tools with missing 
 		const [entry] = artifact.entries;
 		if (mode === "implement-check-artifact-fail") {
 			assert.equal(result.details.implement.check.status, "fail");
+			assert.equal(entry.disposition, "nonzero-exit");
 			assert.equal(entry.toolName.text, "bash");
 			assert.equal(entry.exitCode.value, 1);
 			assert.match(text(result), /^✗ im\d+ /);
@@ -4615,6 +4696,138 @@ test("implement: a failed check, an edit after the check, or no check run is ✗
 	});
 	const res = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
 	assert.equal(res.isError, false, text(res));
+});
+
+test("provider errors are classified as infra, account, or model/task", () => {
+	for (const message of [
+		"Upstream error from OpenInference: Upstream returned HTTP 409",
+		"Request timed out",
+		"fetch failed: ECONNRESET",
+		"503 Service Unavailable",
+		"429 rate_limit_error: too many requests",
+	])
+		assert.equal(classifyProviderError(message), "infra", message);
+	for (const message of [
+		"403 Key limit exceeded (total limit)",
+		"429 quota exceeded for this project",
+		"insufficient_quota: check your plan",
+		"401 Unauthorized",
+	])
+		assert.equal(classifyProviderError(message), "account", message);
+	for (const message of [
+		"invalid request: tool schema rejected",
+		"400 invalid_request_error: max_tokens: 550 > 512",
+		"",
+		undefined,
+	])
+		assert.equal(classifyProviderError(message), "model/task", String(message));
+});
+
+test("an infra failure without effects is retried on the same model; effects or account limits are not", async (t) => {
+	const counter = () => join(mkdtempSync(join(TEST_HOME, "infra-")), "runs");
+	const { tool } = setup(t, {
+		env: { FAKE_PI_MODE: "infra-flaky", FAKE_PI_INFRA_FAILS: "2", FAKE_PI_ERROR: "Upstream returned HTTP 409" },
+		limits: { infraRetryDelaysMs: [1, 1] },
+	});
+	process.env.FAKE_PI_COUNTER = counter();
+	const retried = await run(tool, { role: "scout", task: "look" });
+	assert.equal(retried.isError, false, text(retried));
+	assert.match(text(retried), /Answered after run 3\./);
+	const [r] = retried.details.round1;
+	assert.deepEqual(r.infraRetries, ["exit 1: Upstream returned HTTP 409", "exit 1: Upstream returned HTTP 409"]);
+	assert.deepEqual(
+		r.provenance.map((p) => p.attempt),
+		[1, 2, 3],
+	);
+
+	process.env.FAKE_PI_COUNTER = counter();
+	process.env.FAKE_PI_INFRA_FAILS = "5";
+	const exhausted = await run(tool, { role: "scout", task: "look" });
+	assert.equal(exhausted.isError, true);
+	assert.match(
+		text(exhausted),
+		/^Failure class: infra \(provider or network, not the task\); retried 2× on the same model\.$/m,
+	);
+	assert.equal(readFileSync(process.env.FAKE_PI_COUNTER, "utf8"), "3");
+
+	process.env.FAKE_PI_COUNTER = counter();
+	process.env.FAKE_PI_ERROR = "403 Key limit exceeded (total limit)";
+	const account = await run(tool, { role: "scout", task: "look" });
+	assert.match(
+		text(account),
+		/^Failure class: account \(quota, key, or billing limit\); BLOCKER: retrying cannot help\.$/m,
+	);
+	assert.equal(readFileSync(process.env.FAKE_PI_COUNTER, "utf8"), "1");
+});
+
+test("implement retries an infra failure without effects inside the same job, and not after a Bash effect", async (t) => {
+	const counter = () => join(mkdtempSync(join(TEST_HOME, "infra-")), "runs");
+	const { tool } = setup(t, {
+		env: implementEnv("infra-flaky", {
+			FAKE_PI_INFRA_FAILS: "1",
+			FAKE_PI_ERROR: "Request timed out",
+			FAKE_PI_INFRA_EFFECT: undefined,
+			FAKE_PI_COUNTER: counter(),
+		}),
+		limits: { infraRetryDelaysMs: [1, 1] },
+	});
+	const retried = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(retried.isError, false, text(retried));
+	assert.equal(text(retried).split("\n").length, 2, text(retried));
+	const details = readFileSync(retried.details.implement.detailsPath, "utf8");
+	assert.match(details, /## Infra retries\n\nexit 1: Request timed out\n/);
+
+	process.env.FAKE_PI_COUNTER = counter();
+	process.env.FAKE_PI_INFRA_EFFECT = "1";
+	const kept = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(kept.isError, true);
+	assert.equal(readFileSync(process.env.FAKE_PI_COUNTER, "utf8"), "1", "a Bash effect prevents the retry");
+	assert.match(text(kept), /^Failure class: infra \(provider or network, not the task\)\.$/m);
+});
+
+test("implement accepts a handback whose only failures had no effect", async (t) => {
+	const { tool } = setup(t, {
+		env: implementEnv("implement-no-effect-failures", { FAKE_PI_EDIT_WRITE_FAILED: undefined }),
+	});
+	const result = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(result.isError, false, text(result));
+	assert.equal(result.details.implement.check.status, "pass");
+	const [attempt] = result.details.implement.outcome.provenance;
+	assert.deepEqual(
+		attempt.toolEffects.map(({ toolCallId, effect }) => [toolCallId, effect]),
+		[
+			["edit-mismatch", "not-started"],
+			["read-missing", "completed"],
+			["fenced-write", "denied"],
+			["timed-out", "completed"],
+			["t1", "completed"],
+		],
+	);
+	assert.deepEqual(
+		attempt.stopFacts.map(({ toolCallId, cause }) => [toolCallId, cause]),
+		[
+			["fenced-write", "worker-fence-denial"],
+			["timed-out", "tool-failure"],
+		],
+	);
+	const details = readFileSync(result.details.implement.detailsPath, "utf8");
+	assert.doesNotMatch(details, /acceptance withheld/);
+	assert.doesNotMatch(details, /edit-mismatch|read-missing/);
+	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	assert.deepEqual(
+		artifact.entries.map((entry) => [entry.toolCallId.text, entry.disposition]),
+		[
+			["edit-mismatch", "edit-rejected"],
+			["read-missing", "read-failed"],
+			["fenced-write", "guard-denied"],
+			["timed-out", "timeout"],
+		],
+	);
+
+	process.env.FAKE_PI_EDIT_WRITE_FAILED = "1";
+	const unknown = await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+	assert.equal(unknown.isError, true, "an edit failure without a known pre-write cause stays unknown");
+	assert.match(text(unknown), /acceptance withheld/);
 });
 
 test("implement: a worker that moves another branch trips the ref tripwire", async (t) => {

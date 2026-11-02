@@ -241,6 +241,41 @@ test("workerRisk blocks commands that move an implement worker off its branch or
 	}
 });
 
+test("an implement worker's git in a fresh mktemp repo passes; leaving it or pointing git elsewhere does not", (t) => {
+	const role = process.env.ME_PI_ROLE;
+	t.after(() => {
+		if (role === undefined) delete process.env.ME_PI_ROLE;
+		else process.env.ME_PI_ROLE = role;
+	});
+	process.env.ME_PI_ROLE = "implement";
+	const fresh = [
+		'DIR=$(mktemp -d) && cd "$DIR" && git init -q source && cd source && git config user.email t@example.com && git remote add origin "$DIR/origin.git" && git push origin HEAD',
+		"D=$(mktemp -d -t hooks); cd $D; git init -q --bare origin.git && git clone -q origin.git work && cd work && git push",
+		`T=$(mktemp -d) && cd "\${T}" && git init -q && git commit -q --allow-empty -m x && git reset --hard`,
+	];
+	for (const command of fresh) {
+		assert.equal(workerRisk(command), undefined, command);
+		assert.equal(classify(command, onMain), undefined, command);
+	}
+	for (const command of [
+		'DIR=$(mktemp -d) && cd "$DIR" && cd /repo && git push',
+		'DIR=$(mktemp -d) && cd "$DIR" && git clone -q /repo work && cd work && git push',
+		'DIR=$(mktemp -d) && cd "$DIR" && cd .. && git config user.name x',
+		'DIR=$(mktemp -d) && cd "$DIR" && git -C ~/repo push',
+		'DIR=$(mktemp -d) && cd "$DIR" && GIT_DIR=x git config user.name x',
+		'DIR=$(mktemp -d) && cd "$DIR" && DIR=/repo && cd "$DIR" && git push',
+		'DIR=$(mktemp -d) && cd "$DIR" && cd "$HOME" && git config user.name x',
+		'cd "$DIR" && git config user.name x',
+		'V=$(mktemp -d) && cd "$V" && cd - && git push --force origin main',
+		'V=$(mktemp -d) && cd "$V" && cd && cd fun/me-pi && git push --force origin main',
+		'V=$(mktemp -d) && cd "$V" && pushd work && popd && git config user.name x',
+		'V=$(mktemp -d ./t.XXXX) && cd "$V" && git config user.name x',
+	])
+		assert.ok(workerRisk(command), command);
+	delete process.env.ME_PI_ROLE;
+	assert.ok(classify(fresh[2], onMain), "the main session's guard never exempts temp repos");
+});
+
 test("gitTreeWrite names checkout-writing git subcommands and passes reads", () => {
 	for (const [command, sub] of [
 		["git add -A", "add"],

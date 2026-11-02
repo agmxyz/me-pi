@@ -14,7 +14,13 @@ import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
-import type { AttemptProvenance, StopFact } from "./delegate-provenance.ts";
+import {
+	type AttemptProvenance,
+	type FailureClass,
+	failureClassLine,
+	type StopFact,
+	type ToolEffectFact,
+} from "./delegate-provenance.ts";
 import { PROTECTED_BRANCHES } from "./guard.ts";
 
 const run = promisify(execFile);
@@ -164,6 +170,7 @@ const COUNT_KEY = Symbol.for("me-pi.delegate.implement-count");
 const MAX_COMMITS = 20;
 const MAX_WIP_FILES = 20;
 const MAX_BLOCKED = 3;
+const MAX_NEW_TOP_LEVEL = 5;
 const FIRST_LINE_CAP = 200;
 
 export function nextImplementId(): string {
@@ -216,6 +223,9 @@ export type Outcome = {
 	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
 	provenance?: AttemptProvenance[];
 	stopFacts?: StopFact[];
+	failureClass?: FailureClass;
+	// Failures retried on the same model as infra failures before this outcome.
+	infraRetries?: string[];
 };
 
 export type DeliveredState = {
@@ -238,6 +248,8 @@ export type Facts = {
 	deletions: number;
 	stat: string;
 	wip?: { sha: string; reason: string; files: string[]; more: number };
+	// Top-level directories (`dir/`) and dot-paths the range added: often scratch the task did not ask for.
+	newTopLevel?: string[];
 	// ✗ lines other than WIP and the check, without the ✗.
 	problems: string[];
 	check: CheckState;
@@ -508,12 +520,35 @@ export function isCheckRun(command: string, check: string, cwd: string): boolean
 	return normalized(command) === normalized(check);
 }
 
+// Trailing output redirections, e.g. `> out.txt 2>&1`.
+const REDIRECTS = /(?:\s+\d?>>?(?:&\d|\s*[^\s|;&]+))+\s*$/;
+
+/**
+ * Whether a bash command runs the declared check inside a pipe, chain, or redirect, or with only extra flags
+ * (`check -- --test-timeout=…`), where its result does not count. Extra file targets are a focused run, not the check.
+ */
+export function checkInCompound(command: string, check: string, cwd: string): boolean {
+	if (isCheckRun(command, check, cwd)) return false;
+	const want = normalized(check);
+	return command.split(/\|\||&&|[|;\n]/).some((part) => {
+		const got = normalized(part.replace(REDIRECTS, ""));
+		if (got === want) return true;
+		if (!got.startsWith(`${want} `)) return false;
+		const extra = got
+			.slice(want.length)
+			.trim()
+			.split(/\s+/)
+			.filter((arg) => arg !== "--");
+		return extra.length > 0 && extra.every((arg) => arg.startsWith("-"));
+	});
+}
+
 const TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
 const CUT_PROTOCOLS = ["ssh", "https", "http", "git"];
 
 /**
  * The implement worker's environment: writes fenced to the repo (ME_PI_OUTPUT_DIR) and out of the git dir
- * (ME_PI_DENY_DIR), an orphan stop (ME_PI_PARENT), git remotes cut off by appending `protocol.<p>.allow=never` after
+ * (ME_PI_DENY_DIR), an orphan stop (ME_PI_PARENT), the declared check (ME_PI_CHECK), git remotes cut off by appending `protocol.<p>.allow=never` after
  * any GIT_CONFIG_* the user set, and gh without a login. These prevent accidents, not misuse: `git -c` and `env -u`
  * undo them. Provider keys stay; Pi needs them.
  */
@@ -524,6 +559,7 @@ export function workerEnv(env: NodeJS.ProcessEnv, job: Checkout): NodeJS.Process
 		ME_PI_OUTPUT_DIR: job.repoRoot,
 		ME_PI_DENY_DIR: job.commonDir,
 		ME_PI_PARENT: String(process.pid),
+		ME_PI_CHECK: job.check.command,
 	};
 	for (const name of TOKEN_VARS) delete out[name];
 	out.GH_CONFIG_DIR = job.ghConfigDir;
@@ -586,7 +622,25 @@ function correlatedCompletedBashFailure(fact: StopFact, attempt: AttemptProvenan
 	);
 }
 
-/** A completed Bash failure is diagnostic only when its parent stop/effect pair is unique; other stops and unresolved effects block. */
+/** A guard or fence denial is diagnostic when its call's only effect is the denial: the tool never ran. */
+function correlatedDenial(fact: StopFact, attempt: AttemptProvenance): boolean {
+	if (
+		(fact.owner !== "guard" && fact.owner !== "delegate-worker") ||
+		(fact.cause !== "guard-denial" && fact.cause !== "worker-fence-denial") ||
+		fact.effect !== "denied" ||
+		!fact.toolCallId ||
+		fact.jobId !== attempt.jobId ||
+		fact.attempt !== attempt.attempt
+	)
+		return false;
+	const effects = attempt.toolEffects.filter((effect) => effect.toolCallId === fact.toolCallId);
+	return effects.length === 1 && effects[0].effect === "denied";
+}
+
+/**
+ * Diagnostic only: a completed Bash failure whose parent stop/effect pair is unique, and a correlated denial. Other
+ * stops and unresolved effects block; `not-started` is a failure the tool reported before any effect.
+ */
 function hasUnresolvedProvenance(outcome: Outcome): boolean {
 	const attempts = outcome.provenance ?? [];
 	if (!attempts.length) return true;
@@ -599,15 +653,21 @@ function hasUnresolvedProvenance(outcome: Outcome): boolean {
 		),
 	);
 	const isDiagnostic = (fact: StopFact) =>
-		fact.toolCallId !== undefined &&
-		allowedFailures.has(`${fact.jobId}\0${fact.attempt}\0${fact.toolCallId}`) &&
-		fact.owner === "delegate-parent" &&
-		fact.cause === "tool-failure" &&
-		fact.resource === "tool" &&
-		fact.effect === "completed";
+		(fact.toolCallId !== undefined &&
+			allowedFailures.has(`${fact.jobId}\0${fact.attempt}\0${fact.toolCallId}`) &&
+			fact.owner === "delegate-parent" &&
+			fact.cause === "tool-failure" &&
+			fact.resource === "tool" &&
+			fact.effect === "completed") ||
+		attempts.some((attempt) => correlatedDenial(fact, attempt));
+	const settled = (effect: ToolEffectFact, attempt: AttemptProvenance) =>
+		effect.effect === "completed" ||
+		effect.effect === "not-started" ||
+		(effect.effect === "denied" &&
+			attempt.stopFacts.some((fact) => fact.toolCallId === effect.toolCallId && correlatedDenial(fact, attempt)));
 	return (
 		allStopFacts.some((fact) => !isDiagnostic(fact)) ||
-		attempts.some((attempt) => !attempt.complete || attempt.toolEffects.some((fact) => fact.effect !== "completed"))
+		attempts.some((attempt) => !attempt.complete || attempt.toolEffects.some((fact) => !settled(fact, attempt)))
 	);
 }
 
@@ -781,6 +841,17 @@ async function finishSteps(job: Checkout, facts: Facts): Promise<void> {
 		facts.insertions = num(short.out, "insertions?");
 		facts.deletions = num(short.out, "deletions?");
 		facts.stat = stat.out;
+		const added = await git(job.repoRoot, ["diff", "--name-only", "--diff-filter=A", `${job.base}..${sha}`]);
+		const existing = await git(job.repoRoot, ["ls-tree", "--name-only", job.base]);
+		if (added.ok && existing.ok) {
+			const had = new Set(existing.out.split("\n"));
+			const tops = added.out
+				.split("\n")
+				.filter(Boolean)
+				.map((path) => (path.includes("/") ? `${path.split("/")[0]}/` : path))
+				.filter((top) => !had.has(top.replace(/\/$/, "")) && (top.endsWith("/") || top.startsWith(".")));
+			facts.newTopLevel = [...new Set(tops)].sort();
+		}
 		// 4. Files Pi loads on /reload: the coordinator reviews them before reloading.
 		const trust = await git(job.repoRoot, ["diff", "--name-only", `${job.base}..${sha}`, "--", ".pi", ".agents"]);
 		if (!trust.ok) {
@@ -855,9 +926,11 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 			),
 		),
 		...section(`Commits (${f.commitCount}, oldest first)`, f.commits.join("\n")),
+		...section("New top-level paths", f.newTopLevel?.map(shown).join("\n")),
 		...section("Diffstat", f.stat),
 		...section(`Check \`${f.check.command}\`: ${f.check.status}`, checkHistory.join("\n") || "(not run)"),
-		...section("Failure", o.failure),
+		...section("Failure", o.failure && `${o.failure}${failureClassLine(o)}`),
+		...section("Infra retries", o.infraRetries?.map(shown).join("\n")),
 		...section("Answer", o.answer),
 		...section("Tools", o.tools?.join("\n")),
 		...section("Stderr (tail)", o.stderr),
@@ -914,9 +987,15 @@ export function formatHandback(f: Facts): string {
 		if (f.failed) out.push(warning);
 		else out[1] = `${out[1]} ${warning}`;
 	}
+	if (f.newTopLevel?.length) {
+		const [paths, more] = capped(f.newTopLevel.join("\n"), MAX_NEW_TOP_LEVEL);
+		const note = `⚠ new top-level paths: ${paths.map(shown).join(", ")}${more ? `, … ${more} more` : ""}; confirm the task asked for them`;
+		if (f.failed) out.push(note);
+		else out[1] = `${out[1]} ${note}`;
+	}
 	if (blocked.length > MAX_BLOCKED) out.push(`+${blocked.length - MAX_BLOCKED} more BLOCKED in details`);
 	const failure = failureLine(o.failure);
-	if (failure) out.push(`✗ ${shown(failure)}`);
+	if (failure) out.push(`✗ ${shown(failure)}${failureClassLine(o)}`);
 	if (f.wip) {
 		const files = f.wip.files.join(", ") + (f.wip.more ? `, … ${f.wip.more} more` : "");
 		// The reason is the failure line above when there is one.
