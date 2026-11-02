@@ -63,7 +63,7 @@ Stop when the integrated source is fresh-green, required findings are verified, 
 
 ## 6. Close only authorized work
 
-Use the designated tracker mechanism only for explicitly authorized actions and exact targets after their agreed acceptance point. Keep accepted and externally closed distinct. PR creation/readiness, push, remote merge, publication, and cleanup are not implicit. Do not write coordinator ledgers or reports into the checkout unless explicitly authorized.
+Use the designated tracker mechanism only for explicitly authorized actions and exact targets after their agreed acceptance point. Keep accepted and externally closed distinct. WIP commits stay in the integration branch history; when it merges, recommend squash-merge unless the tracker convention says otherwise. PR creation/readiness, push, remote merge, publication, and cleanup are not implicit. Do not write coordinator ledgers or reports into the checkout unless explicitly authorized.
 
 Report integration branch and final SHA; tickets completed and closed separately; exact check and result; pinned baseline; Standards and Spec findings and handling; corrective commits and coverage carried forward; blockers, skipped checks, and unverified claims.
 

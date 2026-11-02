@@ -33,6 +33,7 @@ import {
 	FAILED_TOOL_ARTIFACT_LIMITS,
 	FailedToolArtifactCollector,
 	type FailedToolCallInput,
+	type FailedToolDisposition,
 } from "./delegate-artifacts.ts";
 import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
@@ -938,6 +939,25 @@ function failedWithoutEffect(toolName: string, result: unknown): boolean {
 	return toolName === "edit" && EDIT_REJECTED_BEFORE_WRITE.test(toolResultText(eventRecord(result)) ?? "");
 }
 
+/** Names a failed call's cause for the failed-tools artifact, so readers need not infer it from the output text. */
+function failureDisposition(toolName: string | undefined, resultValue: unknown): FailedToolDisposition {
+	const result = eventRecord(resultValue);
+	const marker = eventRecord(result?.details)?.[TOOL_PROVENANCE_DETAIL_KEY];
+	const causes = Array.isArray(marker) ? marker.filter(isStopFact).map((fact) => fact.cause) : [];
+	if (causes.includes("wrap-up-limit")) return "budget-blocked";
+	if (causes.includes("guard-denial") || causes.includes("worker-fence-denial")) return "guard-denied";
+	if (causes.length) return "blocked";
+	if (!toolName) return "unknown";
+	if (toolName === "bash") {
+		const exitCode = bashExitCode(resultValue);
+		if (exitCode === 124 || /Command timed out after \d+ seconds/.test(toolResultText(result) ?? ""))
+			return "timeout";
+		return exitCode !== undefined && exitCode !== 0 ? "nonzero-exit" : "unknown";
+	}
+	if (!failedWithoutEffect(toolName, resultValue)) return "unknown";
+	return toolName === "edit" ? "edit-rejected" : "read-failed";
+}
+
 function toolLabel(name: string): string {
 	const label = name
 		.replace(/[^A-Za-z0-9_-]+/g, "_")
@@ -1148,6 +1168,7 @@ function runWorkerAttempt(
 				cwd: typeof event.cwd === "string" ? event.cwd : cwd,
 				rawArgsCommand: call?.rawArgsCommand,
 				effectiveCommand,
+				disposition: failureDisposition(call?.toolName ?? endedToolName, event.result),
 				isError: true,
 				result: failedToolResult(event.result, call?.toolName ?? endedToolName),
 			});

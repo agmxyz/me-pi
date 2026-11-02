@@ -523,6 +523,7 @@ process.stdin.on("end", () => {
     tool("read", { path: "missing.txt" }, true, { toolCallId: "read-missing", result: { content: [{ type: "text", text: "ENOENT" }] } });
     const fence = { owner: "delegate-worker", jobId, attempt, toolCallId: "fenced-write", cause: "worker-fence-denial", resource: "guard", effect: "denied" };
     tool("write", { path: "/tmp/scratch.ts" }, true, { toolCallId: "fenced-write", result: { content: [{ type: "text", text: "Blocked: /tmp/scratch.ts is outside the checkout." }], details: { __mePiDelegateProvenance: [fence] } } });
+    tool("bash", { command: "timeout 1 node --test" }, true, { toolCallId: "timed-out", result: { structuredContent: { exit_code: 124 } } });
     if (process.env.FAKE_PI_EDIT_WRITE_FAILED) tool("edit", { path: "src/cli.ts" }, true, { toolCallId: "edit-write-failed", result: { content: [{ type: "text", text: "EACCES: permission denied, open 'src/cli.ts'" }] } });
     writeFileSync("feature.txt", "fixed\\n");
     git("add", "feature.txt");
@@ -4415,6 +4416,7 @@ test("implement captures failed declared checks and non-Bash tools with missing 
 		const [entry] = artifact.entries;
 		if (mode === "implement-check-artifact-fail") {
 			assert.equal(result.details.implement.check.status, "fail");
+			assert.equal(entry.disposition, "nonzero-exit");
 			assert.equal(entry.toolName.text, "bash");
 			assert.equal(entry.exitCode.value, 1);
 			assert.match(text(result), /^✗ im\d+ /);
@@ -4788,16 +4790,30 @@ test("implement accepts a handback whose only failures had no effect", async (t)
 			["edit-mismatch", "not-started"],
 			["read-missing", "completed"],
 			["fenced-write", "denied"],
+			["timed-out", "completed"],
 			["t1", "completed"],
 		],
 	);
 	assert.deepEqual(
 		attempt.stopFacts.map(({ toolCallId, cause }) => [toolCallId, cause]),
-		[["fenced-write", "worker-fence-denial"]],
+		[
+			["fenced-write", "worker-fence-denial"],
+			["timed-out", "tool-failure"],
+		],
 	);
 	const details = readFileSync(result.details.implement.detailsPath, "utf8");
 	assert.doesNotMatch(details, /acceptance withheld/);
 	assert.doesNotMatch(details, /edit-mismatch|read-missing/);
+	const artifact = JSON.parse(readFileSync(result.details.implement.outcome.failedToolCapture.path, "utf8"));
+	assert.deepEqual(
+		artifact.entries.map((entry) => [entry.toolCallId.text, entry.disposition]),
+		[
+			["edit-mismatch", "edit-rejected"],
+			["read-missing", "read-failed"],
+			["fenced-write", "guard-denied"],
+			["timed-out", "timeout"],
+		],
+	);
 
 	process.env.FAKE_PI_EDIT_WRITE_FAILED = "1";
 	const unknown = await run(tool, implement(), undefined, undefined, implementRepo().ctx);

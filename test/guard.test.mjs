@@ -241,6 +241,29 @@ test("workerRisk blocks commands that move an implement worker off its branch or
 	}
 });
 
+test("git in a fresh mktemp repo passes; leaving it or pointing git elsewhere does not", () => {
+	const fresh = [
+		'DIR=$(mktemp -d) && cd "$DIR" && git init -q source && cd source && git config user.email t@example.com && git remote add origin "$DIR/origin.git" && git push origin HEAD',
+		"D=$(mktemp -d -t hooks); cd $D; git init -q --bare origin.git && git clone -q origin.git work && cd work && git push",
+		'T=$(mktemp -d) && cd "${T}" && git init -q && git commit -q --allow-empty -m x && git reset --hard',
+	];
+	for (const command of fresh) {
+		assert.equal(workerRisk(command), undefined, command);
+		assert.equal(classify(command, onMain), undefined, command);
+	}
+	for (const command of [
+		'DIR=$(mktemp -d) && cd "$DIR" && cd /repo && git push',
+		'DIR=$(mktemp -d) && cd "$DIR" && git clone -q /repo work && cd work && git push',
+		'DIR=$(mktemp -d) && cd "$DIR" && cd .. && git config user.name x',
+		'DIR=$(mktemp -d) && cd "$DIR" && git -C ~/repo push',
+		'DIR=$(mktemp -d) && cd "$DIR" && GIT_DIR=x git config user.name x',
+		'DIR=$(mktemp -d) && cd "$DIR" && DIR=/repo && cd "$DIR" && git push',
+		'DIR=$(mktemp -d) && cd "$DIR" && cd "$HOME" && git config user.name x',
+		'cd "$DIR" && git config user.name x',
+	])
+		assert.ok(workerRisk(command), command);
+});
+
 test("gitTreeWrite names checkout-writing git subcommands and passes reads", () => {
 	for (const [command, sub] of [
 		["git add -A", "add"],

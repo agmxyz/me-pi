@@ -23,7 +23,7 @@ The coordinator owns decisions, scope, acceptance, and review. The implement wor
 
 ## 2. Implement and commit one task
 
-Dispatch `delegate(role="implement", background=true, check=<exact command>, task=<brief>)`. Keep one checkout writer. Use the background job ID and wait for its handback; do not poll or resubmit.
+Dispatch `delegate(role="implement", background=true, check=<exact command>, task=<brief>)`; `implement` takes no `runs` and uses the configured worker pool. Keep one checkout writer. Use the background job ID and wait for its handback; do not poll or resubmit.
 
 The self-contained worker brief names the repository/cwd, eligible branch, starting SHA, task and acceptance criteria, source paths, finalized decisions and exclusions, runtime/dependency constraints, commit convention, exact check, and the selected verification evidence with its limits. Tell the worker to understand the existing behavior/tests, make the smallest evidence-driven change, use red-first reproduction when it materially helps, run focused verification with a per-test timeout while iterating, run the exact check alone after its final edit, and commit only passing work. Preserve any explicit user/repository test-first requirement; do not load `tdd` by default. Require `BLOCKED: <step>: <reason>` for a missing decision, tool, permission, or evidence. Workers cannot delegate or ask the user.
 
