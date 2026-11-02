@@ -14,3 +14,14 @@ Run `./install.sh` only from the live checkout's main session, never a worktree,
 - Runs `rtk init --global --agent pi` if `rtk` is available.
 
 Review `GLOBAL_AGENTS.md` and the install script before choosing this setup. Restart Pi or run `/reload` after a successful install to discover the skills. For model pools, worker operation, and recovery, see the [delegate guide](delegate.md).
+
+## Undo
+
+```sh
+rm ~/.pi/agent/AGENTS.md                     # only if it links to this checkout's GLOBAL_AGENTS.md
+rm ~/.pi/agent/skills/implement-me-pi ~/.pi/agent/skills/implement-spec-me-pi
+pi remove /path/to/me-pi                     # this checkout
+pi remove npm:pi-web-access                  # unless you use it elsewhere
+rm ~/.pi/agent/extensions/interactive-shell.ts ~/.pi/agent/extensions/handoff.ts   # if unedited
+rtk init --global --agent pi --uninstall     # only if install.sh set it up and you don't want it
+```
