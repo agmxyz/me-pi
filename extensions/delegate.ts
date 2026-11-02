@@ -33,6 +33,7 @@ import {
 } from "./delegate-artifacts.ts";
 import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
+	canonicalModel,
 	configPath,
 	configuredModels,
 	loadModelSet,
@@ -1602,7 +1603,8 @@ function buildSchema() {
 	const model = {
 		type: "string",
 		minLength: 1,
-		description: "An exact Pi model ID in provider/model form; omit to use the role's configured model selection.",
+		description:
+			"A Pi model ref: provider/id, or a bare id that one logged-in provider offers; omit to use the role's configured model selection.",
 	};
 	return {
 		type: "object",
@@ -2085,7 +2087,12 @@ export default function (pi: ExtensionAPI) {
 				const configured = new Set(configuredModels(set));
 				for (const spec of specs)
 					if (spec.model && !configured.has(spec.model)) validateOneOffModel(spec.model, ctx?.modelRegistry);
-				resolved = specs.map((r) => resolveRun(role, r, set, session, ctx?.thinkingLevel));
+				resolved = specs.map((r) => {
+					const run = resolveRun(role, r, set, session, ctx?.thinkingLevel);
+					return run.model && run.model !== session
+						? { ...run, model: canonicalModel(run.model, ctx?.modelRegistry) }
+						: run;
+				});
 				if (role !== "implement") job.skills = set.readOnlySkills;
 			} catch (err: any) {
 				return fail(err.message);

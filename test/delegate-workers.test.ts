@@ -173,7 +173,7 @@ test("bad calls are refused before any worker starts", async (t) => {
 		[{ role: "review", task: "x", model: OPUS }, /unknown parameter\(s\) model; set model and thinking inside runs/],
 		[
 			{ role: "review", task: "x", runs: [{ model: "openai/gpt-x" }] },
-			/unknown model .*no exact provider\/model match/,
+			/unknown model .*no provider\/id or model id match/,
 		],
 	]) {
 		const res = await run(tool, params);

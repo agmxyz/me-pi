@@ -212,9 +212,9 @@ test("one-off models must be exact catalog IDs with usable authentication", asyn
 	});
 	const context = { ...CTX, modelRegistry: registry };
 	for (const [model, error] of [
-		["google/not-in-catalog", /unknown model .*no exact provider\/model match/],
-		[UNAUTHENTICATED, /unauthenticated.*no configured authentication/],
-		["Gemini Flash", /must be an exact Pi model ID in provider\/model form/],
+		["google/not-in-catalog", /unknown model .*no provider\/id or model id match/],
+		[UNAUTHENTICATED, /unauthenticated.*no usable login for provider "unauthed"/],
+		["Gemini Flash", /unknown model "Gemini Flash"/],
 	]) {
 		const res = await run(tool, { role: "review", task: "x", runs: [{ model }] }, undefined, undefined, context);
 		assert.equal(res.isError, true, model);
@@ -230,6 +230,59 @@ test("one-off models must be exact catalog IDs with usable authentication", asyn
 	assert.equal(unsupported.isError, true);
 	assert.match(text(unsupported), /model registry lacks catalog\/auth lookup/);
 	assert.equal(existsSync(marker), false, "invalid or unverifiable models never spawn a worker");
+});
+
+test("bare model refs resolve like Pi: one-off validation, canonical --model, and same-model infra retry", async (t) => {
+	const GLM = "z-ai/glm-5.3-flash";
+	const OR = `openrouter/${GLM}`;
+	const marker = scratch("bare-ref-marker");
+	const context = { ...CTX, modelRegistry: registryFixture({ catalog: [...REGISTRY_MODELS, OR] }) };
+	const { tool } = setup(t, {
+		config: { version: 3, scout: pool([LUNA], "low"), worker: pool([GLM], "high") },
+		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: OR, FAKE_PI_MARKER: marker },
+		limits: { infraRetryDelaysMs: [1, 1] },
+	});
+	const launches = () =>
+		readFileSync(marker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line).model);
+
+	const pooled = await run(tool, { role: "review", task: "x" }, undefined, undefined, context);
+	assert.equal(pooled.isError, true, text(pooled));
+	assert.deepEqual(launches(), [OR, OR, OR], "the canonical ref reaches workers and the infra retry fires");
+
+	writeFileSync(marker, "");
+	const oneOff = await run(
+		tool,
+		{ role: "review", task: "x", runs: [{ model: "gemini-test" }] },
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(oneOff.isError, false, text(oneOff));
+	assert.deepEqual(launches(), [ONE_OFF], "a bare unique one-off ref is accepted and canonicalized");
+});
+
+test("a configured ref that is unknown or ambiguous fails the call naming the config", async (t) => {
+	const marker = scratch("bad-config-ref-marker");
+	const context = {
+		...CTX,
+		modelRegistry: registryFixture({ catalog: [...REGISTRY_MODELS, "a/shared", "b/shared"] }),
+	};
+	for (const [model, error] of [
+		["missing/model", /unknown model "missing\/model" in .*delegate.*\.json/],
+		["shared", /ambiguous model "shared" in .*: matches a\/shared, b\/shared; write provider\/id/],
+	]) {
+		const { tool } = setup(t, {
+			config: { version: 3, scout: pool([LUNA], "low"), worker: pool([model], "high") },
+			env: { FAKE_PI_MARKER: marker },
+		});
+		const res = await run(tool, { role: "review", task: "x" }, undefined, undefined, context);
+		assert.equal(res.isError, true, model);
+		assert.match(text(res), error);
+	}
+	assert.equal(existsSync(marker), false);
 });
 
 test("an unlisted model never falls back to the configured pool", async (t) => {

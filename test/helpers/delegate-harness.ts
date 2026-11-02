@@ -142,6 +142,7 @@ function registryFixture({
 	const availableModels = available.map(model).filter(Boolean);
 	const authProviders = new Set(authenticated ?? availableModels.map((m) => m.provider));
 	return {
+		getAll: () => models,
 		find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
 		getAvailable: () => availableModels,
 		hasConfiguredAuth: (candidate) => authProviders.has(candidate.provider),
@@ -766,18 +767,11 @@ const waitDead = (pid) => waitFor(() => !isAlive(pid), `pid ${pid} to die`, 5000
 
 const scratch = (name) => join(mkdtempSync(join(TEST_HOME, `${name}-`)), name);
 
-function commandCtx({ available = [HAIKU, SONNET, OPUS] } = {}) {
+function commandCtx({ available = [HAIKU, SONNET, OPUS], catalog = available } = {}) {
 	const notes = [];
 	const ctx = {
 		hasUI: true,
-		modelRegistry: {
-			getAvailable: () =>
-				available.map((m) => {
-					const cut = m.indexOf("/");
-					const [provider, id] = [m.slice(0, cut), m.slice(cut + 1)];
-					return { provider, id, name: id, cost: { input: 1, output: 5 } };
-				}),
-		},
+		modelRegistry: registryFixture({ catalog, available }),
 		ui: { notify: (message, type) => notes.push([message, type]) },
 	};
 	return { ctx, notes };

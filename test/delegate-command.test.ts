@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { commandCtx, HAIKU, modelSet, OPUS, POOL_SET, run, setup, statusFor } from "./helpers/delegate-harness.ts";
+import {
+	commandCtx,
+	HAIKU,
+	modelSet,
+	OPUS,
+	POOL_SET,
+	run,
+	setup,
+	statusFor,
+	UNAUTHENTICATED,
+} from "./helpers/delegate-harness.ts";
 
 test("/delegate status shows the stage and only active worker progress", async () => {
 	const active = new Map([
@@ -117,10 +127,8 @@ test("/delegate status: the set with availability, missing tools, running and re
 		return notes[0][0];
 	};
 	const before = await status();
-	assert.ok(before.includes(`Scout pool: 1. ${HAIKU} (low) ✓; 2. ${OPUS} (off) ✗ not available`));
-	assert.ok(
-		before.includes(`Worker pool: 1. ${OPUS} (max) ✗ not available (no login or unknown id); 2. ${HAIKU} (low) ✓`),
-	);
+	assert.ok(before.includes(`Scout pool: 1. ${HAIKU} (low) ✓; 2. ${OPUS} (off) ✗ unknown model id`));
+	assert.ok(before.includes(`Worker pool: 1. ${OPUS} (max) ✗ unknown model id; 2. ${HAIKU} (low) ✓`));
 	assert.equal(before.includes("Review pool:"), false);
 	assert.match(before, /\nTools: missing Skill \(this repo's extensions\/skill\.ts\), web_search \(pi-web-access\)/);
 	assert.match(before, /\nRunning: none\nLast calls: none$/);
@@ -183,4 +191,37 @@ test("/delegate models directs users to edit JSON manually without writing it", 
 	await main.commands.delegate.handler("models", ctx);
 	assert.deepEqual(notes, [[`Edit ${path} to set ordered models and per-model thinking, then run /reload.`, "info"]]);
 	assert.equal(readFileSync(path, "utf8"), original);
+});
+
+test("/delegate status shows what each model ref resolves to", async (t) => {
+	const OR = "openrouter/z-ai/glm-5.3-flash";
+	const main = setup(t, {
+		config: {
+			version: 3,
+			scout: { models: [{ model: HAIKU, thinking: "low" }] },
+			worker: {
+				models: [
+					{ model: "z-ai/glm-5.3-flash", thinking: "high" },
+					{ model: UNAUTHENTICATED, thinking: "high" },
+					{ model: "shared-id", thinking: "high" },
+					{ model: "missing/model", thinking: "high" },
+				],
+			},
+		},
+	});
+	const { ctx, notes } = commandCtx({
+		catalog: [HAIKU, OR, UNAUTHENTICATED, "anthropic/shared-id", "nvidia/shared-id"],
+		available: [HAIKU, OR, "nvidia/shared-id"],
+	});
+	await main.commands.delegate.handler("status", ctx);
+	assert.ok(notes[0][0].includes(`Scout pool: 1. ${HAIKU} (low) \u2713\n`), notes[0][0]);
+	assert.ok(
+		notes[0][0].includes(
+			`Worker pool: 1. z-ai/glm-5.3-flash (high) \u2713 \u2192 ${OR}; ` +
+				`2. ${UNAUTHENTICATED} (high) \u2717 not logged in (unauthed); ` +
+				"3. shared-id (high) \u2717 ambiguous: anthropic/shared-id, nvidia/shared-id; write provider/id; " +
+				"4. missing/model (high) \u2717 unknown model id",
+		),
+		notes[0][0],
+	);
 });

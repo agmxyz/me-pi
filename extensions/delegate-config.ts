@@ -168,40 +168,101 @@ export function configuredModels(set: ModelSet): string[] {
 	];
 }
 
-export interface ModelAvailabilityRegistry {
-	find(provider: string, modelId: string): { provider: string; id: string } | undefined;
-	getAvailable(): readonly { provider: string; id: string }[];
-	hasConfiguredAuth(model: { provider: string; id: string }): boolean;
+interface CatalogModel {
+	provider: string;
+	id: string;
+}
+
+/** The part of Pi's ModelRegistry that model-reference resolution reads. */
+export interface ModelRefRegistry {
+	getAll(): readonly CatalogModel[];
+	getAvailable(): readonly CatalogModel[];
+}
+
+export type ModelRefResolution =
+	| { status: "resolved"; model: string; provider: string; id: string; usable: boolean }
+	| { status: "ambiguous"; candidates: string[] }
+	| { status: "unknown" };
+
+const isModelRefRegistry = (value: unknown): value is ModelRefRegistry =>
+	!!value &&
+	typeof (value as ModelRefRegistry).getAll === "function" &&
+	typeof (value as ModelRefRegistry).getAvailable === "function";
+
+/**
+ * Resolve `provider/id` or a bare id like Pi's `--model` without fuzzy matching or thinking suffixes.
+ * Mirrors pi-coding-agent dist/core/model-resolver.js `splitProviderPrefix` + `selectReference`.
+ */
+export function resolveModelRef(ref: string, registry: ModelRefRegistry): ModelRefResolution {
+	const text = ref.trim();
+	const all = registry.getAll();
+	const available = registry.getAvailable();
+	if (!Array.isArray(all) || !Array.isArray(available))
+		throw new Error("Pi's model registry returned an invalid model list");
+	const usable = (provider: string) => available.some((m) => m.provider === provider);
+	const lower = text.toLowerCase();
+	const raw = all.filter((m) => m.id.toLowerCase() === lower);
+	let named: CatalogModel | undefined;
+	const slash = text.indexOf("/");
+	if (slash > 0) {
+		const prefix = text.slice(0, slash).trim().toLowerCase();
+		const rest = text
+			.slice(slash + 1)
+			.trim()
+			.toLowerCase();
+		const provider = rest ? all.find((m) => m.provider.toLowerCase() === prefix)?.provider : undefined;
+		if (provider)
+			named =
+				all.find((m) => m.provider === provider && m.id.toLowerCase() === rest) ??
+				raw.find((m) => m.provider === provider);
+	}
+	const others = raw.filter((m) => m !== named);
+	const candidates = named ? [named, ...others] : others;
+	const resolved = (m: CatalogModel): ModelRefResolution => ({
+		status: "resolved",
+		model: `${m.provider}/${m.id}`,
+		provider: m.provider,
+		id: m.id,
+		usable: available.some((a) => a.provider === m.provider && a.id === m.id),
+	});
+	if (candidates.length === 0) return { status: "unknown" };
+	if (new Set(candidates.map((m) => m.provider)).size === 1) return resolved(candidates[0]);
+	if (named && usable(named.provider)) return resolved(named);
+	const usableOthers = others.filter((m) => usable(m.provider));
+	if (usableOthers.length === 1) return resolved(usableOthers[0]);
+	if (usableOthers.length === 0 && named) return resolved(named);
+	return { status: "ambiguous", candidates: candidates.map((m) => `${m.provider}/${m.id}`) };
 }
 
 /** Validate unlisted explicit models without inspecting or returning credential material. */
-export function validateOneOffModel(modelId: string, registry: unknown): void {
-	const separator = modelId.indexOf("/");
-	if (separator <= 0 || separator === modelId.length - 1)
-		throw new Error(`model ${JSON.stringify(modelId)} must be an exact Pi model ID in provider/model form`);
-	const provider = modelId.slice(0, separator);
-	const id = modelId.slice(separator + 1);
-	const api = registry as ModelAvailabilityRegistry | undefined;
-	if (
-		!api ||
-		typeof api.find !== "function" ||
-		typeof api.getAvailable !== "function" ||
-		typeof api.hasConfiguredAuth !== "function"
-	)
+export function validateOneOffModel(ref: string, registry: unknown): void {
+	if (!isModelRefRegistry(registry))
+		throw new Error(`cannot validate model ${JSON.stringify(ref)}: Pi's model registry lacks catalog/auth lookup`);
+	const result = resolveModelRef(ref, registry);
+	if (result.status !== "resolved") throw new Error(unresolvedMessage(ref, result));
+	if (!result.usable)
 		throw new Error(
-			`cannot validate model ${JSON.stringify(modelId)}: Pi's model registry lacks catalog/auth lookup`,
+			`model ${JSON.stringify(ref)} is unauthenticated: Pi lists no usable login for provider ${JSON.stringify(result.provider)}`,
 		);
-	const model = api.find(provider, id);
-	if (!model || model.provider !== provider || model.id !== id)
-		throw new Error(`unknown model ${JSON.stringify(modelId)}: no exact provider/model match in Pi's catalog`);
-	const available = api.getAvailable();
-	if (!Array.isArray(available)) throw new Error("Pi's model registry returned an invalid available-model list");
-	if (available.some((candidate) => candidate.provider === provider && candidate.id === id)) return;
-	if (!api.hasConfiguredAuth(model))
-		throw new Error(
-			`model ${JSON.stringify(modelId)} is unauthenticated: Pi has no configured authentication for provider ${JSON.stringify(provider)}`,
-		);
-	throw new Error(
-		`model ${JSON.stringify(modelId)} is unavailable: Pi does not list it as available; provider authentication may not be usable`,
-	);
+}
+
+function unresolvedMessage(
+	ref: string,
+	result: Exclude<ModelRefResolution, { status: "resolved" }>,
+	where = "",
+): string {
+	return result.status === "ambiguous"
+		? `ambiguous model ${JSON.stringify(ref)}${where}: matches ${result.candidates.join(", ")}; write provider/id`
+		: `unknown model ${JSON.stringify(ref)}${where}: no provider/id or model id match in Pi's catalog`;
+}
+
+/**
+ * Canonical `provider/id` for a configured or one-off ref, so workers and retry correlation agree with Pi.
+ * Without a registry (tests) refs pass through unchanged.
+ */
+export function canonicalModel(ref: string, registry: unknown): string {
+	if (!isModelRefRegistry(registry)) return ref;
+	const result = resolveModelRef(ref, registry);
+	if (result.status !== "resolved") throw new Error(unresolvedMessage(ref, result, ` in ${configPath()}`));
+	return result.model;
 }
