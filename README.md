@@ -11,7 +11,8 @@ Your main session hands bounded work (a lookup, a review, research, a scoped cha
 - **Small surface.** One `delegate` tool, one `/delegate` command, no agent files to write. Works with zero config.
 - **Six fixed roles:** `scout`, `general`, `review`, `research`, `challenge`, `implement`. Each has its own tools and answer shape; only `implement` edits your project.
 - **Follows your workflow.** Workers load your own `AGENTS.md` and skills. Add `(coordinator only)` to a `## ` heading and workers skip that section.
-- **`implement` delivers commits.** It works on your feature branch, runs the check you give it, and commits; interrupted work is saved as a `WIP` commit.
+- **Real processes, not threads.** Each worker is a separate `pi --mode json -p --no-session --no-mcp` process in its own process group; a timeout or cancel kills the whole group, including anything it spawned.
+- **`implement` delivers commits.** It works on your feature branch, runs the check you give it, and commits. A pass counts only for the exact checkout content it ran on: any later edit marks it stale. Interrupted work is saved as a `WIP` commit.
 - **Bounded by default.** Time and cost limits per worker, at most four at once, and worker file reads of secret paths (`.env*`, keys, `~/.ssh`, `~/.pi/agent/auth.json`) blocked.
 - **Model pools.** A cheap model for scouts, a stronger one for workers or reviews, set in one JSON file.
 
