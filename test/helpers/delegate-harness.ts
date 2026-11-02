@@ -19,14 +19,17 @@ const {
 	default: registerExtension,
 	classifyProviderError,
 	LIMITS,
+	PROMPT_GUIDELINES,
+	PROMPT_SNIPPET,
+} = await import("../../extensions/delegate.ts");
+
+const {
+	ROLES,
+	WORKER_CONTRACT,
 	LOCAL_TOOLS,
 	WEB_TOOLS,
 	IMPLEMENT_TOOLS,
-	PROMPT_GUIDELINES,
-	PROMPT_SNIPPET,
-	ROLES,
-	WORKER_CONTRACT,
-} = await import("../../extensions/delegate.ts");
+} = await import("../../extensions/delegate-worker.ts");
 
 const {
 	secretPathIn,

@@ -13,6 +13,7 @@ import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
+import { ENV_CHECK, ENV_DENY_DIR, ENV_OUTPUT_DIR, ENV_PARENT, ENV_ROLE } from "./delegate-env.ts";
 import { realpathOr } from "./delegate-fence.ts";
 import {
 	type AttemptProvenance,
@@ -606,11 +607,11 @@ const CUT_PROTOCOLS = ["ssh", "https", "http", "git"];
 export function workerEnv(env: NodeJS.ProcessEnv, job: Checkout): NodeJS.ProcessEnv {
 	const out: NodeJS.ProcessEnv = {
 		...env,
-		ME_PI_ROLE: "implement",
-		ME_PI_OUTPUT_DIR: job.repoRoot,
-		ME_PI_DENY_DIR: job.commonDir,
-		ME_PI_PARENT: String(process.pid),
-		ME_PI_CHECK: job.check.command,
+		[ENV_ROLE]: "implement",
+		[ENV_OUTPUT_DIR]: job.repoRoot,
+		[ENV_DENY_DIR]: job.commonDir,
+		[ENV_PARENT]: String(process.pid),
+		[ENV_CHECK]: job.check.command,
 	};
 	for (const name of TOKEN_VARS) delete out[name];
 	out.GH_CONFIG_DIR = job.ghConfigDir;

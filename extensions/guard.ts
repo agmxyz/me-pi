@@ -7,6 +7,7 @@
 
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isImplementWorker, isWorkerProcess, workerIdentity } from "./delegate-env.ts";
 
 export const GUARD_STOP_EVENT = "me-pi:guard-stop";
 
@@ -155,7 +156,7 @@ const LEAVES_TEMP =
  * that could leave it keeps the git rules. Only implement workers get this: their git remote protocols are cut.
  */
 function inFreshTempRepo(command: string): boolean {
-	if (process.env.ME_PI_ROLE !== "implement") return false;
+	if (!isImplementWorker()) return false;
 	const fresh = FRESH_TEMP_REPO.exec(command);
 	if (!fresh) return false;
 	const name = fresh[1];
@@ -334,14 +335,12 @@ export default function (pi: ExtensionAPI) {
 		const risk = classify(command, () => branchIn(ctx.cwd));
 		if (!risk) return undefined;
 		const block = (reason: string) => {
-			if (process.env.ME_PI_RUN === "1") {
-				const jobId = process.env.ME_PI_DELEGATE_JOB_ID;
-				const attempt = Number(process.env.ME_PI_DELEGATE_ATTEMPT);
-				if (jobId && Number.isSafeInteger(attempt) && attempt > 0 && event.toolCallId) {
+			if (isWorkerProcess()) {
+				const identity = workerIdentity();
+				if (identity && event.toolCallId) {
 					const fact: GuardStopEvent = {
 						owner: "guard",
-						jobId,
-						attempt,
+						...identity,
 						toolCallId: event.toolCallId,
 						cause: "guard-denial",
 						resource: "guard",

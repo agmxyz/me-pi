@@ -28,7 +28,7 @@ await resourceLoader.reload();
 const result = resourceLoader.getExtensions();
 const skillResult = resourceLoader.getSkills();
 if (assertion === "assert-delegate") {
-	if (process.env.ME_PI_RUN) {
+	if (process.env.ME_PI_RUN === "1") {
 		throw new Error("delegate tool registration probe must run outside worker mode");
 	}
 	const delegate = result.extensions.find((extension) => extension.path.endsWith("/extensions/delegate.ts"));
