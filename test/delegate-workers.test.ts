@@ -10,6 +10,7 @@ import {
 	HAIKU,
 	IMPLEMENT_TOOLS,
 	LOCAL_TOOLS,
+	modelSet,
 	OPUS,
 	PROMPT_GUIDELINES,
 	PROMPT_SNIPPET,
@@ -29,7 +30,7 @@ import {
 } from "./helpers/delegate-harness.ts";
 
 test("a scout runs read-only, one-shot, marked as a worker, with the prompt on stdin", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	const updates = [];
 	const res = await run(tool, { role: "scout", task: "-- find foo" }, undefined, (u) => updates.push(u));
 	assert.equal(res.isError, false, text(res));
@@ -53,7 +54,7 @@ test("a scout runs read-only, one-shot, marked as a worker, with the prompt on s
 });
 
 test("each worker gets the contract and its role's answer format", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-system" } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "echo-system" } });
 	for (const role of ["scout", "research", "review", "challenge"]) {
 		const res = await run(tool, { role, task: "x" });
 		assert.equal(res.isError, false, text(res));
@@ -63,7 +64,7 @@ test("each worker gets the contract and its role's answer format", async (t) => 
 });
 
 test("roles get their tools: only research and challenge reach the web", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	for (const [role, tools] of [
 		["review", LOCAL_TOOLS],
 		["research", WEB_TOOLS],
@@ -108,7 +109,7 @@ test("without a model config, workers use the main session model", async (t) => 
 
 test("the default role is general: local tools, first worker model, max thinking, no answer format", async (t) => {
 	const { tool } = setup(t, {
-		config: { models: [HAIKU, SONNET, OPUS], default: SONNET },
+		config: modelSet([HAIKU, SONNET, OPUS], SONNET),
 		env: { FAKE_PI_MODE: "echo-system" },
 	});
 	const system = text(await run(tool, { task: "x" }));
@@ -120,7 +121,7 @@ test("the default role is general: local tools, first worker model, max thinking
 });
 
 test("web overrides the role's tools and adds a badge to progress and results", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	const progress = [];
 	const onUpdate = (u) => progress.push(text(u));
 	const on = await run(tool, { role: "review", task: "x", web: true }, undefined, onUpdate);
@@ -135,14 +136,14 @@ test("web overrides the role's tools and adds a badge to progress and results", 
 });
 
 test("web does not lift scout's thinking cap", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	const res = await run(tool, { role: "scout", task: "x", web: true, runs: [{ thinking: "high" }] });
 	assert.match(text(res), new RegExp(`^DONE model=${HAIKU} thinking=low tools=${WEB_TOOLS} .* role=scout `));
 	assert.match(text(res), /\n\[claude-haiku-5-5 @low web \$/);
 });
 
 test("a call's answer replaces the role's format, up to 400 characters", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-system" } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "echo-system" } });
 	const prompt = (role, format) => `${WORKER_CONTRACT}\nRole: ${role}. Final answer format: ${format}\n[`;
 	const review = text(await run(tool, { role: "review", task: "x", answer: "  a table: option | risk \n" }));
 	assert.ok(review.startsWith(prompt("review", "a table: option | risk")), review);
@@ -152,7 +153,7 @@ test("a call's answer replaces the role's format, up to 400 characters", async (
 
 test("bad calls are refused before any worker starts", async (t) => {
 	const marker = scratch("marker");
-	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: { models: [HAIKU, OPUS] } });
+	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: modelSet([HAIKU, OPUS]) });
 	for (const [params, error] of [
 		[{ role: "planner", task: "x" }, /role must be one of general, scout, research, review, challenge, implement$/],
 		[{ role: "constructor", task: "x" }, /role must be one of/],
@@ -185,7 +186,7 @@ test("bad calls are refused before any worker starts", async (t) => {
 
 test("details carry a view for the TUI: progress per round, then the reported runs and the footer", async (t) => {
 	const { tool } = setup(t, {
-		config: { models: [HAIKU, OPUS] },
+		config: modelSet([HAIKU, OPUS]),
 		env: { FAKE_PI_MODE: "fail-round2", FAKE_PI_FAIL_MODEL: OPUS },
 	});
 	const updates = [];
@@ -217,7 +218,7 @@ test("details carry a view for the TUI: progress per round, then the reported ru
 });
 
 test("several runs answer the same task in parallel; usage is summed", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, SONNET, OPUS] } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, SONNET, OPUS]) });
 	const res = await run(tool, {
 		role: "review",
 		task: "q",
@@ -294,7 +295,7 @@ test("default-origin rebuttals retain exact candidates without cross-model fallb
 
 test("rebuttal returns only round 2; each worker saw its own and the others' answers", async (t) => {
 	const marker = scratch("marker");
-	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: { models: [HAIKU, SONNET, OPUS] } });
+	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: modelSet([HAIKU, SONNET, OPUS]) });
 	const res = await run(tool, {
 		role: "challenge",
 		task: "plan",
@@ -329,7 +330,7 @@ test("rebuttal returns only round 2; each worker saw its own and the others' ans
 test("a failed round-2 run falls back to its round-1 answer, in request order", async (t) => {
 	const { tool } = setup(t, {
 		env: { FAKE_PI_MODE: "fail-round2", FAKE_PI_FAIL_MODEL: SONNET },
-		config: { models: [HAIKU, SONNET, OPUS] },
+		config: modelSet([HAIKU, SONNET, OPUS]),
 	});
 	const res = await run(tool, {
 		role: "review",
@@ -349,7 +350,7 @@ test("a failed round-2 run falls back to its round-1 answer, in request order", 
 test("rebuttal is skipped and flagged when fewer than two runs succeed", async (t) => {
 	const { tool } = setup(t, {
 		env: { FAKE_PI_MODE: "fail-model", FAKE_PI_FAIL_MODEL: OPUS },
-		config: { models: [SONNET, OPUS] },
+		config: modelSet([SONNET, OPUS]),
 	});
 	const res = await run(tool, {
 		role: "review",

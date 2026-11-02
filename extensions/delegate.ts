@@ -435,7 +435,7 @@ export function configPath(): string {
 	return process.env.ME_PI_DELEGATE_CONFIG || join(HOME, ".pi", "agent", "delegate.json");
 }
 
-/** A missing file means both pools use the main session's model and thinking. Legacy configs migrate in memory. */
+/** A missing file means both pools use the main session's model and thinking. */
 export function loadModelSet(path = configPath()): ModelSet {
 	if (!existsSync(path)) return defaultModelSet();
 	const where = `delegate config ${path}`;
@@ -446,13 +446,6 @@ export function loadModelSet(path = configPath()): ModelSet {
 		throw new Error(`${where}: ${err?.message ?? err}`);
 	}
 	return validModelSet(raw, where);
-}
-
-function modelIds(value: unknown, where: string): string[] {
-	if (!Array.isArray(value) || value.some((m) => typeof m !== "string" || !m.trim()))
-		throw new Error(`${where} must be an array of model ids like "anthropic/claude-haiku-5-5"`);
-	if (new Set(value).size !== value.length) throw new Error(`${where} lists a model twice`);
-	return value;
 }
 
 function modelEntries(value: unknown, where: string, scout: boolean): ModelEntry[] {
@@ -483,34 +476,6 @@ function poolThinking(value: unknown, where: string, scout: boolean): string {
 	return value as string;
 }
 
-function migratePool(models: string[], thinking: string): ModelEntry[] {
-	return models.map((model) => ({ model, thinking }));
-}
-
-function legacyModelSet(raw: any, where: string): ModelSet {
-	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "default");
-	if (unknown.length) throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: models, default)`);
-	const models = modelIds(raw.models ?? [], `${where}: "models"`);
-	if (raw.default !== undefined && !models.includes(raw.default))
-		throw new Error(`${where}: "default" must be one of "models"`);
-	const workerFirst = raw.default ?? models.at(-1);
-	const workerModels = workerFirst ? [workerFirst, ...models.filter((m: string) => m !== workerFirst)] : [];
-	return {
-		version: 3,
-		scout: { models: migratePool(models, "low"), thinking: "low" },
-		worker: { models: migratePool(workerModels, "max"), thinking: "max" },
-	};
-}
-
-function migrateV2Pool(raw: any, where: string, scout: boolean): ModelPool {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected an object`);
-	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "thinking");
-	if (unknown.length) throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: models, thinking)`);
-	const models = modelIds(raw.models, `${where}.models`);
-	const thinking = poolThinking(raw.thinking, `${where}.thinking`, scout);
-	return { models: migratePool(models, thinking), thinking };
-}
-
 function validV3Pool(raw: any, where: string, scout: boolean): ModelPool {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected an object`);
 	const unknown = Object.keys(raw).filter((k) => k !== "models" && k !== "thinking");
@@ -520,24 +485,17 @@ function validV3Pool(raw: any, where: string, scout: boolean): ModelPool {
 	return { models, thinking: poolThinking(raw.thinking, `${where}.thinking`, scout) };
 }
 
-/** The checked v3 set; reads v1 `{ models, default }` and v2 pool configs for compatibility. */
+/** The checked v3 set. Other formats (v1 `{ models, default }`, v2 string-list pools) fail with a pointer to the docs. */
 function validModelSet(raw: any, where: string): ModelSet {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${where}: expected a JSON object`);
-	if (raw.version === undefined) return legacyModelSet(raw, where);
-	if (raw.version !== 2 && raw.version !== 3)
-		throw new Error(`${where}: unsupported version ${JSON.stringify(raw.version)} (expected 2 or 3)`);
-	const allowed =
-		raw.version === 2 ? ["version", "scout", "worker"] : ["version", "scout", "worker", "review", "readOnlySkills"];
+	if (raw.version !== 3)
+		throw new Error(
+			`${where}: unsupported format (version ${JSON.stringify(raw.version ?? null)}); expected "version": 3 with { model, thinking } pool entries. Rewrite it as shown in docs/delegate.md ("Configure model pools").`,
+		);
+	const allowed = ["version", "scout", "worker", "review", "readOnlySkills"];
 	const unknown = Object.keys(raw).filter((k) => !allowed.includes(k));
 	if (unknown.length)
 		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: ${allowed.join(", ")})`);
-	if (raw.version === 2) {
-		return {
-			version: 3,
-			scout: migrateV2Pool(raw.scout, `${where}.scout`, true),
-			worker: migrateV2Pool(raw.worker, `${where}.worker`, false),
-		};
-	}
 	return {
 		version: 3,
 		scout: validV3Pool(raw.scout, `${where}.scout`, true),

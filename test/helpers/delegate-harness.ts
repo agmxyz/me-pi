@@ -78,6 +78,18 @@ const LUNA = "openai-codex/gpt-6-luna";
 
 const COPILOT = "github-copilot/claude-sonnet-5-5";
 
+// A v3 pool giving every model the same thinking level.
+const pool = (models: string[], thinking: string) => ({
+	models: models.map((model) => ({ model, thinking })),
+	thinking,
+});
+// Scouts get every model at low; workers start with `workerFirst` (default: the last model) at max.
+const modelSet = (models: string[], workerFirst = models.at(-1)) => ({
+	version: 3,
+	scout: pool(models, "low"),
+	worker: pool([workerFirst, ...models.filter((m) => m !== workerFirst)], "max"),
+});
+
 const POOL_SET = {
 	version: 3,
 	scout: {
@@ -948,4 +960,4 @@ const implement = (extra = {}) => ({ role: "implement", task: "add a feature", c
 // Resolves once a hang-mode worker has written the file it writes before it waits.
 const workerStarted = (repo) => waitFor(() => existsSync(join(repo, "left.txt")), "the worker to start");
 
-export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, IMPLEMENT_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, WORKER_CONTRACT, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, trackCheck, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, snapshotContent, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, fallbackAuthorization, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals, CHECK, implementRepo, implementEnv, implement, workerStarted };
+export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, IMPLEMENT_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, WORKER_CONTRACT, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, trackCheck, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, snapshotContent, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, pool, modelSet, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, fallbackAuthorization, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals, CHECK, implementRepo, implementEnv, implement, workerStarted };

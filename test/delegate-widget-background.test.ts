@@ -7,6 +7,7 @@ import {
 	fallbackAuthorization,
 	HAIKU,
 	LUNA,
+	modelSet,
 	OPUS,
 	POOL_SET,
 	run,
@@ -97,7 +98,7 @@ test("each worker keeps one persona across progress, widget rerenders, and the r
 	const draws = [0, 0, 0.99, 0.9];
 	t.mock.method(Math, "random", () => draws.shift() ?? 0.5);
 	const { tool } = setup(t, {
-		config: { models: [HAIKU, OPUS] },
+		config: modelSet([HAIKU, OPUS]),
 		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
 	});
 	const ui = tuiCtx();
@@ -155,7 +156,7 @@ test("a scout worker is an elf in progress and the widget", async (t) => {
 test("the elapsed timer stops between rebuttal rounds and restarts for active rows", async (t) => {
 	const intervals = trackIntervals(t);
 	const { tool } = setup(t, {
-		config: { models: [HAIKU, OPUS] },
+		config: modelSet([HAIKU, OPUS]),
 		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
 	});
 	const ui = tuiCtx();
@@ -242,7 +243,7 @@ test("the TUI widget keeps the first configured candidate after a provider retry
 });
 
 test("the TUI widget shows the rebuttal stage", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	const ui = tuiCtx();
 	const result = await run(
 		tool,

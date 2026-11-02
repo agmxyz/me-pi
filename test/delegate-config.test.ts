@@ -8,6 +8,7 @@ import {
 	HAIKU,
 	LUNA,
 	loadModelSet,
+	modelSet,
 	OPUS,
 	POLICY,
 	POOL_SET,
@@ -20,65 +21,20 @@ import {
 	text,
 } from "./helpers/delegate-harness.ts";
 
-test("v1 and v2 configs migrate to per-model levels, and empty pools use the session model", () => {
-	const path = scratch("legacy-delegate.json");
-	writeFileSync(path, JSON.stringify({ models: [HAIKU, SONNET, OPUS], default: SONNET }));
-	const set = loadModelSet(path);
-	assert.deepEqual(set, {
-		version: 3,
-		scout: {
-			models: [HAIKU, SONNET, OPUS].map((model) => ({ model, thinking: "low" })),
-			thinking: "low",
-		},
-		worker: {
-			models: [SONNET, HAIKU, OPUS].map((model) => ({ model, thinking: "max" })),
-			thinking: "max",
-		},
-	});
-	assert.deepEqual(resolveRun("review", { model: OPUS, thinking: "medium" }, set), {
-		model: OPUS,
-		candidates: [{ model: OPUS, thinking: "medium" }],
-		thinking: "medium",
-	});
-	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { models: [HAIKU, SONNET, OPUS], default: SONNET });
-
-	const v2Path = scratch("v2-delegate.json");
-	writeFileSync(
-		v2Path,
-		JSON.stringify({
-			version: 2,
-			scout: { models: [HAIKU], thinking: "off" },
-			worker: { models: [LUNA, OPUS], thinking: "max" },
-		}),
-	);
-	const v2 = loadModelSet(v2Path);
-	assert.equal(JSON.parse(readFileSync(v2Path, "utf8")).version, 2, "reading a legacy config does not rewrite it");
-	assert.deepEqual(v2, {
-		version: 3,
-		scout: { models: [{ model: HAIKU, thinking: "off" }], thinking: "off" },
-		worker: {
-			models: [LUNA, OPUS].map((model) => ({ model, thinking: "max" })),
-			thinking: "max",
-		},
-	});
-	assert.deepEqual(resolveRun("scout", { thinking: "high" }, v2), {
-		model: HAIKU,
-		candidates: [{ model: HAIKU, thinking: "low" }],
-		thinking: "low",
-	});
-	assert.deepEqual(resolveRun("review", {}, v2), {
-		model: LUNA,
-		candidates: [
-			{ model: LUNA, thinking: "max" },
-			{ model: OPUS, thinking: "max" },
-		],
-		thinking: "max",
-	});
-	assert.deepEqual(resolveRun("review", { model: "openai/gpt-x" }, v2), {
-		model: "openai/gpt-x",
-		candidates: [{ model: "openai/gpt-x", thinking: "max" }],
-		thinking: "max",
-	});
+test("v1 and v2 configs fail with a pointer to the v3 format, and empty pools use the session model", () => {
+	for (const [name, config] of [
+		["v1", { models: [HAIKU, SONNET, OPUS], default: SONNET }],
+		["v2", { version: 2, scout: { models: [HAIKU], thinking: "off" }, worker: { models: [LUNA], thinking: "max" } }],
+	]) {
+		const path = scratch(`${name}-delegate.json`);
+		writeFileSync(path, JSON.stringify(config));
+		assert.throws(
+			() => loadModelSet(path),
+			/unsupported format \(version (null|2)\); expected "version": 3 .*docs\/delegate\.md/,
+			name,
+		);
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), config, `${name} config is not rewritten`);
+	}
 
 	const empty = loadModelSet(join(TEST_HOME, "nope.json"));
 	assert.deepEqual(resolveRun("scout", {}, empty, "x/session", "off"), {
@@ -193,20 +149,7 @@ test("v3 model configs validate per-model thinking", (t) => {
 	for (const [content, error] of [
 		["{", /delegate config .*: /],
 		["[]", /expected a JSON object/],
-		[JSON.stringify({ models: [HAIKU], tiers: {} }), /unknown key\(s\) tiers \(allowed: models, default\)/],
-		[JSON.stringify({ models: [{ id: HAIKU }] }), /models.*must be an array of model ids/],
-		[JSON.stringify({ models: [HAIKU, HAIKU] }), /models.*lists a model twice/],
-		[JSON.stringify({ models: [HAIKU], default: OPUS }), /"default" must be one of "models"/],
-		[JSON.stringify({ version: 4 }), /unsupported version 4 \(expected 2 or 3\)/],
-		[
-			JSON.stringify({
-				version: 2,
-				scout: { models: [HAIKU], thinking: "low" },
-				worker: { models: [OPUS], thinking: "max" },
-				review: { models: [SONNET], thinking: "high" },
-			}),
-			/unknown key\(s\) review \(allowed: version, scout, worker\)/,
-		],
+		[JSON.stringify({ version: 4 }), /unsupported format \(version 4\)/],
 		[
 			JSON.stringify({
 				version: 3,
@@ -264,10 +207,12 @@ test("v3 model configs validate per-model thinking", (t) => {
 	]) {
 		assert.throws(() => loadModelSet(write(content)), error);
 	}
-	const { tool } = setup(t, { config: JSON.stringify({ models: "x" }) });
+	const { tool } = setup(t, {
+		config: JSON.stringify({ version: 3, scout: { models: "x" }, worker: { models: [] } }),
+	});
 	return run(tool, { role: "scout", task: "x" }).then((res) => {
 		assert.equal(res.isError, true);
-		assert.match(text(res), /models.*must be an array/);
+		assert.match(text(res), /scout\.models must be an array/);
 	});
 });
 
@@ -372,7 +317,7 @@ test("review pool selects its first candidate, reports status, and preserves wor
 });
 
 test("the schema allows exact model IDs outside the configured pools", (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	const model = tool.parameters.properties.runs.items.properties.model;
 	assert.equal(model.type, "string");
 	assert.equal(model.enum, undefined);

@@ -11,6 +11,7 @@ import {
 	ONE_OFF,
 	OPUS,
 	POOL_SET,
+	pool,
 	REGISTRY_MODELS,
 	registryFixture,
 	resolveRun,
@@ -36,9 +37,9 @@ test("dispatch stays first-only when a parent snapshot cannot bind a later child
 	};
 	const { tool } = setup(t, {
 		config: {
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, SONNET], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "low"),
+			worker: pool([HAIKU, SONNET], "max"),
 		},
 		env: {
 			FAKE_PI_MODE: "rate-limit-model",
@@ -391,9 +392,9 @@ test("a rate-limited worker does not fall back through its pool", async (t) => {
 	const marker = scratch("fallback-marker");
 	const { tool } = setup(t, {
 		config: {
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, SONNET], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "low"),
+			worker: pool([HAIKU, SONNET], "max"),
 		},
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
@@ -418,9 +419,9 @@ test("quota and usage-limit failures do not fall through an authorized pool", as
 	// One setup, so its env restore runs once; each case only swaps the error text.
 	const { tool } = setup(t, {
 		config: {
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, SONNET], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "low"),
+			worker: pool([HAIKU, SONNET], "max"),
 		},
 		env: { FAKE_PI_MODE: "quota-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_ERROR: "" },
 	});
@@ -460,9 +461,9 @@ test("first-only dispatch reports the first candidate's worker cost", async (t) 
 	const marker = scratch("fallback-cost-marker");
 	const { tool } = setup(t, {
 		config: {
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, SONNET, OPUS], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "low"),
+			worker: pool([HAIKU, SONNET, OPUS], "max"),
 		},
 		env: {
 			FAKE_PI_MODE: "rate-limit-models",
@@ -536,9 +537,9 @@ test("model-unavailable errors without structured retry evidence fail closed", a
 	const marker = scratch("unavailable-marker");
 	const { tool } = setup(t, {
 		config: {
-			version: 2,
-			scout: { models: [LUNA], thinking: "off" },
-			worker: { models: [HAIKU, SONNET], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "off"),
+			worker: pool([HAIKU, SONNET], "max"),
 		},
 		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
@@ -562,9 +563,9 @@ test("an adopted scope and later config changes cannot enable cross-model fallba
 	const marker = scratch("adopted-snapshot-frozen-marker");
 	const { tool } = setup(t, {
 		config: {
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, SONNET, OPUS], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "low"),
+			worker: pool([HAIKU, SONNET, OPUS], "max"),
 		},
 		env: {
 			FAKE_PI_MODE: "rate-limit-models",
@@ -587,9 +588,9 @@ test("an adopted scope and later config changes cannot enable cross-model fallba
 	writeFileSync(
 		process.env.ME_PI_DELEGATE_CONFIG,
 		JSON.stringify({
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, OPUS, ONE_OFF], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "low"),
+			worker: pool([HAIKU, OPUS, ONE_OFF], "max"),
 		}),
 	);
 
@@ -610,9 +611,9 @@ test("configuration and authorization added after dispatch cannot start another 
 	const marker = scratch("late-fallback-authorization-marker");
 	const { tool } = setup(t, {
 		config: {
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, SONNET], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "low"),
+			worker: pool([HAIKU, SONNET], "max"),
 		},
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
@@ -621,9 +622,9 @@ test("configuration and authorization added after dispatch cannot start another 
 	writeFileSync(
 		process.env.ME_PI_DELEGATE_CONFIG,
 		JSON.stringify({
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, SONNET, OPUS], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "low"),
+			worker: pool([HAIKU, SONNET, OPUS], "max"),
 		}),
 	);
 	params.fallbackAuthorization = fallbackAuthorization([HAIKU, SONNET, OPUS]);
@@ -643,9 +644,9 @@ test("named, adopted, or mismatched scope metadata cannot enable fallback", asyn
 	const marker = scratch("scope-metadata-no-fallback-marker");
 	const { tool } = setup(t, {
 		config: {
-			version: 2,
-			scout: { models: [LUNA], thinking: "low" },
-			worker: { models: [HAIKU, SONNET], thinking: "max" },
+			version: 3,
+			scout: pool([LUNA], "low"),
+			worker: pool([HAIKU, SONNET], "max"),
 		},
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
@@ -675,9 +676,9 @@ test("named, adopted, or mismatched scope metadata cannot enable fallback", asyn
 
 test("fallback fails closed on malformed evidence, shell 429s, prior effects, and blocked calls", async (t) => {
 	const config = {
-		version: 2,
-		scout: { models: [LUNA], thinking: "low" },
-		worker: { models: [HAIKU, SONNET], thinking: "max" },
+		version: 3,
+		scout: pool([LUNA], "low"),
+		worker: pool([HAIKU, SONNET], "max"),
 	};
 	const cases = [
 		["malformed-retry", /no structured retry classification/, "no-retry"],
@@ -748,9 +749,9 @@ test("fallback fails closed on malformed evidence, shell 429s, prior effects, an
 test("fallback keeps the original tool deadline and retains a competing guard denial", async (t) => {
 	const delayedMarker = scratch("fallback-deadline-marker");
 	const config = {
-		version: 2,
-		scout: { models: [LUNA], thinking: "low" },
-		worker: { models: [HAIKU, SONNET], thinking: "max" },
+		version: 3,
+		scout: pool([LUNA], "low"),
+		worker: pool([HAIKU, SONNET], "max"),
 	};
 	const delayed = setup(t, {
 		config,
@@ -811,9 +812,9 @@ test("fallback preserves the cumulative scout tool-call allowance", async (t) =>
 	const marker = scratch("fallback-scout-call-limit-marker");
 	const { tool } = setup(t, {
 		config: {
-			version: 2,
-			scout: { models: [HAIKU, SONNET], thinking: "low" },
-			worker: { models: [LUNA], thinking: "max" },
+			version: 3,
+			scout: pool([HAIKU, SONNET], "low"),
+			worker: pool([LUNA], "max"),
 		},
 		env: { FAKE_PI_MODE: "read-then-retry", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 		limits: { scoutToolCalls: 1 },

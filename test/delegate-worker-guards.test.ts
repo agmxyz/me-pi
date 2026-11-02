@@ -10,6 +10,7 @@ import {
 	HAIKU,
 	LIMITS,
 	LOCAL_TOOLS,
+	modelSet,
 	OPUS,
 	REPO_ROOT,
 	run,
@@ -292,7 +293,7 @@ test("implement workers' bash calls are checked against the worker-only rules", 
 });
 
 test("workers get a wrap-up budget: scout tool calls, 80% of the time limit and cost cap", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "echo-budget" } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "echo-budget" } });
 	assert.equal(LIMITS.scoutToolCalls, 60);
 	assert.equal(LIMITS.scoutTimeoutSecs, 300);
 	assert.equal(LIMITS.costCapUsd, 5);
@@ -441,7 +442,7 @@ test("workers write only inside their own output directory", async (t) => {
 });
 
 test("output: each worker gets write and a fresh 0700 directory; the result lists files, not contents", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "write-draft" } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "write-draft" } });
 	const res = await run(tool, { task: "draft", output: true, runs: [{ model: HAIKU }, { model: OPUS }] });
 	assert.equal(res.isError, false, text(res));
 	assert.doesNotMatch(text(res), /DRAFT-BODY/);
@@ -458,7 +459,7 @@ test("output: each worker gets write and a fresh 0700 directory; the result list
 test("output with rebuttal: round 2 gets new directories and the round-1 file lists", async (t) => {
 	const marker = scratch("marker");
 	const { tool } = setup(t, {
-		config: { models: [HAIKU, OPUS] },
+		config: modelSet([HAIKU, OPUS]),
 		env: { FAKE_PI_MODE: "write-draft", FAKE_PI_MARKER: marker },
 	});
 	const res = await run(tool, { task: "d", output: true, runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true });
@@ -477,7 +478,7 @@ test("output with rebuttal: round 2 gets new directories and the round-1 file li
 });
 
 test("output: the file list is capped and quotes names with control characters", async (t) => {
-	const { tool } = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "write-many" } });
+	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "write-many" } });
 	const res = text(await run(tool, { task: "x", output: true }));
 	assert.match(res, /: "a\\n\[forged label\]" \(1 B\), f00 \(1 B\), /);
 	assert.match(res, /, f48 \(1 B\), \u2026 3 more\n\[claude-opus-5-5 /);
@@ -486,7 +487,7 @@ test("output: the file list is capped and quotes names with control characters",
 
 test("output: a failed round-2 run lists its own directory", async (t) => {
 	const { tool } = setup(t, {
-		config: { models: [HAIKU, OPUS] },
+		config: modelSet([HAIKU, OPUS]),
 		env: { FAKE_PI_MODE: "fail-round2", FAKE_PI_FAIL_MODEL: OPUS },
 	});
 	const res = await run(tool, { task: "x", output: true, runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true });
@@ -505,16 +506,16 @@ test("output: a failed round-2 run lists its own directory", async (t) => {
 });
 
 test("output: a failed run still lists its files; a failed mkdtemp is reported", async (t) => {
-	const failed = setup(t, { config: { models: [HAIKU, OPUS] }, env: { FAKE_PI_MODE: "fail" } });
+	const failed = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "fail" } });
 	assert.match(text(await run(failed.tool, { task: "x", output: true })), /\nFiles in \S+: none written\n\[/);
-	const noTmp = setup(t, { config: { models: [HAIKU, OPUS] }, env: { TMPDIR: join(TEST_HOME, "missing-tmp") } });
+	const noTmp = setup(t, { config: modelSet([HAIKU, OPUS]), env: { TMPDIR: join(TEST_HOME, "missing-tmp") } });
 	const res = await run(noTmp.tool, { task: "x", output: true });
 	assert.equal(res.isError, true);
 	assert.match(text(res), /^\u2717 could not create the output directory: ENOENT/);
 });
 
 test("output with no files written says so; without output there is no write tool", async (t) => {
-	const none = setup(t, { config: { models: [HAIKU, OPUS] } });
+	const none = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	const empty = text(await run(none.tool, { task: "x", output: true }));
 	assert.match(empty, /^DONE .*tools=read,grep,find,ls,Skill,write .*\nFiles in \S+: none written\n\[/);
 	const without = text(await run(none.tool, { task: "x" }));
