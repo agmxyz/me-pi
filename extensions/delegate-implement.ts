@@ -722,6 +722,29 @@ function hasUnresolvedProvenance(outcome: Outcome): boolean {
 	);
 }
 
+/**
+ * Runs a prepared job so finish always runs exactly once. The body ends the job itself through `end`; if it throws
+ * before that, the job ends with `onError`'s outcome and the error is rethrown with the handback appended.
+ */
+export async function runImplementJob<T>(
+	job: Checkout,
+	body: (end: (outcome: Outcome) => Promise<Facts>) => Promise<T>,
+	onError: (err: unknown) => Outcome,
+): Promise<T> {
+	let ended: Promise<Facts> | undefined;
+	const end = (outcome: Outcome) => {
+		ended ??= finish(job, outcome);
+		return ended;
+	};
+	try {
+		return await body(end);
+	} catch (err: any) {
+		if (ended) throw err;
+		const facts = await end(onError(err));
+		throw new Error(`${err?.message ?? err}\n${formatHandback(facts)}`);
+	}
+}
+
 /** Ends a job; never throws. Commits leftovers as WIP on the job's branch, checks the range and tripwires. */
 export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Facts> {
 	const facts: Facts = {
