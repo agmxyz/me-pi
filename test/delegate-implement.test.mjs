@@ -826,7 +826,7 @@ test("isCheckRun: one leading cd to the job cwd counts; any other cd or chain do
 		assert.equal(isCheckRun(c, check, cwd), false, c);
 });
 
-test("checkInCompound: the declared check inside a pipe, chain, or redirect, but not alone or with other args", () => {
+test("checkInCompound: the declared check inside a pipe, chain, or redirect, or with only extra flags, but not alone or with file targets", () => {
 	const check = "npm run check";
 	const cwd = TEST_HOME;
 	for (const c of [
@@ -836,13 +836,15 @@ test("checkInCompound: the declared check inside a pipe, chain, or redirect, but
 		`npm run lint && ${check}`,
 		`${check} > /tmp/out.txt 2>&1`,
 		`rtk ${check} | head`,
+		`${check} -- --test-timeout=60000`,
+		`${check} -- --test-timeout=60000 | tail`,
 	])
 		assert.equal(checkInCompound(c, check, cwd), true, c);
 	for (const c of [
 		check,
 		`cd ${cwd} && ${check}`,
 		`${check} 2>&1`,
-		`${check} -- --test-timeout=60000 | tail`,
+		`${check} -- test/a.test.mjs`,
 		"npm run check:types | tail",
 		"node --test test/a.test.mjs | tail",
 	])

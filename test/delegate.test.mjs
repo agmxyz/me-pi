@@ -1079,6 +1079,10 @@ test("implement workers' bash calls are checked against the worker-only rules", 
 	assert.match(piped.reason, /^Blocked: run `npm test` alone, exactly as given/);
 	assert.equal(await checked(bash("npm test"), { cwd: REPO_ROOT }), undefined);
 	assert.equal(await checked(bash("npm test -- test/a.test.mjs | tail"), { cwd: REPO_ROOT }), undefined);
+	assert.match(
+		(await checked(bash("npm test -- --test-timeout=60000"), { cwd: REPO_ROOT })).reason,
+		/^Blocked: run `npm test` alone/,
+	);
 	const other = setup(t, { env: { ME_PI_RUN: "1" } }).handlers.tool_call;
 	assert.equal(await other(bash("git push origin x"), { cwd: REPO_ROOT }), undefined);
 });

@@ -2207,11 +2207,11 @@ export default function (pi: ExtensionAPI) {
 				const command = String((event.input as { command?: unknown }).command ?? "");
 				const risk = workerRisk(command);
 				if (risk) return recordBlock(`Blocked: ${risk}; list it as BLOCKED.`, "worker-fence-denial", "guard");
-				// A piped or chained check reports another command's exit status, so it would not count as the check.
+				// A piped, chained, or re-argued check reports another command's exit status, so it would not count as the check.
 				const check = process.env.ME_PI_CHECK;
 				if (check && checkInCompound(command, check, ctx.cwd))
 					return recordBlock(
-						`Blocked: run \`${check}\` alone, exactly as given, so its exit status counts (no pipe, chain, or redirect). Use focused commands for partial output.`,
+						`Blocked: run \`${check}\` alone, exactly as given, so its exit status counts (no pipe, chain, redirect, or extra flags). Use focused commands for partial output.`,
 						"worker-fence-denial",
 						"guard",
 					);

@@ -523,10 +523,24 @@ export function isCheckRun(command: string, check: string, cwd: string): boolean
 // Trailing output redirections, e.g. `> out.txt 2>&1`.
 const REDIRECTS = /(?:\s+\d?>>?(?:&\d|\s*[^\s|;&]+))+\s*$/;
 
-/** Whether a bash command runs the declared check inside a pipe, chain, or redirect, where its result does not count. */
+/**
+ * Whether a bash command runs the declared check inside a pipe, chain, or redirect, or with only extra flags
+ * (`check -- --test-timeout=…`), where its result does not count. Extra file targets are a focused run, not the check.
+ */
 export function checkInCompound(command: string, check: string, cwd: string): boolean {
 	if (isCheckRun(command, check, cwd)) return false;
-	return command.split(/\|\||&&|[|;\n]/).some((part) => normalized(part.replace(REDIRECTS, "")) === normalized(check));
+	const want = normalized(check);
+	return command.split(/\|\||&&|[|;\n]/).some((part) => {
+		const got = normalized(part.replace(REDIRECTS, ""));
+		if (got === want) return true;
+		if (!got.startsWith(`${want} `)) return false;
+		const extra = got
+			.slice(want.length)
+			.trim()
+			.split(/\s+/)
+			.filter((arg) => arg !== "--");
+		return extra.length > 0 && extra.every((arg) => arg.startsWith("-"));
+	});
 }
 
 const TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
