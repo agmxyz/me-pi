@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { HOME } from "./delegate-config.ts";
 
@@ -58,7 +58,45 @@ export function secretPathIn(toolName: string, input: unknown, cwd: string): str
 	if (typeof fields.path !== "string" || !fields.path.trim()) return undefined;
 	const given = fields.path.trim().replace(/^@/, "");
 	const absolute = resolve(cwd, expandHome(given));
-	return [absolute, realpathOr(absolute)].find(isSecretPath);
+	return [absolute, ...resolvedForms(absolute)].find(isSecretPath);
+}
+
+const MAX_LINK_HOPS = 40;
+
+// The path through its symlinks; when that fails (a dangling link), each hop of the readlink chain instead,
+// so a link to a missing secret path is still caught.
+function resolvedForms(absolute: string): string[] {
+	try {
+		return [realpathSync.native(absolute)];
+	} catch {
+		const hops: string[] = [];
+		let current = absolute;
+		for (let i = 0; i < MAX_LINK_HOPS; i++) {
+			const next = followFirstLink(current);
+			if (next === undefined) break;
+			hops.push(next);
+			current = next;
+		}
+		return hops;
+	}
+}
+
+// The path with its first symlink component replaced by the link's target, or undefined when none is a link.
+function followFirstLink(absolute: string): string | undefined {
+	const parts = absolute.split(sep).filter(Boolean);
+	let prefix: string = sep;
+	for (let i = 0; i < parts.length; i++) {
+		prefix = join(prefix, parts[i]);
+		let target: string;
+		try {
+			if (!lstatSync(prefix).isSymbolicLink()) continue;
+			target = readlinkSync(prefix);
+		} catch {
+			return undefined; // Missing component: nothing further to follow.
+		}
+		return join(resolve(dirname(prefix), target), ...parts.slice(i + 1));
+	}
+	return undefined;
 }
 
 // --- Draft output (enforced inside workers) -------------------------------------------------------

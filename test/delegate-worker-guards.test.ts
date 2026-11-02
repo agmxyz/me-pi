@@ -226,7 +226,10 @@ test("workers cannot name secret paths in read, grep, find, or ls", async (t) =>
 	const home = homedir();
 	const dir = mkdtempSync(join(TEST_HOME, "secrets-"));
 	writeFileSync(join(dir, "notes.txt"), "x");
+	// Both targets are missing in the fixture HOME: a dangling link must still be blocked by where it points.
 	symlinkSync(join(home, ".ssh", "id_ed25519"), join(dir, "innocent-link"));
+	symlinkSync(join(home, ".ssh", "me-pi-test-nonexistent-key"), join(dir, "plain-link"));
+	symlinkSync("plain-link", join(dir, "relative-link"));
 	for (const [tool, input] of [
 		["read", { path: "~/.ssh/id_ed25519" }],
 		["read", { path: join(home, ".pi/agent/auth.json") }],
@@ -239,6 +242,9 @@ test("workers cannot name secret paths in read, grep, find, or ls", async (t) =>
 		["read", { path: "../.git-credentials" }],
 		["read", { path: "certs/server.pem" }],
 		["read", { path: "innocent-link" }],
+		["read", { path: "plain-link" }],
+		["read", { path: "relative-link" }],
+		["ls", { path: "relative-link/sub" }],
 		["grep", { pattern: "x", path: "~/.aws" }],
 		["grep", { pattern: "TOKEN", path: ".", glob: "**/.env*" }],
 		["grep", { pattern: "x", glob: "{*.ts,id_rsa}" }],
