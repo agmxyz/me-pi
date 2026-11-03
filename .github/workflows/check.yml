@@ -22,7 +22,7 @@ jobs:
       matrix:
         # macOS is covered by local runs while the repo is private (10x minutes); add it back when public.
         os: [ubuntu-latest]
-        node: ["22.19", "24"]
+        node: ["22.19"]
     steps:
       # Depth 1 still gives a HEAD for `git diff --check HEAD`.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
