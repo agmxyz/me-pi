@@ -24,14 +24,14 @@ import {
 } from "./delegate-attempt.ts";
 import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
-	canonicalModel,
+	type AllocatedRun,
 	configPath,
 	configuredModels,
 	loadModelSet,
 	type ModelSet,
 	type ResolvedRun,
 	type RunSpec,
-	resolveRun,
+	resolveRuns,
 	THINKING_LEVELS,
 	validateOneOffModel,
 } from "./delegate-config.ts";
@@ -419,7 +419,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. Only the pool's first model is dispatched; there is no cross-model fallback. Explicit models remain exact. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. A run without a model starts on the pool's first model; a review run started while other reviews run starts on the least-occupied usable review-pool model instead. Each run dispatches that one model; there is no cross-model fallback. Explicit models remain exact; name the model to continue a review on it. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
 			},
 			task: {
 				type: "string",
@@ -443,7 +443,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. For several models on the same task, use one entry per model. Not for implement: it uses the first model in the worker pool in delegate.json.",
+					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. An omitted model uses the pool's first model; for review, concurrent runs spread across usable review-pool models. For several models on the same task, use one entry per model. Not for implement: it uses the first model in the worker pool in delegate.json.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -672,7 +672,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Each run uses one model, the explicit `model` or the role pool's first; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Each run uses one model, the explicit `model` or the role pool's first (concurrent reviews start on the least-occupied usable review-pool model); no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),
@@ -741,25 +741,41 @@ export default function (pi: ExtensionAPI) {
 			if (badRun >= 0)
 				return fail(`runs[${badRun}] must be { model?: string, thinking?: ${THINKING_LEVELS.join("|")} }`);
 			if (rebuttal && specs.length < 2) return fail("rebuttal needs at least 2 runs");
+			// Reservation: for non-implement roles, everything from here through `active.set` in `call()` must stay
+			// synchronous (no `await`), so a concurrent review call sees this call's models when it allocates its own.
 			let set: ModelSet;
 			let session: string | undefined;
-			let resolved: ResolvedRun[];
+			let allocated: AllocatedRun[];
 			try {
 				set = loadModelSet();
 				session = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 				const configured = new Set(configuredModels(set));
 				for (const spec of specs)
 					if (spec.model && !configured.has(spec.model)) validateOneOffModel(spec.model, ctx?.modelRegistry);
-				resolved = specs.map((r) => {
-					const run = resolveRun(role, r, set, session, ctx?.thinkingLevel);
-					return run.model && run.model !== session
-						? { ...run, model: canonicalModel(run.model, ctx?.modelRegistry) }
-						: run;
+				const occupied = new Map<string, number>();
+				for (const a of active.values())
+					if (a.role === "review")
+						for (const m of a.models) if (m !== "session model") occupied.set(m, (occupied.get(m) ?? 0) + 1);
+				allocated = resolveRuns(role, specs, set, {
+					sessionModel: session,
+					sessionThinking: ctx?.thinkingLevel,
+					registry: ctx?.modelRegistry,
+					occupied,
 				});
 				if (role !== "implement") job.skills = set.readOnlySkills;
 			} catch (err: any) {
 				return fail(err.message);
 			}
+			const resolved: ResolvedRun[] = allocated.map(({ model, thinking }) => ({ model, thinking }));
+			const allocation = allocated.map((r) => r.allocation);
+			// Fewer eligible distinct review models than concurrent review runs: say so once, never an error.
+			const sharedNote = allocated
+				.filter((r) => r.allocation.source === "pool" && r.allocation.shared > 0)
+				.map(
+					(r) =>
+						`Review model shared: ${r.model} already has ${r.allocation.shared} review run(s) reserved; all eligible distinct pool models are occupied.`,
+				)
+				.join(" ");
 
 			const models = resolved.map((r) => r.model ?? "session model");
 			// Picked once per worker: progress, the widget, and the rebuttal round all reuse it.
@@ -858,6 +874,8 @@ export default function (pi: ExtensionAPI) {
 				end?: (outcome: Outcome) => Promise<Facts>,
 			) => {
 				const start = Date.now();
+				// The review-model reservation: reached with no `await` since allocation (non-implement roles), released by
+				// the `finally` below on every exit. Keep this segment synchronous.
 				active.set(key, {
 					role,
 					models,
@@ -1015,8 +1033,9 @@ export default function (pi: ExtensionAPI) {
 					if (history.length > HISTORY_SIZE) history.shift();
 					const usage = {};
 					for (const r of all) addUsage(usage, r.usage);
+					const notes = [note, sharedNote].filter(Boolean).join(" ");
 					const footer =
-						all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
+						all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${notes}` : notes;
 					// implement: the handback replaces the answer; the TUI view keeps the full answer.
 					const sections = facts
 						? [formatHandback(facts)]
@@ -1048,6 +1067,7 @@ export default function (pi: ExtensionAPI) {
 						details: {
 							round1: round1.map(withoutOutput),
 							round2: round2.map(withoutOutput),
+							allocation,
 							view,
 							...(facts && { implement: facts }),
 						},
