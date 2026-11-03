@@ -9,10 +9,12 @@ import {
 	HAIKU,
 	IMPLEMENT_TOOLS,
 	LOCAL_TOOLS,
+	LUNA,
 	modelSet,
 	OPUS,
 	PROMPT_GUIDELINES,
 	PROMPT_SNIPPET,
+	pool,
 	progressLines,
 	REPO_ROOT,
 	ROLES,
@@ -54,23 +56,24 @@ test("a scout runs read-only, one-shot, marked as a worker, with the prompt on s
 
 test("each worker gets the contract and its role's answer format", async (t) => {
 	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "echo-system" } });
-	for (const role of ["scout", "research", "review", "challenge"]) {
+	for (const role of ["scout"]) {
 		const res = await run(tool, { role, task: "x" });
 		assert.equal(res.isError, false, text(res));
-		assert.ok(text(res).startsWith(workerContract(ROLES[role].web)), role);
+		assert.ok(text(res).startsWith(workerContract(false)), role);
 		assert.ok(text(res).includes(`Role: ${role}. Final answer format: ${ROLES[role].answer}`), role);
 	}
 });
 
-test("roles get their tools: only research and challenge reach the web", async (t) => {
+test("no role reaches the web: web tools come only from web: true, never from task or skill wording", async (t) => {
 	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]) });
-	for (const [role, tools] of [
-		["review", LOCAL_TOOLS],
-		["research", WEB_TOOLS],
-		["challenge", WEB_TOOLS],
+	const task = "research the web for the latest API docs and fetch pages; load the research skill";
+	for (const [role, model, thinking] of [
+		["general", OPUS, "max"],
+		["scout", HAIKU, "low"],
 	]) {
-		const res = await run(tool, { role, task: "x" });
-		assert.match(text(res), new RegExp(`model=${OPUS} thinking=max tools=${tools} `), role);
+		const res = await run(tool, { role, task });
+		assert.equal(res.isError, false, text(res));
+		assert.match(text(res), new RegExp(`model=${model} thinking=${thinking} tools=${LOCAL_TOOLS} `), role);
 	}
 });
 
@@ -119,17 +122,17 @@ test("the default role is general: local tools, first worker model, max thinking
 	assert.match(text(res), new RegExp(`^DONE model=${SONNET} thinking=max tools=${LOCAL_TOOLS} .* role=general `));
 });
 
-test("web overrides the role's tools and adds a badge to progress and results", async (t) => {
+test("web: true adds web tools and a badge to progress and results; web: false keeps local tools", async (t) => {
 	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]) });
 	const progress = [];
 	const onUpdate = (u) => progress.push(text(u));
-	const on = await run(tool, { role: "review", task: "x", web: true }, undefined, onUpdate);
-	assert.match(text(on), new RegExp(`thinking=max tools=${WEB_TOOLS} .* role=review `));
+	const on = await run(tool, { role: "general", task: "x", web: true }, undefined, onUpdate);
+	assert.match(text(on), new RegExp(`thinking=max tools=${WEB_TOOLS} .* role=general `));
 	assert.match(text(on), /\n\[claude-opus-5-5 @max web \$0\.0020 \d+s\]$/);
 	assert.ok(progress.length && progress.every((p) => p.startsWith("Workers [web]\n")), progress.join("|"));
 	progress.length = 0;
-	const off = await run(tool, { role: "research", task: "x", web: false }, undefined, onUpdate);
-	assert.match(text(off), new RegExp(`thinking=max tools=${LOCAL_TOOLS} .* role=research `));
+	const off = await run(tool, { role: "general", task: "x", web: false }, undefined, onUpdate);
+	assert.match(text(off), new RegExp(`thinking=max tools=${LOCAL_TOOLS} .* role=general `));
 	assert.match(text(off), /\n\[claude-opus-5-5 @max \$0\.0020 \d+s\]$/);
 	assert.ok(progress.length && progress.every((p) => p.startsWith("Workers\n")), progress.join("|"));
 });
@@ -144,8 +147,10 @@ test("web does not lift scout's thinking cap", async (t) => {
 test("a call's answer replaces the role's format, up to 400 characters", async (t) => {
 	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "echo-system" } });
 	const prompt = (role, format) => `${workerContract(false)}\nRole: ${role}. Final answer format: ${format}\n[`;
-	const review = text(await run(tool, { role: "review", task: "x", answer: "  a table: option | risk \n" }));
-	assert.ok(review.startsWith(prompt("review", "a table: option | risk")), review);
+	const general = text(await run(tool, { role: "general", task: "x", answer: "  a table: option | risk \n" }));
+	assert.ok(general.startsWith(prompt("general", "a table: option | risk")), general);
+	const scout = text(await run(tool, { role: "scout", task: "x", answer: "one path" }));
+	assert.ok(scout.startsWith(prompt("scout", "one path")), scout);
 	const longest = text(await run(tool, { task: "x", answer: "y".repeat(400) }));
 	assert.ok(longest.startsWith(prompt("general", "y".repeat(400))), longest);
 });
@@ -154,7 +159,11 @@ test("bad calls are refused before any worker starts", async (t) => {
 	const marker = scratch("marker");
 	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: modelSet([HAIKU, OPUS]) });
 	for (const [params, error] of [
-		[{ role: "planner", task: "x" }, /role must be one of general, scout, research, review, challenge, implement$/],
+		[{ role: "planner", task: "x" }, /role must be one of general, scout, implement$/],
+		...["review", "research", "challenge"].map((role) => [
+			{ role, task: "x" },
+			/^role must be one of general, scout, implement$/,
+		]),
 		[{ role: "constructor", task: "x" }, /role must be one of/],
 		[{ role: "__proto__", task: "x" }, /role must be one of/],
 		[{ role: "scout", task: "  " }, /task must be a non-empty string/],
@@ -163,16 +172,16 @@ test("bad calls are refused before any worker starts", async (t) => {
 		[{ task: "x", answer: "" }, /answer must be a non-empty string of at most 400 characters/],
 		[{ task: "x", answer: " \n " }, /answer must be a non-empty string of at most 400 characters/],
 		[{ task: "x", answer: "y".repeat(401) }, /answer must be a non-empty string of at most 400 characters/],
-		[{ role: "review", task: "x", runs: [] }, /runs must have 1-4 entries/],
-		[{ role: "review", task: "x", runs: Array(5).fill({}) }, /runs must have 1-4 entries/],
-		[{ role: "review", task: "x", runs: [{ model: "" }] }, /runs\[0\] must be/],
-		[{ role: "review", task: "x", runs: [{ model: "   " }] }, /runs\[0\] must be/],
-		[{ role: "review", task: "x", rebuttal: true }, /rebuttal needs at least 2 runs/],
-		[{ role: "review", task: "x", runs: ["x"] }, /runs\[0\] must be \{ model\?: string, thinking\?: off\|/],
-		[{ role: "review", task: "x", runs: [{}, { thinking: "huge" }] }, /runs\[1\] must be/],
-		[{ role: "review", task: "x", model: OPUS }, /unknown parameter\(s\) model; set model and thinking inside runs/],
+		[{ role: "general", task: "x", runs: [] }, /runs must have 1-4 entries/],
+		[{ role: "general", task: "x", runs: Array(5).fill({}) }, /runs must have 1-4 entries/],
+		[{ role: "general", task: "x", runs: [{ model: "" }] }, /runs\[0\] must be/],
+		[{ role: "general", task: "x", runs: [{ model: "   " }] }, /runs\[0\] must be/],
+		[{ role: "general", task: "x", rebuttal: true }, /rebuttal needs at least 2 runs/],
+		[{ role: "general", task: "x", runs: ["x"] }, /runs\[0\] must be \{ model\?: string, thinking\?: off\|/],
+		[{ role: "general", task: "x", runs: [{}, { thinking: "huge" }] }, /runs\[1\] must be/],
+		[{ role: "general", task: "x", model: OPUS }, /unknown parameter\(s\) model; set model and thinking inside runs/],
 		[
-			{ role: "review", task: "x", runs: [{ model: "openai/gpt-x" }] },
+			{ role: "general", task: "x", runs: [{ model: "openai/gpt-x" }] },
 			/unknown model .*no provider\/id or model id match/,
 		],
 	]) {
@@ -219,7 +228,7 @@ test("details carry a view for the TUI: progress per round, then the reported ru
 test("several runs answer the same task in parallel; usage is summed", async (t) => {
 	const { tool } = setup(t, { config: modelSet([HAIKU, SONNET, OPUS]) });
 	const res = await run(tool, {
-		role: "review",
+		role: "general",
 		task: "q",
 		runs: [{ model: SONNET }, { model: OPUS, thinking: "medium" }],
 	});
@@ -231,7 +240,7 @@ test("several runs answer the same task in parallel; usage is summed", async (t)
 	assert.equal(res.usage.cost.total, 0.004);
 });
 
-test("default-origin rebuttals keep exact models without cross-model fallback", async (t) => {
+test("rebuttals keep each run's exact model without cross-model fallback", async (t) => {
 	const config = {
 		version: 3,
 		scout: { models: [], thinking: "low" },
@@ -254,17 +263,13 @@ test("default-origin rebuttals keep exact models without cross-model fallback", 
 		},
 	});
 	const defaultResult = await run(defaultRun.tool, {
-		role: "review",
+		role: "general",
 		task: "check fallback across rebuttal rounds",
-		runs: [{}, {}],
+		runs: [{ model: HAIKU }, { model: SONNET }],
 		rebuttal: true,
 	});
 	assert.equal(defaultResult.isError, true, text(defaultResult));
-	// Two default review runs in one call start on distinct pool entries, each at its own thinking level.
-	assert.deepEqual(defaultResult.details.allocation, [
-		{ source: "pool", poolIndex: 0, shared: 0 },
-		{ source: "pool", poolIndex: 1, shared: 0 },
-	]);
+	// Each named model runs at its own pool entry's thinking level.
 	const exactPair = [
 		[HAIKU, "high"],
 		[SONNET, "low"],
@@ -307,7 +312,7 @@ test("default-origin rebuttals keep exact models without cross-model fallback", 
 	const explicitMarker = scratch("explicit-rebuttal-no-fallback-marker");
 	process.env.FAKE_PI_MARKER = explicitMarker;
 	const explicitResult = await run(defaultRun.tool, {
-		role: "review",
+		role: "general",
 		task: "explicit model does not fall back in rebuttal",
 		runs: [{ model: HAIKU }, { model: OPUS }],
 		rebuttal: true,
@@ -326,11 +331,40 @@ test("default-origin rebuttals keep exact models without cross-model fallback", 
 	);
 });
 
+test("concurrent default calls keep their pool's first entry; explicit models stay exact", async (t) => {
+	const marker = scratch("concurrent-pool-marker");
+	const { tool } = setup(t, {
+		config: { version: 3, scout: pool([HAIKU, SONNET], "low"), worker: pool([LUNA, OPUS], "max") },
+		env: { FAKE_PI_MARKER: marker },
+	});
+	for (const [role, first] of [
+		["general", LUNA],
+		["scout", HAIKU],
+	]) {
+		const pair = await Promise.all([run(tool, { role, task: "a" }), run(tool, { role, task: "b" })]);
+		for (const r of pair) assert.equal(r.isError, false, text(r));
+		assert.deepEqual(
+			pair.map((r) => r.details.round1[0].requested.model),
+			[first, first],
+			role,
+		);
+		for (const r of pair) assert.equal(r.details.allocation, undefined);
+	}
+	const [general, exact] = await Promise.all([
+		run(tool, { task: "g" }),
+		run(tool, { task: "e", runs: [{ model: OPUS }] }),
+	]);
+	assert.deepEqual(
+		[general, exact].map((r) => r.details.round1[0].requested.model),
+		[LUNA, OPUS],
+	);
+});
+
 test("rebuttal returns only round 2; each worker saw its own and the others' answers", async (t) => {
 	const marker = scratch("marker");
 	const { tool } = setup(t, { env: { FAKE_PI_MARKER: marker }, config: modelSet([HAIKU, SONNET, OPUS]) });
 	const res = await run(tool, {
-		role: "challenge",
+		role: "general",
 		task: "plan",
 		runs: [{ model: SONNET }, { model: OPUS }],
 		rebuttal: true,
@@ -366,7 +400,7 @@ test("a failed round-2 run falls back to its round-1 answer, in request order", 
 		config: modelSet([HAIKU, SONNET, OPUS]),
 	});
 	const res = await run(tool, {
-		role: "review",
+		role: "general",
 		task: "q",
 		runs: [{ model: SONNET }, { model: OPUS }],
 		rebuttal: true,
@@ -386,7 +420,7 @@ test("rebuttal is skipped and flagged when fewer than two runs succeed", async (
 		config: modelSet([SONNET, OPUS]),
 	});
 	const res = await run(tool, {
-		role: "review",
+		role: "general",
 		task: "q",
 		runs: [{ model: SONNET }, { model: OPUS }],
 		rebuttal: true,
@@ -595,6 +629,10 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(all, /Resolve\/report each BLOCKED line/);
 	assert.match(all, /When a skill applies, you keep its required user decisions and orchestration through completion/);
 	assert.match(all, /Workers cannot delegate; a handback completes only the assigned step/);
+	assert.match(
+		all,
+		/Workers see neither this conversation nor the bodies of skills you loaded: make the brief self-contained, name any discovered skill the worker should load with `Skill`, and set `answer` for a specific format/,
+	);
 	// The `check` schema owns the one-unchained-command rule (asserted in delegate-worker-guards.test.ts).
 	assert.doesNotMatch(all, /unchained/);
 	assert.match(all, /Until an implement worker hands back, it is the checkout's only writer/);
@@ -609,7 +647,23 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(tool.description, /One `implement` worker edits, runs `check`, and commits on your current branch/);
 	assert.doesNotMatch(PROMPT_SNIPPET, /edits, runs `check`/);
 	// The schema owns the general-role default and the output directory rule.
-	assert.match(tool.parameters.properties.role.description, /omit for general/);
+	assert.match(tool.parameters.properties.role.description, /^Omit for general/);
+	// Pi validates the enum before execute runs, so the migration hint lives in the schema.
+	assert.match(tool.parameters.properties.role.description, /Removed: review, research, challenge; use general/);
+	// No text advertises a removed role or a review pool.
+	const advertised = [
+		tool.description,
+		prompt,
+		workerContract(false),
+		workerContract(true),
+		...Object.values(tool.parameters.properties).map((p: any) => p.description),
+	].join("\n");
+	assert.doesNotMatch(
+		advertised,
+		/\b(?:research|review|challenge)\b (?:role|preset)|review pool|`(?:research|review|challenge)`/i,
+	);
+	assert.doesNotMatch(tool.parameters.properties.web.description, /role/);
+	assert.match(tool.description, /only implement modifies the checkout/);
 	assert.match(tool.parameters.properties.output.description, /only into its own temp directory/);
 	assert.match(tool.parameters.properties.runs.description, /Not for implement/);
 

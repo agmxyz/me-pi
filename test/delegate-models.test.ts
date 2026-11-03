@@ -26,23 +26,23 @@ test("model pools resolve per-model thinking, the first pool model, and independ
 		model: LUNA,
 		thinking: "off",
 	});
-	assert.deepEqual(resolveRun("review", {}, POOL_SET), {
+	assert.deepEqual(resolveRun("general", {}, POOL_SET), {
 		model: LUNA,
 		thinking: "max",
 	});
-	assert.deepEqual(resolveRun("research", { model: OPUS, thinking: "high" }, POOL_SET), {
+	assert.deepEqual(resolveRun("general", { model: OPUS, thinking: "high" }, POOL_SET), {
 		model: OPUS,
 		thinking: "high",
 	});
-	assert.deepEqual(resolveRun("review", { model: HAIKU }, POOL_SET), {
+	assert.deepEqual(resolveRun("general", { model: HAIKU }, POOL_SET), {
 		model: HAIKU,
 		thinking: "off",
 	});
-	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, POOL_SET), {
+	assert.deepEqual(resolveRun("general", { model: ONE_OFF }, POOL_SET), {
 		model: ONE_OFF,
 		thinking: "max",
 	});
-	assert.deepEqual(resolveRun("review", { model: ONE_OFF, thinking: "low" }, POOL_SET), {
+	assert.deepEqual(resolveRun("general", { model: ONE_OFF, thinking: "low" }, POOL_SET), {
 		model: ONE_OFF,
 		thinking: "low",
 	});
@@ -56,15 +56,15 @@ test("model pools resolve per-model thinking, the first pool model, and independ
 			thinking: "medium",
 		},
 	};
-	assert.deepEqual(resolveRun("review", { model: OPUS }, perModelSet), {
+	assert.deepEqual(resolveRun("general", { model: OPUS }, perModelSet), {
 		model: OPUS,
 		thinking: "low",
 	});
-	assert.deepEqual(resolveRun("review", { thinking: "medium" }, perModelSet), {
+	assert.deepEqual(resolveRun("general", { thinking: "medium" }, perModelSet), {
 		model: HAIKU,
 		thinking: "medium",
 	});
-	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, perModelSet), {
+	assert.deepEqual(resolveRun("general", { model: ONE_OFF }, perModelSet), {
 		model: ONE_OFF,
 		thinking: "medium",
 	});
@@ -79,41 +79,6 @@ test("model pools resolve per-model thinking, the first pool model, and independ
 	assert.deepEqual(resolveRun("scout", { model: ONE_OFF, thinking: "high" }, POOL_SET), {
 		model: ONE_OFF,
 		thinking: "low",
-	});
-	const withReviewPool = {
-		...POOL_SET,
-		review: {
-			models: [
-				{ model: OPUS, thinking: "high" },
-				{ model: SONNET, thinking: "medium" },
-			],
-			thinking: "low",
-		},
-	};
-	assert.deepEqual(resolveRun("review", {}, withReviewPool), {
-		model: OPUS,
-		thinking: "high",
-	});
-	assert.deepEqual(resolveRun("general", {}, withReviewPool), {
-		model: LUNA,
-		thinking: "max",
-	});
-	assert.deepEqual(resolveRun("research", {}, withReviewPool), {
-		model: LUNA,
-		thinking: "max",
-	});
-	assert.deepEqual(resolveRun("review", { model: ONE_OFF }, withReviewPool), {
-		model: ONE_OFF,
-		thinking: "low",
-	});
-	// An exact model absent from review keeps existing cross-pool precedence (scout before worker).
-	assert.deepEqual(resolveRun("review", { model: LUNA }, withReviewPool), {
-		model: LUNA,
-		thinking: "off",
-	});
-	assert.deepEqual(resolveRun("review", { model: LUNA, thinking: "max" }, withReviewPool), {
-		model: LUNA,
-		thinking: "max",
 	});
 });
 
@@ -134,19 +99,19 @@ test("unlisted models use role defaults or independent thinking overrides withou
 	const path = process.env.ME_PI_DELEGATE_CONFIG;
 	const original = readFileSync(path, "utf8");
 
-	const defaulted = await run(tool, { role: "review", task: "x", runs: [{ model: ONE_OFF }] });
+	const defaulted = await run(tool, { role: "general", task: "x", runs: [{ model: ONE_OFF }] });
 	assert.equal(defaulted.isError, false, text(defaulted));
 	assert.match(text(defaulted), new RegExp(`DONE model=${ONE_OFF} thinking=medium`));
 
 	const overridden = await run(tool, {
-		role: "review",
+		role: "general",
 		task: "x",
 		runs: [{ model: ONE_OFF, thinking: "high" }],
 	});
 	assert.equal(overridden.isError, false, text(overridden));
 	assert.match(text(overridden), new RegExp(`DONE model=${ONE_OFF} thinking=high`));
 
-	const listed = await run(tool, { role: "review", task: "x", runs: [{ model: OPUS }] });
+	const listed = await run(tool, { role: "general", task: "x", runs: [{ model: OPUS }] });
 	assert.equal(listed.isError, false, text(listed));
 	assert.match(text(listed), new RegExp(`DONE model=${OPUS} thinking=low`));
 	assert.equal(readFileSync(path, "utf8"), original, "one-off choices do not persist to delegate.json");
@@ -184,7 +149,7 @@ test("an explicit thinking override applies to the first pool model", async (t) 
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
 	const res = await run(tool, {
-		role: "review",
+		role: "general",
 		task: "x",
 		runs: [{ thinking: "medium" }],
 	});
@@ -216,13 +181,13 @@ test("one-off models must be exact catalog IDs with usable authentication", asyn
 		[UNAUTHENTICATED, /unauthenticated.*no usable login for provider "unauthed"/],
 		["Gemini Flash", /unknown model "Gemini Flash"/],
 	]) {
-		const res = await run(tool, { role: "review", task: "x", runs: [{ model }] }, undefined, undefined, context);
+		const res = await run(tool, { role: "general", task: "x", runs: [{ model }] }, undefined, undefined, context);
 		assert.equal(res.isError, true, model);
 		assert.match(text(res), error);
 	}
 	const unsupported = await run(
 		tool,
-		{ role: "review", task: "x", runs: [{ model: ONE_OFF }] },
+		{ role: "general", task: "x", runs: [{ model: ONE_OFF }] },
 		undefined,
 		undefined,
 		{ ...CTX, modelRegistry: {} },
@@ -231,7 +196,7 @@ test("one-off models must be exact catalog IDs with usable authentication", asyn
 	assert.match(text(unsupported), /model registry lacks catalog\/auth lookup/);
 	const loggedIn = await run(
 		tool,
-		{ role: "review", task: "x", runs: [{ model: UNAUTHENTICATED }] },
+		{ role: "general", task: "x", runs: [{ model: UNAUTHENTICATED }] },
 		undefined,
 		undefined,
 		{
@@ -264,14 +229,14 @@ test("bare model refs resolve like Pi: one-off validation, canonical --model, an
 			.split("\n")
 			.map((line) => JSON.parse(line).model);
 
-	const pooled = await run(tool, { role: "review", task: "x" }, undefined, undefined, context);
+	const pooled = await run(tool, { role: "general", task: "x" }, undefined, undefined, context);
 	assert.equal(pooled.isError, true, text(pooled));
 	assert.deepEqual(launches(), [OR, OR, OR], "the canonical ref reaches workers and the infra retry fires");
 
 	writeFileSync(marker, "");
 	const oneOff = await run(
 		tool,
-		{ role: "review", task: "x", runs: [{ model: "gemini-test" }] },
+		{ role: "general", task: "x", runs: [{ model: "gemini-test" }] },
 		undefined,
 		undefined,
 		context,
@@ -290,7 +255,7 @@ test("a configured ref that is unknown passes through; an ambiguous one fails na
 		config: { version: 3, scout: pool([LUNA], "low"), worker: pool(["missing/model"], "high") },
 		env: { FAKE_PI_MARKER: marker },
 	});
-	const passed = await run(unknown.tool, { role: "review", task: "x" }, undefined, undefined, context);
+	const passed = await run(unknown.tool, { role: "general", task: "x" }, undefined, undefined, context);
 	assert.equal(passed.isError, false, text(passed));
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
@@ -306,7 +271,7 @@ test("a configured ref that is unknown passes through; an ambiguous one fails na
 		config: { version: 3, scout: pool([LUNA], "low"), worker: pool(["shared"], "high") },
 		env: { FAKE_PI_MARKER: marker },
 	});
-	const res = await run(ambiguous.tool, { role: "review", task: "x" }, undefined, undefined, context);
+	const res = await run(ambiguous.tool, { role: "general", task: "x" }, undefined, undefined, context);
 	assert.equal(res.isError, true);
 	assert.match(text(res), /ambiguous model "shared" in .*: matches a\/shared, b\/shared; write provider\/id/);
 	assert.equal(readFileSync(marker, "utf8"), "");
@@ -328,7 +293,7 @@ test("an unlisted model never falls back to the configured pool", async (t) => {
 		},
 		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: ONE_OFF, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "review", task: "x", runs: [{ model: ONE_OFF }] });
+	const res = await run(tool, { role: "general", task: "x", runs: [{ model: ONE_OFF }] });
 	assert.equal(res.isError, true);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
@@ -355,7 +320,7 @@ test("an explicitly selected configured model never falls back after an availabi
 		},
 		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "review", task: "x", runs: [{ model: HAIKU }] });
+	const res = await run(tool, { role: "general", task: "x", runs: [{ model: HAIKU }] });
 	assert.equal(res.isError, true);
 	assert.deepEqual(
 		readFileSync(marker, "utf8")
@@ -378,7 +343,7 @@ test("a rate-limited worker does not fall back through its pool", async (t) => {
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
 	const res = await run(tool, {
-		role: "review",
+		role: "general",
 		task: "x",
 	});
 	assert.equal(res.isError, true, text(res));
@@ -408,7 +373,7 @@ test("quota and usage-limit failures do not fall through the pool", async (t) =>
 	]) {
 		process.env.FAKE_PI_ERROR = error;
 		const res = await run(tool, {
-			role: "review",
+			role: "general",
 			task: "x",
 		});
 		assert.equal(res.isError, true, error);
@@ -447,7 +412,7 @@ test("first-only dispatch reports the first pool model's worker cost", async (t)
 		limits: { costCapUsd: 0.003 },
 	});
 	const res = await run(tool, {
-		role: "review",
+		role: "general",
 		task: "x",
 	});
 	assert.equal(res.isError, true);
@@ -480,7 +445,7 @@ test("default dispatch keeps the first pool model's configured thinking level", 
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker },
 	});
 	const progress = [];
-	const res = await run(tool, { role: "review", task: "x" }, undefined, (update) => progress.push(update));
+	const res = await run(tool, { role: "general", task: "x" }, undefined, (update) => progress.push(update));
 	assert.equal(res.isError, true, text(res));
 	assert.ok(
 		progress.some(
@@ -510,7 +475,7 @@ test("model-unavailable errors without structured retry evidence fail closed", a
 		env: { FAKE_PI_MODE: "unavailable-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
 	const res = await run(tool, {
-		role: "research",
+		role: "general",
 		task: "x",
 	});
 	assert.equal(res.isError, true, text(res));
@@ -533,7 +498,7 @@ test("configuration changed after dispatch cannot start another child", async (t
 		},
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const params = { role: "review", task: "frozen at dispatch" };
+	const params = { role: "general", task: "frozen at dispatch" };
 	const pending = run(tool, params);
 	writeFileSync(
 		process.env.ME_PI_DELEGATE_CONFIG,
@@ -575,7 +540,7 @@ test("attempt provenance records malformed evidence, shell 429s, prior effects, 
 			env: { FAKE_PI_MODE: mode, FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 		});
 		const res = await run(tool, {
-			role: "review",
+			role: "general",
 			task: mode,
 		});
 		assert.equal(res.isError, true, mode);
@@ -642,7 +607,7 @@ test("a retry after the tool deadline retains the deadline stop and a competing 
 		limits: { timeoutSecs: 1 },
 	});
 	const deadline = await run(delayed.tool, {
-		role: "review",
+		role: "general",
 		task: "original tool deadline",
 	});
 	assert.equal(deadline.isError, true, text(deadline));
@@ -666,7 +631,7 @@ test("a retry after the tool deadline retains the deadline stop and a competing 
 		limits: { timeoutSecs: 0.5 },
 	});
 	const stopped = await run(competing.tool, {
-		role: "review",
+		role: "general",
 		task: "competing safety cause",
 	});
 	assert.equal(stopped.isError, true, text(stopped));
@@ -730,7 +695,7 @@ test("non-availability failures do not trigger pool fallback", async (t) => {
 		},
 		env: { FAKE_PI_MODE: "fail-model", FAKE_PI_FAIL_MODEL: HAIKU, FAKE_PI_MARKER: marker },
 	});
-	const res = await run(tool, { role: "review", task: "x" });
+	const res = await run(tool, { role: "general", task: "x" });
 	assert.equal(res.isError, true);
 	const calls = readFileSync(marker, "utf8").trim().split("\n").map(JSON.parse);
 	assert.deepEqual(

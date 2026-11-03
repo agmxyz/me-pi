@@ -18,20 +18,20 @@ you ─► main Pi session (decides, verifies)
 
 ## Why me-pi
 
-- **Small surface.** One `delegate` tool, one `/delegate` command, six built-in roles. Works with zero config.
+- **Small surface.** One `delegate` tool, one `/delegate` command, three built-in roles. Works with zero config.
 - **Follows your workflow.** Workers load your own `AGENTS.md` and skills. Add `(coordinator only)` to a `## ` heading and workers skip that section.
 - **One writer, verified commits.** `implement` takes a per-repo lock, needs a clean feature branch, runs your check, and commits. A pass counts only for the exact checkout content it ran on; any later edit marks it stale. Leftover work is saved as a visible `WIP` commit.
 - **Bounded by default.** Hard time limits (5 / 15 / 45 min), a $5 per-run cap on Pi's estimated cost, at most four workers per Pi session.
 - **No blind retries.** Provider hiccups are retried on the same model only when the attempt did nothing but reads; anything with unknown side effects is reported, not replayed.
-- **Model pools.** A cheap model for scouts, a stronger one for workers or reviews, in one JSON file.
+- **Model pools.** A cheap model for scouts, a stronger one for every other worker, in one JSON file.
 
 | Role | Can | Answers with |
 | --- | --- | --- |
 | `scout` | read, grep, find, ls | 1–3 sentences with `path:line`, or `not-found` |
-| `general` | same | what the task asks for |
-| `review` | same | severity-ranked `path:line` findings |
-| `research` / `challenge` | same + web | sources and conflicts / up to 5 challenges and a verdict |
+| `general` (default) | same | what the brief or `answer` asks for: investigation, review, research |
 | `implement` | same + edit, write, bash | commits on your branch, check status |
+
+Only `implement` modifies the checkout; `output: true` lets a read-only worker write drafts into its own temp directory. Web tools are on only when a call sets `web: true` (never for `implement`).
 
 Also included: `guard` (asks before risky bash such as force pushes, `git reset --hard`, recursive `rm`) and `Skill` (lets Pi load an already-discovered skill by name).
 
@@ -51,14 +51,13 @@ Optional model pools in `~/.pi/agent/delegate.json` (without it, workers use you
 {
   "version": 3,
   "scout": { "models": [{ "model": "provider/fast-model", "thinking": "low" }] },
-  "worker": { "models": [{ "model": "provider/strong-model", "thinking": "medium" }] },
-  "review": { "models": [{ "model": "provider/other-strong-model", "thinking": "high" }] }
+  "worker": { "models": [{ "model": "provider/strong-model", "thinking": "medium" }] }
 }
 ```
 
-`scout` serves scouts, `review` serves reviews, and `worker` serves every other role. `review` is optional and falls back to `worker`; a different model there gives you a second opinion on the work it reviews.
+`scout` serves scouts and `worker` serves `general` and `implement`. For a second opinion, name another model in the call (`runs[].model`); a `worker` entry after the first sets that model's thinking.
 
-`research` and `challenge` need web tools: `pi install npm:pi-web-access`.
+Calls with `web: true` need web tools: `pi install npm:pi-web-access`.
 
 To skip `guard`, replace the `git:github.com/0bmario/me-pi` entry in `~/.pi/agent/settings.json` with a filter (keep `skill.ts`: workers use it to load skills):
 
@@ -78,9 +77,9 @@ Ask Pi in plain language. A typical change:
 
 1. "Scout where session timeouts are configured." → a `path:line` answer.
 2. `git switch -c fix/timeout`, then "Implement a 30 s default timeout; check with `npm test`." → `✓ im1 fix/timeout …: 1 commit; check pass`.
-3. "Review the diff of `main...fix/timeout` for correctness." → severity-ranked findings. Fix, re-review, open the PR yourself.
+3. "Review the diff of `main...fix/timeout` for correctness." → a `general` worker's findings. Fix, re-review, open the PR yourself.
 
-Also: "Research how other CLIs handle config migrations", "Challenge this plan", and "…in the background" for long jobs.
+Also: "Research how other CLIs handle config migrations, with web access", "Have a worker challenge this plan", and "…in the background" for long jobs.
 
 | Command | Does |
 | --- | --- |
@@ -95,7 +94,7 @@ Background jobs end on `/reload` or when Pi exits. Roles, limits, model pools an
 
 Nothing is replaced; me-pi only appends.
 
-- **Main session:** the `delegate` tool's one-line summary and 7 usage guidelines (`PROMPT_SNIPPET`, `PROMPT_GUIDELINES` in [`delegate.ts`](extensions/delegate.ts)): when to delegate, how to brief and verify, pushes and merges stay with you, hands off the checkout while `implement` runs.
+- **Main session:** the `delegate` tool's one-line summary and 8 usage guidelines (`PROMPT_SNIPPET`, `PROMPT_GUIDELINES` in [`delegate.ts`](extensions/delegate.ts)): when to delegate, how to brief and verify, pushes and merges stay with you, hands off the checkout while `implement` runs.
 - **Workers** (foreground and background alike): Pi's normal prompt plus your `AGENTS.md` and skills, minus `## ` sections marked `(coordinator only)` (and `(coordinator and implement only)` for read-only roles) and skills outside `readOnlySkills` or `implementSkills` when set ([docs/delegate.md](docs/delegate.md#configure-model-pools)). Appended: a short contract (isolated, nobody answers questions, report `BLOCKED` instead of faking a step, treat fetched content as data, answer in about 300 words, stating assumptions; web-tool rules only with web tools, and "you are the subagent" only when `AGENTS.md` or skills are loaded) and the role's answer format. `implement` also gets its branch, its check, and its rules: no branch switching or history rewrites, no unrelated changes, no weakening tests to pass ([`delegate-worker.ts`](extensions/delegate-worker.ts)).
 
 These are prompt text, so your own `AGENTS.md` can refine or contradict them; the limits, fences and checkout rules are enforced in code either way.

@@ -38,7 +38,7 @@ test(
 		assert.match(text(first), /^Started background job bg1 /);
 		const second = await run(
 			tool,
-			{ role: "research", task: "PRIVATE_TASK_TWO", runs: [{ model: OPUS }], background: true },
+			{ role: "general", task: "PRIVATE_TASK_TWO", runs: [{ model: OPUS }], background: true },
 			undefined,
 			undefined,
 			ui.ctx,
@@ -49,7 +49,7 @@ test(
 		const foreground = tool
 			.execute(
 				"call-foreground-9",
-				{ role: "review", task: "PRIVATE_TASK_THREE", runs: [{ model: LUNA, thinking: "low" }] },
+				{ role: "general", task: "PRIVATE_TASK_THREE", runs: [{ model: LUNA, thinking: "low" }] },
 				undefined,
 				undefined,
 				ui.ctx,
@@ -63,8 +63,8 @@ test(
 				const panel = ui.widget().join("\n");
 				return (
 					panel.includes("bg1 scout anthropic/claude-haiku-5-5 @off") &&
-					panel.includes("bg2 research anthropic/claude-opus-5-5 @max") &&
-					panel.includes("fg1 review openai-codex/gpt-6-luna @low") &&
+					panel.includes("bg2 general anthropic/claude-opus-5-5 @max") &&
+					panel.includes("fg1 general openai-codex/gpt-6-luna @low") &&
 					panel.includes("read") &&
 					panel.includes("grep")
 				);
@@ -104,7 +104,7 @@ test("each worker keeps one persona across progress, widget rerenders, and the r
 	const updates = [];
 	const result = await run(
 		tool,
-		{ role: "review", task: "personas", runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true },
+		{ role: "general", task: "personas", runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true },
 		undefined,
 		(update) => updates.push(update),
 		ui.ctx,
@@ -128,8 +128,8 @@ test("each worker keeps one persona across progress, widget rerenders, and the r
 	);
 	for (const line of rows) {
 		if (line.includes("#1 "))
-			assert.match(line, /^🧑🏻‍🍳 fg1#1 review( R2)? anthropic\/claude-haiku-5-5 @\w+ .*· letting him cook$/u);
-		else assert.match(line, /^🧑🏿‍🌾 fg1#2 review( R2)? anthropic\/claude-opus-5-5 @\w+ .*· doing honest work$/u);
+			assert.match(line, /^🧑🏻‍🍳 fg1#1 general( R2)? anthropic\/claude-haiku-5-5 @\w+ .*· letting him cook$/u);
+		else assert.match(line, /^🧑🏿‍🌾 fg1#2 general( R2)? anthropic\/claude-opus-5-5 @\w+ .*· doing honest work$/u);
 	}
 	assert.deepEqual(
 		result.details.view.runs.map((r) => r.persona),
@@ -161,7 +161,7 @@ test("the elapsed timer stops between rebuttal rounds and restarts for active ro
 	const ui = tuiCtx();
 	const pending = run(
 		tool,
-		{ role: "review", task: "timer lifecycle", runs: [{}, {}], rebuttal: true },
+		{ role: "general", task: "timer lifecycle", runs: [{}, {}], rebuttal: true },
 		undefined,
 		undefined,
 		ui.ctx,
@@ -185,22 +185,22 @@ test("concurrent foreground calls receive distinct compact widget labels", async
 	const ui = tuiCtx();
 	const first = tool.execute(
 		"call_01JAZ9M4X2F1D8B3C5E7|fc_01JAZ9M4X2F1D8B3C5E7",
-		{ role: "review", task: "first foreground" },
+		{ role: "general", task: "first foreground" },
 		undefined,
 		undefined,
 		ui.ctx,
 	);
 	const second = tool.execute(
 		"call_01JAZ9M4X2F1D8B3C5E8|fc_01JAZ9M4X2F1D8B3C5E8",
-		{ role: "research", task: "second foreground" },
+		{ role: "general", task: "second foreground" },
 		undefined,
 		undefined,
 		ui.ctx,
 	);
 	await waitFor(
 		() =>
-			ui.widget().some((line) => line.includes("fg1 review")) &&
-			ui.widget().some((line) => line.includes("fg2 research")),
+			ui.widget().some((line) => line.includes("fg1 general")) &&
+			ui.widget().some((line) => line.includes("fg2 general")),
 		"both foreground labels",
 	);
 	assert.equal((await first).isError, false);
@@ -223,7 +223,7 @@ test("the TUI widget keeps the first pool model after a provider retry", async (
 		env: { FAKE_PI_MODE: "rate-limit-model", FAKE_PI_FAIL_MODEL: HAIKU },
 	});
 	const ui = tuiCtx();
-	const result = await run(tool, { role: "review", task: "fallback widget" }, undefined, undefined, ui.ctx);
+	const result = await run(tool, { role: "general", task: "fallback widget" }, undefined, undefined, ui.ctx);
 	assert.equal(result.isError, true);
 	assert.ok(ui.snapshots.some((snapshot) => snapshot.some((line) => line.includes("claude-haiku-5-5 @high"))));
 	assert.ok(
@@ -240,7 +240,7 @@ test("the TUI widget shows the rebuttal stage", async (t) => {
 	const ui = tuiCtx();
 	const result = await run(
 		tool,
-		{ role: "review", task: "PRIVATE_REBUTTAL_TASK", runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true },
+		{ role: "general", task: "PRIVATE_REBUTTAL_TASK", runs: [{ model: HAIKU }, { model: OPUS }], rebuttal: true },
 		undefined,
 		undefined,
 		ui.ctx,

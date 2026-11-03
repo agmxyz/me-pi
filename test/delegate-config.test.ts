@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { loadModelSet, resolveModelRef, resolveRun } from "../extensions/delegate-config.ts";
+import { SUBAGENT_LINE } from "../extensions/delegate-worker.ts";
 import {
-	commandCtx,
 	HAIKU,
 	LUNA,
 	modelSet,
@@ -19,6 +19,7 @@ import {
 	TEST_HOME,
 	text,
 	UNAUTHENTICATED,
+	workerContract,
 } from "./helpers/delegate-harness.ts";
 
 test("v1 and v2 configs fail with a pointer to the v3 format, and empty pools use the session model", () => {
@@ -41,14 +42,13 @@ test("v1 and v2 configs fail with a pointer to the v3 format, and empty pools us
 		model: "x/session",
 		thinking: "off",
 	});
-	assert.deepEqual(resolveRun("review", { model: "y/m" }, empty, "x/session", "medium"), {
+	assert.deepEqual(resolveRun("general", { model: "y/m" }, empty, "x/session", "medium"), {
 		model: "y/m",
 		thinking: "medium",
 	});
-	assert.throws(() => resolveRun("review", {}, empty, "x/session"), /main session's thinking level is unknown/);
 	assert.throws(
-		() => resolveRun("review", {}, { ...empty, review: { models: [] } }, "x/session"),
-		/set review\.thinking/,
+		() => resolveRun("general", {}, empty, "x/session"),
+		/main session's thinking level is unknown; set worker\.thinking/,
 	);
 });
 
@@ -60,7 +60,7 @@ test("workers drop coordinator-only policy, writer policy unless implement, and 
 	const reader = options();
 	const { skills } = reader;
 	const handlers = setup(t, {
-		env: { ME_PI_RUN: "1", ME_PI_ROLE: "review", ME_PI_SKILLS: JSON.stringify(["code-review", "pr"]) },
+		env: { ME_PI_RUN: "1", ME_PI_ROLE: "general", ME_PI_SKILLS: JSON.stringify(["code-review", "pr"]) },
 	}).handlers;
 	handlers.before_agent_start({ systemPromptOptions: reader });
 	assert.equal(reader.contextFiles[0].content, "## Output\n- lead with the result\n## Secrets\n- never read keys");
@@ -79,6 +79,15 @@ test("workers drop coordinator-only policy, writer policy unless implement, and 
 	assert.equal(writer.skills.length, 3, "no allowlist keeps every skill");
 });
 
+test("a general worker with no context files or skills drops the subagent line", (t) => {
+	const options = { contextFiles: [], skills: [], appendSystemPrompt: workerContract(false) };
+	assert.ok(options.appendSystemPrompt.includes(SUBAGENT_LINE));
+	setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "general" } }).handlers.before_agent_start({
+		systemPromptOptions: options,
+	});
+	assert.ok(!options.appendSystemPrompt.includes(SUBAGENT_LINE), options.appendSystemPrompt);
+});
+
 test("readOnlySkills reaches read-only workers and is validated", async (t) => {
 	const config = {
 		version: 3,
@@ -88,10 +97,10 @@ test("readOnlySkills reaches read-only workers and is validated", async (t) => {
 	};
 	assert.deepEqual(loadModelSet(join(mkdtempSync(join(TEST_HOME, "cfg-")), "x.json")).readOnlySkills, undefined);
 	const { tool } = setup(t, { config });
-	const res = await run(tool, { role: "review", task: "x" });
+	const res = await run(tool, { role: "general", task: "x" });
 	assert.equal(res.isError, false, text(res));
 	assert.match(text(res), /skills=\["code-review","pr"\]/);
-	const plain = await run(setup(t).tool, { role: "review", task: "x" });
+	const plain = await run(setup(t).tool, { role: "general", task: "x" });
 	assert.match(text(plain), /skills=all/);
 	for (const [value, error] of [
 		["code-review", /readOnlySkills must be an array of skill names/],
@@ -126,7 +135,7 @@ test("implementSkills reaches implement workers only and is validated like readO
 		assert.throws(() => loadModelSet(write({ implementSkills: value })), error);
 	assert.throws(
 		() => loadModelSet(write({ implementSkils: ["tdd"] })),
-		/unknown key\(s\) implementSkils \(allowed: version, scout, worker, review, readOnlySkills, implementSkills\)/,
+		/unknown key\(s\) implementSkils \(allowed: version, scout, worker, readOnlySkills, implementSkills\)/,
 	);
 
 	const handlers = setup(t, {
@@ -156,25 +165,6 @@ test("v3 model configs validate per-model thinking", (t) => {
 		{ version: 3, scout: { models: [] }, worker: { models: [] } },
 		"pool-level thinking is optional",
 	);
-	assert.deepEqual(
-		loadModelSet(
-			write(
-				JSON.stringify({
-					version: 3,
-					scout: { models: [] },
-					worker: { models: [{ model: LUNA, thinking: "max" }] },
-					review: { models: [{ model: OPUS, thinking: "high" }], thinking: "medium" },
-				}),
-			),
-		),
-		{
-			version: 3,
-			scout: { models: [] },
-			worker: { models: [{ model: LUNA, thinking: "max" }] },
-			review: { models: [{ model: OPUS, thinking: "high" }], thinking: "medium" },
-		},
-		"review pool is optional and validated in v3",
-	);
 	assert.deepEqual(loadModelSet(write(JSON.stringify(POOL_SET))), POOL_SET);
 	assert.equal(loadModelSet(write(JSON.stringify(POOL_SET))).worker.models[1].thinking, "max");
 	for (const [content, error] of [
@@ -188,38 +178,6 @@ test("v3 model configs validate per-model thinking", (t) => {
 				worker: { models: [], thinking: "max" },
 			}),
 			/scout.models\[0\].thinking must be one of low, off/,
-		],
-		[
-			JSON.stringify({
-				version: 3,
-				scout: { models: [], thinking: "low" },
-				worker: { models: [] },
-				review: "invalid",
-			}),
-			/review: expected an object/,
-		],
-		[
-			JSON.stringify({
-				version: 3,
-				scout: { models: [], thinking: "low" },
-				worker: { models: [] },
-				review: { models: [{ model: HAIKU, thinking: "nope" }] },
-			}),
-			/review\.models\[0\]\.thinking must be one of off, minimal, low, medium, high, xhigh, max/,
-		],
-		[
-			JSON.stringify({
-				version: 3,
-				scout: { models: [], thinking: "low" },
-				worker: { models: [] },
-				review: {
-					models: [
-						{ model: HAIKU, thinking: "high" },
-						{ model: HAIKU, thinking: "low" },
-					],
-				},
-			}),
-			/review\.models lists model .* twice/,
 		],
 		[
 			JSON.stringify({
@@ -247,8 +205,30 @@ test("v3 model configs validate per-model thinking", (t) => {
 	});
 });
 
-test("review pool selects its first model, reports status, and preserves worker/scout behavior", async (t) => {
-	const marker = scratch("review-pool-marker");
+test("a review pool fails with a migration pointer before any worker starts, without rewriting the file", async (t) => {
+	const marker = scratch("review-key-marker");
+	const config = {
+		version: 3,
+		scout: { models: [{ model: HAIKU, thinking: "low" }] },
+		worker: { models: [{ model: LUNA, thinking: "max" }] },
+		review: { models: [{ model: SONNET, thinking: "high" }] },
+	};
+	const path = scratch("review-delegate.json");
+	writeFileSync(path, JSON.stringify(config));
+	const migration =
+		/review pool was removed: move its entries into worker\.models \(later entries keep their thinking when a run names that model\) and pass runs\[\]\.model for a second-opinion review; see docs\/delegate\.md/;
+	assert.throws(() => loadModelSet(path), migration);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), config, "the config is not rewritten");
+
+	const { tool } = setup(t, { config, env: { FAKE_PI_MODE: "success", FAKE_PI_MARKER: marker } });
+	const res = await run(tool, { task: "x" });
+	assert.equal(res.isError, true);
+	assert.match(text(res), migration);
+	assert.equal(existsSync(marker), false, "no worker started");
+});
+
+test("worker and scout pools select their first model; an exact model never falls back; the cost cap stops retries", async (t) => {
+	const marker = scratch("pool-marker");
 	const config = {
 		version: 3,
 		scout: {
@@ -258,16 +238,10 @@ test("review pool selects its first model, reports status, and preserves worker/
 		worker: {
 			models: [
 				{ model: LUNA, thinking: "max" },
-				{ model: OPUS, thinking: "high" },
-			],
-			thinking: "max",
-		},
-		review: {
-			models: [
 				{ model: SONNET, thinking: "high" },
 				{ model: OPUS, thinking: "medium" },
 			],
-			thinking: "low",
+			thinking: "max",
 		},
 	};
 	const main = setup(t, {
@@ -275,18 +249,6 @@ test("review pool selects its first model, reports status, and preserves worker/
 		env: { FAKE_PI_MODE: "success", FAKE_PI_FAIL_MODEL: SONNET, FAKE_PI_MARKER: marker },
 		limits: { costCapUsd: 0.005 },
 	});
-	const { ctx: statusCtx, notes } = commandCtx({ available: [HAIKU, OPUS] });
-	await main.commands.delegate.handler("status", statusCtx);
-	assert.ok(notes[0][0].includes(`Review pool: 1. ${SONNET} (high) ✗ unknown model id; 2. ${OPUS} (medium) ✓`));
-
-	const reviewRes = await run(main.tool, {
-		role: "review",
-		task: "check review pool",
-	});
-	assert.equal(reviewRes.isError, false, text(reviewRes));
-	assert.equal(reviewRes.details.round1[0].requested.model, SONNET);
-	assert.equal(reviewRes.details.round1[0].requested.thinking, "high");
-
 	const generalRes = await run(main.tool, { role: "general", task: "check worker pool" });
 	assert.equal(generalRes.isError, false, text(generalRes));
 	assert.equal(generalRes.details.round1[0].requested.model, LUNA);
@@ -298,7 +260,7 @@ test("review pool selects its first model, reports status, and preserves worker/
 	assert.equal(scoutRes.details.round1[0].requested.thinking, "low");
 
 	process.env.FAKE_PI_MODE = "rate-limit-model";
-	const exactFail = await run(main.tool, { role: "review", task: "exact fail", runs: [{ model: SONNET }] });
+	const exactFail = await run(main.tool, { role: "general", task: "exact fail", runs: [{ model: SONNET }] });
 	assert.equal(exactFail.isError, true);
 
 	const calls = readFileSync(marker, "utf8")
@@ -309,22 +271,21 @@ test("review pool selects its first model, reports status, and preserves worker/
 			return [model, thinking];
 		});
 	assert.deepEqual(calls, [
-		[SONNET, "high"],
 		[LUNA, "max"],
 		[HAIKU, "low"],
 		[SONNET, "high"],
 	]);
 
 	// Exhausting the cap on the first attempt fails without further attempts.
-	const costMarker = scratch("review-pool-cost-marker");
+	const costMarker = scratch("pool-cost-marker");
 	const capped = setup(t, {
 		config,
 		env: { FAKE_PI_MODE: "rate-limit-models", FAKE_PI_FAIL_MODELS: `${SONNET},${OPUS}`, FAKE_PI_MARKER: costMarker },
 		limits: { costCapUsd: 0.002 },
 	});
 	const cappedRes = await run(capped.tool, {
-		role: "review",
 		task: "budget shared",
+		runs: [{ model: SONNET }],
 	});
 	assert.equal(cappedRes.isError, true);
 	const costStops = cappedRes.details.round1[0].provenance[0].stopFacts;

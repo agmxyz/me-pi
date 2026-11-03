@@ -72,7 +72,7 @@ function budgetResource(budget: Budget, calls: number, cost: number, now = Date.
 
 // `Skill` is extensions/skill.ts; web tools are pi-web-access's. Names not installed are ignored by pi.
 export const LOCAL_TOOLS = "read,grep,find,ls,Skill";
-// Only research and challenge get the network unless a call sets `web`: a worker reading an untrusted
+// Only a call that sets `web: true` gets the network: a worker reading an untrusted
 // diff or page with both local reads and web tools could be steered into sending file contents out.
 export const WEB_TOOLS = `${LOCAL_TOOLS},web_search,fetch_content,get_search_content`;
 // implement edits, runs commands, and commits, in the coordinator's checkout; never with web tools.
@@ -147,15 +147,15 @@ export function readWorkerEnv(env: NodeJS.ProcessEnv = process.env): WorkerEnv {
 
 // --- Roles and contract ---------------------------------------------------------------------------
 
-/** A preset: whether its workers get the web tools, and its final answer format (general has none). */
+/** A role's final answer format (general has none). */
 export interface Role {
-	web: boolean;
 	answer?: string;
 }
 
-/** One call's workers: the role, the web tools and answer format after the call's overrides, and `output`. */
+/** One call's workers: the role, whether the call set `web: true`, the answer format after `answer`, and `output`. */
 export interface Job extends Role {
 	role: string;
+	web: boolean;
 	output: boolean;
 	jobId: string;
 	// Skills the worker may see and load; undefined means all.
@@ -170,25 +170,11 @@ export interface Job extends Role {
 }
 
 export const ROLES: Record<string, Role> = {
-	general: { web: false },
+	general: {},
 	scout: {
-		web: false,
 		answer: "1-3 sentences with path:line evidence per claim, or `not-found: <what you searched, where>`.",
 	},
-	research: {
-		web: true,
-		answer: "findings, each with its source (URL or path:line), conflicts, open questions.",
-	},
-	review: {
-		web: false,
-		answer: "findings sorted by severity as `path:line: high|medium|low: problem. Fix: change.`, or `none`.",
-	},
-	challenge: {
-		web: true,
-		answer: "premise, at most 5 challenges strongest first, verdict: proceed | proceed-with-changes | stop.",
-	},
 	implement: {
-		web: false,
 		answer: "First line: one-sentence summary. Then BLOCKED lines. Never paste the diff or test output.",
 	},
 };

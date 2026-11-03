@@ -51,19 +51,19 @@ test("scouts are elves; other workers are chefs or farmers; every skin tone is r
 	);
 	assert.equal(pickPersona("scout", seq(0)).phrase, "what do your elf-eyes see?");
 	assert.deepEqual(
-		SKIN_TONES.map((_, i) => pickPersona("review", seq(i / 5, 0)).emoji),
+		SKIN_TONES.map((_, i) => pickPersona("general", seq(i / 5, 0)).emoji),
 		["🧑🏻‍🍳", "🧑🏼‍🍳", "🧑🏽‍🍳", "🧑🏾‍🍳", "🧑🏿‍🍳"],
 	);
 	assert.deepEqual(
-		SKIN_TONES.map((_, i) => pickPersona("review", seq(i / 5, 0.99)).emoji),
+		SKIN_TONES.map((_, i) => pickPersona("general", seq(i / 5, 0.99)).emoji),
 		["🧑🏻‍🌾", "🧑🏼‍🌾", "🧑🏽‍🌾", "🧑🏾‍🌾", "🧑🏿‍🌾"],
 	);
-	for (const role of ["general", "review", "research", "challenge", "implement"]) {
+	for (const role of ["general", "implement"]) {
 		assert.deepEqual(pickPersona(role, seq(0.99, 0)), { emoji: "🧑🏿‍🍳", phrase: "letting him cook" });
 		assert.deepEqual(pickPersona(role, seq(0, 0.5)), { emoji: "🧑🏻‍🌾", phrase: "doing honest work" });
 	}
 	for (let i = 0; i < 50; i++) {
-		const { emoji } = pickPersona("review");
+		const { emoji } = pickPersona("general");
 		assert.match(emoji, /^🧑[🏻🏼🏽🏾🏿]\u200d[🍳🌾]$/u);
 	}
 });
@@ -81,7 +81,7 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 		id: "bg1",
 		worker: index + 1,
 		workerCount: 6,
-		role: index === 0 ? "scout" : "review",
+		role: index === 0 ? "scout" : "general",
 		model: "anthropic/claude-haiku-5-5",
 		thinking: "low",
 		startedAt,
@@ -96,7 +96,7 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 		lines[1],
 		/^🧝🏻 bg1#1 scout R2 anthropic\/claude-haiku-5-5 @low 2s · read · what do your elf-eyes see\?$/,
 	);
-	assert.match(lines[4], /^🧑🏽‍🍳 bg1#4 review anthropic\/claude-haiku-5-5 @low 2s · grep · letting him cook$/);
+	assert.match(lines[4], /^🧑🏽‍🍳 bg1#4 general anthropic\/claude-haiku-5-5 @low 2s · grep · letting him cook$/);
 	const withoutElapsed = (line) => line.replace(/@low \d+s/, "@low <elapsed>");
 	assert.deepEqual(
 		draw(component, 200).map(withoutElapsed),
@@ -134,7 +134,7 @@ test("long native foreground IDs use compact labels so role, model, and thinking
 				displayId: "fg1",
 				worker: 1,
 				workerCount: 1,
-				role: "review",
+				role: "general",
 				model: "openai-codex/gpt-6-luna",
 				thinking: "low",
 				startedAt: Date.now(),
@@ -145,7 +145,7 @@ test("long native foreground IDs use compact labels so role, model, and thinking
 		theme,
 	);
 	const [row] = draw(component, 90).slice(1);
-	assert.match(row, /🧑🏾‍🌾 fg1 review openai-codex\/gpt-6-luna @low/);
+	assert.match(row, /🧑🏾‍🌾 fg1 general openai-codex\/gpt-6-luna @low/);
 	assert.doesNotMatch(row, /call_|fc_/);
 	assertFits(component, 90);
 });

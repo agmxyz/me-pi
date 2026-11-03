@@ -86,7 +86,7 @@ test("registers delegate in the main session; workers get only the secret-path b
 	assert.deepEqual(Object.keys(main.handlers), ["session_shutdown", "tool_call"]);
 	const { properties, required } = main.tool.parameters;
 	assert.deepEqual(required, ["task"]);
-	assert.deepEqual(properties.role.enum, ["general", "scout", "research", "review", "challenge", "implement"]);
+	assert.deepEqual(properties.role.enum, ["general", "scout", "implement"]);
 	assert.equal(properties.check.type, "string");
 	assert.match(properties.check.description, /one unchained command/);
 	assert.match(properties.check.description, /runs it alone, exactly as given, after its final edit/);
@@ -305,9 +305,6 @@ test("workers get a wrap-up budget: scout tool calls, 80% of the time limit and 
 	for (const [role, tools, secs] of [
 		["scout", 60, 300],
 		["general", null, 900],
-		["research", null, 900],
-		["review", null, 900],
-		["challenge", null, 900],
 	]) {
 		const before = Date.now();
 		const res = await run(tool, { role, task: "x" });
@@ -370,7 +367,7 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	for (let i = 0; i < 60; i++) assert.equal(await call(cappedScout), undefined);
 	assert.match((await call(cappedScout)).reason, /budget reached \(60 tool calls\)/);
 
-	for (const role of ["general", "research", "review", "challenge", "implement"]) {
+	for (const role of ["general", "implement"]) {
 		const uncapped = worker({ tools: null, deadline: far, cost: 1 }, role);
 		for (let i = 0; i < 150; i++) assert.equal(await call(uncapped), undefined, role);
 	}
