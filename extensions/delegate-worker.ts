@@ -242,7 +242,7 @@ export const implementContract = (job: Checkout) =>
 export const workerSystemPrompt = ({ role, answer, implement, web }: Job, outDir?: string) =>
 	`${implement ? implementContract(implement.job) : workerContract(web)}\nRole: ${role}.${answer ? ` Final answer format: ${answer}` : ""}${
 		outDir
-			? `\nOutput: you may also \`write\` your drafts, only to absolute paths inside ${outDir} (relative paths resolve against the project); writes elsewhere are blocked. In your final answer, list each file you wrote with one line on what it holds, not its contents.`
+			? `\nOutput (exception to read-only): you may also \`write\` your drafts, only to absolute paths inside ${outDir} (relative paths resolve against the project); writes elsewhere are blocked. Within your answer format, list each file you wrote with one line on what it holds, not its contents.`
 			: ""
 	}`;
 

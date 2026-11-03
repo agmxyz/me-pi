@@ -614,10 +614,10 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(tool.parameters.properties.runs.description, /Not for implement/);
 
 	const implementTools = new Set(IMPLEMENT_TOOLS.split(","));
-	for (const tool of ["read", "grep", "find", "ls", "Skill", "edit", "write", "bash"])
-		assert.ok(implementTools.has(tool), `implement retains ${tool}`);
+	for (const name of ["read", "grep", "find", "ls", "Skill", "edit", "write", "bash"])
+		assert.ok(implementTools.has(name), `implement retains ${name}`);
 	assert.equal(
-		[...implementTools].some((tool) => tool.startsWith("web_")),
+		[...implementTools].some((name) => name.startsWith("web_")),
 		false,
 	);
 	assert.match(tool.description, /it cannot push or use gh/);

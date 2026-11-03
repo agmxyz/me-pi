@@ -182,6 +182,18 @@ test("only workers with web tools get the fetch_content auth rule; everyone trea
 	}
 });
 
+test("only an output directory adds the write exception and its file list", () => {
+	const job: Job = { ...ROLES.scout, role: "scout", output: true, jobId: "j" };
+	const cues = [
+		/Output \(exception to read-only\): you may also `write`/,
+		/Within your answer format, list each file/,
+	];
+	for (const cue of cues) {
+		assert.match(workerSystemPrompt(job, "/tmp/out"), cue);
+		assert.doesNotMatch(workerSystemPrompt(job), cue);
+	}
+});
+
 test("scopeWorkerPrompt keeps the subagent line only while context files or skills remain", () => {
 	const contract = workerContract(false);
 	assert.ok(contract.includes(SUBAGENT_LINE));
