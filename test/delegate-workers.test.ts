@@ -260,12 +260,48 @@ test("default-origin rebuttals keep exact models without cross-model fallback", 
 		rebuttal: true,
 	});
 	assert.equal(defaultResult.isError, true, text(defaultResult));
+	// Two default review runs in one call start on distinct pool entries, each at its own thinking level.
+	assert.deepEqual(defaultResult.details.allocation, [
+		{ source: "pool", poolIndex: 0, shared: 0 },
+		{ source: "pool", poolIndex: 1, shared: 0 },
+	]);
+	const exactPair = [
+		[HAIKU, "high"],
+		[SONNET, "low"],
+	];
+	assert.deepEqual(
+		defaultResult.details.round1.map((r) => [r.requested.model, r.requested.thinking]),
+		exactPair,
+	);
+	assert.deepEqual(
+		defaultResult.details.round1.map((r) => r.failure),
+		[undefined, undefined],
+		"round 1 succeeds on both models, so the rebuttal runs",
+	);
+	// Round 2 reuses each run's dispatched model; HAIKU's rate limit is reported, not moved to OPUS or SONNET.
 	assert.deepEqual(
 		defaultResult.details.round2.map((r) => [r.requested.model, r.requested.thinking]),
+		exactPair,
+	);
+	assert.match(defaultResult.details.round2[0].failure, /429 rate_limit_error: rebuttal unavailable/);
+	assert.equal(defaultResult.details.round2[0].failureClass, "infra");
+	assert.equal(defaultResult.details.round2[0].infraRetries, undefined, "same-model retries are off here");
+	assert.equal(defaultResult.details.round2[1].failure, undefined);
+	assert.match(text(defaultResult), /^✗ round 2 failed: exit 1: 429 rate_limit_error: rebuttal unavailable/);
+	assert.deepEqual(
+		readFileSync(defaultMarker, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.map((call) => [call.prompt.includes("## Round 2 (rebuttal)") ? 2 : 1, call.model, call.thinking])
+			.sort(),
 		[
-			[HAIKU, "high"],
-			[HAIKU, "high"],
+			[1, HAIKU, "high"],
+			[1, SONNET, "low"],
+			[2, HAIKU, "high"],
+			[2, SONNET, "low"],
 		],
+		"one launch per run per round; OPUS never starts",
 	);
 
 	const explicitMarker = scratch("explicit-rebuttal-no-fallback-marker");
