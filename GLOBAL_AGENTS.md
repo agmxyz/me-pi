@@ -7,7 +7,7 @@
 - Brevity applies to wording, not work, verification, or reasoning.
 
 ## Engineering (defaults; repo instructions override conflicts)
-- If material ambiguity affects implementation and cannot be resolved from context, ask; otherwise proceed.
+- If material ambiguity affects implementation and cannot be resolved from context, ask, or report it as blocked when no one can answer; otherwise proceed.
 - Make the smallest in-scope change. Match existing patterns, naming, and libraries; remove code orphaned by the change when safe.
 - Handle errors explicitly; surface unexpected failures and consequential fallbacks.
 - Verify behavior changes with targeted checks. Do not weaken or skip tests merely to pass.
