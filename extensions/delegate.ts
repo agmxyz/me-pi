@@ -416,6 +416,8 @@ function buildSchema() {
 			role: {
 				type: "string",
 				enum: ROLE_NAMES,
+				// Pi validates the enum before execute runs, so the hint for callers of the roles removed in #55 lives
+				// here; drop its "Removed:" sentence with the review-key migration in delegate-config.
 				description:
 					"Omit for general: read-only work of any kind (investigation, review, research), defined by the task. scout: fast bounded read-only search on the scout pool (low/off thinking). implement: the only role that modifies the checkout; it edits, runs `check`, and commits. general and implement use the worker pool. Removed: review, research, challenge; use general with a brief, plus web: true when outside sources are needed.",
 			},

@@ -96,6 +96,8 @@ function validModelSet(raw: any, where: string): ModelSet {
 		throw new Error(
 			`${where}: unsupported format (version ${JSON.stringify(raw.version ?? null)}); expected "version": 3 with { model, thinking } pool entries. Rewrite it as shown in docs/delegate.md ("Configure model pools").`,
 		);
+	// For version 3 configs written before the review pool was removed (#55); delete at the next version bump,
+	// when the unknown-key error covers it.
 	if (raw.review !== undefined)
 		throw new Error(
 			`${where}: review pool was removed: move its entries into worker.models (later entries keep their thinking when a run names that model) and pass runs[].model for a second-opinion review; see docs/delegate.md`,
