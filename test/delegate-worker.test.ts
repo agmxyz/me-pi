@@ -4,11 +4,13 @@ import test from "node:test";
 import type { Checkout } from "../extensions/delegate-implement.ts";
 import {
 	IMPLEMENT_TOOLS,
+	implementContract,
 	type Job,
 	LOCAL_TOOLS,
 	ROLES,
 	readWorkerEnv,
 	scopeWorkerPrompt,
+	WORKER_CONTRACT,
 	workerLaunch,
 	workerSystemPrompt,
 } from "../extensions/delegate-worker.ts";
@@ -144,4 +146,15 @@ test("workerLaunch gives implement its tools, trust flag, and fenced env", () =>
 	assert.equal(read.outputDir, "/repo");
 	assert.equal(read.denyDir, "/repo/.git");
 	assert.equal(read.skills, undefined);
+});
+
+test("implement's contract keeps scope and check integrity; read-only workers don't get it", () => {
+	const c = implementContract({ branch: "feat", check: { command: "npm test" } } as Checkout);
+	assert.match(c, /Do only the task: list unrelated problems/);
+	assert.match(
+		c,
+		/the task does not ask you to change\. If the check passes only that way, leave it failing and list it as BLOCKED/,
+	);
+	assert.doesNotMatch(WORKER_CONTRACT, /weaken|Do only the task/);
+	assert.match(WORKER_CONTRACT, /the assumptions you made and what you could not verify/);
 });
