@@ -110,7 +110,7 @@ test("each worker keeps one persona across progress, widget rerenders, and the r
 		ui.ctx,
 	);
 	assert.equal(result.isError, false);
-	const chef = { emoji: "🧑🏻‍🍳", phrase: "letting him cook" };
+	const chef = { emoji: "🧑🏻‍🍳", phrase: "time to cook" };
 	const farmer = { emoji: "🧑🏿‍🌾", phrase: "doing honest work" };
 	for (const update of updates)
 		assert.deepEqual(
@@ -128,7 +128,7 @@ test("each worker keeps one persona across progress, widget rerenders, and the r
 	);
 	for (const line of rows) {
 		if (line.includes("#1 "))
-			assert.match(line, /^🧑🏻‍🍳 fg1#1 general( R2)? anthropic\/claude-haiku-5-5 @\w+ .*· letting him cook$/u);
+			assert.match(line, /^🧑🏻‍🍳 fg1#1 general( R2)? anthropic\/claude-haiku-5-5 @\w+ .*· time to cook$/u);
 		else assert.match(line, /^🧑🏿‍🌾 fg1#2 general( R2)? anthropic\/claude-opus-5-5 @\w+ .*· doing honest work$/u);
 	}
 	assert.deepEqual(

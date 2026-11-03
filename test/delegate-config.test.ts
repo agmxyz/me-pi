@@ -358,11 +358,11 @@ test(
 		);
 		assert.match(
 			live.content[0].text,
-			/🧑[🏻-🏿]\u200d[🍳🌾] claude-haiku-5-5 @high turn 0 .*· (letting him cook|doing honest work)$/mu,
+			/🧑[🏻-🏿]\u200d[🍳🌾] claude-haiku-5-5 @high turn 0 .*· (time to cook|doing honest work)$/mu,
 		);
 		assert.match(
 			live.content[0].text,
-			/🧑[🏻-🏿]\u200d[🍳🌾] claude-sonnet-5-5 @low turn 0 .*· (letting him cook|doing honest work)$/mu,
+			/🧑[🏻-🏿]\u200d[🍳🌾] claude-sonnet-5-5 @low turn 0 .*· (time to cook|doing honest work)$/mu,
 		);
 		assert.doesNotMatch(live.content[0].text, /--\*/);
 		assert.doesNotMatch(JSON.stringify(live), /PRIVATE_(?:ARGUMENT|COMMAND|OUTPUT|REASONING)|\\u001b/);

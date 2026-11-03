@@ -22,7 +22,7 @@ export function pickPersona(role: string, random: () => number = Math.random): P
 	const tone = pick(SKIN_TONES);
 	if (role === "scout") return { emoji: `\u{1F9DD}${tone}`, phrase: "what do your elf-eyes see?" };
 	return pick([
-		{ emoji: `\u{1F9D1}${tone}\u200D\u{1F373}`, phrase: "letting him cook" },
+		{ emoji: `\u{1F9D1}${tone}\u200D\u{1F373}`, phrase: "time to cook" },
 		{ emoji: `\u{1F9D1}${tone}\u200D\u{1F33E}`, phrase: "doing honest work" },
 	]);
 }

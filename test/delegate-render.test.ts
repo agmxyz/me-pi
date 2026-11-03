@@ -41,7 +41,7 @@ const seq =
 	(...values) =>
 	() =>
 		values.shift();
-const CHEF = { emoji: "🧑🏽‍🍳", phrase: "letting him cook" };
+const CHEF = { emoji: "🧑🏽‍🍳", phrase: "time to cook" };
 const ELF = { emoji: "🧝🏻", phrase: "what do your elf-eyes see?" };
 
 test("scouts are elves; other workers are chefs or farmers; every skin tone is reachable", () => {
@@ -59,7 +59,7 @@ test("scouts are elves; other workers are chefs or farmers; every skin tone is r
 		["🧑🏻‍🌾", "🧑🏼‍🌾", "🧑🏽‍🌾", "🧑🏾‍🌾", "🧑🏿‍🌾"],
 	);
 	for (const role of ["general", "implement"]) {
-		assert.deepEqual(pickPersona(role, seq(0.99, 0)), { emoji: "🧑🏿‍🍳", phrase: "letting him cook" });
+		assert.deepEqual(pickPersona(role, seq(0.99, 0)), { emoji: "🧑🏿‍🍳", phrase: "time to cook" });
 		assert.deepEqual(pickPersona(role, seq(0, 0.5)), { emoji: "🧑🏻‍🌾", phrase: "doing honest work" });
 	}
 	for (let i = 0; i < 50; i++) {
@@ -96,7 +96,7 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 		lines[1],
 		/^🧝🏻 bg1#1 scout R2 anthropic\/claude-haiku-5-5 @low 2s · read · what do your elf-eyes see\?$/,
 	);
-	assert.match(lines[4], /^🧑🏽‍🍳 bg1#4 general anthropic\/claude-haiku-5-5 @low 2s · grep · letting him cook$/);
+	assert.match(lines[4], /^🧑🏽‍🍳 bg1#4 general anthropic\/claude-haiku-5-5 @low 2s · grep · time to cook$/);
 	const withoutElapsed = (line) => line.replace(/@low \d+s/, "@low <elapsed>");
 	assert.deepEqual(
 		draw(component, 200).map(withoutElapsed),
@@ -233,7 +233,7 @@ test("progress shows the stage and one line per run; the plain text is what non-
 	};
 	assert.deepEqual(progressLines(view), [
 		"Rebuttal [web]",
-		"🧑🏽‍🍳 claude-haiku-5-5 @low turn 2 $0.0017 read src/a.ts · letting him cook",
+		"🧑🏽‍🍳 claude-haiku-5-5 @low turn 2 $0.0017 read src/a.ts · time to cook",
 		"🧝🏻 claude-sonnet-5-5 @off turn 2 $0.0017 · what do your elf-eyes see?",
 		"✗ claude-haiku-5-5 @low turn 2 $0.0017",
 		"✓ claude-haiku-5-5 @low turn 2 $0.0017",
