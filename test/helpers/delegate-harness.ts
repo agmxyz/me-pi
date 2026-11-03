@@ -26,7 +26,7 @@ const { classifyProviderError } = await import("../../extensions/delegate-attemp
 
 const {
 	ROLES,
-	WORKER_CONTRACT,
+	workerContract,
 	LOCAL_TOOLS,
 	WEB_TOOLS,
 	IMPLEMENT_TOOLS,
@@ -246,7 +246,7 @@ let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
-  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), approve: args.includes("--approve"), prompt }) + "\\n");
+  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), approve: args.includes("--approve"), skills: process.env.ME_PI_SKILLS, prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
   if (mode === "implement-agent-loop") {
     runAgentLoopFixture().catch((error) => { console.error(error); process.exitCode = 1; });
@@ -358,7 +358,7 @@ process.stdin.on("end", () => {
     mkdirSync(out + "/notes");
     writeFileSync(out + "/notes/draft.md", "DRAFT-BODY");
     const sp = flag("--append-system-prompt") || "";
-    emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only for files inside " + out + ". Relative paths resolve against the project, not this directory")));
+    emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only to absolute paths inside " + out + " (relative paths resolve against the project)")));
     process.exit(0);
   }
   // implement modes: git runs in the worker's cwd, the coordinator's checkout.
@@ -927,4 +927,4 @@ const implement = (extra = {}) => ({ role: "implement", task: "add a feature", c
 // Resolves once a hang-mode worker has written the file it writes before it waits.
 const workerStarted = (repo) => waitFor(() => existsSync(join(repo, "left.txt")), "the worker to start");
 
-export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, IMPLEMENT_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, WORKER_CONTRACT, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, trackCheck, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, snapshotContent, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, pool, modelSet, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals, CHECK, implementRepo, implementEnv, implement, workerStarted };
+export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, IMPLEMENT_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, workerContract, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, trackCheck, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, snapshotContent, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, pool, modelSet, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals, CHECK, implementRepo, implementEnv, implement, workerStarted };
