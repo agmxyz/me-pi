@@ -198,7 +198,8 @@ test("a reservation is released on every exit; a busy refusal reserves nothing",
 	const marker = scratch("alloc-release-marker");
 	const { tool, commands, handlers, messages } = setup(t, {
 		config: TWO,
-		env: { FAKE_PI_MARKER: marker, FAKE_PI_FAIL_MODEL: OPUS },
+		// FAKE_PI_MODE is listed so the test's restore covers the direct mutations below.
+		env: { FAKE_PI_MARKER: marker, FAKE_PI_FAIL_MODEL: OPUS, FAKE_PI_MODE: undefined },
 	});
 	// A fresh concurrent pair after the call ended: [0, 1] proves no OPUS reservation leaked ([1, 0] if it did).
 	const freshPair = async (why: string) => {
@@ -236,18 +237,6 @@ test("a reservation is released on every exit; a busy refusal reserves nothing",
 	await freshPair("cancel");
 
 	process.env.FAKE_PI_MODE = "hang";
-	writeFileSync(marker, "");
-	const pending = run(tool, review("session shutdown"));
-	await waitFor(() => launches(marker).length === 1, "the foreground worker to start");
-	assert.equal(await runningNone(commands), false, "the call holds its reservation while it runs");
-	await handlers.session_shutdown();
-	const ended = await pending;
-	assert.match(text(ended), /^✗ stopped: session ended/);
-	heldOnOpus(ended);
-	assert.ok(await runningNone(commands), "session_shutdown released the reservation");
-	await freshPair("session shutdown");
-
-	process.env.FAKE_PI_MODE = "hang";
 	LIMITS.timeoutSecs = 0.5;
 	const timedOut = await run(tool, review("hard timeout"));
 	assert.match(text(timedOut), /^✗ stopped: timeout after 0\.5s/);
@@ -282,6 +271,18 @@ test("a reservation is released on every exit; a busy refusal reserves nothing",
 	).message.details;
 	assert.deepEqual(fourthDetails.allocation, [{ source: "pool", poolIndex: 1, shared: 1 }]);
 	await freshPair("busy refusal and cancels");
+
+	// Last: session_shutdown terminates this extension instance, so no call runs on it afterwards.
+	process.env.FAKE_PI_MODE = "hang";
+	writeFileSync(marker, "");
+	const pending = run(tool, review("session shutdown"));
+	await waitFor(() => launches(marker).length === 1, "the foreground worker to start");
+	assert.equal(await runningNone(commands), false, "the call holds its reservation while it runs");
+	await handlers.session_shutdown();
+	const ended = await pending;
+	assert.match(text(ended), /^✗ stopped: session ended/);
+	heldOnOpus(ended);
+	assert.ok(await runningNone(commands), "session_shutdown released the reservation");
 });
 
 test("duplicate aliases are one candidate; the first occurrence keeps its thinking", async (t) => {
