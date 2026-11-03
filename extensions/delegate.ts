@@ -409,7 +409,7 @@ function buildSchema() {
 	const model = {
 		type: "string",
 		minLength: 1,
-		description: "provider/id, or a bare id that one logged-in provider offers; omit for the role's pool model.",
+		description: "provider/id, or a bare id that one logged-in provider offers.",
 	};
 	return {
 		type: "object",
@@ -427,20 +427,20 @@ function buildSchema() {
 			},
 			web: {
 				type: "boolean",
-				description: "Override the role's web tools (on only for research and challenge).",
+				description: "Override the role's web tools.",
 			},
 			answer: {
 				type: "string",
 				minLength: 1,
 				maxLength: MAX_FORMAT,
-				description: "Final answer format (at most 400 characters); replaces the role's.",
+				description: "Final answer format; replaces the role's.",
 			},
 			runs: {
 				type: "array",
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"One entry per model; model and thinking are set independently. An omitted model uses the role pool's first (concurrent reviews spread across usable review-pool models), with its configured thinking. An explicitly named model runs alone and never falls back; name it to continue a review on it. Omitted fields fall back to delegate.json, then session defaults. implement always uses the worker pool's first model.",
+					"One entry per model; set model and thinking independently. Omitted fields come from delegate.json, then session defaults: an omitted model is the role pool's first (concurrent reviews spread across usable review-pool models), with its configured thinking. An explicitly named model runs alone and never falls back; name it to continue a review on it. Not for implement: it always uses the worker pool's first model.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -450,12 +450,12 @@ function buildSchema() {
 			output: {
 				type: "boolean",
 				description:
-					"Give each worker `write` into its own temp directory; the result lists file paths, not contents.",
+					"Each worker may `write` only into its own temp directory; the result lists file paths, not contents.",
 			},
 			rebuttal: {
 				type: "boolean",
 				description:
-					"With 2+ runs: a second round where each worker sees the others' answers and keeps, revises, or retracts its claims; only round 2 returns.",
+					"With 2+ runs: in round 2 each worker sees the others' answers and keeps, revises, or retracts its claims; only round 2 returns.",
 			},
 			check: {
 				type: "string",
@@ -475,17 +475,16 @@ function buildSchema() {
 }
 
 export const PROMPT_SNIPPET =
-	"Run read-only workers, alone or as a multi-model panel, and get back only their answers; one `implement` worker edits, runs `check`, and commits on your current branch";
+	"Run read-only workers, alone or as a multi-model panel, or one committing `implement` worker; get back only their answers";
 
 export const PROMPT_GUIDELINES = [
-	"Honor explicit user-required delegation and any repo- or skill-required independent review first. Otherwise delegate bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs; keep coupled decisions with the coordinator. Pushes, PRs, merges, and branch deletion are main-session only and require user authorization.",
-	"When the user names several models for one question, send one call with one `runs` entry per model (with its thinking) and `rebuttal: true` if they should check each other; then report agreements, disagreements with their evidence, and your verdict.",
-	"Omit `role` for a general worker or pick the preset that fits. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
-	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory; copy what you keep and check the diff yourself.",
-	"Give each worker a compact, self-contained brief: scope, deliverable, context/constraints, acceptance evidence, blocker reporting. Explicitly accept/reject/recover handbacks; proportionately verify decisive claims and inspect implementation diffs/check adequacy without routinely redoing worker work. Resolve/report each BLOCKED line. Use delegate for repo-required subagents; follow repo review requirements.",
-	"When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires. Workers cannot delegate; a handback completes only the assigned step.",
-	"An implement worker is the only writer to the checkout while its job is active; until its handback, do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user.",
-	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
+	"Honor explicit user-required delegation, repo-required subagents (use delegate), and any repo- or skill-required independent review first. Otherwise delegate bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs; keep coupled decisions with the coordinator. Pushes, PRs, merges, and branch deletion are main-session only and require user authorization.",
+	"When the user names several models for one question, make one call with a `runs` entry per model (with its thinking), plus `rebuttal: true` if they should cross-check; report agreements, disagreements with evidence, and your verdict.",
+	"Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out. For a draft (docs, a plan, a patch), set `output: true`, then copy what you keep and check the diff yourself.",
+	"Give each worker a compact, self-contained brief: scope, deliverable, context/constraints, acceptance evidence, blocker reporting. Explicitly accept/reject/recover handbacks; proportionately verify decisive claims and inspect implementation diffs/check adequacy without routinely redoing worker work. Resolve/report each BLOCKED line.",
+	"When a skill applies, you keep its required user decisions and orchestration through completion. Workers cannot delegate; a handback completes only the assigned step.",
+	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user.",
+	"Set `background: true` for work that takes minutes while you keep going with the user; tell them the job id, and do not wait, poll, or repeat the call. At most 4 workers run at once across all calls.",
 ];
 
 const SPEND_WARN_SHARE = 0.8;
@@ -669,7 +668,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; with `output: true` each can write drafts into its own temp directory. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers. Read-only roles read files and load skills. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),

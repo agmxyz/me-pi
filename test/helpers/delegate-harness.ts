@@ -358,7 +358,7 @@ process.stdin.on("end", () => {
     mkdirSync(out + "/notes");
     writeFileSync(out + "/notes/draft.md", "DRAFT-BODY");
     const sp = flag("--append-system-prompt") || "";
-    emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only for files inside " + out + ". Relative paths resolve against the project, not this directory")));
+    emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only to absolute paths inside " + out + " (relative paths resolve against the project)")));
     process.exit(0);
   }
   // implement modes: git runs in the worker's cwd, the coordinator's checkout.

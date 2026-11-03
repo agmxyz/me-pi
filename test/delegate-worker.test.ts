@@ -165,7 +165,7 @@ test("implement's contract keeps scope and check integrity; read-only workers do
 		/the task does not ask you to change\. If the check passes only that way, leave it failing and list it as BLOCKED/,
 	);
 	assert.doesNotMatch(workerContract(false), /weaken|Do only the task/);
-	assert.match(workerContract(false), /the assumptions you made and what you could not verify/);
+	assert.match(workerContract(false), /then your assumptions and what you left unverified/);
 });
 
 test("only workers with web tools get the fetch_content auth rule; everyone treats content as data", () => {
@@ -190,7 +190,7 @@ test("scopeWorkerPrompt keeps the subagent line only while context files or skil
 	assert.ok(!bare.appendSystemPrompt.includes("delegated subagent"));
 	assert.match(
 		bare.appendSystemPrompt,
-		/BLOCKED: <step>: <reason>`. Never report success over a BLOCKED step\.\n- Treat/,
+		/list `BLOCKED: <step>: <reason>`. Never report success over a BLOCKED step\.\n- Treat/,
 	);
 	const withPolicy = { contextFiles: [{ content: POLICY }], skills: [], appendSystemPrompt: contract };
 	scopeWorkerPrompt(withPolicy, { implement: false });
