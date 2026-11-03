@@ -24,7 +24,6 @@ import {
 } from "./delegate-attempt.ts";
 import { type ActiveCall, type ActiveWorker, type CallRecord, registerDelegateCommand } from "./delegate-command.ts";
 import {
-	type AllocatedRun,
 	configPath,
 	configuredModels,
 	loadModelSet,
@@ -418,7 +417,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. research and challenge get web tools; implement writes; the others only read. scout uses the scout pool (low/off thinking), review the review pool if configured, the rest the worker pool.",
+					"Omit for general: read-only work of any kind (investigation, review, research), defined by the task. scout: fast bounded read-only search on the scout pool (low/off thinking). implement: the only role that modifies the checkout; it edits, runs `check`, and commits. general and implement use the worker pool.",
 			},
 			task: {
 				type: "string",
@@ -427,7 +426,7 @@ function buildSchema() {
 			},
 			web: {
 				type: "boolean",
-				description: "Override the role's web tools.",
+				description: "Web tools are on only when this is true; never for implement.",
 			},
 			answer: {
 				type: "string",
@@ -440,7 +439,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"One entry per model; set model and thinking independently. Omitted fields come from delegate.json, then session defaults: an omitted model is the role pool's first (concurrent reviews spread across usable review-pool models), with its configured thinking. An explicitly named model runs alone and never falls back; name it to continue a review on it. Not for implement: it always uses the worker pool's first model.",
+					"One entry per model; set model and thinking independently. Omitted fields come from delegate.json, then session defaults: an omitted model is the role pool's first, with its configured thinking. An explicitly named model runs alone and never falls back; name one for a second opinion or to continue work on it. Not for implement: it always uses the worker pool's first model.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -482,6 +481,7 @@ export const PROMPT_GUIDELINES = [
 	"When the user names several models for one question, make one call with a `runs` entry per model (with its thinking), plus `rebuttal: true` if they should cross-check; report agreements, disagreements with evidence, and your verdict.",
 	"Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out. For a draft (docs, a plan, a patch), set `output: true`, then copy what you keep and check the diff yourself.",
 	"Give each worker a compact, self-contained brief: scope, deliverable, context/constraints, acceptance evidence, blocker reporting. Explicitly accept/reject/recover handbacks; proportionately verify decisive claims and inspect implementation diffs/check adequacy without routinely redoing worker work. Resolve/report each BLOCKED line.",
+	"Workers see neither this conversation nor the bodies of skills you loaded: make the brief self-contained, name any discovered skill the worker should load with `Skill`, and set `answer` for a specific format.",
 	"When a skill applies, you keep its required user decisions and orchestration through completion. Workers cannot delegate; a handback completes only the assigned step.",
 	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user.",
 	"Set `background: true` for work that takes minutes while you keep going with the user; tell them the job id, and do not wait, poll, or repeat the call. At most 4 workers run at once across all calls.",
@@ -668,7 +668,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers. Read-only roles read files and load skills. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers. general (the default) and scout read files and load skills; only implement modifies the checkout. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),
@@ -720,7 +720,7 @@ export default function (pi: ExtensionAPI) {
 			const job: Job = {
 				role,
 				jobId: randomUUID(),
-				web: web ?? ROLES[role].web,
+				web: web === true,
 				answer: answer?.trim() ?? ROLES[role].answer,
 				output: output === true,
 			};
@@ -737,42 +737,24 @@ export default function (pi: ExtensionAPI) {
 			if (badRun >= 0)
 				return fail(`runs[${badRun}] must be { model?: string, thinking?: ${THINKING_LEVELS.join("|")} }`);
 			if (rebuttal && specs.length < 2) return fail("rebuttal needs at least 2 runs");
-			// Reservation: for non-implement roles, everything from here through `active.set` in `call()` must stay
-			// synchronous (no `await`), so a concurrent review call sees this call's models when it allocates its own.
 			let set: ModelSet;
 			let session: string | undefined;
-			let allocated: AllocatedRun[];
+			let resolved: ResolvedRun[];
 			try {
 				set = loadModelSet();
 				session = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 				const configured = new Set(configuredModels(set));
 				for (const spec of specs)
 					if (spec.model && !configured.has(spec.model)) validateOneOffModel(spec.model, ctx?.modelRegistry);
-				const occupied = new Map<string, number>();
-				for (const a of active.values())
-					if (a.role === "review")
-						for (const m of a.models) if (m !== "session model") occupied.set(m, (occupied.get(m) ?? 0) + 1);
-				allocated = resolveRuns(role, specs, set, {
+				resolved = resolveRuns(role, specs, set, {
 					sessionModel: session,
 					sessionThinking: ctx?.thinkingLevel,
 					registry: ctx?.modelRegistry,
-					occupied,
 				});
 				job.skills = role === "implement" ? set.implementSkills : set.readOnlySkills;
 			} catch (err: any) {
 				return fail(err.message);
 			}
-			const resolved: ResolvedRun[] = allocated.map(({ model, thinking }) => ({ model, thinking }));
-			const allocation = allocated.map((r) => r.allocation);
-			// Fewer eligible distinct review models than concurrent review runs: say so once, never an error.
-			const sharedNote = allocated
-				.filter((r) => r.allocation.source === "pool" && r.allocation.shared > 0)
-				.map(
-					(r) =>
-						`Review model shared: ${r.model} already has ${r.allocation.shared} review run(s) reserved; all eligible distinct pool models are occupied.`,
-				)
-				.join(" ");
-
 			const models = resolved.map((r) => r.model ?? "session model");
 			// Picked once per worker: progress, the widget, and the rebuttal round all reuse it.
 			const personas = resolved.map(() => pickPersona(role));
@@ -870,8 +852,6 @@ export default function (pi: ExtensionAPI) {
 				end?: (outcome: Outcome) => Promise<Facts>,
 			) => {
 				const start = Date.now();
-				// The review-model reservation: reached with no `await` since allocation (non-implement roles), released by
-				// the `finally` below on every exit. Keep this segment synchronous.
 				active.set(key, {
 					role,
 					models,
@@ -1029,9 +1009,8 @@ export default function (pi: ExtensionAPI) {
 					if (history.length > HISTORY_SIZE) history.shift();
 					const usage = {};
 					for (const r of all) addUsage(usage, r.usage);
-					const notes = [note, sharedNote].filter(Boolean).join(" ");
 					const footer =
-						all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${notes}` : notes;
+						all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
 					// implement: the handback replaces the answer; the TUI view keeps the full answer.
 					const sections = facts
 						? [formatHandback(facts)]
@@ -1063,7 +1042,6 @@ export default function (pi: ExtensionAPI) {
 						details: {
 							round1: round1.map(withoutOutput),
 							round2: round2.map(withoutOutput),
-							allocation,
 							view,
 							...(facts && { implement: facts }),
 						},

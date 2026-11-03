@@ -21,7 +21,7 @@ test("/delegate status shows the stage and only active worker progress", async (
 		[
 			"bg7",
 			{
-				role: "review",
+				role: "general",
 				models: [HAIKU, OPUS],
 				start: Date.now(),
 				job: "bg7",
@@ -52,7 +52,7 @@ test("/delegate status shows the stage and only active worker progress", async (
 		],
 	]);
 	const output = await statusFor(active)();
-	assert.match(output, /\nRunning \(1\):\n {2}bg7 review: claude-haiku-5-5, claude-opus-5-5 \d+s\n/);
+	assert.match(output, /\nRunning \(1\):\n {2}bg7 general: claude-haiku-5-5, claude-opus-5-5 \d+s\n/);
 	assert.match(output, /\n {4}Stage: Rebuttal\n {4}Worker 1: claude-haiku-5-5 @low \d+s · grep\n/);
 	assert.doesNotMatch(output, /Worker 2:|completed-only-marker|PRIVATE_(?:TASK|TOOL_ARGS|RESULT|REASONING)_MARKER/);
 	assert.match(output, /\nLast calls: none$/);
@@ -83,12 +83,14 @@ test("/delegate status keeps the existing running summary without worker metadat
 });
 
 test("/delegate status keeps the existing running summary for stage-only calls", async () => {
-	const active = new Map([["bg10", { role: "review", models: [OPUS], start: 1_000, job: "bg10", stage: "Rebuttal" }]]);
+	const active = new Map([
+		["bg10", { role: "general", models: [OPUS], start: 1_000, job: "bg10", stage: "Rebuttal" }],
+	]);
 	const originalNow = Date.now;
 	Date.now = () => 4_000;
 	try {
 		const output = await statusFor(active)();
-		assert.match(output, /\nRunning \(1\):\n {2}bg10 review: claude-opus-5-5 3s\n/);
+		assert.match(output, /\nRunning \(1\):\n {2}bg10 general: claude-opus-5-5 3s\n/);
 		assert.doesNotMatch(output, /\n {4}(?:Stage:|Worker(?: \d+)?:)/);
 	} finally {
 		Date.now = originalNow;
@@ -149,11 +151,11 @@ test("/delegate status: the set with availability, missing tools, running and re
 
 	const hanging = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "hang" } });
 	const controller = new AbortController();
-	const pending = run(hanging.tool, { role: "review", task: "x" }, controller.signal);
+	const pending = run(hanging.tool, { role: "general", task: "x" }, controller.signal);
 	await new Promise((r) => setTimeout(r, 300));
 	const { ctx, notes } = commandCtx();
 	await hanging.commands.delegate.handler("status", ctx);
-	assert.match(notes[0][0], /\nRunning \(1\):\n {2}review: claude-opus-5-5 \d+s\n/);
+	assert.match(notes[0][0], /\nRunning \(1\):\n {2}general: claude-opus-5-5 \d+s\n/);
 	controller.abort();
 	await pending;
 

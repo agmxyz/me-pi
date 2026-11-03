@@ -26,6 +26,3 @@ Evidence from the owner of an operation identifying why it stopped or was refuse
 
 **Review closure**:
 The disposition of findings and affected coverage that establishes whether delivered work satisfies its required review obligations.
-
-**Review pool**:
-A group of model preferences for independent review, distinct from implementation preferences and subject to the run's authorized model choices.

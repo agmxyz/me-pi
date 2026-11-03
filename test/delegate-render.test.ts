@@ -41,7 +41,7 @@ const seq =
 	(...values) =>
 	() =>
 		values.shift();
-const CHEF = { emoji: "🧑🏽‍🍳", phrase: "letting him cook" };
+const CHEF = { emoji: "🧑🏽‍🍳", phrase: "time to cook" };
 const ELF = { emoji: "🧝🏻", phrase: "what do your elf-eyes see?" };
 
 test("scouts are elves; other workers are chefs or farmers; every skin tone is reachable", () => {
@@ -51,19 +51,19 @@ test("scouts are elves; other workers are chefs or farmers; every skin tone is r
 	);
 	assert.equal(pickPersona("scout", seq(0)).phrase, "what do your elf-eyes see?");
 	assert.deepEqual(
-		SKIN_TONES.map((_, i) => pickPersona("review", seq(i / 5, 0)).emoji),
+		SKIN_TONES.map((_, i) => pickPersona("general", seq(i / 5, 0)).emoji),
 		["🧑🏻‍🍳", "🧑🏼‍🍳", "🧑🏽‍🍳", "🧑🏾‍🍳", "🧑🏿‍🍳"],
 	);
 	assert.deepEqual(
-		SKIN_TONES.map((_, i) => pickPersona("review", seq(i / 5, 0.99)).emoji),
+		SKIN_TONES.map((_, i) => pickPersona("general", seq(i / 5, 0.99)).emoji),
 		["🧑🏻‍🌾", "🧑🏼‍🌾", "🧑🏽‍🌾", "🧑🏾‍🌾", "🧑🏿‍🌾"],
 	);
-	for (const role of ["general", "review", "research", "challenge", "implement"]) {
-		assert.deepEqual(pickPersona(role, seq(0.99, 0)), { emoji: "🧑🏿‍🍳", phrase: "letting him cook" });
+	for (const role of ["general", "implement"]) {
+		assert.deepEqual(pickPersona(role, seq(0.99, 0)), { emoji: "🧑🏿‍🍳", phrase: "time to cook" });
 		assert.deepEqual(pickPersona(role, seq(0, 0.5)), { emoji: "🧑🏻‍🌾", phrase: "doing honest work" });
 	}
 	for (let i = 0; i < 50; i++) {
-		const { emoji } = pickPersona("review");
+		const { emoji } = pickPersona("general");
 		assert.match(emoji, /^🧑[🏻🏼🏽🏾🏿]\u200d[🍳🌾]$/u);
 	}
 });
@@ -81,7 +81,7 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 		id: "bg1",
 		worker: index + 1,
 		workerCount: 6,
-		role: index === 0 ? "scout" : "review",
+		role: index === 0 ? "scout" : "general",
 		model: "anthropic/claude-haiku-5-5",
 		thinking: "low",
 		startedAt,
@@ -96,7 +96,7 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 		lines[1],
 		/^🧝🏻 bg1#1 scout R2 anthropic\/claude-haiku-5-5 @low 2s · read · what do your elf-eyes see\?$/,
 	);
-	assert.match(lines[4], /^🧑🏽‍🍳 bg1#4 review anthropic\/claude-haiku-5-5 @low 2s · grep · letting him cook$/);
+	assert.match(lines[4], /^🧑🏽‍🍳 bg1#4 general anthropic\/claude-haiku-5-5 @low 2s · grep · time to cook$/);
 	const withoutElapsed = (line) => line.replace(/@low \d+s/, "@low <elapsed>");
 	assert.deepEqual(
 		draw(component, 200).map(withoutElapsed),
@@ -134,7 +134,7 @@ test("long native foreground IDs use compact labels so role, model, and thinking
 				displayId: "fg1",
 				worker: 1,
 				workerCount: 1,
-				role: "review",
+				role: "general",
 				model: "openai-codex/gpt-6-luna",
 				thinking: "low",
 				startedAt: Date.now(),
@@ -145,7 +145,7 @@ test("long native foreground IDs use compact labels so role, model, and thinking
 		theme,
 	);
 	const [row] = draw(component, 90).slice(1);
-	assert.match(row, /🧑🏾‍🌾 fg1 review openai-codex\/gpt-6-luna @low/);
+	assert.match(row, /🧑🏾‍🌾 fg1 general openai-codex\/gpt-6-luna @low/);
 	assert.doesNotMatch(row, /call_|fc_/);
 	assertFits(component, 90);
 });
@@ -233,7 +233,7 @@ test("progress shows the stage and one line per run; the plain text is what non-
 	};
 	assert.deepEqual(progressLines(view), [
 		"Rebuttal [web]",
-		"🧑🏽‍🍳 claude-haiku-5-5 @low turn 2 $0.0017 read src/a.ts · letting him cook",
+		"🧑🏽‍🍳 claude-haiku-5-5 @low turn 2 $0.0017 read src/a.ts · time to cook",
 		"🧝🏻 claude-sonnet-5-5 @off turn 2 $0.0017 · what do your elf-eyes see?",
 		"✗ claude-haiku-5-5 @low turn 2 $0.0017",
 		"✓ claude-haiku-5-5 @low turn 2 $0.0017",

@@ -213,7 +213,7 @@ test("implement refusals leave no lock", async (t) => {
 			ctx,
 			/^implement does not take runs with more than 1 entry, rebuttal$/,
 		],
-		[{ role: "review", task: "x", check: CHECK }, ctx, /^check is a non-empty string, for role implement only$/],
+		[{ role: "general", task: "x", check: CHECK }, ctx, /^check is a non-empty string, for role implement only$/],
 		...["npm test | tail", "npm test; true", "npm test && x", "npm test || true"].map((check) => [
 			implement({ check }),
 			ctx,
