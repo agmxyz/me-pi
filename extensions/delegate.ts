@@ -409,8 +409,7 @@ function buildSchema() {
 	const model = {
 		type: "string",
 		minLength: 1,
-		description:
-			"A Pi model ref: provider/id, or a bare id that one logged-in provider offers; omit to use the role's configured model selection.",
+		description: "provider/id, or a bare id that one logged-in provider offers; omit for the role's pool model.",
 	};
 	return {
 		type: "object",
@@ -419,31 +418,29 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. Scout uses the scout pool (low/off); review uses the optional review pool when configured, otherwise the worker pool; all other roles use the worker pool. Each model has its own thinking level. A run without a model starts on the pool's first model; a review run started while other reviews run starts on the least-occupied usable review-pool model instead. Each run dispatches that one model; there is no cross-model fallback. Explicit models remain exact; name the model to continue a review on it. research and challenge can use web tools; implement edits, runs `check`, and commits on your current branch; the other roles are read-only.",
+					"Preset; omit for general. research and challenge get web tools; implement edits, runs `check`, and commits; the others only read. scout uses the scout pool (low/off thinking), review the review pool if configured, the rest the worker pool.",
 			},
 			task: {
 				type: "string",
 				description:
-					"Self-contained instructions: goal, context, acceptance criteria, paths. The worker sees nothing else. Read-only workers cannot run commands: write diffs or command output to a temp file and pass its path. For implement, give the check command as `check`.",
+					"The worker sees only this. Read-only workers cannot run commands: write diffs or command output to a temp file and pass its path.",
 			},
 			web: {
 				type: "boolean",
-				description:
-					"Override the role's web tools (on for research and challenge, off for the others). Risk: fetched pages are untrusted data that can steer the worker, which also reads local files, into sending them out; turn it on only when the task needs outside sources.",
+				description: "Override the role's web tools (on only for research and challenge).",
 			},
 			answer: {
 				type: "string",
 				minLength: 1,
 				maxLength: MAX_FORMAT,
-				description:
-					"Final answer format, at most 400 characters; replaces the role's. Example: `a table: option | cost | risk, then your pick`.",
+				description: "Final answer format (at most 400 characters); replaces the role's.",
 			},
 			runs: {
 				type: "array",
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"Omit for one worker using the role's defaults. Set model and thinking independently; omitted fields use delegate.json/session defaults. Any explicitly named model runs alone and never falls back. An omitted model uses the pool's first model; for review, concurrent runs spread across usable review-pool models. For several models on the same task, use one entry per model. Not for implement: it uses the first model in the worker pool in delegate.json.",
+					"One entry per model; model and thinking are set independently. An omitted model uses the role pool's first (concurrent reviews spread across usable review-pool models), with its configured thinking. An explicitly named model runs alone and never falls back; name it to continue a review on it. Not for implement.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -452,24 +449,23 @@ function buildSchema() {
 			},
 			output: {
 				type: "boolean",
-				description:
-					"Give each worker `write`, only inside its own fresh temp directory, for drafts (docs, plans, patches). The result lists the file paths, not their contents; copy what you need and check the diff.",
+				description: "Give each worker `write` into its own temp directory; the result lists the files.",
 			},
 			rebuttal: {
 				type: "boolean",
 				description:
-					"With 2+ runs: a second round where each worker sees the others' answers and keeps, revises, or retracts claims. Only round-2 answers are returned.",
+					"With 2+ runs: a second round where each worker checks the others' answers; only round 2 returns.",
 			},
 			check: {
 				type: "string",
 				minLength: 1,
 				description:
-					"implement only, required: one unchained command, run from your cwd, that proves the change (e.g. `npm run check --prefix extensions`). The worker runs it alone, exactly as given, after its final edit.",
+					"implement only, required: one unchained command, run from your cwd, that proves the change. The worker runs it alone, exactly as given, after its final edit.",
 			},
 			background: {
 				type: "boolean",
 				description:
-					"Return a job id at once and keep the conversation going; the answer arrives later as a delegate message that starts a turn. Background jobs end on /reload or exit.",
+					"Return a job id at once; the answer arrives later as a `delegate` message that starts a turn. Jobs end on /reload or exit.",
 			},
 		},
 		required: ["task"],
@@ -478,17 +474,17 @@ function buildSchema() {
 }
 
 export const PROMPT_SNIPPET =
-	"Run read-only workers (general, or the presets scout, research, review, challenge), alone or as a multi-model panel with rebuttal, and get back only their answers (drafts only with `output: true`); one `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); you get a 2-line handback";
+	"Run read-only workers, alone or as a multi-model panel, and get back only their answers; one `implement` worker edits, runs `check`, and commits on your current branch";
 
 export const PROMPT_GUIDELINES = [
 	"Honor explicit user-required delegation and any repo- or skill-required independent review first. Otherwise delegate bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs; keep coupled decisions with the coordinator. Pushes, PRs, merges, and branch deletion are main-session only and require user authorization.",
 	"When the user names several models for one question, send one call with one `runs` entry per model (with its thinking) and `rebuttal: true` if they should check each other; then report agreements, disagreements with their evidence, and your verdict.",
-	"Omit `role` for a general worker, or pick the preset that fits; `answer` (at most 400 characters) sets the answer format. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
-	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory and the result lists the files; copy what you keep and check the diff yourself.",
+	"Omit `role` for a general worker or pick the preset that fits. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
+	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory; copy what you keep and check the diff yourself.",
 	"Give each worker a compact, self-contained brief: scope, deliverable, context/constraints, acceptance evidence, blocker reporting. Explicitly accept/reject/recover handbacks; proportionately verify decisive claims and inspect implementation diffs/check adequacy without routinely redoing worker work. Resolve/report each BLOCKED line. Use delegate for repo-required subagents; follow repo review requirements.",
 	"When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires. Workers cannot delegate; a handback completes only the assigned step. Declare `check` as one unchained command to run alone.",
 	"An implement worker is the only writer to the checkout while its job is active; until its handback, do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user.",
-	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile; the answer arrives as a later `delegate` message that starts a turn. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
+	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
 ];
 
 const SPEND_WARN_SHARE = 0.8;
@@ -672,7 +668,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; research and challenge, or `web: true`, also use the web; with `output: true` each can write drafts into its own temp directory. Each run uses one model, the explicit `model` or the role pool's first (concurrent reviews start on the least-occupied usable review-pool model); no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers and get back only their answers. Read-only roles read files and load skills; with `output: true` each can write drafts into its own temp directory. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),
