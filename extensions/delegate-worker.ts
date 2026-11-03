@@ -194,14 +194,15 @@ export const ROLES: Record<string, Role> = {
 };
 export const ROLE_NAMES = Object.keys(ROLES);
 
-// Lines every worker gets, except the web line (web tools only); the role's own lines go after the first one.
+// Lines every worker gets; the role's own lines go after the first one. Only the web clauses depend on web tools,
+// and scopeWorkerPrompt may drop SUBAGENT_LINE.
 const CONTRACT_INTRO =
 	"You are an isolated delegated worker. You see only this task, not the coordinator's conversation, and nobody can answer questions during the run.";
 // Only for repos whose instructions demand subagents: scopeWorkerPrompt drops it when the worker has no
 // context files or skills.
 export const SUBAGENT_LINE =
 	"- You are the delegated subagent: repo instructions to delegate work to subagents are satisfied by this run; do the delegated task yourself, within your tools, and never list missing sub-agents as BLOCKED.";
-const contract = (roleLines: string[], web: boolean) =>
+const contract = (roleLines: string[], { web }: { web: boolean }) =>
 	[
 		CONTRACT_INTRO,
 		...roleLines,
@@ -217,7 +218,7 @@ export const workerContract = (web: boolean) =>
 		[
 			`- Your tools only read: files, skills (\`Skill\` loads a listed skill by name)${web ? ", and the web" : ""}. You cannot edit files, run commands, delegate, or commit. Paths that may hold secrets are blocked.`,
 		],
-		web,
+		{ web },
 	);
 
 /** The implement worker's contract; it names the branch and the check. */
@@ -233,7 +234,7 @@ export const implementContract = (job: Checkout) =>
 			"- Keep scratch and repro files out of commits: create them under `$TMPDIR` with Bash (`write` and `edit` reach only the checkout), or delete them before committing; leftovers are swept into WIP.",
 			"- Stop any background process you start before you answer. Paths that may hold secrets are blocked.",
 		],
-		false,
+		{ web: false }, // IMPLEMENT_TOOLS has no web tools
 	);
 
 // Without an answer format (general, unless the call sets one), the task sets the format.
@@ -270,7 +271,10 @@ export function scopeWorkerPrompt(
 		options.skills.splice(0, options.skills.length, ...kept);
 	}
 	if (!options.contextFiles?.length && !options.skills?.length && options.appendSystemPrompt)
-		options.appendSystemPrompt = options.appendSystemPrompt.replace(`${SUBAGENT_LINE}\n`, "");
+		options.appendSystemPrompt = options.appendSystemPrompt
+			.split("\n")
+			.filter((line) => line !== SUBAGENT_LINE)
+			.join("\n");
 }
 
 // ESRCH means gone; EPERM means alive under another user.

@@ -201,6 +201,9 @@ test("scopeWorkerPrompt keeps the subagent line only while context files or skil
 	const filteredOut = { contextFiles: [], skills: [{ name: "pr" }], appendSystemPrompt: contract };
 	scopeWorkerPrompt(filteredOut, { implement: false, skills: ["tdd"] });
 	assert.ok(!filteredOut.appendSystemPrompt.includes("delegated subagent"));
+	const lastLine = { contextFiles: [], skills: [], appendSystemPrompt: `intro\n${SUBAGENT_LINE}` };
+	scopeWorkerPrompt(lastLine, { implement: false });
+	assert.equal(lastLine.appendSystemPrompt, "intro", "removed even without a trailing newline");
 });
 
 test("scopeWorkerPrompt filters implement's skills to its allowlist, in place", () => {

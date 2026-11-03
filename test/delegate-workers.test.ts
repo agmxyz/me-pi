@@ -602,7 +602,8 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 		/When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires/,
 	);
 	assert.match(all, /Workers cannot delegate; a handback completes only the assigned step/);
-	assert.match(all, /Declare `check` as one unchained command to run alone/);
+	// The `check` schema owns the one-unchained-command rule (asserted in delegate-worker-guards.test.ts).
+	assert.doesNotMatch(all, /unchained/);
 	assert.match(all, /only writer to the checkout while its job is active/);
 	assert.match(all, /until its handback, do not edit, commit, or switch branches in that repo/);
 	assert.match(all, /Surface failed handbacks/);

@@ -418,7 +418,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Preset; omit for general. research and challenge get web tools; implement edits, runs `check`, and commits; the others only read. scout uses the scout pool (low/off thinking), review the review pool if configured, the rest the worker pool.",
+					"Preset; omit for general. research and challenge get web tools; implement writes; the others only read. scout uses the scout pool (low/off thinking), review the review pool if configured, the rest the worker pool.",
 			},
 			task: {
 				type: "string",
@@ -440,7 +440,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"One entry per model; model and thinking are set independently. An omitted model uses the role pool's first (concurrent reviews spread across usable review-pool models), with its configured thinking. An explicitly named model runs alone and never falls back; name it to continue a review on it. Not for implement.",
+					"One entry per model; model and thinking are set independently. An omitted model uses the role pool's first (concurrent reviews spread across usable review-pool models), with its configured thinking. An explicitly named model runs alone and never falls back; name it to continue a review on it. Omitted fields fall back to delegate.json, then session defaults. implement always uses the worker pool's first model.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -449,12 +449,13 @@ function buildSchema() {
 			},
 			output: {
 				type: "boolean",
-				description: "Give each worker `write` into its own temp directory; the result lists the files.",
+				description:
+					"Give each worker `write` into its own temp directory; the result lists file paths, not contents.",
 			},
 			rebuttal: {
 				type: "boolean",
 				description:
-					"With 2+ runs: a second round where each worker checks the others' answers; only round 2 returns.",
+					"With 2+ runs: a second round where each worker sees the others' answers and keeps, revises, or retracts its claims; only round 2 returns.",
 			},
 			check: {
 				type: "string",
@@ -482,7 +483,7 @@ export const PROMPT_GUIDELINES = [
 	"Omit `role` for a general worker or pick the preset that fits. Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
 	"For a draft (docs, a plan, a patch), set `output: true`: each worker writes only into its own temp directory; copy what you keep and check the diff yourself.",
 	"Give each worker a compact, self-contained brief: scope, deliverable, context/constraints, acceptance evidence, blocker reporting. Explicitly accept/reject/recover handbacks; proportionately verify decisive claims and inspect implementation diffs/check adequacy without routinely redoing worker work. Resolve/report each BLOCKED line. Use delegate for repo-required subagents; follow repo review requirements.",
-	"When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires. Workers cannot delegate; a handback completes only the assigned step. Declare `check` as one unchained command to run alone.",
+	"When a skill applies, the coordinator retains its required user decisions and orchestration through completion, including any independent review the skill requires. Workers cannot delegate; a handback completes only the assigned step.",
 	"An implement worker is the only writer to the checkout while its job is active; until its handback, do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user.",
 	"Set `background: true` when the work takes minutes and you can keep going with the user meanwhile. Do not wait, poll, or repeat the call; tell the user the job id. At most 4 workers run at once across all calls.",
 ];
