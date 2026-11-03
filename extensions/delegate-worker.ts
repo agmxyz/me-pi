@@ -147,12 +147,10 @@ export function readWorkerEnv(env: NodeJS.ProcessEnv = process.env): WorkerEnv {
 
 // --- Roles and contract ---------------------------------------------------------------------------
 
-/** A role's final answer format (general has none). */
 export interface Role {
 	answer?: string;
 }
 
-/** One call's workers: the role, whether the call set `web: true`, the answer format after `answer`, and `output`. */
 export interface Job extends Role {
 	role: string;
 	web: boolean;

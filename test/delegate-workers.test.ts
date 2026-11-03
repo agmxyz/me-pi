@@ -269,7 +269,6 @@ test("rebuttals keep each run's exact model without cross-model fallback", async
 		rebuttal: true,
 	});
 	assert.equal(defaultResult.isError, true, text(defaultResult));
-	// Each named model runs at its own pool entry's thinking level.
 	const exactPair = [
 		[HAIKU, "high"],
 		[SONNET, "low"],
@@ -647,7 +646,6 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.doesNotMatch(PROMPT_SNIPPET, /edits, runs `check`/);
 	// The schema owns the general-role default and the output directory rule.
 	assert.match(tool.parameters.properties.role.description, /^Omit for general/);
-	// No text advertises a removed role or a review pool.
 	const advertised = [
 		tool.description,
 		prompt,
