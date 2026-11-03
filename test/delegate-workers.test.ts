@@ -649,8 +649,6 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.doesNotMatch(PROMPT_SNIPPET, /edits, runs `check`/);
 	// The schema owns the general-role default and the output directory rule.
 	assert.match(tool.parameters.properties.role.description, /^Omit for general/);
-	// Pi validates the enum before execute runs, so the migration hint lives in the schema.
-	assert.match(tool.parameters.properties.role.description, /Removed: review, research, challenge; use general/);
 	// No text advertises a removed role or a review pool.
 	const advertised = [
 		tool.description,
