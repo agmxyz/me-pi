@@ -28,8 +28,10 @@ export interface ModelSet {
 	scout: ModelPool;
 	worker: ModelPool;
 	review?: ModelPool;
-	/** Skills read-only workers may see and load; omitted means all. `implement` always sees all. */
+	/** Skills read-only workers may see and load; omitted means all. */
 	readOnlySkills?: string[];
+	/** Skills `implement` workers may see and load; omitted means all. */
+	implementSkills?: string[];
 }
 
 const defaultModelSet = (): ModelSet => ({
@@ -98,7 +100,7 @@ function validModelSet(raw: any, where: string): ModelSet {
 		throw new Error(
 			`${where}: unsupported format (version ${JSON.stringify(raw.version ?? null)}); expected "version": 3 with { model, thinking } pool entries. Rewrite it as shown in docs/delegate.md ("Configure model pools").`,
 		);
-	const allowed = ["version", "scout", "worker", "review", "readOnlySkills"];
+	const allowed = ["version", "scout", "worker", "review", "readOnlySkills", "implementSkills"];
 	const unknown = Object.keys(raw).filter((k) => !allowed.includes(k));
 	if (unknown.length)
 		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: ${allowed.join(", ")})`);
@@ -107,14 +109,19 @@ function validModelSet(raw: any, where: string): ModelSet {
 		scout: validV3Pool(raw.scout, `${where}.scout`, true),
 		worker: validV3Pool(raw.worker, `${where}.worker`, false),
 		...(raw.review !== undefined ? { review: validV3Pool(raw.review, `${where}.review`, false) } : {}),
-		...(raw.readOnlySkills !== undefined ? { readOnlySkills: skillNames(raw.readOnlySkills, where) } : {}),
+		...(raw.readOnlySkills !== undefined
+			? { readOnlySkills: skillNames(raw.readOnlySkills, `${where}.readOnlySkills`) }
+			: {}),
+		...(raw.implementSkills !== undefined
+			? { implementSkills: skillNames(raw.implementSkills, `${where}.implementSkills`) }
+			: {}),
 	};
 }
 
 function skillNames(value: unknown, where: string): string[] {
 	if (!Array.isArray(value) || value.some((s) => typeof s !== "string" || !s.trim()))
-		throw new Error(`${where}.readOnlySkills must be an array of skill names`);
-	if (new Set(value).size !== value.length) throw new Error(`${where}.readOnlySkills lists a skill twice`);
+		throw new Error(`${where} must be an array of skill names`);
+	if (new Set(value).size !== value.length) throw new Error(`${where} lists a skill twice`);
 	return value;
 }
 

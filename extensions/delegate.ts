@@ -762,7 +762,7 @@ export default function (pi: ExtensionAPI) {
 					registry: ctx?.modelRegistry,
 					occupied,
 				});
-				if (role !== "implement") job.skills = set.readOnlySkills;
+				job.skills = role === "implement" ? set.implementSkills : set.readOnlySkills;
 			} catch (err: any) {
 				return fail(err.message);
 			}

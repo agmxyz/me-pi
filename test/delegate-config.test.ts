@@ -107,6 +107,39 @@ test("readOnlySkills reaches read-only workers and is validated", async (t) => {
 	}
 });
 
+test("implementSkills reaches implement workers only and is validated like readOnlySkills", (t) => {
+	const write = (extra: object) => {
+		const path = scratch("delegate.json");
+		writeFileSync(path, JSON.stringify({ version: 3, scout: { models: [] }, worker: { models: [] }, ...extra }));
+		return path;
+	};
+	const set = loadModelSet(write({ readOnlySkills: ["pr"], implementSkills: ["tdd", "code-review"] }));
+	assert.deepEqual(set.implementSkills, ["tdd", "code-review"]);
+	assert.deepEqual(set.readOnlySkills, ["pr"]);
+	assert.equal(loadModelSet(write({})).implementSkills, undefined, "unset keeps all skills");
+	for (const [value, error] of [
+		["tdd", /\.implementSkills must be an array of skill names/],
+		[{ tdd: true }, /\.implementSkills must be an array of skill names/],
+		[["tdd", " "], /\.implementSkills must be an array of skill names/],
+		[["tdd", "tdd"], /\.implementSkills lists a skill twice/],
+	] as const)
+		assert.throws(() => loadModelSet(write({ implementSkills: value })), error);
+	assert.throws(
+		() => loadModelSet(write({ implementSkils: ["tdd"] })),
+		/unknown key\(s\) implementSkils \(allowed: version, scout, worker, review, readOnlySkills, implementSkills\)/,
+	);
+
+	const handlers = setup(t, {
+		env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement", ME_PI_SKILLS: JSON.stringify(["tdd"]) },
+	}).handlers;
+	const options = { contextFiles: [], skills: [{ name: "tdd" }, { name: "wizard" }] };
+	handlers.before_agent_start({ systemPromptOptions: options });
+	assert.deepEqual(
+		options.skills.map((s) => s.name),
+		["tdd"],
+	);
+});
+
 test("v3 model configs validate per-model thinking", (t) => {
 	const write = (content) => {
 		const path = scratch("delegate.json");

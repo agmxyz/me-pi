@@ -448,6 +448,20 @@ test("implement dispatches only the first worker pool model", async (t) => {
 	assert.doesNotMatch(details, /claude-opus-5-5/);
 });
 
+test("implement workers get implementSkills, not readOnlySkills; unset sends no allowlist", async (t) => {
+	const skillsSent = async (extra: object) => {
+		const marker = scratch("implement-skills-marker");
+		const { tool } = setup(t, {
+			config: { ...POOL_SET, readOnlySkills: ["pr"], ...extra },
+			env: implementEnv("rate-limit-model", { FAKE_PI_FAIL_MODEL: LUNA, FAKE_PI_MARKER: marker }),
+		});
+		await run(tool, implement(), undefined, undefined, implementRepo().ctx);
+		return JSON.parse(readFileSync(marker, "utf8").trim().split("\n")[0]).skills;
+	};
+	assert.equal(await skillsSent({ implementSkills: ["tdd", "code-review"] }), '["tdd","code-review"]');
+	assert.equal(await skillsSent({}), "");
+});
+
 test("implement gets its own time limit; the wrap-up deadline is 80% of it", async (t) => {
 	const { tool } = setup(t, { env: implementEnv("echo-budget") });
 	const { ctx } = implementRepo();
