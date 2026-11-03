@@ -100,7 +100,7 @@ function validModelSet(raw: any, where: string): ModelSet {
 	// when the unknown-key error covers it.
 	if (raw.review !== undefined)
 		throw new Error(
-			`${where}: review pool was removed: move its entries into worker.models (later entries keep their thinking when a run names that model) and pass runs[].model for a second-opinion review; see docs/delegate.md`,
+			`${where}: review pool was removed: move its entries not already listed into worker.models (later entries keep their thinking when a run names that model) and pass runs[].model for a second-opinion review; see docs/delegate.md`,
 		);
 	const allowed = ["version", "scout", "worker", "readOnlySkills", "implementSkills"];
 	const unknown = Object.keys(raw).filter((k) => !allowed.includes(k));

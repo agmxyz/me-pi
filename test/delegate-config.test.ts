@@ -216,7 +216,7 @@ test("a review pool fails with a migration pointer before any worker starts, wit
 	const path = scratch("review-delegate.json");
 	writeFileSync(path, JSON.stringify(config));
 	const migration =
-		/review pool was removed: move its entries into worker\.models \(later entries keep their thinking when a run names that model\) and pass runs\[\]\.model for a second-opinion review; see docs\/delegate\.md/;
+		/review pool was removed: move its entries not already listed into worker\.models \(later entries keep their thinking when a run names that model\) and pass runs\[\]\.model for a second-opinion review; see docs\/delegate\.md/;
 	assert.throws(() => loadModelSet(path), migration);
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), config, "the config is not rewritten");
 

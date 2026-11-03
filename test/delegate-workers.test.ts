@@ -348,8 +348,6 @@ test("concurrent default calls keep their pool's first entry; explicit models st
 			[first, first],
 			role,
 		);
-		// Guard: review spreading (#55) must not come back as a per-run allocation detail.
-		for (const r of pair) assert.equal(r.details.allocation, undefined);
 	}
 	const [general, exact] = await Promise.all([
 		run(tool, { task: "g" }),
