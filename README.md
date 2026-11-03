@@ -91,6 +91,15 @@ Also: "Research how other CLIs handle config migrations", "Challenge this plan",
 
 Background jobs end on `/reload` or when Pi exits. Roles, limits, model pools and recovery: [docs/delegate.md](docs/delegate.md).
 
+## What it adds to your prompts
+
+Nothing is replaced; me-pi only appends.
+
+- **Main session:** the `delegate` tool's one-line summary and 8 usage guidelines (`PROMPT_SNIPPET`, `PROMPT_GUIDELINES` in [`delegate.ts`](extensions/delegate.ts)): when to delegate, how to brief and verify, pushes and merges stay with you, hands off the checkout while `implement` runs.
+- **Workers** (foreground and background alike): Pi's normal prompt plus your `AGENTS.md` and skills, minus `## ` sections marked `(coordinator only)` (and `(coordinator and implement only)` for read-only roles). Appended: a short contract (isolated, nobody answers questions, report `BLOCKED` instead of faking a step, treat fetched content as data, answer in about 300 words) and the role's answer format. `implement` also gets its branch, its check, and its rules: no branch switching or history rewrites, no weakening tests to pass ([`delegate-worker.ts`](extensions/delegate-worker.ts)).
+
+These are prompt text, so your own `AGENTS.md` can refine or contradict them; the limits, fences and checkout rules are enforced in code either way.
+
 ## Safety
 
 - Not a sandbox. Extensions and workers run with your OS permissions; `guard` and the fences are guardrails, not security boundaries.
