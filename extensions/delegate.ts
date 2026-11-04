@@ -508,7 +508,7 @@ export const PROMPT_GUIDELINES = [
 	"Workers see only the brief, not this chat or loaded skill bodies: give scope, deliverable, context, acceptance evidence, and any skill to load with `Skill`. When a skill applies, you keep its user decisions and orchestration; a handback completes only its step.",
 	"For several models on one question, make one call, one `runs` entry each, plus `rebuttal: true` to cross-check; report agreements, disagreements with evidence, and your verdict.",
 	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user. Pushes, PRs, merges, and branch deletion are main-session only, with user authorization.",
-	"Set `background: true` for work that takes minutes while you keep going with the user; do not wait, poll, or repeat the call.",
+	"Set `background: true` for work that takes minutes while you keep going with the user; tell them the job id; do not wait, poll, or repeat the call.",
 ];
 
 const SPEND_WARN_SHARE = 0.8;
