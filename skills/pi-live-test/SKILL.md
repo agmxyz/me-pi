@@ -10,7 +10,7 @@ The user names the change (issue, PR, or branch) and optionally a herdr pane alr
 
 ## 1. Plan
 
-Turn the change's acceptance criteria into live **checks**: one delegate call as exact JSON (or a slash command such as `/delegate status`) plus its expected result. Cover each behavior the change adds or removes, and its edge: refusals, config errors, explicit `runs[].model`, web on and off. Leave unchanged behavior to the hermetic tests.
+Turn the change's acceptance criteria into live **checks**: one delegate call as exact JSON (or a slash command such as `/delegate status`) plus its expected result. To test the coordinator's own judgement (whether and how it delegates), a check is instead a natural request with no tool hints plus the expected decision, run in its own fresh Pi and scored from that session's log (`~/.pi/agent/sessions/<cwd-slug>/`, newest `.jsonl`): the exact delegate arguments and brief, and whether the handback was verified. Cover each behavior the change adds or removes, and its edge: refusals, config errors, explicit `runs[].model`, web on and off. Leave unchanged behavior to the hermetic tests.
 
 Show the user the checks and an estimated cost (recent `/delegate status` costs are a guide). Name any edit to `~/.pi/agent/delegate.json`, with a timestamped backup first.
 
