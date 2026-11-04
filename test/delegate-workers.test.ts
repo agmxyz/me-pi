@@ -623,7 +623,10 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 		/goal\/<slug>|goal base SHA|tickets?|issue tracker|gh issue|Closes #|draft PR|PR body|push again|first ✓|mark it ready|At goal end|goal[- ](?:end|review)|per-goal|fresh review|own commits|fix job|fix findings|follow-up implement|git revert|two `review` calls|no diff read|Trust a ✓ handback/i,
 	);
 	assert.match(all, /Delegate only to keep a large read out of context or to work in the background/);
-	assert.match(all, /A read over ~3 files or ~300 lines, or of unknown scope/);
+	assert.match(
+		all,
+		/A read over ~3 files, ~300 lines, or ~12 KB \(changelogs and docs run long\), or of unknown scope/,
+	);
 	assert.match(all, /User, repo \(use delegate for required subagents\), or skill requirements come first/);
 	assert.match(all, /Work from handbacks: read only lines you will act on/);
 	assert.match(all, /An implement ✓ means the extension saw `check` pass on the delivered commit: do not re-run it/);
