@@ -32,7 +32,7 @@ elif [ -e "$SKILLS_DESTINATION" ] && [ ! -d "$SKILLS_DESTINATION" ]; then
   exit 1
 fi
 
-for skill in implement-me-pi implement-spec-me-pi; do
+for skill in implement-me-pi implement-spec-me-pi pi-live-test; do
   source="$SKILLS_SOURCE/$skill"
   destination="$SKILLS_DESTINATION/$skill"
   global_name="$GLOBAL_SKILLS_DESTINATION/$skill"
@@ -106,6 +106,7 @@ mkdir -p "$PI_AGENT/extensions" "$SKILLS_DESTINATION"
 link_policy
 install_skill_pointer implement-me-pi
 install_skill_pointer implement-spec-me-pi
+install_skill_pointer pi-live-test
 
 # Register the root Pi package first. The old extensions-directory source has a
 # separate identity, so remove it only after the root registration succeeds.

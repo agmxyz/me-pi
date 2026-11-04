@@ -38,6 +38,8 @@ for entry in tracked.split(b"\0"):
 for relative in (
     "skills/implement-me-pi/SKILL.md",
     "skills/implement-spec-me-pi/SKILL.md",
+    "skills/pi-live-test/SKILL.md",
+    "skills/pi-live-test/pi-live.sh",
 ):
     original = os.path.join(source, relative)
     if not os.path.isfile(original):
@@ -187,7 +189,8 @@ assert_link() { [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]; }
 assert_skill_links() {
   local agent_dir="$1" repo_root="$2"
   assert_link "$agent_dir/skills/implement-me-pi" "$repo_root/skills/implement-me-pi" &&
-    assert_link "$agent_dir/skills/implement-spec-me-pi" "$repo_root/skills/implement-spec-me-pi"
+    assert_link "$agent_dir/skills/implement-spec-me-pi" "$repo_root/skills/implement-spec-me-pi" &&
+    assert_link "$agent_dir/skills/pi-live-test" "$repo_root/skills/pi-live-test"
 }
 SKILL_LOADER_RUN=0
 run_skill_loader() { # <home> <agent dir> <mode> <project...>; disable package installation/network while probing resource discovery.
