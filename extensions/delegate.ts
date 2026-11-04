@@ -442,17 +442,16 @@ function buildSchema() {
 			role: {
 				type: "string",
 				enum: ROLE_NAMES,
-				description:
-					"Omit for general: read-only work of any kind (investigation, review, research), defined by the task. scout: fast bounded read-only search. implement: the only role that modifies the checkout; it edits, runs `check`, and commits.",
+				description: "Omit for general: read-only work of any kind. scout: fast bounded read-only search.",
 			},
 			task: {
 				type: "string",
-				description: "The worker sees only this. Read-only workers cannot run commands.",
+				description: "Read-only workers cannot run commands.",
 			},
 			web: {
 				type: "boolean",
 				description:
-					"Web tools are on only when this is true; never for implement. Set it only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
+					"Web tools are on only when this is true. Set it only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
 			},
 			answer: {
 				type: "string",
@@ -465,7 +464,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"One entry per model. An explicitly named model runs alone and never falls back; name one for a second opinion or to continue work on it. Not for implement: it always uses the worker pool's first model.",
+					"An explicitly named model runs alone and never falls back; name one for a second opinion or to continue work on it. Not for implement.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -480,13 +479,13 @@ function buildSchema() {
 			rebuttal: {
 				type: "boolean",
 				description:
-					"With 2+ runs: in round 2 each worker sees the others' answers and keeps, revises, or retracts its claims; only round 2 returns.",
+					"In round 2 each worker sees the others' answers and keeps, revises, or retracts its claims; only round 2 returns.",
 			},
 			check: {
 				type: "string",
 				minLength: 1,
 				description:
-					"implement only, required: one unchained command, run from your cwd, that proves the change. The worker runs it alone, exactly as given, after its final edit.",
+					"one unchained command, run from your cwd, that proves the change. The worker runs it alone, exactly as given, after its final edit.",
 			},
 			background: {
 				type: "boolean",
@@ -509,7 +508,7 @@ export const PROMPT_GUIDELINES = [
 	"Workers see only the brief, not this chat or loaded skill bodies: give scope, deliverable, context, acceptance evidence, and any skill to load with `Skill`. When a skill applies, you keep its user decisions and orchestration; a handback completes only its step.",
 	"For several models on one question, make one call, one `runs` entry each, plus `rebuttal: true` to cross-check; report agreements, disagreements with evidence, and your verdict.",
 	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user. Pushes, PRs, merges, and branch deletion are main-session only, with user authorization.",
-	"Set `background: true` for work that takes minutes while you keep going with the user; tell them the job id; do not wait, poll, or repeat the call.",
+	"Set `background: true` for work that takes minutes while you keep going with the user; do not wait, poll, or repeat the call.",
 ];
 
 const SPEND_WARN_SHARE = 0.8;
@@ -693,7 +692,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers; only implement modifies the checkout. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers; only implement modifies the checkout. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo).",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),

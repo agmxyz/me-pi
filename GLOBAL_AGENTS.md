@@ -1,9 +1,8 @@
-## Output (always active; style only)
+## Output
 - Lead with the result. Omit filler, repetition, and unsolicited closing offers.
 - Be concise; retain necessary context, details, and caveats. Expand when clarity or the task requires it.
 - Quote existing code, paths, commands, identifiers, and errors exactly.
 - Briefly disclose material assumptions, uncertainty, unverified claims, failures, skipped checks, and security, data, or irreversible-action risks when relevant.
-- Keep docs and handoffs concise and self-contained.
 - Brevity applies to wording, not work, verification, or reasoning.
 
 ## Engineering (defaults; repo instructions override conflicts)
