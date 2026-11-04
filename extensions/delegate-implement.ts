@@ -11,6 +11,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
 import { ENV_CHECK, ENV_DENY_DIR, ENV_OUTPUT_DIR, ENV_PARENT, ENV_ROLE } from "./delegate-env.ts";
@@ -1032,6 +1033,9 @@ const CHECK_MARKS = { pass: "✓", fail: "✗", stale: "stale", none: "not run" 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** The tool result: a facts line, the worker's first line with the details path, then BLOCKED and ✗ lines. */
+// Absolute because the global policy that points here is loaded in other repos.
+export const RECOVERY_POINTER = `Recovery rules: ${fileURLToPath(new URL("../docs/delegate.md", import.meta.url))}#bounded-coordinator-recovery`;
+
 export function formatHandback(f: Facts): string {
 	const o = f.outcome;
 	const range = `${f.base.slice(0, 7)}..${f.tip?.slice(0, 7) ?? "(missing)"}`;
@@ -1083,5 +1087,6 @@ export function formatHandback(f: Facts): string {
 		out.push(`✗ check ${reason}`);
 	}
 	out.push(...f.problems.map((p) => `✗ ${shown(p)}`));
+	if (f.failed) out.push(RECOVERY_POINTER);
 	return safeDocument(out.join("\n"));
 }

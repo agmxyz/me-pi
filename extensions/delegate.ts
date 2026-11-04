@@ -45,6 +45,7 @@ import {
 	nextImplementId,
 	type Outcome,
 	prepare as prepareImplement,
+	RECOVERY_POINTER,
 	runImplementJob,
 } from "./delegate-implement.ts";
 import { killGroup, startWorkerProcess } from "./delegate-process.ts";
@@ -84,6 +85,9 @@ const HISTORY_SIZE = 20;
 // Model-facing answer size per run; the main session's context is what this extension protects.
 const ANSWER_CAP = 12 * 1024;
 const FAILED_PARTIAL_CAP = 4 * 1024;
+// What a read-only answer may put in the main context; the head carries findings, the tail the caveats.
+const HANDBACK_CEILING = 4 * 1024;
+const HANDBACK_TAIL = 600;
 // A call's `answer` replaces the role's answer format; the cap keeps it a format, not a second task.
 const MAX_FORMAT = 400;
 
@@ -382,15 +386,31 @@ function runView(
 	};
 }
 
+/** Cuts an answer past `HANDBACK_CEILING` to its head and tail, keeping every BLOCKED line and a path to the rest. */
+function trimMiddle(answer: string): string {
+	const buf = Buffer.from(answer, "utf8");
+	if (buf.length <= HANDBACK_CEILING) return answer;
+	let headEnd = HANDBACK_CEILING - HANDBACK_TAIL;
+	while (headEnd > 0 && (buf[headEnd] & 0xc0) === 0x80) headEnd--;
+	let tailStart = buf.length - HANDBACK_TAIL;
+	while (tailStart < buf.length && (buf[tailStart] & 0xc0) === 0x80) tailStart++;
+	const head = buf.subarray(0, headEnd).toString("utf8");
+	const tail = buf.subarray(tailStart).toString("utf8");
+	const blocked = answer
+		.split("\n")
+		.filter((l) => l.trim().startsWith("BLOCKED:") && !head.includes(l) && !tail.includes(l))
+		.map((l) => `${l.trim()}\n`)
+		.join("");
+	return `${head}\n[${tailStart - headEnd} bytes cut]\n${blocked}${tail}\nFull answer: ${saveFull(answer)}`;
+}
+
 function formatRun(r: RunResult): string {
 	const answer = r.output.trim() || "(empty answer)";
 	let body: string;
-	if (!r.failure && Buffer.byteLength(answer, "utf8") > ANSWER_CAP)
-		body = `${cap(answer, ANSWER_CAP)} Full answer: ${saveFull(answer)}${filesLine(r)}\n${label(r)}`;
-	else if (!r.failure) body = `${answer}${filesLine(r)}\n${label(r)}`;
+	if (!r.failure) body = `${trimMiddle(answer)}${filesLine(r)}\n${label(r)}`;
 	else {
 		const partial = r.output.trim() ? `\nPartial answer:\n${cap(r.output.trim(), FAILED_PARTIAL_CAP)}` : "";
-		body = `✗ ${r.failure}${failureClassLine(r)}${partial}${filesLine(r)}\n${label(r)}`;
+		body = `✗ ${r.failure}${failureClassLine(r)}${partial}${filesLine(r)}\n${label(r)}\n${RECOVERY_POINTER}`;
 	}
 	return body;
 }
@@ -417,7 +437,7 @@ function buildSchema() {
 				type: "string",
 				enum: ROLE_NAMES,
 				description:
-					"Omit for general: read-only work of any kind (investigation, review, research), defined by the task. scout: fast bounded read-only search on the scout pool (low/off thinking). implement: the only role that modifies the checkout; it edits, runs `check`, and commits. general and implement use the worker pool.",
+					"Omit for general: read-only work of any kind (investigation, review, research), defined by the task. scout: fast bounded read-only search. implement: the only role that modifies the checkout; it edits, runs `check`, and commits.",
 			},
 			task: {
 				type: "string",
@@ -426,7 +446,8 @@ function buildSchema() {
 			},
 			web: {
 				type: "boolean",
-				description: "Web tools are on only when this is true; never for implement.",
+				description:
+					"Web tools are on only when this is true; never for implement. Set it only when the task needs outside sources: fetched pages can steer a worker into sending local files out.",
 			},
 			answer: {
 				type: "string",
@@ -439,7 +460,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"One entry per model; set model and thinking independently. Omitted fields come from delegate.json, then session defaults: an omitted model is the role pool's first, with its configured thinking. An explicitly named model runs alone and never falls back; name one for a second opinion or to continue work on it. Not for implement: it always uses the worker pool's first model.",
+					"One entry per model; set model and thinking independently; omitted fields use the role pool's defaults. An explicitly named model runs alone and never falls back; name one for a second opinion or to continue work on it. Not for implement: it always uses the worker pool's first model.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -449,7 +470,7 @@ function buildSchema() {
 			output: {
 				type: "boolean",
 				description:
-					"Each worker may `write` only into its own temp directory; the result lists file paths, not contents.",
+					"For a draft (docs, a plan, a patch): each worker may `write` only into its own temp directory; the result lists file paths, not contents. Copy what you keep and check the diff yourself.",
 			},
 			rebuttal: {
 				type: "boolean",
@@ -477,14 +498,13 @@ export const PROMPT_SNIPPET =
 	"Run read-only workers, alone or as a multi-model panel, or one committing `implement` worker; get back only their answers";
 
 export const PROMPT_GUIDELINES = [
-	"Honor explicit user-required delegation, repo-required subagents (use delegate), and any repo- or skill-required independent review first. Otherwise delegate bounded, independently checkable work when context savings, parallelism, or independent judgment justify briefing and verification costs; keep coupled decisions with the coordinator. Pushes, PRs, merges, and branch deletion are main-session only and require user authorization.",
-	"When the user names several models for one question, make one call with a `runs` entry per model (with its thinking), plus `rebuttal: true` if they should cross-check; report agreements, disagreements with evidence, and your verdict.",
-	"Set `web: true` only when the task needs outside sources: fetched pages can steer a worker into sending local files out. For a draft (docs, a plan, a patch), set `output: true`, then copy what you keep and check the diff yourself.",
-	"Give each worker a compact, self-contained brief: scope, deliverable, context/constraints, acceptance evidence, blocker reporting. Explicitly accept/reject/recover handbacks; proportionately verify decisive claims and inspect implementation diffs/check adequacy without routinely redoing worker work. Resolve/report each BLOCKED line.",
-	"Workers see neither this conversation nor the bodies of skills you loaded: make the brief self-contained, name any discovered skill the worker should load with `Skill`, and set `answer` for a specific format.",
-	"When a skill applies, you keep its required user decisions and orchestration through completion. Workers cannot delegate; a handback completes only the assigned step.",
-	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user.",
-	"Set `background: true` for work that takes minutes while you keep going with the user; tell them the job id, and do not wait, poll, or repeat the call. At most 4 workers run at once across all calls.",
+	"Delegate only to keep a large read out of context or to work in the background; a few reads or a small edit stay inline. A read over ~3 files or ~300 lines, or of unknown scope, goes to `scout` (local lookup) or `general` (web, logs); independent judgment to `general`; many-file changes or long test/fix loops to `implement`. User, repo (use delegate for required subagents), or skill requirements come first.",
+	"Work from handbacks: read only lines you will act on; spot-check only claims a decision rests on. Put any diff or log a worker needs in a temp file without printing it. Resolve or report each BLOCKED line.",
+	"An implement ✓ means the extension saw `check` pass on the delivered commit: do not re-run it. Read a diff up to ~50 changed lines yourself; past that, on security, data, or public-contract risk, or when asked, get one `general` review of the diff file.",
+	"Workers see only the brief, not this chat or loaded skill bodies: give scope, deliverable, context, acceptance evidence, and any skill to load with `Skill`. When a skill applies, you keep its user decisions and orchestration; a handback completes only its step.",
+	"For several models on one question, make one call, one `runs` entry each, plus `rebuttal: true` to cross-check; report agreements, disagreements with evidence, and your verdict.",
+	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user. Pushes, PRs, merges, and branch deletion are main-session only, with user authorization.",
+	"Set `background: true` for work that takes minutes while you keep going with the user; tell them the job id; do not wait, poll, or repeat the call.",
 ];
 
 const SPEND_WARN_SHARE = 0.8;
@@ -668,7 +688,7 @@ export default function (pi: ExtensionAPI) {
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers. general (the default) and scout read files and load skills; only implement modifies the checkout. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
+			"Run Pi workers; only implement modifies the checkout. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo); it cannot push or use gh; you get a 2-line handback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),

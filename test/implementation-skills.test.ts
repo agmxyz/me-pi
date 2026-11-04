@@ -73,7 +73,7 @@ function assertUserInvokedReviewContract(source, name) {
 	assertContinuationDecisionPath(source, name);
 	assert.match(source, /Freeze the slice's scope, acceptance criteria, and exact check/);
 	assert.match(source, /At most 2 continuations after the first attempt \(3 attempts total\)/);
-	assert.match(source, /same model and within the original scope and authority/);
+	assert.match(source, /same model and provider and within the original scope and authority/);
 	assert.match(source, /renaming, splitting, or new job IDs do not reset the count/);
 	assert.match(source, /A guard-denied action stays denied/);
 	assert.match(
@@ -112,7 +112,8 @@ test("both user-invoked implementation entrypoints retain full review and bounde
 	assert.match(recovery, /same model/);
 	assert.match(recovery, /A guard-denied action stays denied/);
 	assert.match(recovery, /Unknown or partial effects stop affected writes and acceptance/);
-	assert.match(recovery, /fresh passing check on committed work and independent review/);
+	assert.match(recovery, /fresh passing check on committed work and the review \[the gate\]/);
+	assert.match(recovery, /At the first continuation, not before the first attempt/);
 
 	assert.match(delegateGuide, /A guard-denied action stays denied/);
 	assert.match(delegateGuide, /canonical structured `exit_code` from 1 through 127/);

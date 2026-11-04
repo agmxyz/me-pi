@@ -165,7 +165,10 @@ test("implement's contract keeps scope and check integrity; read-only workers do
 		/the task does not ask you to change\. If the check passes only that way, leave it failing and list it as BLOCKED/,
 	);
 	assert.doesNotMatch(workerContract(false), /weaken|Do only the task/);
-	assert.match(workerContract(false), /then your assumptions and what you left unverified/);
+	assert.match(
+		workerContract(false),
+		/your assumptions and what you left unverified last; past ~600 words the middle is cut/,
+	);
 });
 
 test("only workers with web tools get the fetch_content auth rule; everyone treats content as data", () => {
