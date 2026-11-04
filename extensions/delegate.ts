@@ -37,11 +37,13 @@ import {
 import { isWorkerProcess } from "./delegate-env.ts";
 import { commandDir, realpathOr, realTarget, UNICODE_SPACES, within } from "./delegate-fence.ts";
 import {
+	blockedLines,
 	type Checkout,
 	type Facts,
 	finish as finishImplement,
 	formatHandback,
 	ImplementLockRefusal,
+	MAX_BLOCKED,
 	nextImplementId,
 	type Outcome,
 	prepare as prepareImplement,
@@ -84,7 +86,6 @@ const MAX_RUNS = 4;
 const HISTORY_SIZE = 20;
 // Model-facing answer size per run; the main session's context is what this extension protects.
 const ANSWER_CAP = 12 * 1024;
-const FAILED_PARTIAL_CAP = 4 * 1024;
 // What a read-only answer may put in the main context; the head carries findings, the tail the caveats.
 const HANDBACK_CEILING = 4 * 1024;
 const HANDBACK_TAIL = 600;
@@ -386,7 +387,7 @@ function runView(
 	};
 }
 
-/** Cuts an answer past `HANDBACK_CEILING` to its head and tail, keeping every BLOCKED line and a path to the rest. */
+/** Cuts an answer past `HANDBACK_CEILING` to its head and tail, keeping cut BLOCKED lines (up to `MAX_BLOCKED`) and a path to the rest. */
 function trimMiddle(answer: string): string {
 	const buf = Buffer.from(answer, "utf8");
 	if (buf.length <= HANDBACK_CEILING) return answer;
@@ -396,12 +397,13 @@ function trimMiddle(answer: string): string {
 	while (tailStart < buf.length && (buf[tailStart] & 0xc0) === 0x80) tailStart++;
 	const head = buf.subarray(0, headEnd).toString("utf8");
 	const tail = buf.subarray(tailStart).toString("utf8");
-	const blocked = answer
-		.split("\n")
-		.filter((l) => l.trim().startsWith("BLOCKED:") && !head.includes(l) && !tail.includes(l))
-		.map((l) => `${l.trim()}\n`)
+	const cut = blockedLines(answer).filter((l) => !head.includes(l) && !tail.includes(l));
+	const more = cut.length > MAX_BLOCKED ? `+${cut.length - MAX_BLOCKED} more BLOCKED in the full answer\n` : "";
+	const blocked = cut
+		.slice(0, MAX_BLOCKED)
+		.map((l) => `${l}\n`)
 		.join("");
-	return `${head}\n[${tailStart - headEnd} bytes cut]\n${blocked}${tail}\nFull answer: ${saveFull(answer)}`;
+	return `${head}\n[${tailStart - headEnd} bytes cut]\n${blocked}${more}${tail}\nFull answer: ${saveFull(answer)}`;
 }
 
 function formatRun(r: RunResult): string {
@@ -409,7 +411,7 @@ function formatRun(r: RunResult): string {
 	let body: string;
 	if (!r.failure) body = `${trimMiddle(answer)}${filesLine(r)}\n${label(r)}`;
 	else {
-		const partial = r.output.trim() ? `\nPartial answer:\n${cap(r.output.trim(), FAILED_PARTIAL_CAP)}` : "";
+		const partial = r.output.trim() ? `\nPartial answer:\n${trimMiddle(r.output.trim())}` : "";
 		body = `✗ ${r.failure}${failureClassLine(r)}${partial}${filesLine(r)}\n${label(r)}\n${RECOVERY_POINTER}`;
 	}
 	return body;
@@ -441,8 +443,7 @@ function buildSchema() {
 			},
 			task: {
 				type: "string",
-				description:
-					"The worker sees only this. Read-only workers cannot run commands: write diffs or command output to a temp file and pass its path.",
+				description: "The worker sees only this. Read-only workers cannot run commands.",
 			},
 			web: {
 				type: "boolean",
@@ -460,7 +461,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"One entry per model; set model and thinking independently; omitted fields use the role pool's defaults. An explicitly named model runs alone and never falls back; name one for a second opinion or to continue work on it. Not for implement: it always uses the worker pool's first model.",
+					"One entry per model. An explicitly named model runs alone and never falls back; name one for a second opinion or to continue work on it. Not for implement: it always uses the worker pool's first model.",
 				items: {
 					type: "object",
 					additionalProperties: false,

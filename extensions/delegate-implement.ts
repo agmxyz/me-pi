@@ -169,7 +169,7 @@ export function settingsTripwire(before: string, after: string): string[] {
 const COUNT_KEY = Symbol.for("me-pi.delegate.implement-count");
 const MAX_COMMITS = 20;
 const MAX_WIP_FILES = 20;
-const MAX_BLOCKED = 3;
+export const MAX_BLOCKED = 3;
 const MAX_NEW_TOP_LEVEL = 5;
 const FIRST_LINE_CAP = 200;
 
@@ -1032,10 +1032,20 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 const CHECK_MARKS = { pass: "✓", fail: "✗", stale: "stale", none: "not run" };
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-/** The tool result: a facts line, the worker's first line with the details path, then BLOCKED and ✗ lines. */
 // Absolute because the global policy that points here is loaded in other repos.
 export const RECOVERY_POINTER = `Recovery rules: ${fileURLToPath(new URL("../docs/delegate.md", import.meta.url))}#bounded-coordinator-recovery`;
 
+const BLOCKED_LINE = /^(?:[-*]\s+)?BLOCKED:/;
+
+/** The worker contract's `BLOCKED: <step>: <reason>` lines, list items included, trimmed. */
+export function blockedLines(text: string): string[] {
+	return text
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => BLOCKED_LINE.test(l));
+}
+
+/** The tool result: a facts line, the worker's first line with the details path, then BLOCKED and ✗ lines. */
 export function formatHandback(f: Facts): string {
 	const o = f.outcome;
 	const range = `${f.base.slice(0, 7)}..${f.tip?.slice(0, 7) ?? "(missing)"}`;
@@ -1045,9 +1055,9 @@ export function formatHandback(f: Facts): string {
 	const check = `check ${checkMark} \`${shown(f.check.command)}\``;
 	const head = `${f.failed ? "✗" : "✓"} ${f.id} ${f.branch} ${range}: ${stat}; ${check}${o.label ? ` ${o.label}` : ""}`;
 	const lines = (o.answer ?? "").split("\n").map((l) => l.trim());
-	const first = shown((lines.find((l) => l && !l.startsWith("BLOCKED:")) ?? "(no answer)").slice(0, FIRST_LINE_CAP));
+	const first = shown((lines.find((l) => l && !BLOCKED_LINE.test(l)) ?? "(no answer)").slice(0, FIRST_LINE_CAP));
 	const details = f.detailsPath ? `${/[.!?]$/.test(first) ? "" : "."} Details: ${f.detailsPath}` : "";
-	const blocked = lines.filter((l) => l.startsWith("BLOCKED:"));
+	const blocked = blockedLines(o.answer ?? "");
 	const out = [
 		head,
 		`${first}${details}`,

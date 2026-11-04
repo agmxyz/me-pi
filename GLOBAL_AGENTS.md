@@ -19,7 +19,7 @@
 - Local: `git reset --hard`, `git clean`, discarding uncommitted changes or stashes, `git branch -D`, history rewrites, or deleting files outside temp/build dirs unless the current change orphans them.
 
 ## Remote approval (coordinator only)
-- After a failed worker run, another model or provider needs my consent. A ✗ handback stays incomplete until the recovery rules its failure message links are met; recovery grants no new approval.
+- After a failed worker run, another model or provider needs my consent.
 - Remote protected actions: pushing to main/master or a default/protected branch; force-pushing; merging or closing PRs; releases, package publishes, deploys; deleting or overwriting remote data; access, visibility, or billing changes; messages sent as me.
 - Creating tickets, branches, and PRs I request is approved. A requested PR also permits the ordinary non-force push needed to create its unprotected feature branch.
 

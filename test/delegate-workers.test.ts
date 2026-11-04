@@ -489,6 +489,14 @@ test("a long answer keeps its head, tail, and every BLOCKED line from the cut mi
 	assert.ok(Buffer.byteLength(out) < 5 * 1024, `${Buffer.byteLength(out)} bytes`);
 });
 
+test("a long answer restores at most three cut BLOCKED lines, list items included", async (t) => {
+	const res = await run(setup(t, { env: { FAKE_PI_MODE: "many-blocked" } }).tool, { role: "scout", task: "x" });
+	assert.match(
+		text(res),
+		/\n\[\d+ bytes cut\]\n- BLOCKED: a: x\nBLOCKED: b: x\nBLOCKED: c: x\n\+2 more BLOCKED in the full answer\nw+\nAssumptions: none\nFull answer: /,
+	);
+});
+
 test("a failed run points at the recovery rules by absolute path", async (t) => {
 	const res = await run(setup(t, { env: { FAKE_PI_MODE: "silent" } }).tool, { role: "scout", task: "x" });
 	assert.match(text(res), /\nRecovery rules: \/\S+\/docs\/delegate\.md#bounded-coordinator-recovery$/);
