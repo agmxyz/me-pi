@@ -11,7 +11,6 @@ import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
 import { ENV_CHECK, ENV_DENY_DIR, ENV_OUTPUT_DIR, ENV_PARENT, ENV_ROLE } from "./delegate-env.ts";
@@ -24,6 +23,7 @@ import {
 	type StopFact,
 	type ToolEffectFact,
 } from "./delegate-provenance.ts";
+import { blockedLines, capBlocked, isBlockedLine, RECOVERY_POINTER } from "./delegate-worker.ts";
 import { PROTECTED_BRANCHES } from "./guard.ts";
 
 const run = promisify(execFile);
@@ -169,7 +169,6 @@ export function settingsTripwire(before: string, after: string): string[] {
 const COUNT_KEY = Symbol.for("me-pi.delegate.implement-count");
 const MAX_COMMITS = 20;
 const MAX_WIP_FILES = 20;
-export const MAX_BLOCKED = 3;
 const MAX_NEW_TOP_LEVEL = 5;
 const FIRST_LINE_CAP = 200;
 
@@ -1032,19 +1031,6 @@ async function writeDetails(f: Facts, tmpRoot: string): Promise<string> {
 const CHECK_MARKS = { pass: "✓", fail: "✗", stale: "stale", none: "not run" };
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-// Absolute because the global policy that points here is loaded in other repos.
-export const RECOVERY_POINTER = `Recovery rules: ${fileURLToPath(new URL("../docs/delegate.md", import.meta.url))}#bounded-coordinator-recovery`;
-
-const BLOCKED_LINE = /^(?:[-*]\s+)?BLOCKED:/;
-
-/** The worker contract's `BLOCKED: <step>: <reason>` lines, list items included, trimmed. */
-export function blockedLines(text: string): string[] {
-	return text
-		.split("\n")
-		.map((l) => l.trim())
-		.filter((l) => BLOCKED_LINE.test(l));
-}
-
 /** The tool result: a facts line, the worker's first line with the details path, then BLOCKED and ✗ lines. */
 export function formatHandback(f: Facts): string {
 	const o = f.outcome;
@@ -1055,14 +1041,10 @@ export function formatHandback(f: Facts): string {
 	const check = `check ${checkMark} \`${shown(f.check.command)}\``;
 	const head = `${f.failed ? "✗" : "✓"} ${f.id} ${f.branch} ${range}: ${stat}; ${check}${o.label ? ` ${o.label}` : ""}`;
 	const lines = (o.answer ?? "").split("\n").map((l) => l.trim());
-	const first = shown((lines.find((l) => l && !BLOCKED_LINE.test(l)) ?? "(no answer)").slice(0, FIRST_LINE_CAP));
+	const first = shown((lines.find((l) => l && !isBlockedLine(l)) ?? "(no answer)").slice(0, FIRST_LINE_CAP));
 	const details = f.detailsPath ? `${/[.!?]$/.test(first) ? "" : "."} Details: ${f.detailsPath}` : "";
-	const blocked = blockedLines(o.answer ?? "");
-	const out = [
-		head,
-		`${first}${details}`,
-		...blocked.slice(0, MAX_BLOCKED).map((l) => shown(l.slice(0, FIRST_LINE_CAP))),
-	];
+	const blocked = capBlocked(blockedLines(o.answer ?? ""));
+	const out = [head, `${first}${details}`, ...blocked.kept.map(shown)];
 	if (o.failedToolCapture?.status === "written" && f.failed) {
 		const unmatched = o.failedToolCapture.unmatchedStartCount ?? 0;
 		out.push(
@@ -1081,7 +1063,7 @@ export function formatHandback(f: Facts): string {
 		if (f.failed) out.push(note);
 		else out[1] = `${out[1]} ${note}`;
 	}
-	if (blocked.length > MAX_BLOCKED) out.push(`+${blocked.length - MAX_BLOCKED} more BLOCKED in details`);
+	if (blocked.more) out.push(`+${blocked.more} more BLOCKED in details`);
 	const failure = failureLine(o.failure);
 	if (failure) out.push(`✗ ${shown(failure)}${failureClassLine(o)}`);
 	if (f.wip) {

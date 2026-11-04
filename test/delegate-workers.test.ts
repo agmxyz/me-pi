@@ -427,6 +427,15 @@ test("rebuttal is skipped and flagged when fewer than two runs succeed", async (
 	assert.match(text(res), /Rebuttal skipped: only 1 run\(s\) succeeded in round 1\.$/);
 });
 
+test("a long failed partial keeps its tail, cut BLOCKED lines, and the recovery pointer", async (t) => {
+	const res = await run(setup(t, { env: { FAKE_PI_MODE: "error-long" } }).tool, { role: "scout", task: "x" });
+	assert.equal(res.isError, true);
+	assert.match(
+		text(res),
+		/^✗ provider error\nPartial answer:\nFindings first\nz+\n\[\d+ bytes cut\]\nBLOCKED: tests: no bash\nw+\nUnverified: all\nFull answer: \S+\n\[[^\n]+\]\nRecovery rules: /,
+	);
+});
+
 test("a failure is one line plus a bounded partial answer; stderr stays out of the model's view", async (t) => {
 	const { tool } = setup(t, { env: { FAKE_PI_MODE: "fail" } });
 	const res = await run(tool, { role: "scout", task: "x" });
@@ -508,7 +517,8 @@ test("always-loaded policy and tool text stay under the pre-#58 word count", (t)
 	const global = readFileSync(new URL("../GLOBAL_AGENTS.md", import.meta.url), "utf8");
 	const schema = Object.values(tool.parameters.properties).map((p: any) => p.description ?? "");
 	const total = words([global, PROMPT_SNIPPET, ...PROMPT_GUIDELINES, tool.description, ...schema].join("\n"));
-	assert.ok(total < 1390, `${total} words`);
+	const PRE_58_WORDS = 1390;
+	assert.ok(total < PRE_58_WORDS, `${total} words`);
 });
 
 test("the cost cap stops a continuing worker but keeps a final answer", { timeout: 20000 }, async (t) => {

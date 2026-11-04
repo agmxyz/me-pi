@@ -37,17 +37,14 @@ import {
 import { isWorkerProcess } from "./delegate-env.ts";
 import { commandDir, realpathOr, realTarget, UNICODE_SPACES, within } from "./delegate-fence.ts";
 import {
-	blockedLines,
 	type Checkout,
 	type Facts,
 	finish as finishImplement,
 	formatHandback,
 	ImplementLockRefusal,
-	MAX_BLOCKED,
 	nextImplementId,
 	type Outcome,
 	prepare as prepareImplement,
-	RECOVERY_POINTER,
 	runImplementJob,
 } from "./delegate-implement.ts";
 import { killGroup, startWorkerProcess } from "./delegate-process.ts";
@@ -63,7 +60,17 @@ import {
 	renderCall,
 	renderResult,
 } from "./delegate-render.ts";
-import { costOf, type Job, ROLE_NAMES, ROLES, registerWorker, workerLaunch } from "./delegate-worker.ts";
+import {
+	blockedLines,
+	capBlocked,
+	costOf,
+	type Job,
+	RECOVERY_POINTER,
+	ROLE_NAMES,
+	ROLES,
+	registerWorker,
+	workerLaunch,
+} from "./delegate-worker.ts";
 import { gitTreeWrite } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
@@ -84,7 +91,7 @@ export const LIMITS = {
 };
 const MAX_RUNS = 4;
 const HISTORY_SIZE = 20;
-// Model-facing answer size per run; the main session's context is what this extension protects.
+// One answer's share of a rebuttal prompt.
 const ANSWER_CAP = 12 * 1024;
 // What a read-only answer may put in the main context; the head carries findings, the tail the caveats.
 const HANDBACK_CEILING = 4 * 1024;
@@ -387,7 +394,7 @@ function runView(
 	};
 }
 
-/** Cuts an answer past `HANDBACK_CEILING` to its head and tail, keeping cut BLOCKED lines (up to `MAX_BLOCKED`) and a path to the rest. */
+/** Cuts an answer past `HANDBACK_CEILING` to its head and tail, keeping the BLOCKED lines it cut (see `capBlocked`) and a path to the rest. */
 function trimMiddle(answer: string): string {
 	const buf = Buffer.from(answer, "utf8");
 	if (buf.length <= HANDBACK_CEILING) return answer;
@@ -397,12 +404,9 @@ function trimMiddle(answer: string): string {
 	while (tailStart < buf.length && (buf[tailStart] & 0xc0) === 0x80) tailStart++;
 	const head = buf.subarray(0, headEnd).toString("utf8");
 	const tail = buf.subarray(tailStart).toString("utf8");
-	const cut = blockedLines(answer).filter((l) => !head.includes(l) && !tail.includes(l));
-	const more = cut.length > MAX_BLOCKED ? `+${cut.length - MAX_BLOCKED} more BLOCKED in the full answer\n` : "";
-	const blocked = cut
-		.slice(0, MAX_BLOCKED)
-		.map((l) => `${l}\n`)
-		.join("");
+	const cut = capBlocked(blockedLines(answer).filter((l) => !head.includes(l) && !tail.includes(l)));
+	const blocked = cut.kept.map((l) => `${l}\n`).join("");
+	const more = cut.more ? `+${cut.more} more BLOCKED in the full answer\n` : "";
 	return `${head}\n[${tailStart - headEnd} bytes cut]\n${blocked}${more}${tail}\nFull answer: ${saveFull(answer)}`;
 }
 
@@ -500,7 +504,7 @@ export const PROMPT_SNIPPET =
 
 export const PROMPT_GUIDELINES = [
 	"Delegate only to keep a large read out of context or to work in the background; a few reads or a small edit stay inline. A read over ~3 files, ~300 lines, or ~12 KB (changelogs and docs run long), or of unknown scope, goes to `scout`; web research to `general` with `web: true`, not your own web tools; independent judgment to `general`; many-file changes or long test/fix loops to `implement`. User, repo (use delegate for required subagents), or skill requirements come first.",
-	"Work from handbacks: read only lines you will act on; spot-check only claims a decision rests on. Give a worker any diff or log as a temp file path; do not read or print it yourself. Resolve or report each BLOCKED line.",
+	"Work from handbacks: read only lines you will act on; spot-check only claims a decision rests on. When a worker will read a diff or log, give it a temp file path; do not read or print it yourself. Resolve or report each BLOCKED line.",
 	"An implement ✓ means the extension saw `check` pass on the delivered commit: do not re-run it. Read a small diff yourself; that is its review. Past ~50 changed lines, on security or data risk, a breaking public-contract change, or when asked, give one `general` reviewer the diff file with `answer` set to severity-ranked findings; send fixes to `implement`, or make small ones inline. A skill's own review replaces this.",
 	"Workers see only the brief, not this chat or loaded skill bodies: give scope, deliverable, context, acceptance evidence, and any skill to load with `Skill`. When a skill applies, you keep its user decisions and orchestration; a handback completes only its step.",
 	"For several models on one question, make one call, one `runs` entry each, plus `rebuttal: true` to cross-check; report agreements, disagreements with evidence, and your verdict.",

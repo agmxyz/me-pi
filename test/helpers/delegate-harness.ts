@@ -345,6 +345,7 @@ process.stdin.on("end", () => {
     process.exit(1);
   }
   if (mode === "retry-then-ok") { emit("", { stopReason: "error", errorMessage: "overloaded" }); emit("answer after retry"); process.exit(0); }
+  if (mode === "error-long") { emit("Findings first\\n" + "z".repeat(4000) + "\\nBLOCKED: tests: no bash\\n" + "w".repeat(3000) + "\\nUnverified: all", { stopReason: "error", errorMessage: "provider error" }); process.exit(0); }
   if (mode === "error-exit0") { emit("half", { stopReason: "error", errorMessage: "provider error" }); process.exit(0); }
   if (mode === "write-many") {
     const out = process.env.ME_PI_OUTPUT_DIR;
