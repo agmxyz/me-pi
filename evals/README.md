@@ -10,7 +10,20 @@ Each ref gets its own temp root. `HOME`, `TMPDIR`, and `PI_CODING_AGENT_DIR` (= 
 
 The run never touches `install.sh`, live settings, `delegate.json`, skills, `auth.json`, or the live checkout. It hashes those before and after the run and warns if any changed. One thing is shared: the `pi` launcher's managed install (`~/.pi/agent/install`), meaning the Pi binary itself.
 
-Policy `full-rig` (the routing checks) links the clone's `GLOBAL_AGENTS.md` as `AGENTS.md`, links its `skills/`, adds `+codemode`, and installs `npm:pi-web-access@0.46.0` into the sandbox. It does not load your personal skills, or `~/.pi/agent/extensions` such as RTK. Add skills with `--skill <dir>`. `extensions-only` (for #56's pilot) loads the me-pi package alone.
+Policy `full-rig` (the routing checks) links the clone's `GLOBAL_AGENTS.md` as `AGENTS.md`, links its `skills/`, adds `+codemode`, and installs `npm:pi-web-access@0.46.0` into the sandbox, loaded before me-pi as in the live rig. `extensions-only` (for #56's pilot) loads the me-pi package alone.
+
+Personal skills and extensions are not loaded by default, and routing depends on them. Check 12 on `main` (`e12bc29`), inline runs:
+
+| Setup | Inline |
+|---|---|
+| Live rig | 4/5 |
+| Sandbox, repo skills only (no skills block: they set `disable-model-invocation`) | 1/6 |
+| + 15 personal skills | 2/5 |
+| + RTK extension only | 3/5 |
+| + personal skills and RTK | 5/5 |
+| + personal skills and all 4 live extensions | 5/5 |
+
+To match a live rig, pass its skills with `--skill <dir>` (linked read-only) and its extensions with `--extension <file>` (copied). Each record hashes what you added. Compare refs only under the same setup.
 
 ## Credentials
 

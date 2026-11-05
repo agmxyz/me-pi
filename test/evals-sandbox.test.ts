@@ -70,14 +70,22 @@ function fixture(t: any) {
 
 test("a full-rig sandbox loads me-pi from a remote-less clone and keeps every path inside its root", (t) => {
 	const f = fixture(t);
-	const s = createSandbox(f.opts({ auth: join(f.dir, "eval-auth.json"), packages: ["npm:pi-web-access@0.46.0"] }));
+	writeFileSync(join(f.dir, "ext.ts"), "export default () => {};\n");
+	const s = createSandbox(
+		f.opts({
+			auth: join(f.dir, "eval-auth.json"),
+			packages: ["npm:pi-web-access@0.46.0"],
+			extensions: [join(f.dir, "ext.ts")],
+		}),
+	);
+	assert.equal(readFileSync(join(s.agentDir, "extensions", "ext.ts"), "utf8"), "export default () => {};\n");
 	assert.equal(s.agentDir, join(s.home, ".pi", "agent"));
 	for (const p of [s.home, s.tmp, s.src]) assert.ok(p.startsWith(`${s.root}/`), p);
 	assert.equal(execFileSync("git", ["-C", s.src, "remote"], { encoding: "utf8" }).trim(), "");
 	assert.equal(s.commit, execFileSync("git", ["-C", f.repo, "rev-parse", "main"], { encoding: "utf8" }).trim());
 
 	const settings = JSON.parse(readFileSync(join(s.agentDir, "settings.json"), "utf8"));
-	assert.deepEqual(settings.packages, [s.src, "npm:pi-web-access@0.46.0"]);
+	assert.deepEqual(settings.packages, ["npm:pi-web-access@0.46.0", s.src]);
 	assert.equal(settings.defaultModel, "gpt-6.1-sol");
 	assert.equal(settings.enableInstallTelemetry, false);
 	assert.deepEqual(JSON.parse(readFileSync(join(s.agentDir, "delegate.json"), "utf8")), { version: 3 });
@@ -103,8 +111,16 @@ test("a full-rig sandbox loads me-pi from a remote-less clone and keeps every pa
 
 test("an extensions-only sandbox has no global policy, skills, or extra packages", (t) => {
 	const f = fixture(t);
-	const s = createSandbox(f.opts({ policy: "extensions-only", packages: ["npm:pi-web-access@0.46.0"] }));
+	writeFileSync(join(f.dir, "ext.ts"), "");
+	const s = createSandbox(
+		f.opts({
+			policy: "extensions-only",
+			packages: ["npm:pi-web-access@0.46.0"],
+			extensions: [join(f.dir, "ext.ts")],
+		}),
+	);
 	assert.ok(!existsSync(join(s.agentDir, "AGENTS.md")));
+	assert.ok(!existsSync(join(s.agentDir, "extensions")));
 	assert.ok(!existsSync(join(s.agentDir, "skills")));
 	const settings = JSON.parse(readFileSync(join(s.agentDir, "settings.json"), "utf8"));
 	assert.deepEqual(settings.packages, [s.src]);

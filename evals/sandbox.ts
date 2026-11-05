@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 
-/** `extensions-only` loads the me-pi package alone; `full-rig` adds GLOBAL_AGENTS.md, skills, and extra packages. */
+/** `extensions-only` loads the me-pi package alone; `full-rig` adds GLOBAL_AGENTS.md, skills, extra packages and extensions. */
 export type Policy = "extensions-only" | "full-rig";
 
 export interface Coordinator {
@@ -33,8 +33,10 @@ export interface SandboxOptions {
 	auth?: string;
 	/** full-rig only: extra skill directories, linked by absolute path. */
 	skills?: string[];
-	/** full-rig only: extra package sources: `npm:` specs, or local paths. */
+	/** full-rig only: extra package sources (`npm:` or git URL specs, or local paths), loaded before me-pi as the live rig does. */
 	packages?: string[];
+	/** full-rig only: extension files copied into the sandbox's extensions directory. */
+	extensions?: string[];
 	/** Directories put on the allowlisted PATH, in front of the system ones. */
 	path?: string[];
 	piVersion: string;
@@ -91,7 +93,7 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
 	const fullRig = opts.policy === "full-rig";
 	const auth = opts.auth && refuseLive(opts.auth, opts.realHome, "auth");
 	const extra = fullRig
-		? (opts.packages ?? []).map((p) => (p.startsWith("npm:") ? p : refuseLive(p, opts.realHome, "package")))
+		? (opts.packages ?? []).map((p) => (/^(npm:|git:|https:)/.test(p) ? p : refuseLive(p, opts.realHome, "package")))
 		: [];
 	const root = mkdtempSync(join(opts.root ?? tmpdir(), "me-pi-eval-"));
 	const home = join(root, "home");
@@ -110,7 +112,7 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
 		join(agentDir, "settings.json"),
 		`${JSON.stringify(
 			{
-				packages: [src, ...extra],
+				packages: [...extra, src],
 				...(fullRig ? { defaultTools: ["+codemode"] } : {}),
 				defaultProvider: opts.coordinator.provider,
 				defaultModel: opts.coordinator.model,
@@ -131,6 +133,8 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
 		for (const name of readdirSync(join(src, "skills")))
 			if (existsSync(join(src, "skills", name, "SKILL.md")))
 				symlinkSync(join(src, "skills", name), join(skills, name));
+		if (opts.extensions?.length) mkdirSync(join(agentDir, "extensions"));
+		for (const file of opts.extensions ?? []) cpSync(file, join(agentDir, "extensions", file.split(sep).pop()!));
 		for (const dir of opts.skills ?? []) {
 			const real = realpathSync(dir);
 			symlinkSync(real, join(skills, real.split(sep).pop()!));
