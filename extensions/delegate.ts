@@ -658,11 +658,14 @@ export default function (pi: ExtensionAPI) {
 	const confirmEndingJobs = async (ctx: any) => {
 		if (!jobs.size || !ctx?.hasUI) return;
 		const ids = [...jobs.keys()].join(", ");
-		const ok = await ctx.ui.confirm(
-			`End ${jobs.size} running background job${jobs.size === 1 ? "" : "s"}?`,
-			`${ids} still running; leaving this session ends ${jobs.size === 1 ? "it" : "them"}.`,
+		const one = jobs.size === 1;
+		// No comes first so a reflexive Enter keeps the jobs; Escape keeps them too.
+		const end = `Yes, end ${one ? "it" : "them"}`;
+		const choice = await ctx.ui.select(
+			`${ids} still running in the background; leaving this session ends ${one ? "it" : "them"}.`,
+			["No, stay in this session", end],
 		);
-		return ok ? undefined : { cancel: true };
+		return choice === end ? undefined : { cancel: true };
 	};
 	pi.on("session_before_switch", (_event, ctx) => confirmEndingJobs(ctx));
 	pi.on("session_before_fork", (_event, ctx) => confirmEndingJobs(ctx));

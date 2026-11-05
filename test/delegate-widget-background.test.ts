@@ -356,17 +356,17 @@ test("background: a job stopped by session shutdown delivers nothing; background
 	assert.equal(text(bad), "background must be true or false");
 });
 
-test("leaving the session with background jobs running asks first, and a no keeps the session and the jobs", async (t) => {
+test("leaving the session with background jobs running asks first, No by default, and a no keeps the session and the jobs", async (t) => {
 	const { tool, handlers, messages } = setup(t, { env: { FAKE_PI_MODE: "hang" } });
 	const asked = [];
-	let answer = false;
+	let answer: string | undefined = "No, stay in this session";
 	const ui = {
 		...CTX,
 		hasUI: true,
 		ui: {
 			setStatus: () => {},
-			confirm: async (title, message) => {
-				asked.push([title, message]);
+			select: async (title, options) => {
+				asked.push([title, options]);
 				return answer;
 			},
 		},
@@ -377,17 +377,19 @@ test("leaving the session with background jobs running asks first, and a no keep
 	await run(tool, { role: "scout", task: "y", background: true }, undefined, undefined, bgCtx().ctx);
 	assert.deepEqual(await handlers.session_before_switch({ reason: "new" }, ui), { cancel: true });
 	assert.deepEqual(asked[0], [
-		"End 2 running background jobs?",
-		"bg1, bg2 still running; leaving this session ends them.",
+		"bg1, bg2 still running in the background; leaving this session ends them.",
+		["No, stay in this session", "Yes, end them"],
 	]);
 	assert.deepEqual(await handlers.session_before_fork({ position: "before" }, ui), { cancel: true });
-	assert.equal(asked.length, 2);
+	answer = undefined;
+	assert.deepEqual(await handlers.session_before_switch({ reason: "new" }, ui), { cancel: true }, "Escape stays");
+	assert.equal(asked.length, 3);
 	assert.equal(
 		await handlers.session_before_switch({ reason: "resume" }, { ...CTX, hasUI: false }),
 		undefined,
 		"without a UI the switch goes ahead",
 	);
-	answer = true;
+	answer = "Yes, end them";
 	assert.equal(await handlers.session_before_switch({ reason: "resume" }, ui), undefined);
 	await handlers.session_shutdown({ reason: "resume" });
 	await new Promise((r) => setTimeout(r, 100));
