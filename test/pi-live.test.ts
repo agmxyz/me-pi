@@ -99,3 +99,26 @@ test("a start that settles prints its target and keeps the session", (t) => {
 	assert.match(res.stdout, /^tmux:pi-live-\d+\n$/);
 	assert.ok(!res.calls.some((c) => c.startsWith("tmux kill-session")), res.calls.join("\n"));
 });
+
+test("PI_LIVE_TMUX_SOCKET routes every tmux call to that server, and start runs the given command", (t) => {
+	const res = piLive(
+		t,
+		{ tmux: `[ "$3" = capture-pane ] && echo "ctrl+c/ctrl+d ready"; exit 0` },
+		(dir) => ["start", dir, "--", "env", "-i", "HOME=/tmp/a b", "pi", "--session-dir", "/tmp/s"],
+		{ PI_LIVE_SETTLE: "2", PI_LIVE_TMUX_SOCKET: "/tmp/eval.sock" },
+	);
+	assert.equal(res.status, 0, res.stderr);
+	assert.ok(res.calls.length > 1);
+	assert.ok(
+		res.calls.every((c) => c.startsWith("tmux -S /tmp/eval.sock ")),
+		res.calls.join("\n"),
+	);
+	const start = res.calls.find((c) => c.includes(" new-session "));
+	assert.match(start ?? "", /env -i HOME=\/tmp\/a\\ b pi --session-dir \/tmp\/s $/);
+});
+
+test("start refuses -- without a command", (t) => {
+	const res = piLive(t, { tmux: "exit 0" }, (dir) => ["start", dir, "--"]);
+	assert.equal(res.status, 2);
+	assert.deepEqual(res.calls, []);
+});

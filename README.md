@@ -129,6 +129,8 @@ npm run fix                      # apply Biome fixes
 node --test test/guard.test.ts   # one test file
 ```
 
+Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt text, run the manual routing evals ([evals/README.md](evals/README.md)); they spend real money and never run in CI.
+
 Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR. Good first issues: [#35](https://github.com/0bmario/me-pi/issues/35), [#40](https://github.com/0bmario/me-pi/issues/40).
 
 ## License

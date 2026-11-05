@@ -15,5 +15,5 @@
 		"types": ["node"],
 		"noEmit": true
 	},
-	"include": ["extensions/*.ts"]
+	"include": ["extensions/*.ts", "evals/*.ts"]
 }
