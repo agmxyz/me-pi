@@ -648,7 +648,7 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(all, /User, repo \(use delegate for required subagents\), or skill requirements come first/);
 	assert.match(all, /Work from handbacks: read only lines you will act on/);
 	assert.match(all, /An implement ✓ means the extension saw `check` pass on the delivered commit: do not re-run it/);
-	assert.match(all, /give one `general` reviewer the diff file/);
+	assert.match(all, /write the diff, yours or a worker's, to a temp file for one `general` reviewer/);
 	assert.doesNotMatch(
 		all,
 		/files you have not read|many steps|edit yourself only|edits? (?:up to|under|over) \d+ files?/i,
