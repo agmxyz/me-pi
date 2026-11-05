@@ -544,6 +544,7 @@ test("finish commits leftovers as WIP on the branch with hooks off; odd reasons 
 	assert.match(out, /^✗ WIP \w+ on goal\/x: a\.txt, hooks\/$/m, "the failure line already gives the reason");
 	assert.match(out, /^✗ stopped:$/m);
 	assert.doesNotMatch(out, /^line two/m);
+	assert.match(out, /\nRecovery rules: \/\S+\/docs\/delegate\.md#bounded-coordinator-recovery$/);
 	assert.ok(!existsSync(lockOf(repo)));
 });
 

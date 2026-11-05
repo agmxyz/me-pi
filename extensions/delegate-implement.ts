@@ -23,6 +23,7 @@ import {
 	type StopFact,
 	type ToolEffectFact,
 } from "./delegate-provenance.ts";
+import { blockedLines, capBlocked, isBlockedLine, RECOVERY_POINTER } from "./delegate-worker.ts";
 import { PROTECTED_BRANCHES } from "./guard.ts";
 
 const run = promisify(execFile);
@@ -168,7 +169,6 @@ export function settingsTripwire(before: string, after: string): string[] {
 const COUNT_KEY = Symbol.for("me-pi.delegate.implement-count");
 const MAX_COMMITS = 20;
 const MAX_WIP_FILES = 20;
-const MAX_BLOCKED = 3;
 const MAX_NEW_TOP_LEVEL = 5;
 const FIRST_LINE_CAP = 200;
 
@@ -1041,14 +1041,10 @@ export function formatHandback(f: Facts): string {
 	const check = `check ${checkMark} \`${shown(f.check.command)}\``;
 	const head = `${f.failed ? "✗" : "✓"} ${f.id} ${f.branch} ${range}: ${stat}; ${check}${o.label ? ` ${o.label}` : ""}`;
 	const lines = (o.answer ?? "").split("\n").map((l) => l.trim());
-	const first = shown((lines.find((l) => l && !l.startsWith("BLOCKED:")) ?? "(no answer)").slice(0, FIRST_LINE_CAP));
+	const first = shown((lines.find((l) => l && !isBlockedLine(l)) ?? "(no answer)").slice(0, FIRST_LINE_CAP));
 	const details = f.detailsPath ? `${/[.!?]$/.test(first) ? "" : "."} Details: ${f.detailsPath}` : "";
-	const blocked = lines.filter((l) => l.startsWith("BLOCKED:"));
-	const out = [
-		head,
-		`${first}${details}`,
-		...blocked.slice(0, MAX_BLOCKED).map((l) => shown(l.slice(0, FIRST_LINE_CAP))),
-	];
+	const blocked = capBlocked(blockedLines(o.answer ?? ""));
+	const out = [head, `${first}${details}`, ...blocked.kept.map(shown)];
 	if (o.failedToolCapture?.status === "written" && f.failed) {
 		const unmatched = o.failedToolCapture.unmatchedStartCount ?? 0;
 		out.push(
@@ -1067,7 +1063,7 @@ export function formatHandback(f: Facts): string {
 		if (f.failed) out.push(note);
 		else out[1] = `${out[1]} ${note}`;
 	}
-	if (blocked.length > MAX_BLOCKED) out.push(`+${blocked.length - MAX_BLOCKED} more BLOCKED in details`);
+	if (blocked.more) out.push(`+${blocked.more} more BLOCKED in details`);
 	const failure = failureLine(o.failure);
 	if (failure) out.push(`✗ ${shown(failure)}${failureClassLine(o)}`);
 	if (f.wip) {
@@ -1083,5 +1079,6 @@ export function formatHandback(f: Facts): string {
 		out.push(`✗ check ${reason}`);
 	}
 	out.push(...f.problems.map((p) => `✗ ${shown(p)}`));
+	if (f.failed) out.push(RECOVERY_POINTER);
 	return safeDocument(out.join("\n"));
 }

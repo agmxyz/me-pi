@@ -51,18 +51,22 @@ send_line() {
   case "$(backend "$target")" in
     tmux) tmux send-keys -t "$(id "$target")" -l "$text"; sleep 0.3; tmux send-keys -t "$(id "$target")" Enter ;;
     herdr) herdr pane send-text "$(id "$target")" "$text"; herdr pane send-keys "$(id "$target")" Enter ;;
+    *) echo "unknown target: $target" >&2; exit 2 ;;
   esac
 }
 
 cmd_start() {
   local cwd="${1:-$PWD}" session="$PREFIX$$"
   tmux new-session -d -s "$session" -x 200 -y 60 -c "$cwd" pi
+  # A failed start prints no target, so nothing else could stop the session.
+  trap "tmux kill-session -t '$session' 2>/dev/null" EXIT
   local target="tmux:$session" waited=0
   until screen "$target" | grep -q 'ctrl+c/ctrl+d'; do
     sleep 1; waited=$((waited + 1))
     [ "$waited" -lt 60 ] || { echo "Pi did not start in $session" >&2; exit 1; }
   done
   settle "$target"
+  trap - EXIT
   printf '%s\n' "$target"
 }
 
@@ -70,9 +74,14 @@ cmd_ask() {
   local target="$1" prompt="$2"
   case "$(backend "$target")" in
     herdr)
-      # A prompt sent while Pi is still reloading is dropped (agent_prompt_stalled): retry once.
-      herdr agent prompt "$(id "$target")" "$prompt" --wait --timeout $((TIMEOUT_S * 1000)) >/dev/null ||
-        { sleep 3; herdr agent prompt "$(id "$target")" "$prompt" --wait --timeout $((TIMEOUT_S * 1000)) >/dev/null; } ;;
+      # A prompt sent while Pi is still reloading is dropped (agent_prompt_stalled): retry only that, once.
+      # Any other failure may have delivered the prompt, and a resend would pay for it twice.
+      local out
+      if ! out="$(herdr agent prompt "$(id "$target")" "$prompt" --wait --timeout $((TIMEOUT_S * 1000)) 2>&1)"; then
+        [[ "$out" == *agent_prompt_stalled* ]] || { printf '%s\n' "$out" >&2; exit 1; }
+        sleep 3
+        herdr agent prompt "$(id "$target")" "$prompt" --wait --timeout $((TIMEOUT_S * 1000)) >/dev/null
+      fi ;;
     tmux) send_line "$target" "$prompt"; settle "$target" ;;
     *) usage ;;
   esac
