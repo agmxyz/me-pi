@@ -654,6 +654,18 @@ export default function (pi: ExtensionAPI) {
 	shared[SPEND_KEY] ??= { cost: 0 };
 	const spend: { cost: number } = shared[SPEND_KEY];
 	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), history, active, cancel });
+	// Pi offers no hook before /reload or exit, so those still end background jobs unasked.
+	const confirmEndingJobs = async (ctx: any) => {
+		if (!jobs.size || !ctx?.hasUI) return;
+		const ids = [...jobs.keys()].join(", ");
+		const ok = await ctx.ui.confirm(
+			`End ${jobs.size} running background job${jobs.size === 1 ? "" : "s"}?`,
+			`${ids} still running; leaving this session ends ${jobs.size === 1 ? "it" : "them"}.`,
+		);
+		return ok ? undefined : { cancel: true };
+	};
+	pi.on("session_before_switch", (_event, ctx) => confirmEndingJobs(ctx));
+	pi.on("session_before_fork", (_event, ctx) => confirmEndingJobs(ctx));
 	pi.on("session_shutdown", async () => {
 		clearActivityWidget();
 		shutdown.abort(SESSION_ENDED);

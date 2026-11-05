@@ -83,7 +83,12 @@ test("opt-in coordinator status logs a provider-error stop and announces spend b
 test("registers delegate in the main session; workers get only the secret-path block", (t) => {
 	const main = setup(t);
 	assert.ok(main.tool);
-	assert.deepEqual(Object.keys(main.handlers), ["session_shutdown", "tool_call"]);
+	assert.deepEqual(Object.keys(main.handlers), [
+		"session_before_switch",
+		"session_before_fork",
+		"session_shutdown",
+		"tool_call",
+	]);
 	const { properties, required } = main.tool.parameters;
 	assert.deepEqual(required, ["task"]);
 	assert.deepEqual(properties.role.enum, ["general", "scout", "implement"]);
