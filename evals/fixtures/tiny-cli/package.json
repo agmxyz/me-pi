@@ -1,0 +1,1 @@
+{ "name": "tiny-cli", "version": "1.2.3", "type": "module", "bin": { "greet": "cli.js" }, "scripts": { "test": "node --test" } }
