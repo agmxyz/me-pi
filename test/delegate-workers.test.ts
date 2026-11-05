@@ -641,6 +641,7 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 		/goal\/<slug>|goal base SHA|tickets?|issue tracker|gh issue|Closes #|draft PR|PR body|push again|first ✓|mark it ready|At goal end|goal[- ](?:end|review)|per-goal|fresh review|own commits|fix job|fix findings|follow-up implement|git revert|two `review` calls|no diff read|Trust a ✓ handback/i,
 	);
 	assert.match(all, /Delegate only to keep a large read out of context or to work in the background/);
+	assert.match(all, /a small edit stay inline, even one that needs a review/);
 	assert.match(
 		all,
 		/A read over ~3 files, ~300 lines, or ~12 KB \(changelogs and docs run long\), or of unknown scope/,
