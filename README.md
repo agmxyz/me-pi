@@ -88,7 +88,7 @@ Also: "Research how other CLIs handle config migrations, with web access", "Have
 | `/delegate cancel <id>` | cancel a background job |
 | `/guard on` / `/guard off` | toggle guard for this session |
 
-Background jobs end on `/reload` or when Pi exits. Roles, limits, model pools and recovery: [docs/delegate.md](docs/delegate.md).
+Background jobs end on `/reload`, a session switch, or Pi exit; `/new`, `/resume`, `/fork`, and `/clone` ask first while any run. Roles, limits, model pools and recovery: [docs/delegate.md](docs/delegate.md).
 
 ## What it adds to your prompts
 
