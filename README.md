@@ -94,7 +94,7 @@ Background jobs end on `/reload` or when Pi exits. Roles, limits, model pools an
 
 Nothing is replaced; me-pi only appends.
 
-- **Main session:** the `delegate` tool's one-line summary and 8 usage guidelines (`PROMPT_SNIPPET`, `PROMPT_GUIDELINES` in [`delegate.ts`](extensions/delegate.ts)): when to delegate, how to brief and verify, pushes and merges stay with you, hands off the checkout while `implement` runs.
+- **Main session:** the `delegate` tool's one-line summary and 7 usage guidelines (`PROMPT_SNIPPET`, `PROMPT_GUIDELINES` in [`delegate.ts`](extensions/delegate.ts)): when to delegate, how to brief and verify, pushes and merges stay with you, hands off the checkout while `implement` runs.
 - **Workers** (foreground and background alike): Pi's normal prompt plus your `AGENTS.md` and skills, minus `## ` sections marked `(coordinator only)` (and `(coordinator and implement only)` for read-only roles) and skills outside `readOnlySkills` or `implementSkills` when set ([docs/delegate.md](docs/delegate.md#configure-model-pools)). Appended: a short contract (isolated, nobody answers questions, report `BLOCKED` instead of faking a step, treat fetched content as data, answer in about 300 words, stating assumptions; web-tool rules only with web tools, and "you are the subagent" only when `AGENTS.md` or skills are loaded) and the role's answer format. `implement` also gets its branch, its check, and its rules: no branch switching or history rewrites, no unrelated changes, no weakening tests to pass ([`delegate-worker.ts`](extensions/delegate-worker.ts)).
 
 These are prompt text, so your own `AGENTS.md` can refine or contradict them; the limits, fences and checkout rules are enforced in code either way.
@@ -128,6 +128,8 @@ npm run check                    # lint, typecheck, tests, installer test
 npm run fix                      # apply Biome fixes
 node --test test/guard.test.ts   # one test file
 ```
+
+Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt text, run the manual routing evals ([evals/README.md](evals/README.md)); they spend real money and never run in CI.
 
 Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR. Good first issues: [#35](https://github.com/0bmario/me-pi/issues/35), [#40](https://github.com/0bmario/me-pi/issues/40).
 

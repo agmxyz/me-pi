@@ -345,6 +345,7 @@ process.stdin.on("end", () => {
     process.exit(1);
   }
   if (mode === "retry-then-ok") { emit("", { stopReason: "error", errorMessage: "overloaded" }); emit("answer after retry"); process.exit(0); }
+  if (mode === "error-long") { emit("Findings first\\n" + "z".repeat(4000) + "\\nBLOCKED: tests: no bash\\n" + "w".repeat(3000) + "\\nUnverified: all", { stopReason: "error", errorMessage: "provider error" }); process.exit(0); }
   if (mode === "error-exit0") { emit("half", { stopReason: "error", errorMessage: "provider error" }); process.exit(0); }
   if (mode === "write-many") {
     const out = process.env.ME_PI_OUTPUT_DIR;
@@ -599,6 +600,8 @@ process.stdin.on("end", () => {
   }
   if (mode === "final-over-cap") { emit("complete answer", { cost: 9 }); process.exit(0); }
   if (mode === "long") { emit("y".repeat(30 * 1024)); process.exit(0); }
+  if (mode === "many-blocked") { emit("Findings first\\n" + "z".repeat(4000) + "\\n- BLOCKED: a: x\\nBLOCKED: b: x\\nBLOCKED: c: x\\nBLOCKED: d: x\\nBLOCKED: e: x\\n" + "w".repeat(3000) + "\\nAssumptions: none"); process.exit(0); }
+  if (mode === "long-blocked") { emit("Findings first\\n" + "z".repeat(4000) + "\\nBLOCKED: run tests: no bash\\n" + "w".repeat(3000) + "\\nAssumptions: none; unverified: all"); process.exit(0); }
   if (mode === "split-utf8") {
     const line = Buffer.from(JSON.stringify({ type: "message_end", message: { role: "assistant", usage: usage(0.001), stopReason: "stop", content: [{ type: "text", text: "ok ✓ done" }] } }) + "\\n");
     const cut = line.indexOf(Buffer.from("✓")) + 1;

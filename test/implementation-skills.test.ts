@@ -45,7 +45,10 @@ function assertContinuationDecisionPath(source, name) {
 	assert.match(recovery, /same model/);
 	assert.match(recovery, /A guard-denied action stays denied/);
 	assert.match(recovery, /Unknown or partial effects stop affected writes and acceptance/);
-	assert.match(recovery, /Ask the user for new authority, consequential choices, or unresolved safety/);
+	assert.match(
+		recovery,
+		/Ask the user for new authority, consequential choices \(product, privacy, destructive\), implementation-changing ambiguity, or unresolved safety/,
+	);
 	assert.match(recovery, /fresh passing check on committed work and independent review/);
 
 	if (name === "implement-spec-me-pi") {
@@ -71,10 +74,16 @@ function assertUserInvokedReviewContract(source, name) {
 		/carry forward (?:the )?prior full-review coverage that (?:the delta does not invalidate|remains valid)/,
 	);
 	assertContinuationDecisionPath(source, name);
-	assert.match(source, /Freeze the slice's scope, acceptance criteria, and exact check/);
+	assert.match(
+		source,
+		/At the first continuation, not before the first attempt, freeze the slice's identity, scope, acceptance criteria, exact check/,
+	);
 	assert.match(source, /At most 2 continuations after the first attempt \(3 attempts total\)/);
-	assert.match(source, /same model and within the original scope and authority/);
-	assert.match(source, /renaming, splitting, or new job IDs do not reset the count/);
+	assert.match(source, /same model and provider and within the original scope and authority/);
+	assert.match(
+		source,
+		/renaming, splitting, new job IDs, bases, models, accounts, or providers do not reset the count/,
+	);
 	assert.match(source, /A guard-denied action stays denied/);
 	assert.match(
 		source,
@@ -82,7 +91,10 @@ function assertUserInvokedReviewContract(source, name) {
 	);
 	assert.match(source, /Stop and report when attempts are exhausted or there is no observable progress/);
 	assert.match(source, /compare state and evidence, not repeated error text/);
-	assert.match(source, /Ask the user for new authority, consequential choices, or unresolved safety/);
+	assert.match(
+		source,
+		/Ask the user for new authority, consequential choices \(product, privacy, destructive\), implementation-changing ambiguity, or unresolved safety/,
+	);
 	assert.doesNotMatch(source, /automatic retry/i);
 	assert.match(source, /Do not load `tdd` by default/);
 	assert.match(source, /explicitly requires test-first\/red-first/);
@@ -112,7 +124,8 @@ test("both user-invoked implementation entrypoints retain full review and bounde
 	assert.match(recovery, /same model/);
 	assert.match(recovery, /A guard-denied action stays denied/);
 	assert.match(recovery, /Unknown or partial effects stop affected writes and acceptance/);
-	assert.match(recovery, /fresh passing check on committed work and independent review/);
+	assert.match(recovery, /fresh passing check on committed work and the review \[the gate\]/);
+	assert.match(recovery, /At the first continuation, not before the first attempt/);
 
 	assert.match(delegateGuide, /A guard-denied action stays denied/);
 	assert.match(delegateGuide, /canonical structured `exit_code` from 1 through 127/);

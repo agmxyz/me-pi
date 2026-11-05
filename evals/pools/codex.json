@@ -1,0 +1,37 @@
+{
+	"version": 3,
+	"scout": {
+		"models": [
+			{
+				"model": "openai-codex/gpt-6-luna",
+				"thinking": "off"
+			}
+		]
+	},
+	"worker": {
+		"models": [
+			{
+				"model": "openai-codex/gpt-6-luna",
+				"thinking": "max"
+			},
+			{
+				"model": "openai-codex/gpt-6.1-sol",
+				"thinking": "medium"
+			}
+		]
+	},
+	"readOnlySkills": [
+		"code-review",
+		"codebase-design",
+		"diagnosing-bugs",
+		"domain-modeling",
+		"research",
+		"writing-for-agents",
+		"pr"
+	],
+	"implementSkills": [
+		"tdd",
+		"diagnosing-bugs",
+		"codebase-design"
+	]
+}

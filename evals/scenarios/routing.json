@@ -1,0 +1,115 @@
+{
+	"coordinator": { "provider": "openai-codex", "model": "gpt-6.1-sol", "thinking": "low" },
+	"policy": "full-rig",
+	"pool": "codex",
+	"scenarios": [
+		{
+			"id": "3",
+			"optIn": "needs the code-review skill (--skill) and costs about $2.7",
+			"cwd": "repo",
+			"turns": [{ "prompt": "Review commit 20e9d8f for bugs." }],
+			"expect": [
+				{ "id": "loads code-review", "skill": "code-review" },
+				{ "id": "2 reviewers", "delegate": { "role": "general" }, "count": 2 },
+				{ "id": "diff passed by path, not read", "diffByPath": true }
+			]
+		},
+		{
+			"id": "4",
+			"cwd": "repo",
+			"turns": [{ "prompt": "What changed in the latest Pi release, and does any of it affect extensions?" }],
+			"expect": [
+				{ "id": "one general with web", "delegate": { "role": "general", "web": true }, "count": 1 },
+				{ "id": "no other delegate", "delegate": {}, "count": 1 },
+				{ "id": "no web_enable", "noTool": "web_enable" },
+				{ "id": "no large own read", "maxOwnRead": 12000 }
+			]
+		},
+		{
+			"id": "5",
+			"cwd": "tiny-cli",
+			"turns": [
+				{
+					"prompt": "Add a --version flag that prints the version from package.json, with a test for it. npm test must pass. Work on a new branch feat/version."
+				}
+			],
+			"expect": [
+				{ "id": "inline", "inline": true },
+				{ "id": "no delegate", "delegate": {}, "count": 0 }
+			]
+		},
+		{
+			"id": "6",
+			"optIn": "needs an anthropic credential for claude-opus-5-5",
+			"cwd": "repo",
+			"turns": [
+				{
+					"prompt": "Ask claude-opus-5-5 and gpt-6.1-sol, and have them cross-check each other: should resolveRuns in extensions/delegate-config.ts be folded into resolveRun?"
+				},
+				{ "afterSeconds": 5, "prompt": "Use anthropic." }
+			],
+			"expect": [{ "id": "one call, both models, rebuttal", "delegate": { "minRuns": 2, "rebuttal": true }, "count": 1 }]
+		},
+		{
+			"id": "7",
+			"cwd": "repo",
+			"turns": [
+				{
+					"prompt": "In the background, have a worker audit docs/delegate.md against the code for statements that no longer match. Meanwhile, tell me what the Limits section of that doc covers."
+				},
+				{
+					"afterSeconds": 600,
+					"prompt": "If a background job you started has finished, summarize its result in 5 lines; otherwise say it is still running."
+				}
+			],
+			"expect": [
+				{ "id": "background", "delegate": { "background": true }, "count": 1 },
+				{ "id": "states job id", "reply": "\\bbg\\d+\\b", "turn": 0 },
+				{ "id": "answers the side question", "reply": "[Ll]imit", "turn": 0 },
+				{ "id": "short handback", "maxReplyWords": 120, "turn": 1 }
+			]
+		},
+		{
+			"id": "8",
+			"cwd": "tiny-cli",
+			"turns": [
+				{
+					"prompt": "Use an implement worker for this: add a --shout flag that uppercases the greeting, with a test. npm test must pass. Work on a new branch feat/shout."
+				}
+			],
+			"expect": [
+				{ "id": "implement", "delegate": { "role": "implement" }, "count": 1 },
+				{ "id": "no reviewer", "delegate": { "role": "general" }, "count": 0 },
+				{ "id": "no check re-run", "noRerun": "npm (run )?test" }
+			]
+		},
+		{
+			"id": "12",
+			"cwd": "tiny-cli",
+			"turns": [
+				{
+					"prompt": "Add a --file <path> option that reads the name to greet from a file; reject any path outside the current directory. npm test must pass. Work on a new branch feat/file."
+				}
+			],
+			"expect": [
+				{ "id": "inline", "inline": true },
+				{ "id": "one security review", "delegate": { "role": "general" }, "count": 1 },
+				{ "id": "diff passed by path, not read", "diffByPath": true }
+			]
+		},
+		{
+			"id": "13",
+			"cwd": "tiny-cli",
+			"turns": [
+				{
+					"prompt": "Use an implement worker for this: add a config subcommand with get, set, and list that stores key/value pairs in .greetrc.json in the current directory, with a test for each. npm test must pass. Work on a new branch feat/config."
+				}
+			],
+			"expect": [
+				{ "id": "implement", "delegate": { "role": "implement" }, "count": [1, 3] },
+				{ "id": "one review", "delegate": { "role": "general" }, "count": 1 },
+				{ "id": "no check re-run", "noRerun": "npm (run )?test" }
+			]
+		}
+	]
+}
