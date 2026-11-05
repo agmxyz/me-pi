@@ -446,7 +446,8 @@ function buildSchema() {
 			},
 			task: {
 				type: "string",
-				description: "Read-only workers cannot run commands.",
+				description:
+					"Read-only workers cannot run commands: write diffs or command output to a temp file and pass its path.",
 			},
 			web: {
 				type: "boolean",
