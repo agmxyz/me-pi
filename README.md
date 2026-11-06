@@ -12,7 +12,7 @@ The part you can install on its own is [`pi-workers`](packages/pi-workers): Pi e
 pi install npm:@agmxyz/pi-workers
 ```
 
-Restart Pi or run `/reload`, then try: "Have a scout find where this project handles configuration, with `path:line` evidence." What it does, how it works, its limits and safety notes: [packages/pi-workers](packages/pi-workers). Delegation and recovery in depth: [packages/pi-workers/docs/delegate.md](packages/pi-workers/docs/delegate.md).
+Restart Pi or run `/reload` and work as usual: Pi delegates broad searches, large reviews and multi-file changes on its own, or when you ask it to. What it does, how it works, its limits and safety notes: [packages/pi-workers](packages/pi-workers). Delegation and recovery in depth: [packages/pi-workers/docs/delegate.md](packages/pi-workers/docs/delegate.md).
 
 To track `main` instead, install `git:github.com/agmxyz/me-pi`; install only one of the two. The repo moved from `0bmario/me-pi`: if you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first.
 
