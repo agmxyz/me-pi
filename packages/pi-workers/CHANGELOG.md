@@ -5,7 +5,6 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 ## [Unreleased]
 
 - `guard` no longer asks before recursive `rm` of `$TMPDIR/x` while TMPDIR names a temp directory, or of a directory the same command created with `mktemp -d` (`d=$(mktemp -d) && … && rm -rf "$d"`). It now asks for an expansion right below a temp root (`rm -rf /tmp/$x`), which could be the root itself, and for words the shell may expand into `..` (`\.\.`, `{..,x}`, `.[.]`).
-
 - `guard` now finds `rm` and `git` after `if`, `elif`, `while`, `until`, `!`, `timeout`, `nice`, `watch`, `doas`, `pkexec`, `trap '…'`, and `ssh host '…'`; it missed them before.
 
 ## [0.1.0] - 2026-11-06
