@@ -1,8 +1,8 @@
 {
   "name": "me-pi",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
-  "description": "My Pi setup: global policy, skills and the pi-workers extensions",
+  "description": "My Pi setup: global policy, skills and the pi-goblins extensions",
   "license": "MIT",
   "repository": "https://github.com/agmxyz/me-pi",
   "keywords": [
@@ -23,7 +23,7 @@
       "extensions/skill.ts"
     ],
     "skills": [],
-    "changelogPath": "packages/pi-workers/CHANGELOG.md"
+    "changelogPath": "packages/pi-goblins/CHANGELOG.md"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

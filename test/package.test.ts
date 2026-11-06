@@ -7,11 +7,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-const workers = JSON.parse(readFileSync(new URL("../packages/pi-workers/package.json", import.meta.url), "utf8"));
+const workers = JSON.parse(readFileSync(new URL("../packages/pi-goblins/package.json", import.meta.url), "utf8"));
 const workerExtensions = ["extensions/delegate.ts", "extensions/guard.ts", "extensions/skill.ts"];
 const compatibility = JSON.parse(readFileSync(new URL("../extensions/package.json", import.meta.url), "utf8"));
 
-test("the root manifest is the private setup and loads the pi-workers extensions", () => {
+test("the root manifest is the private setup and loads the pi-goblins extensions", () => {
 	assert.equal(root.name, "me-pi");
 	assert.equal(root.private, true);
 	assert.ok(root.description);
@@ -23,7 +23,7 @@ test("the root manifest is the private setup and loads the pi-workers extensions
 	assert.deepEqual(root.pi, {
 		extensions: workerExtensions,
 		skills: [],
-		changelogPath: "packages/pi-workers/CHANGELOG.md",
+		changelogPath: "packages/pi-goblins/CHANGELOG.md",
 	});
 	assert.ok(existsSync(new URL(`../${root.pi.changelogPath}`, import.meta.url)));
 	for (const entrypoint of root.pi.extensions) {
@@ -31,13 +31,13 @@ test("the root manifest is the private setup and loads the pi-workers extensions
 			readFileSync(new URL(`../${entrypoint}`, import.meta.url), "utf8")
 				.split("\n")
 				.at(-2),
-			`export { default } from "../packages/pi-workers/${entrypoint}";`,
+			`export { default } from "../packages/pi-goblins/${entrypoint}";`,
 		);
 	}
 });
 
-test("the pi-workers manifest declares only the three public Pi extensions", () => {
-	assert.equal(workers.name, "@agmxyz/pi-workers");
+test("the pi-goblins manifest declares only the three public Pi extensions", () => {
+	assert.equal(workers.name, "@agmxyz/pi-goblins");
 	assert.notEqual(workers.private, true);
 	assert.match(workers.version, /^\d+\.\d+\.\d+$/);
 	assert.ok(workers.description);
@@ -45,7 +45,7 @@ test("the pi-workers manifest declares only the three public Pi extensions", () 
 	assert.deepEqual(workers.repository, {
 		type: "git",
 		url: "git+https://github.com/agmxyz/me-pi.git",
-		directory: "packages/pi-workers",
+		directory: "packages/pi-goblins",
 	});
 	assert.ok(workers.keywords.includes("pi-package"));
 	assert.deepEqual(workers.publishConfig, { access: "public" });
@@ -54,13 +54,13 @@ test("the pi-workers manifest declares only the three public Pi extensions", () 
 	assert.deepEqual(workers.peerDependenciesMeta, root.peerDependenciesMeta);
 	assert.deepEqual(workers.engines, root.engines);
 	for (const entrypoint of workers.pi.extensions) {
-		assert.ok(existsSync(new URL(`../packages/pi-workers/${entrypoint}`, import.meta.url)), `${entrypoint} exists`);
+		assert.ok(existsSync(new URL(`../packages/pi-goblins/${entrypoint}`, import.meta.url)), `${entrypoint} exists`);
 	}
 });
 
-test("the pi-workers tarball holds the package, not the author's setup", () => {
+test("the pi-goblins tarball holds the package, not the author's setup", () => {
 	const result = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-		cwd: fileURLToPath(new URL("../packages/pi-workers/", import.meta.url)),
+		cwd: fileURLToPath(new URL("../packages/pi-goblins/", import.meta.url)),
 		encoding: "utf8",
 	});
 	assert.ifError(result.error);

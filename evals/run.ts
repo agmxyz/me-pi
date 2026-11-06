@@ -199,16 +199,15 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		execFileSync("git", ["-C", a.sandbox.src, "rev-parse", `${a.sandbox.commit}:${path}`], {
 			encoding: "utf8",
 		}).trim();
-	// Refs before the pi-workers package move keep their extensions at the root; drop this once no compared ref predates it.
+	// Older refs keep their extensions under the package's earlier names; drop each once no compared ref predates it.
 	const extensionsTree = () => {
-		const moved = spawnSync("git", [
-			"-C",
-			a.sandbox.src,
-			"cat-file",
-			"-e",
-			`${a.sandbox.commit}:packages/pi-workers/extensions`,
-		]);
-		return git(moved.status === 0 ? "packages/pi-workers/extensions" : "extensions");
+		const path =
+			["packages/pi-goblins/extensions", "packages/pi-workers/extensions"].find(
+				(candidate) =>
+					spawnSync("git", ["-C", a.sandbox.src, "cat-file", "-e", `${a.sandbox.commit}:${candidate}`]).status ===
+					0,
+			) ?? "extensions";
+		return git(path);
 	};
 	return {
 		sweep,

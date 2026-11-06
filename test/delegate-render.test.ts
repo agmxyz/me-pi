@@ -7,7 +7,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 initTheme(undefined, false);
 
 const { activityWidget, pickPersona, progressLines, renderCall, renderResult, SKIN_TONES } = await import(
-	"../packages/pi-workers/extensions/delegate-render.ts"
+	"../packages/pi-goblins/extensions/delegate-render.ts"
 );
 
 // Colours as real ANSI codes, so width checks measure only visible text.

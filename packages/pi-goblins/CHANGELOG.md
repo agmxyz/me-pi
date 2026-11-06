@@ -2,6 +2,10 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
+## [0.2.0] - 2026-11-06
+
+- The package is now `@agmxyz/pi-goblins`; `@agmxyz/pi-workers` is deprecated. Switch with `pi remove npm:@agmxyz/pi-workers` and `pi install npm:@agmxyz/pi-goblins`. Tools, commands and settings are unchanged.
+
 ## [0.1.1] - 2026-11-06
 
 - `implement` workers are told to keep scratch files in `"${TMPDIR:?}/<name>"`, which `guard` allows to remove, instead of a bare `$TMPDIR`, whose cleanup `guard` blocked in workers.

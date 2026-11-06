@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
-import { HOME } from "../packages/pi-workers/extensions/delegate-config.ts";
-import { expandHome } from "../packages/pi-workers/extensions/delegate-fence.ts";
+import { HOME } from "../packages/pi-goblins/extensions/delegate-config.ts";
+import { expandHome } from "../packages/pi-goblins/extensions/delegate-fence.ts";
 
 test("expandHome expands only ~ and ~/", () => {
 	assert.equal(expandHome("~"), HOME);

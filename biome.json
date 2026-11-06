@@ -31,7 +31,7 @@
 	"files": {
 		"includes": [
 			"extensions/*.ts",
-			"packages/pi-workers/extensions/*.ts",
+			"packages/pi-goblins/extensions/*.ts",
 			"test/*.ts",
 			"test/fixtures/*.ts",
 			"evals/*.ts"

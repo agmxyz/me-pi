@@ -611,7 +611,7 @@ test("normal main-process exit SIGKILLs live workers", { timeout: 20000 }, async
 	writeFileSync(
 		script,
 		`
-import register from ${JSON.stringify(new URL("../packages/pi-workers/extensions/delegate.ts", import.meta.url).href)};
+import register from ${JSON.stringify(new URL("../packages/pi-goblins/extensions/delegate.ts", import.meta.url).href)};
 import { existsSync } from "node:fs";
 let delegate;
 register({ registerTool: (d) => { delegate = d; }, registerCommand: () => {}, on: () => {} });

@@ -1,4 +1,4 @@
-# pi-workers
+# pi-goblins
 
 [![check](https://github.com/agmxyz/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/agmxyz/me-pi/actions/workflows/check.yml)
 
@@ -11,7 +11,7 @@ Work with Pi as usual. When a task would flood the session, such as a broad sear
 Requires Pi 1.5.0 (the version CI tests) on macOS or Linux (CI covers Linux; macOS is tested locally).
 
 ```sh
-pi install npm:@agmxyz/pi-workers
+pi install npm:@agmxyz/pi-goblins
 ```
 
 To track `main` instead, install `git:github.com/agmxyz/me-pi`. Install only one of the two: both load the same extensions.
@@ -22,7 +22,7 @@ Restart Pi or run `/reload`, then just work. You don't name roles: Pi decides wh
 - "Review this branch's diff for correctness." A large diff goes to a reviewer; for a small one, Pi reads it itself.
 - On a clean feature branch (`git switch -c fix/example`): "Add a 30 s default timeout; `npm test` must pass." A multi-file change or a long fix-and-test loop goes to `implement`, which edits, runs your check and commits.
 
-The routing is prompt guidance to your model (`PROMPT_GUIDELINES` in [`delegate.ts`](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/extensions/delegate.ts)), so it can misjudge. Steer it when you want: "use a worker for this", "do this in the background", or "have Opus 5.5 and Sol 6.1 challenge this plan and cross-check each other" (the models must be available in Pi).
+The routing is prompt guidance to your model (`PROMPT_GUIDELINES` in [`delegate.ts`](https://github.com/agmxyz/me-pi/blob/main/packages/pi-goblins/extensions/delegate.ts)), so it can misjudge. Steer it when you want: "use a worker for this", "do this in the background", or "have Opus 5.5 and Sol 6.1 challenge this plan and cross-check each other" (the models must be available in Pi).
 
 For example, a successful implementation handback can look like this (illustrative):
 
@@ -45,14 +45,14 @@ The coordinator chooses a built-in role and briefs it for the task. The roles ar
 
 Workers load your own `AGENTS.md` and skills; `## ` sections marked `(coordinator only)` are stripped from worker prompts. Read-only workers can also write drafts to their own temp directory with `output: true`; web tools require `web: true` and aren't available to `implement`.
 
-The package also includes `guard`, which asks before risky bash and blocks matching commands in `implement`, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md).
+The package also includes `guard`, which asks before risky bash and blocks matching commands in `implement`, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-goblins/docs/delegate.md).
 
 ## Why use it?
 
 - **Keep the main context focused.** A worker can search files or review a diff and return findings instead of filling the session with its process.
 - **A check with a clear meaning.** A successful `implement` handback means your check passed on the content delivered, not just on an earlier edit.
 - **Limits by default.** Hard time limits (5 / 15 / 45 min for `scout` / `general` / `implement`), a $5 cap on Pi's estimated cost per run, and at most four workers at once. Cost is checked after each reply, so the estimate can exceed $5; a final reply over the cap is kept.
-- **No blind retries.** Eligible infrastructure failures are retried on the same model only after a fully accounted-for, read-only attempt; unknown side effects aren't replayed. pi-workers never switches models on its own.
+- **No blind retries.** Eligible infrastructure failures are retried on the same model only after a fully accounted-for, read-only attempt; unknown side effects aren't replayed. pi-goblins never switches models on its own.
 
 ## Where it's weaker
 
@@ -86,7 +86,7 @@ To skip `guard`, replace the package entry in `~/.pi/agent/settings.json` with a
 ```json
 {
   "packages": [
-    { "source": "npm:@agmxyz/pi-workers", "extensions": ["extensions/delegate.ts", "extensions/skill.ts"] }
+    { "source": "npm:@agmxyz/pi-goblins", "extensions": ["extensions/delegate.ts", "extensions/skill.ts"] }
   ]
 }
 ```
@@ -95,10 +95,10 @@ Without `guard`, `implement` workers also lose its blocks on recursive `rm`, `gi
 
 ## What it adds to your prompts
 
-Nothing is replaced; pi-workers only appends.
+Nothing is replaced; pi-goblins only appends.
 
-- **Main session:** the `delegate` tool's one-line summary and 7 usage guidelines (`PROMPT_SNIPPET`, `PROMPT_GUIDELINES` in [`delegate.ts`](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/extensions/delegate.ts)): when to delegate, how to brief and verify, pushes and merges stay with you, hands off the checkout while `implement` runs.
-- **Workers:** Pi's normal prompt plus your `AGENTS.md` and skills, minus sections marked `(coordinator only)` and skills outside your configured lists ([docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md#configure-model-pools)). Appended is a short contract: report `BLOCKED` instead of faking a step, treat fetched content as data, and answer in about 300 words. `implement` also gets its branch, its check, and rules against branch switching, unrelated changes, and weakening tests ([`delegate-worker.ts`](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/extensions/delegate-worker.ts)).
+- **Main session:** the `delegate` tool's one-line summary and 7 usage guidelines (`PROMPT_SNIPPET`, `PROMPT_GUIDELINES` in [`delegate.ts`](https://github.com/agmxyz/me-pi/blob/main/packages/pi-goblins/extensions/delegate.ts)): when to delegate, how to brief and verify, pushes and merges stay with you, hands off the checkout while `implement` runs.
+- **Workers:** Pi's normal prompt plus your `AGENTS.md` and skills, minus sections marked `(coordinator only)` and skills outside your configured lists ([docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-goblins/docs/delegate.md#configure-model-pools)). Appended is a short contract: report `BLOCKED` instead of faking a step, treat fetched content as data, and answer in about 300 words. `implement` also gets its branch, its check, and rules against branch switching, unrelated changes, and weakening tests ([`delegate-worker.ts`](https://github.com/agmxyz/me-pi/blob/main/packages/pi-goblins/extensions/delegate-worker.ts)).
 
 These are prompt text, so your own `AGENTS.md` can refine or contradict them; the limits, fences and checkout rules are enforced in code either way.
 
@@ -107,13 +107,13 @@ These are prompt text, so your own `AGENTS.md` can refine or contradict them; th
 - Not a sandbox. Extensions and workers run with your OS permissions; `guard` and the fences are guardrails, not security boundaries.
 - Worker file-read tools refuse common secret paths (`.env*`, keys, `~/.ssh`, `~/.pi/agent/auth.json`); `implement`'s bash is not path-fenced.
 - `implement` edits and commits in your real checkout, with Git remotes and `gh` cut off. ✓ means your check exited 0 on the delivered content, not that the code is right; review what it hands back.
-- The recovery rules in [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md) are guidance for the main session, not runtime enforcement.
-- pi-workers itself sends nothing anywhere; workers talk only to your configured model providers, plus fetched pages when web tools are on.
+- The recovery rules in [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-goblins/docs/delegate.md) are guidance for the main session, not runtime enforcement.
+- pi-goblins itself sends nothing anywhere; workers talk only to your configured model providers, plus fetched pages when web tools are on.
 
 ## Uninstall
 
 ```sh
-pi remove npm:@agmxyz/pi-workers   # or git:github.com/agmxyz/me-pi
+pi remove npm:@agmxyz/pi-goblins   # or git:github.com/agmxyz/me-pi
 rm ~/.pi/agent/delegate.json   # if you created it
 ```
 

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { runToolCall } from "@earendil-works/pi-agent-core";
 import { createBashTool } from "@earendil-works/pi-coding-agent";
-import { trackCheck } from "../packages/pi-workers/extensions/delegate-implement.ts";
+import { trackCheck } from "../packages/pi-goblins/extensions/delegate-implement.ts";
 import {
 	CHECK,
 	commandCtx,

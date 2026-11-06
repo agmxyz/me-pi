@@ -1,14 +1,14 @@
 {
-  "name": "@agmxyz/pi-workers",
-  "version": "0.1.1",
+  "name": "@agmxyz/pi-goblins",
+  "version": "0.2.0",
   "description": "Delegate searches, reviews and checked changes to separate Pi worker processes",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/agmxyz/me-pi.git",
-    "directory": "packages/pi-workers"
+    "directory": "packages/pi-goblins"
   },
-  "homepage": "https://github.com/agmxyz/me-pi/tree/main/packages/pi-workers#readme",
+  "homepage": "https://github.com/agmxyz/me-pi/tree/main/packages/pi-goblins#readme",
   "keywords": [
     "pi-package",
     "delegate",

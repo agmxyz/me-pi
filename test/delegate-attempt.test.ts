@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const { createAttemptLedger, infraRetryable, mergeAttempts } = await import(
-	"../packages/pi-workers/extensions/delegate-attempt.ts"
+	"../packages/pi-goblins/extensions/delegate-attempt.ts"
 );
-const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../packages/pi-workers/extensions/delegate-provenance.ts");
+const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../packages/pi-goblins/extensions/delegate-provenance.ts");
 
 // Array-fed ledger tests: synthetic Pi event records mirroring the fake-pi provenance modes in the harness.
 

@@ -4,29 +4,29 @@
 
 My [Pi](https://github.com/earendil-works/pi) setup, shared as a reference rather than a product. It changes as my workflow does.
 
-## pi-workers
+## pi-goblins
 
-The part you can install on its own is [`pi-workers`](packages/pi-workers): Pi extensions that send searches, reviews and scoped changes to separate worker processes and bring back their answers, so your main session stays focused on decisions.
+The part you can install on its own is [`pi-goblins`](packages/pi-goblins): Pi extensions that send searches, reviews and scoped changes to separate worker processes and bring back their answers, so your main session stays focused on decisions.
 
 ```sh
-pi install npm:@agmxyz/pi-workers
+pi install npm:@agmxyz/pi-goblins
 ```
 
-Restart Pi or run `/reload` and work as usual: Pi delegates broad searches, large reviews and multi-file changes on its own, or when you ask it to. What it does, how it works, its limits and safety notes: [packages/pi-workers](packages/pi-workers). Delegation and recovery in depth: [packages/pi-workers/docs/delegate.md](packages/pi-workers/docs/delegate.md).
+Restart Pi or run `/reload` and work as usual: Pi delegates broad searches, large reviews and multi-file changes on its own, or when you ask it to. What it does, how it works, its limits and safety notes: [packages/pi-goblins](packages/pi-goblins). Delegation and recovery in depth: [packages/pi-goblins/docs/delegate.md](packages/pi-goblins/docs/delegate.md).
 
 To track `main` instead, install `git:github.com/agmxyz/me-pi`; install only one of the two. The repo moved from `0bmario/me-pi`: if you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first.
 
 ## The rest of the setup
 
-Around `pi-workers`, I use:
+Around `pi-goblins`, I use:
 
 - **A global policy** ([`GLOBAL_AGENTS.md`](GLOBAL_AGENTS.md)): output style, engineering defaults, which actions need my approval, and how to handle secrets and untrusted content. Sections marked `(coordinator only)` stay out of worker prompts.
 - **Skills** ([`skills/`](skills)): `implement-me-pi` runs one task with a worker and independent review; `implement-spec-me-pi` implements a ticket graph on one branch; `pi-live-test` live-tests a me-pi change in a real Pi. `evolvability-review` is here too, but `install.sh` doesn't link it.
 - **[`install.sh`](install.sh)**, which wires these in machine-wide with a few extras.
 
-You don't need any of it for `pi-workers`; read and copy what's useful. Some skills expect others from my own collection.
+You don't need any of it for `pi-goblins`; read and copy what's useful. Some skills expect others from my own collection.
 
-`./install.sh` changes what Pi loads across all your sessions: it links the policy and skills, registers this checkout as a package, and installs `pi-web-access`. If you installed `pi-workers` from npm or Git, remove it first (`pi remove npm:@agmxyz/pi-workers` or `pi remove git:github.com/agmxyz/me-pi`), so Pi doesn't load the extensions twice. Review the script and [docs/setup.md](docs/setup.md) for requirements, effects and undo steps before running it.
+`./install.sh` changes what Pi loads across all your sessions: it links the policy and skills, registers this checkout as a package, and installs `pi-web-access`. If you installed `pi-goblins` from npm or Git, remove it first (`pi remove npm:@agmxyz/pi-goblins` or `pi remove git:github.com/agmxyz/me-pi`), so Pi doesn't load the extensions twice. Review the script and [docs/setup.md](docs/setup.md) for requirements, effects and undo steps before running it.
 
 ## Contributing
 
@@ -43,7 +43,7 @@ Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt text, run the m
 
 Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR.
 
-To release `@agmxyz/pi-workers`, open a PR that bumps `version` in `package.json`, `packages/pi-workers/package.json`, and `package-lock.json`, and renames `## [Unreleased]` in `packages/pi-workers/CHANGELOG.md` to `## [x.y.z] - date`. Merging it runs [`release.yml`](.github/workflows/release.yml): check, publish to npm with provenance, then tag `pi-workers@x.y.z` and create a GitHub release from that changelog section.
+To release `@agmxyz/pi-goblins`, open a PR that bumps `version` in `package.json`, `packages/pi-goblins/package.json`, and `package-lock.json`, and renames `## [Unreleased]` in `packages/pi-goblins/CHANGELOG.md` to `## [x.y.z] - date`. Merging it runs [`release.yml`](.github/workflows/release.yml): check, publish to npm with provenance, then tag `pi-goblins@x.y.z` and create a GitHub release from that changelog section.
 
 Good first issues: [#35](https://github.com/agmxyz/me-pi/issues/35), [#40](https://github.com/agmxyz/me-pi/issues/40).
 
