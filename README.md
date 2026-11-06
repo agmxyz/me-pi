@@ -2,9 +2,11 @@
 
 [![check](https://github.com/agmxyz/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/agmxyz/me-pi/actions/workflows/check.yml)
 
-Bounded subagents for the [Pi](https://github.com/earendil-works/pi) coding agent. No worktrees, no sandbox, no agent files.
+Delegation for the [Pi](https://github.com/earendil-works/pi) coding agent that keeps your main session's context small: three fixed roles, hard limits, one checked writer, no agent files.
 
-Your main session hands bounded work (a lookup, a review, research, a scoped change) to a separate worker process and gets back only the answer. Workers see only the brief, run under hard time and cost limits, and are killed as a process group when they overrun. `implement` edits your real checkout on a feature branch, and its ✓ means the check you declared passed on exactly what it delivered.
+Your main session hands bounded work (a lookup, a review, research, a scoped change) to a separate Pi process and gets back only the answer. Workers see only the brief, run under hard time and cost limits, and are killed as a process group when they overrun. `implement` edits your real checkout on a feature branch, and its ✓ means the check you declared passed on exactly the commit it delivered.
+
+This is the delegation part of my daily Pi setup, packaged so you can try it without the rest.
 
 ```text
 you ─► main Pi session (decides, verifies)
@@ -16,13 +18,14 @@ you ─► main Pi session (decides, verifies)
        short answer   or   ✓ im1 fix/timeout a1b2c3d..e4f5a6b: 1 commit; check pass
 ```
 
-## Why me-pi
+## Why you might like it
 
-- **Small surface.** One `delegate` tool, one `/delegate` command, three built-in roles. Works with zero config.
+- **Works with zero config.** One `delegate` tool, one `/delegate` command, three built-in roles. No agent files to write.
+- **Your context stays yours.** A 40-file search comes back as a few lines with `path:line` evidence, not 40 files in your session.
 - **Follows your workflow.** Workers load your own `AGENTS.md` and skills. Add `(coordinator only)` to a `## ` heading and workers skip that section.
-- **One writer, verified commits.** `implement` takes a per-repo lock, needs a clean feature branch, runs your check, and commits. A pass counts only for the exact checkout content it ran on; any later edit marks it stale. Leftover work is saved as a visible `WIP` commit.
+- **A ✓ you can lean on.** `implement` takes a per-repo lock, needs a clean feature branch, runs your check, and commits. A pass counts only for the exact content it ran on; any later edit marks it stale. Leftover work is saved as a visible `WIP` commit.
 - **Bounded by default.** Hard time limits (5 / 15 / 45 min), a $5 per-run cap on Pi's estimated cost, at most four workers per Pi session.
-- **No blind retries.** Provider hiccups are retried on the same model only when the attempt did nothing but reads; anything with unknown side effects is reported, not replayed.
+- **No blind retries.** Provider hiccups are retried on the same model only when the attempt did nothing but read; anything with unknown side effects is reported, not replayed. me-pi never switches models on its own.
 - **Model pools.** A cheap model for scouts, a stronger one for every other worker, in one JSON file.
 
 | Role | Can | Answers with |
@@ -33,7 +36,17 @@ you ─► main Pi session (decides, verifies)
 
 Only `implement` modifies the checkout; `output: true` lets a read-only worker write drafts into its own temp directory. Web tools are on only when a call sets `web: true` (never for `implement`).
 
-Also included: `guard` (asks before risky bash such as force pushes, `git reset --hard`, recursive `rm`) and `Skill` (lets Pi load an already-discovered skill by name).
+## Where it's weaker
+
+me-pi is small on purpose, and young. Other Pi packages may fit you better if you need:
+
+- **Custom agents or roles.** The three roles are fixed; there are no agent files.
+- **Parallel writers.** One `implement` worker writes per repo, in your checkout. Worktree-based writers aren't supported yet.
+- **Jobs that outlive the session.** Background jobs end on `/reload`, a session switch, or Pi exit, and a worker's session can't be resumed.
+- **A live view of a worker.** You see progress and the final answer, not the worker's conversation.
+- **Workflows or chains** beyond what your own skills orchestrate.
+
+Packages such as [`pi-subagents`](https://www.npmjs.com/package/pi-subagents) and [`pi-side-agents`](https://www.npmjs.com/package/pi-side-agents) cover several of these.
 
 ## Install
 
@@ -45,9 +58,17 @@ pi install git:github.com/agmxyz/me-pi
 
 The repo moved from `0bmario/me-pi`. If you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first so Pi doesn't load me-pi twice.
 
-Restart Pi or run `/reload`, then check with `/delegate status`. Try it, no config needed: *"Have a scout find where this repo parses CLI flags, with path:line evidence."*
+Restart Pi or run `/reload`, then check with `/delegate status`. Try it: *"Have a scout find where this repo parses CLI flags, with path:line evidence."*
 
-Optional model pools in `~/.pi/agent/delegate.json` (without it, workers use your session's model):
+The package loads three extensions:
+
+| Extension | Does |
+| --- | --- |
+| `delegate` | the `delegate` tool and `/delegate` command |
+| `guard` | asks before risky bash such as force pushes, `git reset --hard`, recursive `rm`; blocks them in `implement` workers |
+| `Skill` | a tool that loads an already-discovered skill by name, for skills written as "load X with the `Skill` tool" |
+
+Optional model pools in `~/.pi/agent/delegate.json` (without it, workers use your session's model; `ME_PI_DELEGATE_CONFIG` points elsewhere):
 
 ```json
 {
@@ -90,7 +111,7 @@ Also: "Research how other CLIs handle config migrations, with web access", "Have
 | `/delegate cancel <id>` | cancel a background job |
 | `/guard on` / `/guard off` | toggle guard for this session |
 
-Background jobs end on `/reload`, a session switch, or Pi exit; `/new`, `/resume`, `/fork`, and `/clone` ask first while any run. Roles, limits, model pools and recovery: [docs/delegate.md](docs/delegate.md).
+`/new`, `/resume`, `/fork`, and `/clone` ask first while background jobs run. Roles, limits, model pools and recovery: [docs/delegate.md](docs/delegate.md).
 
 ## What it adds to your prompts
 
@@ -116,9 +137,9 @@ pi remove git:github.com/agmxyz/me-pi
 rm ~/.pi/agent/delegate.json   # if you created it
 ```
 
-## Author's full setup
+## My setup
 
-From a clone, `./install.sh` installs my personal rig machine-wide (global policy, skills, extras). You don't need it for the package. What it does and how to undo it: [docs/setup.md](docs/setup.md).
+The rest of this repo is my personal Pi setup, shared as a reference rather than a product: my global policy (`GLOBAL_AGENTS.md`), skills that run implementation and spec work through `delegate` (`skills/`), and `./install.sh`, which wires them in machine-wide with a few extras. It changes as my workflow does, and some skills expect skills from my own collection. You don't need any of it for the package; read and copy what's useful. What `install.sh` does and how to undo it: [docs/setup.md](docs/setup.md).
 
 ## Contributing
 
