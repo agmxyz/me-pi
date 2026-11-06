@@ -1,6 +1,6 @@
 # Use and recover delegate workers
 
-The `delegate` tool starts child `pi --mode json -p` workers. A worker sees the task you pass, not the main conversation, so include the relevant paths, context, and acceptance criteria. Ask Pi in ordinary language, for example: “Have a scout trace how this retry path works and return path-and-line evidence.” Read-only workers cannot run shell commands; the coordinating session must supply any needed command output or diff as a file path. Installation, package filtering, and the separate `guard` and `Skill` extensions are covered in the [README](../README.md).
+The `delegate` tool starts child `pi --mode json -p --no-session --no-mcp` workers, each in its own process group with role-specific tools and a deadline. On timeout it stops the worker's process group. A worker sees the task you pass, not the main conversation, so include the relevant paths, context, and acceptance criteria. Ask Pi in ordinary language, for example: “Have a scout trace how this retry path works and return path-and-line evidence.” Read-only workers cannot run shell commands; the coordinating session must supply any needed command output or diff as a file path. Installation, package filtering, and the separate `guard` and `Skill` extensions are covered in the [README](../README.md).
 
 ## Roles and tools
 

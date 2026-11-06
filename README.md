@@ -2,30 +2,20 @@
 
 [![check](https://github.com/agmxyz/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/agmxyz/me-pi/actions/workflows/check.yml)
 
-Hand lookups, reviews, research and scoped changes to a separate [Pi](https://github.com/earendil-works/pi) process and get back only the answer, so your main session's context stays small. Three fixed roles, hard limits, one writer whose commits are checked, no agent files.
+Keep file dumps, long searches and review noise out of your main [Pi](https://github.com/earendil-works/pi) session. `delegate` sends a scoped task to a separate process and brings back an answer instead of the worker's conversation.
 
-Workers see only the brief, run under hard time and cost limits, and are killed as a process group when they overrun. `implement` edits your real checkout on a feature branch, and its ✓ means the check you declared passed on exactly the commit it delivered.
+Three fixed roles need no agent files. Workers have time and cost limits; `implement` edits your real checkout on a feature branch, and its ✓ means your declared check passed on the delivered commit.
 
-This is the delegation part of my daily Pi setup, packaged so you can try it without the rest.
-
-```text
-you ─► main Pi session (decides, verifies)
-          │ delegate { role, task, check? }
-          ▼
-       pi --mode json -p --no-session --no-mcp   (own process group, role tools, deadline)
-          │
-          ▼
-       short answer   or   ✓ im1 fix/timeout a1b2c3d..e4f5a6b: 1 commit; check pass
-```
+This is the delegation part of my Pi setup, packaged so you can try it alone.
 
 ## Why you might like it
 
-- **Works with zero config.** One `delegate` tool, one `/delegate` command, three built-in roles. No agent files to write.
-- **Your context stays yours.** A 40-file search comes back as a few lines with `path:line` evidence, not 40 files in your session.
+- **Less context to sift through.** Instead of reading file dumps in the main session, ask a `scout` to search and return a few lines with `path:line` evidence.
+- **Fixed roles, zero config.** One `delegate` tool, one `/delegate` command, three built-in roles and no agent files to write. The trade-off: you can't define your own roles.
 - **Follows your workflow.** Workers load your own `AGENTS.md` and skills. Add `(coordinator only)` to a `## ` heading and workers skip that section.
 - **A ✓ you can lean on.** `implement` takes a per-repo lock, needs a clean feature branch, runs your check, and commits. A pass counts only for the exact content it ran on; any later edit marks it stale. Leftover work is saved as a visible `WIP` commit.
-- **Bounded by default.** Hard time limits (5 / 15 / 45 min), a $5 per-run cap on Pi's estimated cost, at most four workers running at once.
-- **No blind retries.** Provider hiccups are retried on the same model only when the attempt did nothing but read; anything with unknown side effects is reported, not replayed. me-pi never switches models on its own.
+- **Limits by default.** Hard time limits (5 / 15 / 45 min), a $5 per-run cap on Pi's estimated cost, at most four workers running at once. Cost is checked after each reply, so the estimate can exceed $5 before the run stops.
+- **No blind retries.** Eligible infrastructure failures are retried on the same model only after a fully accounted-for, read-only attempt; unknown side effects aren't replayed. me-pi never switches models on its own.
 - **Model pools.** A cheap model for scouts, a stronger one for every other worker, in one JSON file.
 
 | Role | Can | Answers with |
@@ -70,11 +60,15 @@ The package loads three extensions:
 
 ## Use
 
-Ask Pi in plain language. A typical change:
+Ask Pi in plain language. For example, instead of filling the main session with search results and file contents, a change might go like this:
 
-1. "Scout where session timeouts are configured." → a `path:line` answer, such as: *`src/session.ts:118` reads `SESSION_TIMEOUT`; no default is set (`src/config.ts:40-52`).*
-2. `git switch -c fix/timeout`, then "Implement a 30 s default timeout; check with `npm test`." → `✓ im1 fix/timeout …: 1 commit; check pass`.
-3. "Review the diff of `main...fix/timeout` for correctness." → a `general` worker's findings. Fix, re-review, open the PR yourself.
+1. "Scout where session timeouts are configured." → *`src/session.ts:118` reads `SESSION_TIMEOUT`; no default is set (`src/config.ts:40-52`).*
+2. `git switch -c fix/timeout`, then "Implement a 30 s default timeout; check with `npm test`." Example handback:
+   ```text
+   ✓ im1 fix/timeout a1b2c3d..e4f5a6b: 1 commit, 1 file +3 -1; check ✓ `npm test` [model @medium $0.1234 10s]
+   Added a default timeout. Details: /tmp/me-pi-delegate-123/im1.md
+   ```
+3. "Review the diff of `main...fix/timeout` for correctness." → a `general` worker's findings, rather than its review process. Fix, re-review, open the PR yourself.
 
 Also: "Research how other CLIs handle config migrations, with web access", "Have a worker challenge this plan", and "…in the background" for long jobs.
 
