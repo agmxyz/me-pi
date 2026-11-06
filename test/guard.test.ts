@@ -108,6 +108,23 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 		["rm --recursive src", onFeature, "recursive rm"],
 		['sh -c "rm -rf x"', onFeature, "recursive rm"],
 		["find . -name x | xargs rm -rf", onFeature, "recursive rm"],
+		// Keywords and wrappers before `rm` or `git` still put it at a command position.
+		["if rm -rf src; then :; fi", onFeature, "recursive rm"],
+		["while rm -rf src; do :; done", onFeature, "recursive rm"],
+		["! rm -rf src", onFeature, "recursive rm"],
+		["timeout 5 rm -rf src", onFeature, "recursive rm"],
+		["timeout -s KILL 5s rm -rf src", onFeature, "recursive rm"],
+		["nice -n 10 rm -rf src", onFeature, "recursive rm"],
+		["doas rm -rf src", onFeature, "recursive rm"],
+		["watch 'rm -rf ~'", onFeature, "recursive rm"],
+		['trap "rm -rf /" EXIT', onFeature, "recursive rm"],
+		["trap 'rm -rf src' EXIT", onFeature, "recursive rm"],
+		['ssh host "rm -rf ~"', onFeature, "recursive rm"],
+		['rm -rf dist" "x /etc', onFeature, "recursive rm"],
+		[`trap 'rm -rf "$d" /etc' EXIT`, onFeature, "recursive rm"],
+		["ssh -p 22 -i key user@host 'rm -rf ~'", onFeature, "recursive rm"],
+		["if git push origin main; then :; fi", onFeature, "push to main/master"],
+		["timeout 60 git push origin main", onFeature, "push to main/master"],
 	]) {
 		assert.equal(classify(command, branch), label, command);
 	}
@@ -157,6 +174,11 @@ test("allows feature pushes, PRs, and routine commands", () => {
 		["git switch feature/y", onMain],
 		["git checkout main", onFeature],
 		["rmdir empty-dir", onMain],
+		["if [ -d dist ]; then rm -rf dist; fi", onMain],
+		["timeout 5 rm -rf /tmp/me-pi-x", onMain],
+		["echo done!", onMain],
+		["ssh host ls", onMain],
+		["trap 'rm -f lock' EXIT", onMain],
 		[`git commit -m "$(cat <<'EOF'\nfix: git push origin main and rm -rf src\nEOF\n)"`, onFeature],
 	]) {
 		assert.equal(classify(command, branch), undefined, `expected allowed: ${command}`);
@@ -186,6 +208,7 @@ test("recursive rm of $TMPDIR/… passes only while TMPDIR names a temp director
 			`env -i bash -c 'rm -rf "$TMPDIR/x"'`,
 			'sudo rm -rf "$TMPDIR/x"',
 			'pkexec env rm -rf "$TMPDIR/x"',
+			'pkexec rm -rf "$TMPDIR/x"',
 			// TMPDIR or word splitting changed without writing `TMPDIR=`.
 			`n=TMP; export \${n}DIR=/; rm -rf "$TMPDIR/x"`,
 			'source ./env.sh && rm -rf "$TMPDIR/x"',

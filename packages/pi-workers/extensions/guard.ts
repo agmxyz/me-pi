@@ -24,10 +24,12 @@ export interface GuardStopEvent {
 // Shell options accepted by installer matching and shell `-c` command-position recognition.
 const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 // A command position: start of line/command, after `;`, `&`, `|`, `(`, `{`, `` ` ``, `$(`, a shell keyword
-// (`then`, `do`, `else`), a wrapper with its options (`env -i`, `xargs -0`, `sudo`, `nohup`, `time`, `exec`,
-// `rtk [proxy]`, `command`), `eval`, `find -exec`, or a shell's `-c` (`bash -lc`, `zsh -c`), plus optional
+// (`then`, `do`, `else`, `if`, `elif`, `while`, `until`, `!`), a wrapper with its options (`env -i`, `xargs -0`,
+// `sudo`, `nohup`, `time`, `exec`, `rtk [proxy]`, `command`), a wrapper with options, numbers, or a quote
+// (`timeout 5`, `nice -n 10`, `watch '…'`, `doas`, `pkexec`), `trap '…'`, `ssh [opts] host '…'`, `eval`,
+// `find -exec`, or a shell's `-c` (`bash -lc`, `zsh -c`), plus optional
 // `NAME=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as `grep 'git push'` from matching.
-const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
+const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else|if|elif|while|until)\s+|(?:^|\s)!\s+|\b(?:timeout|nice|ionice|watch|caffeinate|stdbuf|chrt|taskset|chronic|doas|pkexec|runuser)(?:\s+(?:-[sknp]\s+\w+|-\S+|\d\S*))*\s+["']?|\btrap\s+["']|\bssh(?:\s+-[46AaCfGgKkMNnqsTtVvXxYy]+|\s+-\w\s*\S+)*\s+[^-\s]\S*\s+["']?|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
 // `git` global options (`-C dir`, `-c k=v`, `--git-dir=...`) before the subcommand.
 const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
 // Rest of the same command (stops at a command separator).
@@ -237,6 +239,16 @@ function disposableTarget(
 	return DISPOSABLE.test(path) && !hasExpansion(path.replace(/^\$\{TMPDIR:\?\}/, ""));
 }
 
+// Arguments up to the quote that closes a quoted command (`trap 'rm -rf "$d"' EXIT`), so `EXIT` is not a target. Only
+// an unbalanced quote closes one: balanced quotes (`dist" "x /etc`) stay part of `rm`'s own words.
+function withinQuote(args: string): string {
+	for (const quote of ["'", '"']) {
+		const unescaped = [...args.matchAll(new RegExp(`(?<!\\\\)${quote}`, "g"))];
+		if (unescaped.length % 2 === 1) return args.slice(0, unescaped[unescaped.length - 1].index);
+	}
+	return args;
+}
+
 // A parameter expansion or command substitution; `$$` (the shell's pid) is never empty and has no `/`.
 function hasExpansion(path: string): boolean {
 	return /[$\x60]/.test(path.replace(/\$\$/g, ""));
@@ -266,7 +278,7 @@ export function classify(
 	const fresh = freshTempDir(command);
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
 		// `wordsOf`, but keeping backticks inside a word (`/tmp/\`cmd\``), which may hide an expansion.
-		const raw = args
+		const raw = withinQuote(args)
 			.split(/\s+/)
 			.map((w) => (w.split("\x60").length === 2 ? w.replace(/^\x60|\x60$/, "") : w))
 			.filter((w) => w.replace(/["'()\x60]/g, ""));
