@@ -211,25 +211,29 @@ const REDIRECT = /^(?:\d*|&)[<>]/;
 // and `>file` carry their own operand, so the word after them is a target.
 const REDIRECT_OPERATOR = /^(?:\d*|&)[<>]+[&|]?$/;
 
-// `rm` targets: arguments that are not options, `find -exec` placeholders, or redirects and their files. A word with a
-// glued redirect (`/tmp/&>log`, `dist>log`) yields both the part before it (`/tmp/`, what rm gets) and the whole word,
-// so the redirect can neither hide a temp root nor make a word disposable; the redirect never takes the next word as
-// its file. Undefined when a word holds `<`, `>`, `&`, or `|` in arguments with quotes or escapes: without a tokenizer,
-// a quoted character can't be told from a redirect (`"${TMPDIR:?}/"&>log`).
-function rmTargets(args: string): string[] | undefined {
+// Reads `rm`'s arguments once: whether it is recursive, and its targets (not options, `find -exec` placeholders, or
+// redirects and their files). A word with a glued redirect (`/tmp/&>log`, `dist>log`) yields both the part before it
+// (`/tmp/`, what rm gets) and the whole word, so the redirect can neither hide a temp root nor make a word disposable;
+// the redirect never takes the next word as its file. An option with a glued redirect (`-rf&>log`) counts as recursive
+// with no trusted targets, so it always asks: main asked for `rm -rf&>/dev/null dist`, and this keeps that.
+// Targets are undefined when a word holds `<`, `>`, `&`, or `|` in arguments with quotes or escapes: without a
+// tokenizer, a quoted character can't be told from a redirect (`"${TMPDIR:?}/"&>log`).
+function rmArgs(args: string): { recursive: boolean; targets: string[] | undefined } {
 	const quoted = /["'\\]/.test(args);
 	const raw = args.split(/\s+/).filter(Boolean);
+	if (raw.some((w) => /^["'\\]*-/.test(w) && /[<>&|]/.test(w))) return { recursive: true, targets: undefined };
+	const recursive = hasShort(wordsOf(args), "[rR]", "--recursive");
 	const targets: string[] = [];
 	for (const [i, w] of raw.entries()) {
 		if (REDIRECT.test(w) || (i > 0 && REDIRECT_OPERATOR.test(raw[i - 1]))) continue;
 		const cut = w.search(/[<>&|]/);
-		if (cut >= 0 && quoted) return undefined;
+		if (cut >= 0 && quoted) return { recursive, targets: undefined };
 		for (const part of cut > 0 ? [w.slice(0, cut), w] : [w]) {
 			const word = part.replace(/["'()\x60]/g, "");
 			if (word && !word.startsWith("-") && word !== "{}" && word !== "\\") targets.push(word);
 		}
 	}
-	return targets;
+	return { recursive, targets };
 }
 
 export function classify(
@@ -249,9 +253,8 @@ export function classify(
 		if (risk) return risk;
 	}
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
-		const words = wordsOf(args);
-		if (!hasShort(words, "[rR]", "--recursive")) continue;
-		const targets = rmTargets(args);
+		const { recursive, targets } = rmArgs(args);
+		if (!recursive) continue;
 		const disposable =
 			targets !== undefined &&
 			targets.length > 0 &&

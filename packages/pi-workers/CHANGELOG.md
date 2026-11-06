@@ -5,7 +5,7 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 ## [Unreleased]
 
 - `guard` asks again before a recursive `rm` of `"${TMPDIR:?}/name"` when the command could rebind `TMPDIR` first (`TMPDIR=/ rm …`, `export TMPDIR=/;`, `env`, `sudo`, `unset`, `source`, quote-split names, and similar). `${TMPDIR:?}` only catches an unset `TMPDIR`. Plain cleanups such as `rm -rf "${TMPDIR:?}/x"` still pass.
-- `guard` now checks recursive `rm` targets that come after a redirect containing `&` or `|` (`rm -rf dist 2>&1 /Users`, `&>`, `>|`), and targets glued to a redirect (`rm -rf /tmp/&>/dev/null` passes `/tmp/` to `rm`). Before, it allowed both.
+- `guard` now checks recursive `rm` targets that come after a redirect containing `&` or `|` (`rm -rf dist 2>&1 /Users`, `&>`, `>|`), targets glued to a redirect (`rm -rf /tmp/&>/dev/null` passes `/tmp/` to `rm`), and options glued to a redirect (`rm -rf>/dev/null /Users` is recursive). Before, it allowed these.
 
 ## [0.1.2] - 2026-11-06
 

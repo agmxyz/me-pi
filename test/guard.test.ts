@@ -89,6 +89,12 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 			"rm -rf /var/folders/ab/cd/T/&>/dev/null",
 			"rm -rf /tmp/>/dev/null",
 			"rm -rf /tmp/>&2",
+			// A redirect glued to the recursive flag: rm still gets `-rf`.
+			"rm -rf&>/dev/null /Users",
+			"rm -f --recursive&>/dev/null /Users",
+			"rm -R&>x /Users",
+			"rm -rf>/dev/null /Users",
+			"rm -r>log /Users",
 		].map((command) => [command, onFeature, "recursive rm"]),
 		// `${TMPDIR:?}` only catches an unset TMPDIR, not one the command rebinds first (#77).
 		...[
