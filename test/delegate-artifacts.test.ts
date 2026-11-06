@@ -9,7 +9,7 @@ const {
 	FAILED_TOOL_ARTIFACT_REDACTION,
 	FailedToolArtifactCollector,
 	redactSensitiveText,
-} = await import("../extensions/delegate-artifacts.ts");
+} = await import("../packages/pi-workers/extensions/delegate-artifacts.ts");
 
 const start = "2026-01-01T00:00:00.000Z";
 const end = "2026-01-01T00:00:01.250Z";

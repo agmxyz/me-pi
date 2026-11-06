@@ -15,5 +15,5 @@
 		"types": ["node"],
 		"noEmit": true
 	},
-	"include": ["extensions/*.ts", "evals/*.ts"]
+	"include": ["extensions/*.ts", "packages/pi-workers/extensions/*.ts", "evals/*.ts"]
 }

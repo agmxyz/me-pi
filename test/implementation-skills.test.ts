@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const singleTask = readFileSync(join(root, "skills/implement-me-pi/SKILL.md"), "utf8");
 const specGraph = readFileSync(join(root, "skills/implement-spec-me-pi/SKILL.md"), "utf8");
-const delegateGuide = readFileSync(join(root, "docs/delegate.md"), "utf8");
+const delegateGuide = readFileSync(join(root, "packages/pi-workers/docs/delegate.md"), "utf8");
 const readme = readFileSync(join(root, "README.md"), "utf8");
 const setupGuide = readFileSync(join(root, "docs/setup.md"), "utf8");
 const globalAgents = readFileSync(join(root, "GLOBAL_AGENTS.md"), "utf8");
@@ -157,7 +157,7 @@ test("no internal recovery jargon or dated activation gates in guides, skills, o
 	for (const [name, content] of [
 		["README.md", readme],
 		["docs/setup.md", setupGuide],
-		["docs/delegate.md", delegateGuide],
+		["packages/pi-workers/docs/delegate.md", delegateGuide],
 		["skills/implement-me-pi/SKILL.md", singleTask],
 		["skills/implement-spec-me-pi/SKILL.md", specGraph],
 		["GLOBAL_AGENTS.md", globalAgents],

@@ -44,7 +44,7 @@
 			"cwd": "repo",
 			"turns": [
 				{
-					"prompt": "Ask claude-opus-5-5 and gpt-6.1-sol, and have them cross-check each other: should resolveRuns in extensions/delegate-config.ts be folded into resolveRun?"
+					"prompt": "Ask claude-opus-5-5 and gpt-6.1-sol, and have them cross-check each other: should resolveRuns in packages/pi-workers/extensions/delegate-config.ts be folded into resolveRun?"
 				},
 				{ "afterSeconds": 5, "prompt": "Use anthropic." }
 			],
@@ -55,7 +55,7 @@
 			"cwd": "repo",
 			"turns": [
 				{
-					"prompt": "In the background, have a worker audit docs/delegate.md against the code for statements that no longer match. Meanwhile, tell me what the Limits section of that doc covers."
+					"prompt": "In the background, have a worker audit packages/pi-workers/docs/delegate.md against the code for statements that no longer match. Meanwhile, tell me what the Limits section of that doc covers."
 				},
 				{
 					"afterSeconds": 600,

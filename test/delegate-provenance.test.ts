@@ -12,7 +12,7 @@ const {
 	failedWithoutEffect,
 	failureDisposition,
 	toolResultText,
-} = await import("../extensions/delegate-provenance.ts");
+} = await import("../packages/pi-workers/extensions/delegate-provenance.ts");
 
 const text = (...parts: string[]) => ({ content: parts.map((t) => ({ type: "text", text: t })) });
 

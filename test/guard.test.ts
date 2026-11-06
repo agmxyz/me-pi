@@ -7,7 +7,7 @@ const {
 	workerRisk,
 	gitTreeWrite,
 	PROTECTED_BRANCHES,
-} = await import("../extensions/guard.ts");
+} = await import("../packages/pi-workers/extensions/guard.ts");
 
 const onMain = () => "main";
 const onFeature = () => "feature/x";

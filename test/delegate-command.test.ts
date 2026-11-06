@@ -135,7 +135,7 @@ test("/delegate status: the set with availability, missing tools, running and re
 	assert.ok(before.includes(`Scout pool: 1. ${HAIKU} (low) ✓; 2. ${OPUS} (off) ✗ unknown model id`));
 	assert.ok(before.includes(`Worker pool: 1. ${OPUS} (max) ✗ unknown model id; 2. ${HAIKU} (low) ✓`));
 	assert.equal(before.includes("Review pool:"), false);
-	assert.match(before, /\nTools: missing Skill \(this repo's extensions\/skill\.ts\), web_search \(pi-web-access\)/);
+	assert.match(before, /\nTools: missing Skill \(pi-workers' extensions\/skill\.ts\), web_search \(pi-web-access\)/);
 	assert.match(before, /\nRunning: none\nLast calls: none$/);
 
 	await run(main.tool, { task: "x", runs: [{ model: HAIKU }] });

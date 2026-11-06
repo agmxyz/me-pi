@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { startWorkerProcess, type WorkerProcessOptions } from "../extensions/delegate-process.ts";
+import { startWorkerProcess, type WorkerProcessOptions } from "../packages/pi-workers/extensions/delegate-process.ts";
 
 interface Run {
 	records: Record<string, any>[];

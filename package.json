@@ -1,17 +1,14 @@
 {
   "name": "me-pi",
   "version": "0.1.0",
-  "description": "Bounded subagents for the Pi coding agent: worker processes with hard limits, fixed roles, and checked commits",
+  "private": true,
+  "description": "My Pi setup: global policy, skills and the pi-workers extensions",
   "license": "MIT",
   "repository": "https://github.com/agmxyz/me-pi",
   "keywords": [
     "pi-package"
   ],
   "type": "module",
-  "files": [
-    "extensions/*.ts",
-    "CHANGELOG.md"
-  ],
   "scripts": {
     "check": "npm run lint && npm run typecheck && npm test && ./test/install.test.sh && git --no-pager diff --check HEAD",
     "lint": "biome check --error-on-warnings .",
@@ -25,7 +22,8 @@
       "extensions/guard.ts",
       "extensions/skill.ts"
     ],
-    "skills": []
+    "skills": [],
+    "changelogPath": "packages/pi-workers/CHANGELOG.md"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

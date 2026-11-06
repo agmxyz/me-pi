@@ -1,0 +1,48 @@
+{
+  "name": "@agmxyz/pi-workers",
+  "version": "0.1.0",
+  "description": "Delegate searches, reviews and checked changes to separate Pi worker processes",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agmxyz/me-pi.git",
+    "directory": "packages/pi-workers"
+  },
+  "homepage": "https://github.com/agmxyz/me-pi/tree/main/packages/pi-workers#readme",
+  "keywords": [
+    "pi-package",
+    "delegate",
+    "subagents"
+  ],
+  "type": "module",
+  "files": [
+    "extensions/*.ts",
+    "docs/delegate.md",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/delegate.ts",
+      "extensions/guard.ts",
+      "extensions/skill.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

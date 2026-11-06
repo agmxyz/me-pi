@@ -29,7 +29,7 @@ const {
 	settingsResources,
 	settingsTripwire,
 	snapshotGit,
-} = await import("../extensions/delegate-implement.ts");
+} = await import("../packages/pi-workers/extensions/delegate-implement.ts");
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-implement-test-"));
 process.on("exit", () => rmSync(TEST_HOME, { recursive: true, force: true }));
@@ -887,7 +887,7 @@ test("isCheckRun: a cd dir with shell expansion, or a missing dir under &&, does
 
 test("implement ids increment across a reload", async () => {
 	const a = nextImplementId();
-	const reloaded = await import(`../extensions/delegate-implement.ts?reload=${Date.now()}`);
+	const reloaded = await import(`../packages/pi-workers/extensions/delegate-implement.ts?reload=${Date.now()}`);
 	const b = reloaded.nextImplementId();
 	assert.equal(Number(b.slice(2)), Number(a.slice(2)) + 1);
 	assert.match(a, /^im\d+$/);
