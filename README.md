@@ -18,6 +18,7 @@ Restart Pi or run `/reload`, then ask in plain language:
 
 - "Have a scout find where this project handles configuration, with `path:line` evidence."
 - "Have a worker review this diff for correctness and report actionable findings."
+- "Have two `general` workers—Opus 5.5 at medium and Sol 6.1 at high—challenge this plan, then consider each other's findings in a rebuttal round." (The models must be available in Pi.)
 - On a clean feature branch (`git switch -c fix/example`): "Implement this change and check it with `npm test`."
 
 For example, a successful implementation handback can look like this (illustrative):
@@ -52,7 +53,7 @@ The package also includes `guard`, which asks before risky bash and blocks match
 
 ## Where it's weaker
 
-- **Custom roles.** The three roles are built in; you can't define your own agent role or toolset.
+- **Custom worker profiles.** You can brief `general` for different jobs and choose models per call, but you can't define a new persistent role with its own toolset and defaults.
 - **Parallel writers.** Today one `implement` worker writes per repo, in your checkout. Worktree-based writers aren't supported yet.
 - **Long-lived jobs.** Background jobs end on `/reload`, a session switch, or Pi exit, and a worker's session can't be resumed.
 - **A live view or built-in chains.** You see progress and the final answer, not the worker's conversation; workflows beyond that depend on your own skills.
