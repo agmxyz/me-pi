@@ -53,12 +53,20 @@ const DISPOSABLE = new RegExp(
 const TEMP_DIR = /^(?:(?:\/private)?\/tmp|\/var\/folders\/[^/\s]+\/[^/\s]+\/T)(?:\/[^\s]*)?$/;
 // `$TMPDIR`, `${TMPDIR}`, and `${TMPDIR:?}`: the only mentions that leave the variable as Pi's bash inherits it.
 const TMPDIR_EXPANSION = /\$\{TMPDIR(?::\?)?\}|\$TMPDIR(?!\w)/g;
-// Commands that may run `rm` with another environment, where TMPDIR may be unset or different: `sudo`, `su`,
-// `doas`, `ssh`, `env -i`/`env -`, and `exec -c`.
-const OTHER_ENV =
-	/\b(?:sudo|su|doas|ssh)\b|\benv\b[^;&|\n]*\s(?:-\w*i\w*|-|--ignore-environment)(?=\s|$)|\bexec\s+-\w*c/;
-// A nested shell (`sh -c`, `bash -lc`): it does not see unexported variables, so `$V/x` there is `/x`.
-const NESTED_SHELL = new RegExp(String.raw`\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c|\b(?:sudo|su|doas|ssh)\b`);
+// Wrappers that may run `rm` as another user, host, or container, with another environment.
+const ELSEWHERE = String.raw`\b(?:sudo|su|doas|pkexec|runuser|ssh|systemd-run|nix-shell|docker|podman|kubectl)\b`;
+// Commands that may run `rm` with another TMPDIR: those wrappers, `env -i`/`env -`, and `exec -c`.
+const OTHER_ENV = new RegExp(
+	String.raw`${ELSEWHERE}|\benv\b[^;&|\n]*\s(?:-\w*i\w*|-|--ignore-environment)(?=\s|$)|\bexec\s+-\w*c`,
+);
+// Ways to set a variable or word splitting without writing `NAME=` (`export ${n}DIR=/`, `read`, `printf -v`), or to
+// run code the guard cannot see (`eval`, `source`, `. file`).
+const REBINDS =
+	/\b(?:export|declare|typeset|local|readonly|read|mapfile|readarray|getopts|eval|source|IFS)\b|\bprintf\s+-v|(?:^|[;&|(\n]\s*)\.\s/;
+// A nested shell (`sh -c`, `bash -lc`) or a wrapper: it does not see unexported variables, so `$V/x` there is `/x`.
+const NESTED_SHELL = new RegExp(String.raw`\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c|${ELSEWHERE}`);
+// A word the shell may expand into `..` without writing it (`\.\.`, `{..,x}`, `.[.]`, `.?`), so the `..` check misses it.
+const HIDDEN_DOTS = /[\\{[]|(?:^|\/)\.[*?]/;
 // `V=$(mktemp -d …)` opening a command, then `&&`, `;`, or a newline: `$V` names a fresh temp directory.
 const FRESH_TEMP_DIR = /^\s*(\w+)=\$\(mktemp -d(?:\s+-t\s+[\w.-]+)?\s*\)\s*(&&|;|\n)/;
 // A separator after which a command runs even when `mktemp` failed and left the variable empty.
@@ -188,12 +196,13 @@ function inFreshTempRepo(command: string): boolean {
  */
 function freshTempDir(command: string): { name: string; paths: boolean } | undefined {
 	const fresh = FRESH_TEMP_DIR.exec(command);
-	if (!fresh || fresh[1] === "TMPDIR") return undefined;
+	// Uppercase names and `_` may be the shell's own (`OLDPWD`, `PWD`, `REPLY`, `$_`), which `cd` or `read` reset.
+	if (!fresh || !/[a-z]/.test(fresh[1])) return undefined;
 	const name = fresh[1];
 	const rest = command.slice(fresh[0].length);
 	// Any other mention could reassign it; one inside a path (`/tmp/V`) cannot.
 	const others = rest.replace(new RegExp(`\\$\\{${name}(?::\\?)?\\}|\\$${name}(?!\\w)`, "g"), "");
-	if (new RegExp(`(?<![\\w/.-])${name}(?![\\w/.-])`).test(others)) return undefined;
+	if (new RegExp(`(?<![/.-])\\b${name}(?![\\w/.-])`).test(others) || REBINDS.test(rest)) return undefined;
 	return { name, paths: fresh[2] === "&&" && !RUNS_ON_FAILURE.test(rest) && !NESTED_SHELL.test(rest) };
 }
 
@@ -210,7 +219,7 @@ function disposableTarget(
 	fresh: { name: string; paths: boolean } | undefined,
 ): boolean {
 	const target = word.replace(/["'()]/g, "");
-	if (/(?:^|\/)\.\.(?:\/|$)/.test(target)) return false;
+	if (/(?:^|\/)\.\.(?:\/|$)/.test(target) || HIDDEN_DOTS.test(target.replace(/^\$\{\w+(?::\?)?\}/, ""))) return false;
 	const variable = /^\$(?:\{(\w+)(:\?)?\}|(\w+))(.*)$/.exec(target);
 	let path = target;
 	if (variable) {
@@ -252,6 +261,7 @@ export function classify(
 		TEMP_DIR.test(tmpdir) &&
 		!/(?:^|\/)\.\.(?:\/|$)/.test(tmpdir) &&
 		!/\bTMPDIR\b/.test(command.replace(TMPDIR_EXPANSION, "")) &&
+		!REBINDS.test(command) &&
 		!OTHER_ENV.test(command);
 	const fresh = freshTempDir(command);
 	for (const [, args] of command.matchAll(RM_COMMAND)) {

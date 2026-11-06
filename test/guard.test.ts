@@ -65,6 +65,8 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 		[`rm -rf "\${TMPDIR:?}/$n"`, onFeature, "recursive rm"],
 		["rm -rf /tmp/`echo x`", onFeature, "recursive rm"],
 		["rm -rf /tmp/x/$y", onFeature, "recursive rm"],
+		["rm -rf /tmp/x/{..,y}/z", onFeature, "recursive rm"],
+		["rm -rf dist/\\.\\./src", onFeature, "recursive rm"],
 		["rm -rf /tmp/a*", onFeature, "recursive rm"],
 		["rm -rf /tmp/x/../../etc", onFeature, "recursive rm"],
 		["rm -rf /tmpx", onFeature, "recursive rm"],
@@ -183,6 +185,16 @@ test("recursive rm of $TMPDIR/… passes only while TMPDIR names a temp director
 			'export TMPDIR=/; rm -rf "$TMPDIR/x"',
 			`env -i bash -c 'rm -rf "$TMPDIR/x"'`,
 			'sudo rm -rf "$TMPDIR/x"',
+			'pkexec env rm -rf "$TMPDIR/x"',
+			// TMPDIR or word splitting changed without writing `TMPDIR=`.
+			`n=TMP; export \${n}DIR=/; rm -rf "$TMPDIR/x"`,
+			'source ./env.sh && rm -rf "$TMPDIR/x"',
+			"IFS=/; rm -rf $TMPDIR/x",
+			// Words the shell may expand into `..`.
+			'rm -rf "$TMPDIR"/x/\\.\\./\\.\\./y',
+			'rm -rf "$TMPDIR"/x/{..,y}/z',
+			'rm -rf "$TMPDIR"/x/.[.]/y',
+			'rm -rf "$TMPDIR"/x/.?/y',
 		])
 			assert.equal(classify(command, onMain), "recursive rm", `TMPDIR=${tmpdir}: ${command}`);
 	}
@@ -227,6 +239,12 @@ test("recursive rm of a mktemp -d directory the command creates passes; reassign
 		'd=$(mktemp -d) && rm -rf "$d/$y"',
 		'd=$(mktemp -d ./t.XXXX) && rm -rf "$d"',
 		'x=1; d=$(mktemp -d) && rm -rf "$d"',
+		// The shell resets its own variables: `cd` sets OLDPWD and PWD, every command sets `_`.
+		'OLDPWD=$(mktemp -d) && cd src && rm -rf "$OLDPWD"',
+		'PWD=$(mktemp -d) && cd ~/proj && rm -rf "$PWD"',
+		'_=$(mktemp -d) && ls / && rm -rf "$_"/Users',
+		'd=$(mktemp -d) && printf -vd / && rm -rf "$d"/etc',
+		'd=$(mktemp -d) && rm -rf "$d"/.?/.?/etc',
 	])
 		assert.equal(classify(command, onMain), "recursive rm", command);
 });
