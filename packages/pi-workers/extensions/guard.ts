@@ -133,10 +133,31 @@ function gitRisk(
 // A heredoc read by `cat` or `git` (`-m "$(cat <<'EOF'`, `commit -F - <<EOF`): its body is text. The opener line is
 // kept; a heredoc fed to a shell (`bash <<EOF`) is still scanned.
 const TEXT_HEREDOC = /((?:\bcat|\bgit\s[^;&|\n]*?)\s*<<-?\s*(['"]?)(\w+)\2[^\n]*)\n[\s\S]*?\n\t*\3(?=\n|$)/g;
+// A command that opens with a program heredoc: `python3 - <<'EOF'` or `node - <<'EOF'`, optionally after `cd <dir> &&`,
+// alone on the first line. Its body is a program guard doesn't police (`python3 -c '…'` isn't scanned either). Being
+// the first line, it sits in no quote or other heredoc; being the whole line, its output goes to no pipe, file, or
+// substitution. Anything else (a later opener, `cat > f`, a second `<<`, a `\` continuation) keeps the body scanned.
+const SCRIPT_OPENER =
+	/^\s*(?:cd\s+[\w./~-]+\s*&&\s*)?(?:[\w.~-]*\/)*(?:python3?|node)(?:\s+-)?\s*<<(-?)\s*(['"])(\w+)\2\s*$/;
 
-// Empties quoted commit messages, unless they run a command, and text heredoc bodies.
+/**
+ * Drops the body of a `SCRIPT_OPENER` heredoc, ending it where bash does: at the first line equal to the word (with
+ * `<<-`, after leading tabs). Fails closed, returning the command unchanged, on a carriage return or an unterminated
+ * body. Lines after the body stay and are scanned as usual.
+ */
+function withoutScriptHeredoc(command: string): string {
+	if (command.includes("\r")) return command;
+	const lines = command.split("\n");
+	const opener = SCRIPT_OPENER.exec(lines[0]);
+	if (!opener) return command;
+	const [, dash, , word] = opener;
+	const end = lines.findIndex((line, i) => i > 0 && (dash ? line.replace(/^\t+/, "") : line) === word);
+	return end < 0 ? command : [lines[0], ...lines.slice(end + 1)].join("\n");
+}
+
+// Empties quoted commit messages, unless they run a command, text heredoc bodies, and an opening script heredoc body.
 function withoutMessages(command: string): string {
-	return command
+	return withoutScriptHeredoc(command)
 		.replace(TEXT_HEREDOC, "$1")
 		.replace(MESSAGE_ARG, (arg, flag: string, message: string) =>
 			message.startsWith('"') && /\$\(|\x60/.test(message) ? arg : `${flag}""`,
