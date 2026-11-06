@@ -23,6 +23,9 @@ export interface GuardStopEvent {
 	effect: "denied";
 }
 
+// A wrapper's options and numbers before its command (`-n -5`, `--signal KILL 5`, `-u me --`): an option may take
+// one value that is neither an option nor a number, so each word has one reading and backtracking stays linear.
+const WRAPPER_ARGS = String.raw`(?:\s+(?:-\S*(?:\s+(?![-\d])[^\s;&|"'\x60$()]+)?|\d\S*))*`;
 // Shell options accepted by installer matching and shell `-c` command-position recognition.
 const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 // A command position: start of line/command, after `;`, `&`, `|`, `(`, `{`, `` ` ``, `$(`, a shell keyword
@@ -31,7 +34,7 @@ const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 // `nice -n 10`, `watch '…'`, `doas`, `pkexec`), `eval`, `find -exec`, or a shell's `-c` (`bash -lc`, `zsh -c`), plus
 // optional `NAME=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as `grep 'git push'` from
 // matching.
-const LOCAL_POSITION = String.raw`^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|(?:^|[;&|(){\x60\n]|\b(?:then|do|else)\s)\s*(?:(?:if|elif|while|until|!)\s+)+|\b(?:timeout|nice|ionice|watch|caffeinate|stdbuf|chrt|taskset|chronic|doas|pkexec|runuser)(?:\s+(?:-[sknp]\s+\w+|-(?![sknp](?:\s|$))\S+|\d\S*))*\s+["']?|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?`;
+const LOCAL_POSITION = String.raw`^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|(?:^|[;&|(){\x60\n]|\b(?:then|do|else)\s)\s*(?:(?:if|elif|while|until|!)\s+)+|\b(?:timeout|nice|ionice|watch|caffeinate|stdbuf|chrt|taskset|chronic|doas|pkexec|runuser)${WRAPPER_ARGS}\s+["']?|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?`;
 // Commands that run elsewhere or later: `trap '…'` and `ssh [opts] host '…'`. They count for what they would
 // destroy, not for the session's own directory or checkout (`CD`, `gitTreeWrite`).
 const DEFERRED_POSITION = String.raw`(?:^|[;&|(){\x60\n]|\b(?:then|do|else)\s)\s*trap\s+["']|\bssh(?:\s+-[46AaCfGgKkMNnqsTtVvXxYy]+|\s+-[BbcDEeFIiJLlmOoPpQRSWw](?:\s+|(?=[^\s-]))[^\s-]\S*)*\s+[^-\s]\S*\s+["']?`;
@@ -44,9 +47,10 @@ const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git
 const ARGS = String.raw`[^;&|\n]*`;
 
 // Lookaheads, so a command nested in another one's arguments (`git log "$(git push ...)"`) is found too.
-const GIT_COMMAND = new RegExp(`(?=${AT_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
-const LOCAL_GIT_COMMAND = new RegExp(`(?=${AT_LOCAL_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
-// The command position is captured: a quote opening it (`trap '`, `sh -c "`) closes `rm`'s arguments.
+const gitCommand = (at: string) => new RegExp(`(?=${at}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
+const GIT_COMMAND = gitCommand(AT_COMMAND);
+const LOCAL_GIT_COMMAND = gitCommand(AT_LOCAL_COMMAND);
+// The command position is captured, so a `trap '…' SIGNAL…` body can drop its signal names (see `trapBody`).
 const RM_COMMAND = new RegExp(`(?=(${AT_COMMAND})rm(?![\\w-])(${ARGS}))`, "g");
 // A quoted commit message (`-m "..."`, `-am '...'`, `--message=...`) is text, unless it runs a command.
 const MESSAGE_ARG = /(\s(?:-[A-Za-z]*m\s*|--message(?:=|\s+)))("(?:[^"\\]|\\.)*"|'[^']*')/g;
@@ -264,13 +268,19 @@ function disposableTarget(word: string, tmpdirKept: boolean, fresh: FreshTempDir
 	return DISPOSABLE.test(path) && !hasExpansion(path.replace(/^\$\{TMPDIR:\?\}/, ""));
 }
 
-// `rm`'s arguments inside a quoted command (`trap 'rm -rf "$d"' EXIT`): up to the quote that closes the one opening
-// its command position, so `EXIT` is not a target. Without such a quote, the arguments stay whole.
-function withinQuote(position: string, args: string): string {
-	const quote = /(["'])\s*(?:[\w.~-]*\/)*$/.exec(position)?.[1];
+// `trap '…'` or `trap "…"` opening a command position, and nothing quoted after it.
+const TRAP_OPENER = /(?:^|[;&|(){\x60\n]|\b(?:then|do|else)\s)\s*trap\s+(["'])[^"']*$/;
+
+/**
+ * `rm`'s arguments in a trap body (`trap 'rm -rf "$d"' EXIT`) without the closing quote and signal names, so `EXIT` is
+ * not a target. Only a whole-string match cuts: a body joined to more text (`'rm -rf dist '"$HOME" EXIT`) or any other
+ * quoted command (`sh -c '…'`, `eval '…'`) keeps every word, which may make a target look unsafe but never hides one.
+ */
+function trapBody(position: string, args: string): string {
+	const quote = TRAP_OPENER.exec(position)?.[1];
 	if (quote === undefined) return args;
-	const close = new RegExp(quote === "'" ? "'" : '(?<!\\\\)"').exec(args);
-	return close ? args.slice(0, close.index) : args;
+	const body = quote === "'" ? "[^']*" : String.raw`(?:[^"\\]|\\.)*`;
+	return new RegExp(String.raw`^(${body})${quote}(?:\s+(?:[A-Z]+|\d+|-))+\s*$`).exec(args)?.[1] ?? args;
 }
 
 // A parameter expansion or command substitution; `$$` (the shell's pid) is never empty and has no `/`.
@@ -309,7 +319,7 @@ export function classify(
 	const fresh = freshTempDir(command);
 	for (const [, position, args] of command.matchAll(RM_COMMAND)) {
 		// `wordsOf`, but keeping backticks inside a word (`/tmp/\`cmd\``), which may hide an expansion.
-		const raw = withinQuote(position, args)
+		const raw = trapBody(position, args)
 			.split(/\s+/)
 			.map((w) => (w.split("\x60").length === 2 ? w.replace(/^\x60|\x60$/, "") : w))
 			.filter((w) => w.replace(/["'()\x60]/g, ""));
