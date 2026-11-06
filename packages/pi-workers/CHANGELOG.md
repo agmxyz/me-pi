@@ -2,6 +2,10 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
+## [Unreleased]
+
+- The delegate docs say that later worker-pool entries run only when you name them: the coordinator is not told the pool.
+
 ## [0.1.3] - 2026-11-07
 
 - `guard` asks again before a recursive `rm` of `"${TMPDIR:?}/name"` when the command could rebind `TMPDIR` first (`TMPDIR=/ rm …`, `export TMPDIR=/;`, `env`, `sudo`, `unset`, `source`, quote-split names, and similar). `${TMPDIR:?}` only catches an unset `TMPDIR`. Plain cleanups such as `rm -rf "${TMPDIR:?}/x"` still pass.
