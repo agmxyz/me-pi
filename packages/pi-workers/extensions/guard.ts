@@ -75,11 +75,10 @@ const ELSEWHERE = word("sudo|su|doas|pkexec|runuser|ssh|systemd-run|nix-shell|do
 // GNU abbreviations), and `exec -c`.
 const OTHER_ENV = new RegExp(String.raw`${ELSEWHERE}|${word("env")}\s+-|${word("exec")}\s+-\w*c`);
 // Ways to set a variable or word splitting without writing `NAME=` (`export ${n}DIR=/`, `read`, `printf -v`, `IFS=`),
-// or to run code the guard cannot see (`eval`, `source`, `. file`), at a command start (`git init source` is an
+// or to run code the guard cannot see (`eval`, `source`, `. file`), at a command position (`git init source` is an
 // argument). A sourced file such as `.venv/bin/activate` may set TMPDIR, so it asks.
-const COMMAND_START = String.raw`(?:^|[;&|(){\x60\n"']|\$\(|\b(?:then|do|else|if|elif|while|until)\s|!\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*`;
 const REBINDS = new RegExp(
-	String.raw`${COMMAND_START}(?:(?:export|declare|typeset|local|readonly|read|mapfile|readarray|getopts|eval|source|let)(?![\w/.-])|printf\s+-v|\.\s)|${word("IFS")}=`,
+	String.raw`${AT_COMMAND}(?:(?:export|declare|typeset|local|readonly|read|mapfile|readarray|getopts|eval|source|let)(?![\w/.-])|printf\s+-v|\.\s)|${word("IFS")}=`,
 );
 // A nested shell (`sh -c`, `bash -lc`) or a wrapper: it does not see unexported variables, so `$V/x` there is `/x`.
 const NESTED_SHELL = new RegExp(String.raw`\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c|${ELSEWHERE}`);
