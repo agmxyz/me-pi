@@ -59,7 +59,12 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 		["rm -rf /tmp/*", onFeature, "recursive rm"],
 		["rm -rf /var/folders/*", onFeature, "recursive rm"],
 		['rm -rf "$TMPDIR"/*', onFeature, "recursive rm"],
-		["rm -rf $TMPDIR/x", onFeature, "recursive rm"],
+		// An expansion right below a temp root may be empty or hold `..`.
+		["rm -rf /tmp/$x", onFeature, "recursive rm"],
+		[`rm -rf "/tmp/\${name}/"`, onFeature, "recursive rm"],
+		[`rm -rf "\${TMPDIR:?}/$n"`, onFeature, "recursive rm"],
+		["rm -rf /tmp/`echo x`", onFeature, "recursive rm"],
+		["rm -rf /tmp/x/$y", onFeature, "recursive rm"],
 		["rm -rf /tmp/a*", onFeature, "recursive rm"],
 		["rm -rf /tmp/x/../../etc", onFeature, "recursive rm"],
 		["rm -rf /tmpx", onFeature, "recursive rm"],
@@ -141,6 +146,7 @@ test("allows feature pushes, PRs, and routine commands", () => {
 		["rm -rf /tmp/x/*", onMain],
 		["rm -rf dist/a..b", onMain],
 		["rm -rf /var/folders/ab/cd/T/me-pi-x", onMain],
+		["rm -rf /tmp/me-pi-$$", onMain],
 		["git push -o ci.skip origin feature/x", onMain],
 		["git rebase --continue", onMain],
 		["git commit -m 'fix'", onMain],
@@ -153,6 +159,76 @@ test("allows feature pushes, PRs, and routine commands", () => {
 	]) {
 		assert.equal(classify(command, branch), undefined, `expected allowed: ${command}`);
 	}
+});
+
+test("recursive rm of $TMPDIR/… passes only while TMPDIR names a temp directory the command keeps", (t) => {
+	const saved = process.env.TMPDIR;
+	t.after(() => {
+		if (saved === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = saved;
+	});
+	const entries = ['rm -rf "$TMPDIR/x"', "rm -rf $TMPDIR/x", `rm -rf "\${TMPDIR}/x"`, 'rm -rf "$TMPDIR"/x'];
+	for (const tmpdir of ["/tmp", "/private/tmp/", "/var/folders/ab/cd/T/", "/var/folders/ab/cd/T/job-1"]) {
+		process.env.TMPDIR = tmpdir;
+		for (const command of [...entries, 'rm -rf "$TMPDIR/a/b"', `cd "$TMPDIR" && rm -rf "$TMPDIR/x"`])
+			assert.equal(classify(command, onMain), undefined, `TMPDIR=${tmpdir}: ${command}`);
+		for (const command of [
+			"rm -rf $TMPDIR",
+			'rm -rf "$TMPDIR/"',
+			'rm -rf "$TMPDIR"/*',
+			'rm -rf "$TMPDIR/$n"',
+			'rm -rf "$TMPDIR/../x"',
+			'TMPDIR=/ rm -rf "$TMPDIR/x"',
+			'unset TMPDIR; rm -rf "$TMPDIR/x"',
+			'export TMPDIR=/; rm -rf "$TMPDIR/x"',
+			`env -i bash -c 'rm -rf "$TMPDIR/x"'`,
+			'sudo rm -rf "$TMPDIR/x"',
+		])
+			assert.equal(classify(command, onMain), "recursive rm", `TMPDIR=${tmpdir}: ${command}`);
+	}
+	for (const tmpdir of [undefined, "", "/", "/home/me", "/tmp/../etc"]) {
+		if (tmpdir === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = tmpdir;
+		for (const command of entries)
+			assert.equal(classify(command, onMain), "recursive rm", `TMPDIR=${tmpdir}: ${command}`);
+		assert.equal(
+			classify(`rm -rf "\${TMPDIR:?}/x"`, onMain),
+			undefined,
+			`\${TMPDIR:?} fails instead of expanding to /x`,
+		);
+	}
+});
+
+test("recursive rm of a mktemp -d directory the command creates passes; reassigning or emptying it does not", () => {
+	for (const command of [
+		'd=$(mktemp -d) && rm -rf "$d"',
+		'd=$(mktemp -d); rm -rf "$d"',
+		`tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT`,
+		'd=$(mktemp -d -t me) && cd "$d" && touch x && rm -rf "$d"/*',
+		'd=$(mktemp -d) && rm -rf "$d/x"',
+		`d=$(mktemp -d); rm -rf "\${d:?}"/x`,
+		`d=$(mktemp -d)\nrm -rf "\${d}"`,
+	])
+		assert.equal(classify(command, onMain), undefined, `expected allowed: ${command}`);
+	for (const command of [
+		'rm -rf "$d"',
+		'd=$(mktemp -d); d=/; rm -rf "$d"',
+		'd=$(mktemp -d) && read d && rm -rf "$d"',
+		'd=$(mktemp -d) && for d in /x; do rm -rf "$d"; done',
+		"d=$(mktemp -d) && rm -rf $d",
+		// A failed mktemp leaves d empty, so a path below it is a path below /.
+		'd=$(mktemp -d); rm -rf "$d"/*',
+		'd=$(mktemp -d); rm -rf "$d/x"',
+		'd=$(mktemp -d) && rm -rf "$d/x" || rm -rf "$d/y"',
+		// A nested shell does not see d.
+		`d=$(mktemp -d) && sh -c 'rm -rf "$d"/x'`,
+		'd=$(mktemp -d) && rm -rf "$d/"',
+		'd=$(mktemp -d) && rm -rf "$d/.."',
+		'd=$(mktemp -d) && rm -rf "$d/$y"',
+		'd=$(mktemp -d ./t.XXXX) && rm -rf "$d"',
+		'x=1; d=$(mktemp -d) && rm -rf "$d"',
+	])
+		assert.equal(classify(command, onMain), "recursive rm", command);
 });
 
 test("workerRisk blocks commands that move an implement worker off its branch or reach shared state", () => {
