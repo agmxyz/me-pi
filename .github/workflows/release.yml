@@ -1,0 +1,90 @@
+name: release
+
+# A release PR bumps packages/pi-workers/package.json; merging it publishes that version.
+# Re-running is safe: each step skips what npm or GitHub already has.
+on:
+  push:
+    branches: [main]
+    paths: [packages/pi-workers/package.json]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # tag and GitHub release
+      id-token: write # npm trusted publishing
+    defaults:
+      run:
+        working-directory: packages/pi-workers
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No npm cache: a release must not restore state written by other runs.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.19"
+          registry-url: https://registry.npmjs.org
+      - id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name=$(node -p 'require("./package.json").name')
+          version=$(node -p 'require("./package.json").version')
+          tag="pi-workers@$version"
+          if out=$(npm view "$name@$version" version 2>&1); then
+            published=true
+          elif grep -q E404 <<<"$out"; then
+            published=false
+          else
+            echo "$out" >&2
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then released=true; else released=false; fi
+          echo "$name@$version published=$published released=$released"
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "published=$published"
+            echo "released=$released"
+          } >>"$GITHUB_OUTPUT"
+      # Fails before publishing when the release PR forgot to date its CHANGELOG section.
+      - if: steps.state.outputs.published == 'false' || steps.state.outputs.released == 'false'
+        env:
+          VERSION: ${{ steps.state.outputs.version }}
+        run: |
+          awk -v head="## [$VERSION]" '
+            index($0, head) == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md >"$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "CHANGELOG.md has no '## [$VERSION]' section" >&2
+            exit 1
+          fi
+      - if: steps.state.outputs.published == 'false'
+        run: npm ci
+        working-directory: .
+      - if: steps.state.outputs.published == 'false'
+        run: npm run check --prefix extensions
+        working-directory: .
+      # Trusted publishing needs npm >= 11.5.1; Node 22.19 ships npm 10. Provenance is automatic.
+      - if: steps.state.outputs.published == 'false'
+        run: |
+          npm install --global npm@11.21.1
+          npm publish
+      - if: steps.state.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.state.outputs.tag }}
+        run: gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
