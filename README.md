@@ -41,7 +41,11 @@ node --test test/guard.test.ts   # one test file
 
 Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt text, run the manual routing evals ([evals/README.md](evals/README.md)); they spend real money and never run in CI.
 
-Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR. Good first issues: [#35](https://github.com/agmxyz/me-pi/issues/35), [#40](https://github.com/agmxyz/me-pi/issues/40).
+Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR.
+
+To release `@agmxyz/pi-workers`, open a PR that bumps `version` in `package.json`, `packages/pi-workers/package.json`, and `package-lock.json`, and renames `## [Unreleased]` in `packages/pi-workers/CHANGELOG.md` to `## [x.y.z] - date`. Merging it runs [`release.yml`](.github/workflows/release.yml): check, publish to npm with provenance, then tag `pi-workers@x.y.z` and create a GitHub release from that changelog section.
+
+Good first issues: [#35](https://github.com/agmxyz/me-pi/issues/35), [#40](https://github.com/agmxyz/me-pi/issues/40).
 
 ## License
 
