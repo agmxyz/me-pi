@@ -7,36 +7,67 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const workers = JSON.parse(readFileSync(new URL("../packages/pi-workers/package.json", import.meta.url), "utf8"));
+const workerExtensions = ["extensions/delegate.ts", "extensions/guard.ts", "extensions/skill.ts"];
 const compatibility = JSON.parse(readFileSync(new URL("../extensions/package.json", import.meta.url), "utf8"));
 
-test("the root manifest declares only the three public Pi extensions", () => {
+test("the root manifest is the private setup and loads the pi-workers extensions", () => {
 	assert.equal(root.name, "me-pi");
-	assert.notEqual(root.private, true);
+	assert.equal(root.private, true);
 	assert.ok(root.description);
 	assert.equal(root.license, "MIT");
-	assert.match(root.version, /^\d+\.\d+\.\d+$/);
+	assert.equal(root.version, workers.version);
 	assert.equal(root.repository, "https://github.com/agmxyz/me-pi");
 	assert.deepEqual(root.keywords, ["pi-package"]);
 	assert.equal(root.devDependencies["@earendil-works/pi-coding-agent"], "1.5.0");
 	assert.deepEqual(root.pi, {
-		extensions: ["extensions/delegate.ts", "extensions/guard.ts", "extensions/skill.ts"],
+		extensions: workerExtensions,
 		skills: [],
+		changelogPath: "packages/pi-workers/CHANGELOG.md",
 	});
+	assert.ok(existsSync(new URL(`../${root.pi.changelogPath}`, import.meta.url)));
 	for (const entrypoint of root.pi.extensions) {
-		assert.ok(existsSync(new URL(`../${entrypoint}`, import.meta.url)), `${entrypoint} exists`);
+		assert.equal(
+			readFileSync(new URL(`../${entrypoint}`, import.meta.url), "utf8")
+				.split("\n")
+				.at(-2),
+			`export { default } from "../packages/pi-workers/${entrypoint}";`,
+		);
 	}
 });
 
-test("the published tarball holds the package, not the author's setup", () => {
+test("the pi-workers manifest declares only the three public Pi extensions", () => {
+	assert.equal(workers.name, "@agmxyz/pi-workers");
+	assert.notEqual(workers.private, true);
+	assert.match(workers.version, /^\d+\.\d+\.\d+$/);
+	assert.ok(workers.description);
+	assert.equal(workers.license, "MIT");
+	assert.deepEqual(workers.repository, {
+		type: "git",
+		url: "git+https://github.com/agmxyz/me-pi.git",
+		directory: "packages/pi-workers",
+	});
+	assert.ok(workers.keywords.includes("pi-package"));
+	assert.deepEqual(workers.publishConfig, { access: "public" });
+	assert.deepEqual(workers.pi, { extensions: workerExtensions });
+	assert.deepEqual(workers.peerDependencies, root.peerDependencies);
+	assert.deepEqual(workers.peerDependenciesMeta, root.peerDependenciesMeta);
+	assert.deepEqual(workers.engines, root.engines);
+	for (const entrypoint of workers.pi.extensions) {
+		assert.ok(existsSync(new URL(`../packages/pi-workers/${entrypoint}`, import.meta.url)), `${entrypoint} exists`);
+	}
+});
+
+test("the pi-workers tarball holds the package, not the author's setup", () => {
 	const result = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-		cwd: fileURLToPath(new URL("../", import.meta.url)),
+		cwd: fileURLToPath(new URL("../packages/pi-workers/", import.meta.url)),
 		encoding: "utf8",
 	});
 	assert.ifError(result.error);
 	assert.equal(result.status, 0, result.stderr);
 	const files: string[] = JSON.parse(result.stdout)[0].files.map((file: { path: string }) => file.path);
-	const docs = ["package.json", "README.md", "LICENSE", "CHANGELOG.md"];
-	for (const file of [...root.pi.extensions, ...docs]) assert.ok(files.includes(file), `${file} is published`);
+	const docs = ["package.json", "README.md", "LICENSE", "CHANGELOG.md", "docs/delegate.md"];
+	for (const file of [...workers.pi.extensions, ...docs]) assert.ok(files.includes(file), `${file} is published`);
 	assert.deepEqual(
 		files.filter((file) => !docs.includes(file) && !/^extensions\/[\w-]+\.ts$/.test(file)),
 		[],

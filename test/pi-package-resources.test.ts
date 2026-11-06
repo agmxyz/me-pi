@@ -20,6 +20,7 @@ async function createPackageFixture(parent) {
 	const packageRoot = join(parent, "package");
 	await mkdir(packageRoot);
 	await cp(join(root, "extensions"), join(packageRoot, "extensions"), { recursive: true });
+	await cp(join(root, "packages"), join(packageRoot, "packages"), { recursive: true });
 	await cp(join(root, "skills"), join(packageRoot, "skills"), { recursive: true });
 	await symlink(join(root, "node_modules"), join(packageRoot, "node_modules"), "dir");
 	await writeFile(

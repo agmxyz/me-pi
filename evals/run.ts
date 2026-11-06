@@ -2,7 +2,7 @@
  * Manual routing evals: each attempt is a natural request in a fresh, isolated Pi, scored from its session log.
  * Real model calls and real spend; never part of `npm run check`. See evals/README.md.
  */
-import { execFile as execFileCb, execFileSync } from "node:child_process";
+import { execFile as execFileCb, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	appendFileSync,
@@ -199,6 +199,17 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		execFileSync("git", ["-C", a.sandbox.src, "rev-parse", `${a.sandbox.commit}:${path}`], {
 			encoding: "utf8",
 		}).trim();
+	// Refs before the pi-workers package move keep their extensions at the root; drop this once no compared ref predates it.
+	const extensionsTree = () => {
+		const moved = spawnSync("git", [
+			"-C",
+			a.sandbox.src,
+			"cat-file",
+			"-e",
+			`${a.sandbox.commit}:packages/pi-workers/extensions`,
+		]);
+		return git(moved.status === 0 ? "packages/pi-workers/extensions" : "extensions");
+	};
 	return {
 		sweep,
 		attempt: id,
@@ -215,7 +226,7 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 			expect: sha(JSON.stringify(a.scenario.expect)),
 			fixture,
 			pool: sha(JSON.stringify(pool)),
-			extensions: git("extensions"),
+			extensions: extensionsTree(),
 			globalAgents: git("GLOBAL_AGENTS.md"),
 			skills: git("skills"),
 			extraSkills: opt.skill,

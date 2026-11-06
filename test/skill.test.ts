@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-const { default: registerSkill } = await import("../extensions/skill.ts");
+const { default: registerSkill } = await import("../packages/pi-workers/extensions/skill.ts");
 
 const HOME = mkdtempSync(join(tmpdir(), "skill-test-"));
 process.on("exit", () => rmSync(HOME, { recursive: true, force: true }));

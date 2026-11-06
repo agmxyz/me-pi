@@ -64,7 +64,7 @@ The run prints one line per attempt, then a table of passes over completed attem
 
 Each record holds:
 - the commit, Pi and node versions, the coordinator and the policy;
-- hashes of the prompts, assertions, fixture commit, pool, and the git trees of `extensions/`, `GLOBAL_AGENTS.md`, and `skills/`;
+- hashes of the prompts, assertions, fixture commit, pool, and the git trees of `packages/pi-workers/extensions/` (`extensions/` for refs before the package move), `GLOBAL_AGENTS.md`, and `skills/`;
 - the duration, call count, and estimated cost;
 - the state, `completed`, `void` (`STOPPED: infra` in `ME_PI_STATUS_LOG`), or `incomplete` (account stop, timeout, or no session log), and the outcome, `pass`, `fail`, or `unknown`;
 - a verdict with evidence for every assertion.

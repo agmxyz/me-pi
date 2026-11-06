@@ -20,9 +20,9 @@ const {
 	LIMITS,
 	PROMPT_GUIDELINES,
 	PROMPT_SNIPPET,
-} = await import("../../extensions/delegate.ts");
+} = await import("../../packages/pi-workers/extensions/delegate.ts");
 
-const { classifyProviderError } = await import("../../extensions/delegate-attempt.ts");
+const { classifyProviderError } = await import("../../packages/pi-workers/extensions/delegate-attempt.ts");
 
 const {
 	ROLES,
@@ -30,27 +30,27 @@ const {
 	LOCAL_TOOLS,
 	WEB_TOOLS,
 	IMPLEMENT_TOOLS,
-} = await import("../../extensions/delegate-worker.ts");
+} = await import("../../packages/pi-workers/extensions/delegate-worker.ts");
 
 const {
 	secretPathIn,
 	writeBlockedIn,
-} = await import("../../extensions/delegate-fence.ts");
+} = await import("../../packages/pi-workers/extensions/delegate-fence.ts");
 
 const {
 	loadModelSet,
 	resolveRun,
-} = await import("../../extensions/delegate-config.ts");
+} = await import("../../packages/pi-workers/extensions/delegate-config.ts");
 
-const { default: registerGuard } = await import("../../extensions/guard.ts");
+const { default: registerGuard } = await import("../../packages/pi-workers/extensions/guard.ts");
 
-const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../../extensions/delegate-provenance.ts");
+const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../../packages/pi-workers/extensions/delegate-provenance.ts");
 
-const { progressLines } = await import("../../extensions/delegate-render.ts");
+const { progressLines } = await import("../../packages/pi-workers/extensions/delegate-render.ts");
 
-const { registerDelegateCommand } = await import("../../extensions/delegate-command.ts");
+const { registerDelegateCommand } = await import("../../packages/pi-workers/extensions/delegate-command.ts");
 
-const { snapshotContent, trackCheck } = await import("../../extensions/delegate-implement.ts");
+const { snapshotContent, trackCheck } = await import("../../packages/pi-workers/extensions/delegate-implement.ts");
 
 const DEFAULT_LIMITS = { ...LIMITS };
 

@@ -47,7 +47,7 @@ export interface CommandDeps {
 
 // Tools that other extensions add; without them workers lose skills or the web.
 const DEPENDENCIES = [
-	["Skill", "this repo's extensions/skill.ts"],
+	["Skill", "pi-workers' extensions/skill.ts"],
 	["web_search", "pi-web-access"],
 	["fetch_content", "pi-web-access"],
 	["get_search_content", "pi-web-access"],

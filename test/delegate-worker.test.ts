@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import type { Checkout } from "../extensions/delegate-implement.ts";
+import type { Checkout } from "../packages/pi-workers/extensions/delegate-implement.ts";
 import {
 	IMPLEMENT_TOOLS,
 	implementContract,
@@ -14,7 +14,7 @@ import {
 	workerContract,
 	workerLaunch,
 	workerSystemPrompt,
-} from "../extensions/delegate-worker.ts";
+} from "../packages/pi-workers/extensions/delegate-worker.ts";
 
 const POLICY = readFileSync(new URL("../GLOBAL_AGENTS.md", import.meta.url), "utf8");
 const headings = (text: string) => text.split("\n").filter((line) => line.startsWith("## "));

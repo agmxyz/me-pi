@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { loadModelSet, resolveModelRef, resolveRun } from "../extensions/delegate-config.ts";
-import { SUBAGENT_LINE } from "../extensions/delegate-worker.ts";
+import { loadModelSet, resolveModelRef, resolveRun } from "../packages/pi-workers/extensions/delegate-config.ts";
+import { SUBAGENT_LINE } from "../packages/pi-workers/extensions/delegate-worker.ts";
 import {
 	HAIKU,
 	LUNA,
