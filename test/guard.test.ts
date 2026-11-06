@@ -122,6 +122,10 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 		['ssh host "rm -rf ~"', onFeature, "recursive rm"],
 		['rm -rf dist" "x /etc', onFeature, "recursive rm"],
 		[`trap 'rm -rf "$d" /etc' EXIT`, onFeature, "recursive rm"],
+		// A quote inside `rm`'s own words does not hide the targets after it.
+		[`rm -rf dist/"Bob's" ~`, onFeature, "recursive rm"],
+		[`rm -rf dist "'" /etc`, onFeature, "recursive rm"],
+		['rm -rf dist "x\\\\" ~', onFeature, "recursive rm"],
 		["ssh -p 22 -i key user@host 'rm -rf ~'", onFeature, "recursive rm"],
 		["if git push origin main; then :; fi", onFeature, "push to main/master"],
 		["timeout 60 git push origin main", onFeature, "push to main/master"],
@@ -179,6 +183,12 @@ test("allows feature pushes, PRs, and routine commands", () => {
 		["echo done!", onMain],
 		["ssh host ls", onMain],
 		["trap 'rm -f lock' EXIT", onMain],
+		// Keywords only count where a command starts.
+		["rg -n 'if git push origin main' scripts/", onMain],
+		["grep -rn 'while rm -rf' .", onMain],
+		[`grep -rn "trap 'rm -rf" .`, onMain],
+		// A `cd` on another host or in a trap does not move this session's push.
+		["ssh prod 'cd /srv && ./restart'; git push", onFeature],
 		[`git commit -m "$(cat <<'EOF'\nfix: git push origin main and rm -rf src\nEOF\n)"`, onFeature],
 	]) {
 		assert.equal(classify(command, branch), undefined, `expected allowed: ${command}`);
@@ -394,6 +404,8 @@ test("an implement worker's git in a fresh mktemp repo passes; leaving it or poi
 });
 
 test("gitTreeWrite names checkout-writing git subcommands and passes reads", () => {
+	assert.equal(gitTreeWrite("ssh host git pull"), undefined, "git on another host leaves this checkout alone");
+	assert.equal(gitTreeWrite("rg 'if git commit' ."), undefined, "a keyword in quoted text is not a command");
 	for (const [command, sub] of [
 		["git add -A", "add"],
 		["git rm a.ts", "rm"],

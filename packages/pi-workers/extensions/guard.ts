@@ -24,12 +24,18 @@ export interface GuardStopEvent {
 // Shell options accepted by installer matching and shell `-c` command-position recognition.
 const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 // A command position: start of line/command, after `;`, `&`, `|`, `(`, `{`, `` ` ``, `$(`, a shell keyword
-// (`then`, `do`, `else`, `if`, `elif`, `while`, `until`, `!`), a wrapper with its options (`env -i`, `xargs -0`,
-// `sudo`, `nohup`, `time`, `exec`, `rtk [proxy]`, `command`), a wrapper with options, numbers, or a quote
-// (`timeout 5`, `nice -n 10`, `watch '…'`, `doas`, `pkexec`), `trap '…'`, `ssh [opts] host '…'`, `eval`,
-// `find -exec`, or a shell's `-c` (`bash -lc`, `zsh -c`), plus optional
-// `NAME=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as `grep 'git push'` from matching.
-const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else|if|elif|while|until)\s+|(?:^|\s)!\s+|\b(?:timeout|nice|ionice|watch|caffeinate|stdbuf|chrt|taskset|chronic|doas|pkexec|runuser)(?:\s+(?:-[sknp]\s+\w+|-\S+|\d\S*))*\s+["']?|\btrap\s+["']|\bssh(?:\s+-[46AaCfGgKkMNnqsTtVvXxYy]+|\s+-\w\s*\S+)*\s+[^-\s]\S*\s+["']?|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
+// (`then`, `do`, `else`; `if`, `elif`, `while`, `until`, `!` only where a command starts), a wrapper with its
+// options (`env -i`, `xargs -0`, `sudo`, `nohup`, `time`, `exec`, `rtk [proxy]`, `command`, `timeout 5`,
+// `nice -n 10`, `watch '…'`, `doas`, `pkexec`), `eval`, `find -exec`, or a shell's `-c` (`bash -lc`, `zsh -c`), plus
+// optional `NAME=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as `grep 'git push'` from
+// matching.
+const LOCAL_POSITION = String.raw`^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|(?:^|[;&|(){\x60\n]|\b(?:then|do|else)\s)\s*(?:(?:if|elif|while|until|!)\s+)+|\b(?:timeout|nice|ionice|watch|caffeinate|stdbuf|chrt|taskset|chronic|doas|pkexec|runuser)(?:\s+(?:-[sknp]\s+\w+|-(?![sknp](?:\s|$))\S+|\d\S*))*\s+["']?|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?`;
+// Commands that run elsewhere or later: `trap '…'` and `ssh [opts] host '…'`. They count for what they would
+// destroy, not for the session's own directory or checkout (`CD`, `gitTreeWrite`).
+const DEFERRED_POSITION = String.raw`(?:^|[;&|(){\x60\n]|\b(?:then|do|else)\s)\s*trap\s+["']|\bssh(?:\s+-[46AaCfGgKkMNnqsTtVvXxYy]+|\s+-[BbcDEeFIiJLlmOoPpQRSWw](?:\s+|(?=[^\s-]))[^\s-]\S*)*\s+[^-\s]\S*\s+["']?`;
+const AT_TAIL = String.raw`\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
+const AT_COMMAND = `(?:${LOCAL_POSITION}|${DEFERRED_POSITION})${AT_TAIL}`;
+const AT_LOCAL_COMMAND = `(?:${LOCAL_POSITION})${AT_TAIL}`;
 // `git` global options (`-C dir`, `-c k=v`, `--git-dir=...`) before the subcommand.
 const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
 // Rest of the same command (stops at a command separator).
@@ -37,11 +43,13 @@ const ARGS = String.raw`[^;&|\n]*`;
 
 // Lookaheads, so a command nested in another one's arguments (`git log "$(git push ...)"`) is found too.
 const GIT_COMMAND = new RegExp(`(?=${AT_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
-const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${ARGS}))`, "g");
+const LOCAL_GIT_COMMAND = new RegExp(`(?=${AT_LOCAL_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
+// The command position is captured: a quote opening it (`trap '`, `sh -c "`) closes `rm`'s arguments.
+const RM_COMMAND = new RegExp(`(?=(${AT_COMMAND})rm(?![\\w-])(${ARGS}))`, "g");
 // A quoted commit message (`-m "..."`, `-am '...'`, `--message=...`) is text, unless it runs a command.
 const MESSAGE_ARG = /(\s(?:-[A-Za-z]*m\s*|--message(?:=|\s+)))("(?:[^"\\]|\\.)*"|'[^']*')/g;
 // `cd` at a command position: a bare push may then target another repository's branch.
-const CD = new RegExp(`${AT_COMMAND}(?:cd|pushd)(?![\\w-])`);
+const CD = new RegExp(`${AT_LOCAL_COMMAND}(?:cd|pushd)(?![\\w-])`);
 // Build directories and named entries inside temp directories that recursive `rm` may remove without
 // asking (`./dist`, `/tmp/x`, `${TMPDIR:?}/x`). Never a temp root or a glob in it (`/tmp/*`). `disposableTarget`
 // also admits `$TMPDIR/x` and a `mktemp -d` variable, and refuses an expansion as the entry (`/tmp/$x`).
@@ -239,14 +247,13 @@ function disposableTarget(
 	return DISPOSABLE.test(path) && !hasExpansion(path.replace(/^\$\{TMPDIR:\?\}/, ""));
 }
 
-// Arguments up to the quote that closes a quoted command (`trap 'rm -rf "$d"' EXIT`), so `EXIT` is not a target. Only
-// an unbalanced quote closes one: balanced quotes (`dist" "x /etc`) stay part of `rm`'s own words.
-function withinQuote(args: string): string {
-	for (const quote of ["'", '"']) {
-		const unescaped = [...args.matchAll(new RegExp(`(?<!\\\\)${quote}`, "g"))];
-		if (unescaped.length % 2 === 1) return args.slice(0, unescaped[unescaped.length - 1].index);
-	}
-	return args;
+// `rm`'s arguments inside a quoted command (`trap 'rm -rf "$d"' EXIT`): up to the quote that closes the one opening
+// its command position, so `EXIT` is not a target. Without such a quote, the arguments stay whole.
+function withinQuote(position: string, args: string): string {
+	const quote = /(["'])\s*(?:[\w.~-]*\/)*$/.exec(position)?.[1];
+	if (quote === undefined) return args;
+	const close = new RegExp(quote === "'" ? "'" : '(?<!\\\\)"').exec(args);
+	return close ? args.slice(0, close.index) : args;
 }
 
 // A parameter expansion or command substitution; `$$` (the shell's pid) is never empty and has no `/`.
@@ -276,9 +283,9 @@ export function classify(
 		!REBINDS.test(command) &&
 		!OTHER_ENV.test(command);
 	const fresh = freshTempDir(command);
-	for (const [, args] of command.matchAll(RM_COMMAND)) {
+	for (const [, position, args] of command.matchAll(RM_COMMAND)) {
 		// `wordsOf`, but keeping backticks inside a word (`/tmp/\`cmd\``), which may hide an expansion.
-		const raw = withinQuote(args)
+		const raw = withinQuote(position, args)
 			.split(/\s+/)
 			.map((w) => (w.split("\x60").length === 2 ? w.replace(/^\x60|\x60$/, "") : w))
 			.filter((w) => w.replace(/["'()\x60]/g, ""));
@@ -402,7 +409,7 @@ const TREE_WRITES = new Set([
 ]);
 
 export function gitTreeWrite(command: string): string | undefined {
-	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
+	for (const [, , sub, args] of withoutMessages(command).matchAll(LOCAL_GIT_COMMAND)) {
 		// `git stash list|show` only read.
 		const words = wordsOf(args);
 		if (sub === "stash" && ["list", "show"].includes(words[0])) continue;
