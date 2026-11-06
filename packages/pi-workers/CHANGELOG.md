@@ -2,9 +2,10 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
-## [Unreleased]
+## [0.1.1] - 2026-11-06
 
 - `implement` workers are told to keep scratch files in `"${TMPDIR:?}/<name>"`, which `guard` allows to remove, instead of a bare `$TMPDIR`, whose cleanup `guard` blocked in workers.
+- The README's examples are plain requests: Pi decides when to delegate and which worker to use.
 
 ## [0.1.0] - 2026-11-06
 
