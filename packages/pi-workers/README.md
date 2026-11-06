@@ -4,7 +4,7 @@
 
 Keep long searches, file dumps and review noise out of your main [Pi](https://github.com/earendil-works/pi) session. `delegate` sends a task to a separate worker and brings back an answer, so you can focus on what to do with it.
 
-Ask for a lookup, a review or a scoped change. Your main session briefs the worker; you don't need to write agent files. It's developed in [me-pi](https://github.com/agmxyz/me-pi), my Pi setup, if you want to see the workflow around it.
+Work with Pi as usual. When a task would flood the session, such as a broad search, a large review or a multi-file change, Pi hands it to a worker and briefs it; you don't need to write agent files. It's developed in [me-pi](https://github.com/agmxyz/me-pi), my Pi setup, if you want to see the workflow around it.
 
 ## Install and try it
 
@@ -16,12 +16,13 @@ pi install npm:@agmxyz/pi-workers
 
 To track `main` instead, install `git:github.com/agmxyz/me-pi`. Install only one of the two: both load the same extensions.
 
-Restart Pi or run `/reload`, then ask in plain language:
+Restart Pi or run `/reload`, then just work. You don't name roles: Pi decides when a task is worth delegating and which worker gets it. Small reads and edits stay in your session. For example:
 
-- "Have a scout find where this project handles configuration, with `path:line` evidence."
-- "Have a worker review this diff for correctness and report actionable findings."
-- "Have two `general` workers—Opus 5.5 at medium and Sol 6.1 at high—challenge this plan, then consider each other's findings in a rebuttal round." (The models must be available in Pi.)
-- On a clean feature branch (`git switch -c fix/example`): "Implement this change and check it with `npm test`."
+- "Where does this project handle configuration?" A search of unknown scope goes to a read-only worker, and you get back a few lines with `path:line` evidence.
+- "Review this branch's diff for correctness." A large diff goes to a reviewer; for a small one, Pi reads it itself.
+- On a clean feature branch (`git switch -c fix/example`): "Add a 30 s default timeout; `npm test` must pass." A multi-file change or a long fix-and-test loop goes to `implement`, which edits, runs your check and commits.
+
+The routing is prompt guidance to your model (`PROMPT_GUIDELINES` in [`delegate.ts`](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/extensions/delegate.ts)), so it can misjudge. Steer it when you want: "use a worker for this", "do this in the background", or "have Opus 5.5 and Sol 6.1 challenge this plan and cross-check each other" (the models must be available in Pi).
 
 For example, a successful implementation handback can look like this (illustrative):
 
