@@ -2,43 +2,11 @@
 
 [![check](https://github.com/agmxyz/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/agmxyz/me-pi/actions/workflows/check.yml)
 
-Keep file dumps, long searches and review noise out of your main [Pi](https://github.com/earendil-works/pi) session. `delegate` sends a scoped task to a separate process and brings back an answer instead of the worker's conversation.
+Keep long searches, file dumps and review noise out of your main [Pi](https://github.com/earendil-works/pi) session. `delegate` sends a task to a separate worker and brings back an answer, so you can focus on what to do with it.
 
-Three fixed roles need no agent files. Workers have time and cost limits; `implement` edits your real checkout on a feature branch, and its ✓ means your declared check passed on the delivered commit.
+Ask for a lookup, a review or a scoped change. Your main session briefs the worker; you don't need to write agent files. This repo also contains [my optional Pi setup](#my-setup), if you want to try the workflow around it.
 
-This is the delegation part of my Pi setup, packaged so you can try it alone.
-
-## Why you might like it
-
-- **Less context to sift through.** Instead of reading file dumps in the main session, ask a `scout` to search and return a few lines with `path:line` evidence.
-- **Fixed roles, zero config.** One `delegate` tool, one `/delegate` command, three built-in roles and no agent files to write. The trade-off: you can't define your own roles.
-- **Follows your workflow.** Workers load your own `AGENTS.md` and skills. Add `(coordinator only)` to a `## ` heading and workers skip that section.
-- **A ✓ you can lean on.** `implement` takes a per-repo lock, needs a clean feature branch, runs your check, and commits. A pass counts only for the exact content it ran on; any later edit marks it stale. Leftover work is saved as a visible `WIP` commit.
-- **Limits by default.** Hard time limits (5 / 15 / 45 min), a $5 per-run cap on Pi's estimated cost, at most four workers running at once. Cost is checked after each reply, so the estimate can exceed $5 before the run stops.
-- **No blind retries.** Eligible infrastructure failures are retried on the same model only after a fully accounted-for, read-only attempt; unknown side effects aren't replayed. me-pi never switches models on its own.
-- **Model pools.** A cheap model for scouts, a stronger one for every other worker, in one JSON file.
-
-| Role | Can | Answers with |
-| --- | --- | --- |
-| `scout` | read, grep, find, ls | 1–3 sentences with `path:line`, or `not-found` |
-| `general` (default) | same | what the brief or `answer` asks for: investigation, review, research |
-| `implement` | same + edit, write, bash | commits on your branch, check status |
-
-Only `implement` modifies the checkout; `output: true` lets a read-only worker write drafts into its own temp directory. Web tools are on only when a call sets `web: true` (never for `implement`).
-
-## Where it's weaker
-
-me-pi is small on purpose, and young. Other Pi packages may fit you better if you need:
-
-- **Custom agents or roles.** The three roles are fixed; there are no agent files.
-- **Parallel writers.** Today one `implement` worker writes per repo, in your checkout. Worktree-based writers aren't supported yet.
-- **Jobs that outlive the session.** Background jobs end on `/reload`, a session switch, or Pi exit, and a worker's session can't be resumed.
-- **A live view of a worker.** You see progress and the final answer, not the worker's conversation.
-- **Workflows or chains** beyond what your own skills orchestrate.
-
-Packages such as [`pi-subagents`](https://www.npmjs.com/package/pi-subagents) and [`pi-side-agents`](https://www.npmjs.com/package/pi-side-agents) aim at some of these; compare before choosing.
-
-## Install
+## Install and try it
 
 Requires Pi 1.5.0 (the version CI tests) on macOS or Linux (CI covers Linux; macOS is tested locally).
 
@@ -46,40 +14,50 @@ Requires Pi 1.5.0 (the version CI tests) on macOS or Linux (CI covers Linux; mac
 pi install git:github.com/agmxyz/me-pi
 ```
 
+Restart Pi or run `/reload`, then ask in plain language:
+
+- "Have a scout find where this project handles configuration, with `path:line` evidence."
+- "Have a worker review this diff for correctness and report actionable findings."
+- On a clean feature branch (`git switch -c fix/example`): "Implement this change and check it with `npm test`."
+
+For example, a successful implementation handback can look like this (illustrative):
+
+```text
+✓ im1 fix/timeout a1b2c3d..e4f5a6b: 1 commit, 1 file +3 -1; check ✓ `npm test` [model @medium $0.1234 10s]
+Added a default timeout. Details: /tmp/me-pi-delegate-123/im1.md
+```
+
+The ✓ means the declared check passed on the delivered commit, **not** that the code is correct. Review the change. Workers are not sandboxed: they run with your OS permissions; `implement` edits and commits in your real checkout. See [Safety](#safety).
+
 The repo moved from `0bmario/me-pi`. If you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first so Pi doesn't load me-pi twice.
 
-Restart Pi or run `/reload`, then check with `/delegate status`. Try it: *"Have a scout find where this repo parses CLI flags, with path:line evidence."*
+## How it works
 
-The package loads three extensions:
+The coordinator chooses a built-in role and briefs it for the task. The roles are fixed, but the work isn't:
 
-| Extension | Does |
-| --- | --- |
-| `delegate` | the `delegate` tool and `/delegate` command |
-| `guard` | asks before risky bash such as force pushes, `git reset --hard`, recursive `rm`; blocks them in `implement` workers |
-| `Skill` | a tool that loads an already-discovered skill by name, for skills written as "load X with the `Skill` tool" |
+- **`scout`** searches read-only and normally returns a few sentences with `path:line` evidence.
+- **`general`** is a read-only worker you can brief as a reviewer, researcher, plan critic or investigator. It isn't a collection of separate agents.
+- **`implement`** edits, runs commands and commits on your branch. It needs a clean checkout on a branch other than `main` or `master`, takes a per-repo lock and runs the check you name. An edit after the check makes it stale; unfinished work may be saved as a `WIP` commit.
 
-## Use
+Workers load your own `AGENTS.md` and skills; `## ` sections marked `(coordinator only)` are stripped from worker prompts. Read-only workers can also write drafts to their own temp directory with `output: true`; web tools require `web: true` and aren't available to `implement`.
 
-Ask Pi in plain language. For example, instead of filling the main session with search results and file contents, a change might go like this:
+The package also includes `guard`, which asks before risky bash and blocks matching commands in `implement`, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](docs/delegate.md).
 
-1. "Scout where session timeouts are configured." → *`src/session.ts:118` reads `SESSION_TIMEOUT`; no default is set (`src/config.ts:40-52`).*
-2. `git switch -c fix/timeout`, then "Implement a 30 s default timeout; check with `npm test`." Example handback:
-   ```text
-   ✓ im1 fix/timeout a1b2c3d..e4f5a6b: 1 commit, 1 file +3 -1; check ✓ `npm test` [model @medium $0.1234 10s]
-   Added a default timeout. Details: /tmp/me-pi-delegate-123/im1.md
-   ```
-3. "Review the diff of `main...fix/timeout` for correctness." → a `general` worker's findings, rather than its review process. Fix, re-review, open the PR yourself.
+## Why use it?
 
-Also: "Research how other CLIs handle config migrations, with web access", "Have a worker challenge this plan", and "…in the background" for long jobs.
+- **Keep the main context focused.** A worker can search files or review a diff and return findings instead of filling the session with its process.
+- **A check with a clear meaning.** A successful `implement` handback means your check passed on the content delivered, not just on an earlier edit.
+- **Limits by default.** Hard time limits (5 / 15 / 45 min for `scout` / `general` / `implement`), a $5 cap on Pi's estimated cost per run, and at most four workers at once. Cost is checked after each reply, so the estimate can exceed $5; a final reply over the cap is kept.
+- **No blind retries.** Eligible infrastructure failures are retried on the same model only after a fully accounted-for, read-only attempt; unknown side effects aren't replayed. me-pi never switches models on its own.
 
-| Command | Does |
-| --- | --- |
-| `/delegate status` | running jobs, recent calls, model resolution |
-| `/delegate models` | config path |
-| `/delegate cancel <id>` | cancel a background job |
-| `/guard on` / `/guard off` | toggle guard for this session |
+## Where it's weaker
 
-`/new`, `/resume`, `/fork`, and `/clone` ask first while background jobs run. Roles, limits, model pools and recovery: [docs/delegate.md](docs/delegate.md).
+- **Custom roles.** The three roles are built in; you can't define your own agent role or toolset.
+- **Parallel writers.** Today one `implement` worker writes per repo, in your checkout. Worktree-based writers aren't supported yet.
+- **Long-lived jobs.** Background jobs end on `/reload`, a session switch, or Pi exit, and a worker's session can't be resumed.
+- **A live view or built-in chains.** You see progress and the final answer, not the worker's conversation; workflows beyond that depend on your own skills.
+
+Packages such as [`pi-subagents`](https://www.npmjs.com/package/pi-subagents) and [`pi-side-agents`](https://www.npmjs.com/package/pi-side-agents) aim at some of these; compare before choosing.
 
 ## Configure
 
@@ -137,7 +115,9 @@ rm ~/.pi/agent/delegate.json   # if you created it
 
 ## My setup
 
-The rest of this repo is my personal Pi setup, shared as a reference rather than a product: my global policy (`GLOBAL_AGENTS.md`), skills I use to drive `delegate` for implementation and spec work (`skills/`), and `./install.sh`, which wires them in machine-wide with a few extras. It changes as my workflow does, and some skills expect skills from my own collection. You don't need any of it for the package; read and copy what's useful. What `install.sh` does and how to undo it: [docs/setup.md](docs/setup.md).
+Want a workflow around the extensions? The rest of this repo is my personal Pi setup, shared as a reference rather than a product: a global policy (`GLOBAL_AGENTS.md`) and skills for implementation and spec work (`skills/`). You can read and copy what helps, or try the full setup.
+
+You don't need it for the package. `./install.sh` links the policy and skills machine-wide and installs extras; it changes what Pi loads across your sessions. It evolves with my workflow, and some skills expect others from my collection. Review the script and [docs/setup.md](docs/setup.md) for requirements, effects and undo steps before choosing it. If you installed the Git package above, remove it with `pi remove git:github.com/agmxyz/me-pi` before installing the local checkout, so Pi doesn't load both.
 
 ## Contributing
 
