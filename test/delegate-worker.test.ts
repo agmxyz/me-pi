@@ -15,6 +15,7 @@ import {
 	workerLaunch,
 	workerSystemPrompt,
 } from "../packages/pi-workers/extensions/delegate-worker.ts";
+import { classify, workerRisk } from "../packages/pi-workers/extensions/guard.ts";
 
 const POLICY = readFileSync(new URL("../GLOBAL_AGENTS.md", import.meta.url), "utf8");
 const headings = (text: string) => text.split("\n").filter((line) => line.startsWith("## "));
@@ -168,6 +169,19 @@ test("implement's contract keeps scope and check integrity; read-only workers do
 	assert.match(workerContract(false), /your assumptions and what you left unverified last\./);
 	assert.match(workerContract(false), /Past ~600 words, the middle of your answer is cut/);
 	assert.doesNotMatch(c, /middle of your answer is cut/);
+	// The scratch cleanup the contract teaches must pass guard, or the worker is blocked for following it.
+	const cleanup = c.match(/remove them with `([^`]+)`/)?.[1]?.replace("<name>", "repro");
+	assert.ok(cleanup, "the contract names a scratch cleanup command");
+	assert.equal(
+		classify(cleanup, () => "feat"),
+		undefined,
+	);
+	assert.equal(workerRisk(cleanup), undefined);
+	assert.equal(
+		classify('rm -rf "$TMPDIR/repro"', () => "feat"),
+		"recursive rm",
+		"a bare $TMPDIR still asks",
+	);
 });
 
 test("only workers with web tools get the fetch_content auth rule; everyone treats content as data", () => {
