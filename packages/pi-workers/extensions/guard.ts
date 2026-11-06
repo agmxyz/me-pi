@@ -48,6 +48,22 @@ const TEMP_ENTRY = String.raw`[^/*?\s]+(?:/\S*)?$`;
 const DISPOSABLE = new RegExp(
 	String.raw`^(?:(?:\./)?(?:node_modules|dist|build|out|target|coverage|\.cache|\.next|\.turbo|tmp)(?:/|$)|(?:/private)?/tmp/${TEMP_ENTRY}|/var/folders/[^/*?\s]+/[^/*?\s]+/[^/*?\s]+/${TEMP_ENTRY}|\$\{TMPDIR:\?\}/${TEMP_ENTRY})`,
 );
+// `${TMPDIR:?}` is the session's temp dir only if the command can't rebind TMPDIR first (`TMPDIR=/ rm …`,
+// `export TMPDIR=/;`, `sudo`, `z=TMP; z+=DIR=/; ((z))`, `bash -c '…'` reading rc files). Fail closed: outside those
+// expansions, the command must be plain characters (no expansion, assignment, arithmetic, brace, glob, escape, or single
+// quote), never spell `TMP` or `DIR` once quotes are dropped (`TMP""DIR`), and call nothing that changes the environment
+// or writes a variable, at any position, including `.` at a command start unless a path continues it (`.>/dev/null v`
+// sources). A false prompt is fine; a miss is not.
+const TMPDIR_REF = `\${TMPDIR:?}`;
+const NOT_PLAIN = /[^\w\s/.,:@%+&|;>"-]/;
+const REBINDS_ENV =
+	/TMP|DIR|(?<![\w-])(?:env|sudo|doas|su|runuser|pkexec|export|unset|set|source|declare|local|typeset|readonly|read|readarray|mapfile|printf|getopts|eval|let|builtin|enable|exec|select|trap|alias|fc|history)(?![\w-])|(?:^|[\s;&|(])\.(?![\w./-])/;
+
+function tmpdirMayChange(command: string): boolean {
+	const rest = command.replaceAll(TMPDIR_REF, "");
+	return NOT_PLAIN.test(rest) || REBINDS_ENV.test(rest.replace(/["']/g, ""));
+}
+
 // Push options whose value is a separate word, so it is not mistaken for the remote or a refspec.
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
 export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
@@ -190,6 +206,8 @@ export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
 ): string | undefined {
+	// Unstripped: a dropped message or heredoc body could hide a rebinding.
+	const tmpdirUnsafe = tmpdirMayChange(command);
 	command = withoutMessages(command);
 	const gitCommands = inFreshTempRepo(command) ? [] : [...command.matchAll(GIT_COMMAND)];
 	// The session's branch is read before the command runs, so it says nothing about the target after
@@ -209,7 +227,10 @@ export function classify(
 			(w, i) => !w.startsWith("-") && w !== "{}" && w !== "\\" && !/^\d*[<>]/.test(w) && !isRedirect(words[i - 1]),
 		);
 		const disposable =
-			targets.length > 0 && targets.every((t) => DISPOSABLE.test(t) && !/(?:^|\/)\.\.(?:\/|$)/.test(t));
+			targets.length > 0 &&
+			targets.every(
+				(t) => DISPOSABLE.test(t) && !/(?:^|\/)\.\.(?:\/|$)/.test(t) && !(t.startsWith(TMPDIR_REF) && tmpdirUnsafe),
+			);
 		if (!disposable) return "recursive rm";
 	}
 	return undefined;
