@@ -35,7 +35,10 @@ const ARGS = String.raw`[^;&|\n]*`;
 
 // Lookaheads, so a command nested in another one's arguments (`git log "$(git push ...)"`) is found too.
 const GIT_COMMAND = new RegExp(`(?=${AT_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
-const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${ARGS}))`, "g");
+// `rm`'s arguments: like `ARGS`, but steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so
+// targets after them are still read. Stops at `;`, `&&`, `||`, `|`, `|&`, a lone `&`, and newline.
+const RM_ARGS = String.raw`(?:[<>]&|&>|>\||[^;&|\n])*`;
+const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${RM_ARGS}))`, "g");
 // A quoted commit message (`-m "..."`, `-am '...'`, `--message=...`) is text, unless it runs a command.
 const MESSAGE_ARG = /(\s(?:-[A-Za-z]*m\s*|--message(?:=|\s+)))("(?:[^"\\]|\\.)*"|'[^']*')/g;
 // `cd` at a command position: a bare push may then target another repository's branch.
@@ -202,6 +205,37 @@ function inFreshTempRepo(command: string): boolean {
 	return !LEAVES_TEMP.test(rest.replace(new RegExp(`"\\$\\{?${name}\\}?"|\\$\\{?${name}\\}?(?!\\w)`, "g"), "TEMP"));
 }
 
+// A redirect word, read before quotes are dropped (a quoted `">"` is an argument): `2>/dev/null`, `&>log`, `>|log`.
+const REDIRECT = /^(?:\d*|&)[<>]/;
+// A redirect operator whose file is the next word (`> log`, `2>> log`, `&> log`, `>| log`, `>& log`). `2>&1`, `>&2`,
+// and `>file` carry their own operand, so the word after them is a target.
+const REDIRECT_OPERATOR = /^(?:\d*|&)[<>]+[&|]?$/;
+
+// Reads `rm`'s arguments once: whether it is recursive, and its targets (not options, `find -exec` placeholders, or
+// redirects and their files). A word with a glued redirect (`/tmp/&>log`, `dist>log`) yields both the part before it
+// (`/tmp/`, what rm gets) and the whole word, so the redirect can neither hide a temp root nor make a word disposable;
+// the redirect never takes the next word as its file. An option with a glued redirect (`-rf&>log`) counts as recursive
+// with no trusted targets, so it always asks: main asked for `rm -rf&>/dev/null dist`, and this keeps that.
+// Targets are undefined when a word holds `<`, `>`, `&`, or `|` in arguments with quotes or escapes: without a
+// tokenizer, a quoted character can't be told from a redirect (`"${TMPDIR:?}/"&>log`).
+function rmArgs(args: string): { recursive: boolean; targets: string[] | undefined } {
+	const quoted = /["'\\]/.test(args);
+	const raw = args.split(/\s+/).filter(Boolean);
+	if (raw.some((w) => /^["'\\]*-/.test(w) && /[<>&|]/.test(w))) return { recursive: true, targets: undefined };
+	const recursive = hasShort(wordsOf(args), "[rR]", "--recursive");
+	const targets: string[] = [];
+	for (const [i, w] of raw.entries()) {
+		if (REDIRECT.test(w) || (i > 0 && REDIRECT_OPERATOR.test(raw[i - 1]))) continue;
+		const cut = w.search(/[<>&|]/);
+		if (cut >= 0 && quoted) return { recursive, targets: undefined };
+		for (const part of cut > 0 ? [w.slice(0, cut), w] : [w]) {
+			const word = part.replace(/["'()\x60]/g, "");
+			if (word && !word.startsWith("-") && word !== "{}" && word !== "\\") targets.push(word);
+		}
+	}
+	return { recursive, targets };
+}
+
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
@@ -219,14 +253,10 @@ export function classify(
 		if (risk) return risk;
 	}
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
-		const words = wordsOf(args);
-		if (!hasShort(words, "[rR]", "--recursive")) continue;
-		// Not targets: options, `find -exec` placeholders, and redirections (`2>/dev/null`, `> log`).
-		const isRedirect = (w: string | undefined) => w !== undefined && /^\d*(?:[<>]+|>&)\d*$/.test(w);
-		const targets = words.filter(
-			(w, i) => !w.startsWith("-") && w !== "{}" && w !== "\\" && !/^\d*[<>]/.test(w) && !isRedirect(words[i - 1]),
-		);
+		const { recursive, targets } = rmArgs(args);
+		if (!recursive) continue;
 		const disposable =
+			targets !== undefined &&
 			targets.length > 0 &&
 			targets.every(
 				(t) => DISPOSABLE.test(t) && !/(?:^|\/)\.\.(?:\/|$)/.test(t) && !(t.startsWith(TMPDIR_REF) && tmpdirUnsafe),
