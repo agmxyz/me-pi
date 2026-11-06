@@ -9,12 +9,12 @@ My [Pi](https://github.com/earendil-works/pi) setup, shared as a reference rathe
 The part you can install on its own is [`pi-workers`](packages/pi-workers): Pi extensions that send searches, reviews and scoped changes to separate worker processes and bring back their answers, so your main session stays focused on decisions.
 
 ```sh
-pi install git:github.com/agmxyz/me-pi
+pi install npm:@agmxyz/pi-workers
 ```
 
 Restart Pi or run `/reload`, then try: "Have a scout find where this project handles configuration, with `path:line` evidence." What it does, how it works, its limits and safety notes: [packages/pi-workers](packages/pi-workers). Delegation and recovery in depth: [packages/pi-workers/docs/delegate.md](packages/pi-workers/docs/delegate.md).
 
-The repo moved from `0bmario/me-pi`. If you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first so Pi doesn't load the extensions twice.
+To track `main` instead, install `git:github.com/agmxyz/me-pi`; install only one of the two. The repo moved from `0bmario/me-pi`: if you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first.
 
 ## The rest of the setup
 
@@ -26,7 +26,7 @@ Around `pi-workers`, I use:
 
 You don't need any of it for `pi-workers`; read and copy what's useful. Some skills expect others from my own collection.
 
-`./install.sh` changes what Pi loads across all your sessions: it links the policy and skills, registers this checkout as a package, and installs `pi-web-access`. If you installed the Git package above, remove it with `pi remove git:github.com/agmxyz/me-pi` first, so Pi doesn't load both. Review the script and [docs/setup.md](docs/setup.md) for requirements, effects and undo steps before running it.
+`./install.sh` changes what Pi loads across all your sessions: it links the policy and skills, registers this checkout as a package, and installs `pi-web-access`. If you installed `pi-workers` from npm or Git, remove it first (`pi remove npm:@agmxyz/pi-workers` or `pi remove git:github.com/agmxyz/me-pi`), so Pi doesn't load the extensions twice. Review the script and [docs/setup.md](docs/setup.md) for requirements, effects and undo steps before running it.
 
 ## Contributing
 

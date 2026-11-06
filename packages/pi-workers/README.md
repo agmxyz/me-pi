@@ -11,8 +11,10 @@ Ask for a lookup, a review or a scoped change. Your main session briefs the work
 Requires Pi 1.5.0 (the version CI tests) on macOS or Linux (CI covers Linux; macOS is tested locally).
 
 ```sh
-pi install git:github.com/agmxyz/me-pi
+pi install npm:@agmxyz/pi-workers
 ```
+
+To track `main` instead, install `git:github.com/agmxyz/me-pi`. Install only one of the two: both load the same extensions.
 
 Restart Pi or run `/reload`, then ask in plain language:
 
@@ -30,7 +32,7 @@ Added a default timeout. Details: /tmp/me-pi-delegate-123/im1.md
 
 The ✓ means the declared check passed on the delivered commit, **not** that the code is correct. Review the change. Workers are not sandboxed: they run with your OS permissions; `implement` edits and commits in your real checkout. See [Safety](#safety).
 
-The repo moved from `0bmario/me-pi`. If you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first so Pi doesn't load the extensions twice.
+Switching from a Git install? Run `pi remove git:github.com/agmxyz/me-pi` (or `git:github.com/0bmario/me-pi`, the old URL) first, so Pi doesn't load the extensions twice.
 
 ## How it works
 
@@ -78,12 +80,12 @@ Model pools live in `~/.pi/agent/delegate.json` (`ME_PI_DELEGATE_CONFIG` points 
 
 Calls with `web: true` need web tools: `pi install npm:pi-web-access`.
 
-To skip `guard`, replace the `git:github.com/agmxyz/me-pi` entry in `~/.pi/agent/settings.json` with a filter (keep `skill.ts`: workers use it to load skills):
+To skip `guard`, replace the package entry in `~/.pi/agent/settings.json` with a filter (keep `skill.ts`: workers use it to load skills). The paths are the same for the Git source:
 
 ```json
 {
   "packages": [
-    { "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/delegate.ts", "extensions/skill.ts"] }
+    { "source": "npm:@agmxyz/pi-workers", "extensions": ["extensions/delegate.ts", "extensions/skill.ts"] }
   ]
 }
 ```
@@ -110,7 +112,7 @@ These are prompt text, so your own `AGENTS.md` can refine or contradict them; th
 ## Uninstall
 
 ```sh
-pi remove git:github.com/agmxyz/me-pi
+pi remove npm:@agmxyz/pi-workers   # or git:github.com/agmxyz/me-pi
 rm ~/.pi/agent/delegate.json   # if you created it
 ```
 
