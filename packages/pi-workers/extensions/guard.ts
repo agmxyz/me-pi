@@ -35,7 +35,10 @@ const ARGS = String.raw`[^;&|\n]*`;
 
 // Lookaheads, so a command nested in another one's arguments (`git log "$(git push ...)"`) is found too.
 const GIT_COMMAND = new RegExp(`(?=${AT_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
-const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${ARGS}))`, "g");
+// `rm`'s arguments: like `ARGS`, but steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so
+// targets after them are still read. Stops at `;`, `&&`, `||`, `|`, `|&`, a lone `&`, and newline.
+const RM_ARGS = String.raw`(?:[<>]&|&>|>\||[^;&|\n])*`;
+const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${RM_ARGS}))`, "g");
 // A quoted commit message (`-m "..."`, `-am '...'`, `--message=...`) is text, unless it runs a command.
 const MESSAGE_ARG = /(\s(?:-[A-Za-z]*m\s*|--message(?:=|\s+)))("(?:[^"\\]|\\.)*"|'[^']*')/g;
 // `cd` at a command position: a bare push may then target another repository's branch.
@@ -202,6 +205,21 @@ function inFreshTempRepo(command: string): boolean {
 	return !LEAVES_TEMP.test(rest.replace(new RegExp(`"\\$\\{?${name}\\}?"|\\$\\{?${name}\\}?(?!\\w)`, "g"), "TEMP"));
 }
 
+// A redirect word, read before quotes are dropped (a quoted `">"` is an argument): `2>/dev/null`, `&>log`, `>|log`.
+const REDIRECT = /^(?:\d*|&)[<>]/;
+// A redirect operator whose file is the next word (`> log`, `2>> log`, `&> log`, `>| log`, `>& log`). `2>&1`, `>&2`,
+// and `>file` carry their own operand, so the word after them is a target.
+const REDIRECT_OPERATOR = /^(?:\d*|&)[<>]+[&|]?$/;
+
+// `rm` targets: arguments that are not options, `find -exec` placeholders, or redirects and their files.
+function rmTargets(args: string): string[] {
+	const raw = args.split(/\s+/).filter(Boolean);
+	return raw
+		.filter((w, i) => !REDIRECT.test(w) && !(i > 0 && REDIRECT_OPERATOR.test(raw[i - 1])))
+		.map((w) => w.replace(/["'()\x60]/g, ""))
+		.filter((w) => w && !w.startsWith("-") && w !== "{}" && w !== "\\");
+}
+
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
@@ -221,11 +239,7 @@ export function classify(
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
 		const words = wordsOf(args);
 		if (!hasShort(words, "[rR]", "--recursive")) continue;
-		// Not targets: options, `find -exec` placeholders, and redirections (`2>/dev/null`, `> log`).
-		const isRedirect = (w: string | undefined) => w !== undefined && /^\d*(?:[<>]+|>&)\d*$/.test(w);
-		const targets = words.filter(
-			(w, i) => !w.startsWith("-") && w !== "{}" && w !== "\\" && !/^\d*[<>]/.test(w) && !isRedirect(words[i - 1]),
-		);
+		const targets = rmTargets(args);
 		const disposable =
 			targets.length > 0 &&
 			targets.every(
