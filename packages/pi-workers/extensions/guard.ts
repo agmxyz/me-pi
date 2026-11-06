@@ -3,6 +3,8 @@
  * With a UI it asks for confirmation; without one (print mode) it blocks.
  * `/guard on|off` toggles it for the current session; every session starts on.
  * The Approval policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
+ * Recursive `rm` passes without asking only for build directories and named entries in temp directories, including
+ * `$TMPDIR/x` and a directory the same command made with `mktemp -d` (see `disposableTarget`).
  */
 
 import { spawnSync } from "node:child_process";
@@ -48,27 +50,37 @@ const TEMP_ENTRY = String.raw`[^/*?\s]+(?:/\S*)?$`;
 const DISPOSABLE = new RegExp(
 	String.raw`^(?:(?:\./)?(?:node_modules|dist|build|out|target|coverage|\.cache|\.next|\.turbo|tmp)(?:/|$)|(?:/private)?/tmp/${TEMP_ENTRY}|/var/folders/[^/*?\s]+/[^/*?\s]+/[^/*?\s]+/${TEMP_ENTRY}|\$\{TMPDIR:\?\}/${TEMP_ENTRY})`,
 );
-// What `$TMPDIR` must hold for `$TMPDIR/…` to count as `${TMPDIR:?}/…`: a temp root or a directory in one. Anything
-// else (unset, `/`, `$HOME`) keeps it asking.
+// What `$TMPDIR` must hold for `$TMPDIR/…` to count as `${TMPDIR:?}/…`: a temp root or a directory in one, without
+// spaces or `..`. Anything else (unset, `/`, `$HOME`) keeps it asking.
 const TEMP_DIR = /^(?:(?:\/private)?\/tmp|\/var\/folders\/[^/\s]+\/[^/\s]+\/T)(?:\/[^\s]*)?$/;
 // `$TMPDIR`, `${TMPDIR}`, and `${TMPDIR:?}`: the only mentions that leave the variable as Pi's bash inherits it.
 const TMPDIR_EXPANSION = /\$\{TMPDIR(?::\?)?\}|\$TMPDIR(?!\w)/g;
+// A `..` path segment.
+const DOT_DOT = /(?:^|\/)\.\.(?:\/|$)/;
+// A word as a command or argument, not part of a path or name (`$TMPDIR/docker-build`, `my-source`).
+const word = (names: string) => String.raw`(?<![\w/.$-])(?:${names})(?![\w/.-])`;
 // Wrappers that may run `rm` as another user, host, or container, with another environment.
-const ELSEWHERE = String.raw`\b(?:sudo|su|doas|pkexec|runuser|ssh|systemd-run|nix-shell|docker|podman|kubectl)\b`;
-// Commands that may run `rm` with another TMPDIR: those wrappers, `env -i`/`env -`, and `exec -c`.
-const OTHER_ENV = new RegExp(
-	String.raw`${ELSEWHERE}|\benv\b[^;&|\n]*\s(?:-\w*i\w*|-|--ignore-environment)(?=\s|$)|\bexec\s+-\w*c`,
+const ELSEWHERE = word("sudo|su|doas|pkexec|runuser|ssh|systemd-run|nix-shell|docker|podman|kubectl");
+// Commands that may run `rm` with another TMPDIR: those wrappers, `env` with any option (`-i`, `-uTMPDIR`, `--ignore`,
+// GNU abbreviations), and `exec -c`.
+const OTHER_ENV = new RegExp(String.raw`${ELSEWHERE}|${word("env")}\s+-|${word("exec")}\s+-\w*c`);
+// Ways to set a variable or word splitting without writing `NAME=` (`export ${n}DIR=/`, `read`, `printf -v`, `IFS=`),
+// or to run code the guard cannot see (`eval`, `source`, `. file`), at a command start (`git init source` is an
+// argument). A sourced file such as `.venv/bin/activate` may set TMPDIR, so it asks.
+const COMMAND_START = String.raw`(?:^|[;&|(){\x60\n"']|\$\(|\b(?:then|do|else|if|elif|while|until)\s|!\s)\s*(?:[A-Za-z_]\w*=\S*\s+)*`;
+const REBINDS = new RegExp(
+	String.raw`${COMMAND_START}(?:(?:export|declare|typeset|local|readonly|read|mapfile|readarray|getopts|eval|source|let)(?![\w/.-])|printf\s+-v|\.\s)|${word("IFS")}=`,
 );
-// Ways to set a variable or word splitting without writing `NAME=` (`export ${n}DIR=/`, `read`, `printf -v`), or to
-// run code the guard cannot see (`eval`, `source`, `. file`).
-const REBINDS =
-	/\b(?:export|declare|typeset|local|readonly|read|mapfile|readarray|getopts|eval|source|IFS)\b|\bprintf\s+-v|(?:^|[;&|(\n]\s*)\.\s/;
 // A nested shell (`sh -c`, `bash -lc`) or a wrapper: it does not see unexported variables, so `$V/x` there is `/x`.
 const NESTED_SHELL = new RegExp(String.raw`\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c|${ELSEWHERE}`);
-// A word the shell may expand into `..` without writing it (`\.\.`, `{..,x}`, `.[.]`, `.?`), so the `..` check misses it.
-const HIDDEN_DOTS = /[\\{[]|(?:^|\/)\.[*?]/;
+// A word the shell may expand into `..` without writing it: an escape (`\.\.`), a glob after a dot (`.?`, `.*`), any
+// bracket (`.[.]`, `[--/]`), or a brace other than a set of non-empty plain names (`{..,x}`, `.{a,}.`, `{a..z}`).
+const HIDDEN_DOTS = /[\\[]|(?:^|\/)\.[*?]|\{(?![\w-]+(?:,[\w-]+)+\})/;
 // `V=$(mktemp -d …)` opening a command, then `&&`, `;`, or a newline: `$V` names a fresh temp directory.
 const FRESH_TEMP_DIR = /^\s*(\w+)=\$\(mktemp -d(?:\s+-t\s+[\w.-]+)?\s*\)\s*(&&|;|\n)/;
+// Variables bash sets itself (`cd` sets PWD and OLDPWD, every command `_`, `read` REPLY), so a fresh value may not last.
+const SHELL_SET =
+	/^(?:_|PWD|OLDPWD|REPLY|OPTARG|OPTIND|MAPFILE|IFS|HOME|PATH|CDPATH|TMPDIR|RANDOM|SRANDOM|SECONDS|LINENO|PPID|UID|EUID|SHLVL|PIPESTATUS|FUNCNAME|GROUPS|DIRSTACK|COPROC|HOSTNAME|HOSTTYPE|MACHTYPE|OSTYPE|COLUMNS|LINES|HISTCMD|BASH\w*|COMP_\w+|READLINE_\w+|EPOCH\w+)$/;
 // A separator after which a command runs even when `mktemp` failed and left the variable empty.
 const RUNS_ON_FAILURE = /[;\n]|\|\||(?<![&>])&(?![&>])/;
 // Push options whose value is a separate word, so it is not mistaken for the remote or a refspec.
@@ -166,60 +178,64 @@ function withoutMessages(command: string): string {
 		);
 }
 
-// `V=$(mktemp -d …) && cd "$V"` opening a command: its git commands then run in a fresh temp repo.
-const FRESH_TEMP_REPO =
-	/^\s*(\w+)=\$\(mktemp -d(?:\s+-t\s+[\w.-]+)?\s*\)\s*(?:&&|;)\s*cd\s+(?:"\$\{?\1\}?"|\$\{?\1\}?)\s*(?:&&|;)/;
+// `$V`, `${V}`, or `${V:?}` for a variable name.
+function expansionOf(name: string, flags = ""): RegExp {
+	return new RegExp(String.raw`\$\{${name}(?::\?)?\}|\$${name}(?!\w)`, flags);
+}
+
+// A command's opening `V=$(mktemp -d …)`: the variable, the separator after it, and the rest of the command.
+interface FreshTempDir {
+	name: string;
+	separator: string;
+	rest: string;
+}
+
+/**
+ * The command's opening `mktemp -d` assignment, if its variable keeps that value: not one bash sets itself, and named
+ * nowhere else in the command except as `$V` (no `V=…`, `read V`, `for V`, `printf -v V`, `eval`, `source`). Only an
+ * opening assignment counts: one later in the command may not run (`false && d=…`) or may follow a use of the old value.
+ */
+function freshTempDir(command: string): FreshTempDir | undefined {
+	const fresh = FRESH_TEMP_DIR.exec(command);
+	if (!fresh || SHELL_SET.test(fresh[1])) return undefined;
+	const [opening, name, separator] = fresh;
+	const rest = command.slice(opening.length);
+	// A mention inside a path (`/tmp/V`) or as an option (`-d`) cannot reassign it; `printf -vd` is in REBINDS.
+	const others = rest.replace(expansionOf(name, "g"), "");
+	if (new RegExp(String.raw`(?<![/.-])\b${name}(?![\w/.-])`).test(others) || REBINDS.test(rest)) return undefined;
+	return { name, separator, rest };
+}
+
+// `cd "$V"` right after the fresh temp directory is made: the command's git commands then start in a fresh temp repo.
+const CD_FRESH = (name: string) =>
+	new RegExp(String.raw`^\s*cd\s+(?:"(?:${expansionOf(name).source})"|(?:${expansionOf(name).source}))\s*(?:&&|;|\n)`);
 // What could take git out of it: any other expansion, an absolute, home, or `..` path, a `cd` that is not one plain
 // relative path (bare `cd`, `cd -`), `popd`, or a git-dir override.
 const LEAVES_TEMP =
 	/[$\x60~]|(?:^|[\s=:"'(])(?:\/|\.\.(?:[/\s"')]|$))|(?:^|[;&|(\s])(?:cd|pushd)(?![\w-])(?!\s+["']?[\w.][^\s;&|]*)|(?:^|[;&|(\s])popd(?![\w-])|(?:^|\s)(?:-C|--git-dir|--work-tree)\b|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|CONFIG\w*|NAMESPACE)=/;
 
 /**
- * Whether every git command in `command` runs in the fresh temp repo it opens with; reassigning the variable or a path
- * that could leave it keeps the git rules. Only implement workers get this: their git remote protocols are cut.
+ * Whether every git command in `command` runs in the fresh temp repo it opens with (`V=$(mktemp -d) && cd "$V" && …`);
+ * a path that could leave it keeps the git rules. Only implement workers get this: their git remote protocols are cut.
  */
 function inFreshTempRepo(command: string): boolean {
 	if (!isImplementWorker()) return false;
-	const fresh = FRESH_TEMP_REPO.exec(command);
-	if (!fresh) return false;
-	const name = fresh[1];
-	const rest = command.slice(fresh[0].length);
-	if (new RegExp(`\\b${name}=`).test(rest)) return false;
-	return !LEAVES_TEMP.test(rest.replace(new RegExp(`"\\$\\{?${name}\\}?"|\\$\\{?${name}\\}?(?!\\w)`, "g"), "TEMP"));
+	const fresh = freshTempDir(command);
+	const cd = fresh && CD_FRESH(fresh.name).exec(fresh.rest);
+	if (!fresh || !cd) return false;
+	return !LEAVES_TEMP.test(fresh.rest.slice(cd[0].length).replace(expansionOf(fresh.name, "g"), "TEMP"));
 }
 
 /**
- * The variable a command's opening `mktemp -d` assignment names, if nothing else in the command names it
- * (`V=…`, `read V`, `unset V`, `for V`). `paths` says whether a path below it (`"$V"/x`) is safe without `${V:?}`:
- * only when every later command depends on `mktemp` succeeding (`&&` chains) and no nested shell or other user runs
- * it, since an empty `$V/x` is `/x`. The bare `"$V"` is safe either way: empty, `rm` gets `""` or no operand.
+ * Whether recursive `rm` may remove `word` (as written, backticks inside it kept) without asking.
+ * `$TMPDIR/…` counts as `${TMPDIR:?}/…` when `tmpdirKept`. A fresh `mktemp -d` variable counts when quoted (its path
+ * may hold spaces), on its own, or with a path below it when every later command needs `mktemp` to have succeeded
+ * (an `&&` chain with no nested shell, since an empty `$V/x` is `/x`) or as `${V:?}/x`. Any other expansion
+ * (`/tmp/$x`, `/tmp/\`cmd\``) may be empty or hold `..`, so it asks.
  */
-function freshTempDir(command: string): { name: string; paths: boolean } | undefined {
-	const fresh = FRESH_TEMP_DIR.exec(command);
-	// Uppercase names and `_` may be the shell's own (`OLDPWD`, `PWD`, `REPLY`, `$_`), which `cd` or `read` reset.
-	if (!fresh || !/[a-z]/.test(fresh[1])) return undefined;
-	const name = fresh[1];
-	const rest = command.slice(fresh[0].length);
-	// Any other mention could reassign it; one inside a path (`/tmp/V`) cannot.
-	const others = rest.replace(new RegExp(`\\$\\{${name}(?::\\?)?\\}|\\$${name}(?!\\w)`, "g"), "");
-	if (new RegExp(`(?<![/.-])\\b${name}(?![\\w/.-])`).test(others) || REBINDS.test(rest)) return undefined;
-	return { name, paths: fresh[2] === "&&" && !RUNS_ON_FAILURE.test(rest) && !NESTED_SHELL.test(rest) };
-}
-
-/**
- * Whether recursive `rm` may remove `target` (a word as written, backticks inside it kept) without asking.
- * `$TMPDIR/…` counts as `${TMPDIR:?}/…` when TMPDIR names a temp directory here and the command does not change it,
- * since Pi's bash inherits this process's environment. A fresh `mktemp -d` variable counts when quoted (its path may
- * hold spaces), on its own or with a path below it as `freshTempDir` allows. Any other expansion (`/tmp/$x`,
- * `/tmp/\`cmd\``) may be empty or hold `..`, so it asks.
- */
-function disposableTarget(
-	word: string,
-	tmpdirKept: boolean,
-	fresh: { name: string; paths: boolean } | undefined,
-): boolean {
+function disposableTarget(word: string, tmpdirKept: boolean, fresh: FreshTempDir | undefined): boolean {
 	const target = word.replace(/["'()]/g, "");
-	if (/(?:^|\/)\.\.(?:\/|$)/.test(target) || HIDDEN_DOTS.test(target.replace(/^\$\{\w+(?::\?)?\}/, ""))) return false;
+	if (DOT_DOT.test(target) || HIDDEN_DOTS.test(target.replace(/^\$\{\w+(?::\?)?\}/, ""))) return false;
 	const variable = /^\$(?:\{(\w+)(:\?)?\}|(\w+))(.*)$/.exec(target);
 	let path = target;
 	if (variable) {
@@ -231,7 +247,9 @@ function disposableTarget(
 		} else if (name === fresh?.name) {
 			if (!word.startsWith('"')) return false;
 			if (rest === "") return true;
-			return (guarded !== undefined || fresh.paths) && /^\/+[^/]/.test(rest) && !hasExpansion(rest);
+			const chained =
+				fresh.separator === "&&" && !RUNS_ON_FAILURE.test(fresh.rest) && !NESTED_SHELL.test(fresh.rest);
+			return (guarded !== undefined || chained) && /^\/+[^/]/.test(rest) && !hasExpansion(rest);
 		} else return false;
 	}
 	return DISPOSABLE.test(path) && !hasExpansion(path.replace(/^\$\{TMPDIR:\?\}/, ""));
@@ -242,9 +260,15 @@ function hasExpansion(path: string): boolean {
 	return /[$\x60]/.test(path.replace(/\$\$/g, ""));
 }
 
+/**
+ * The risk `command` carries, or undefined. `tmpdir` is the TMPDIR Pi's bash inherits: it gets this process's
+ * environment. A Pi `commandPrefix` or `spawnHook`, `BASH_ENV`, or a shell startup file could still change TMPDIR
+ * before the command runs; the guard accepts that, as it is a guardrail, not a sandbox.
+ */
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
+	tmpdir: string | undefined = process.env.TMPDIR,
 ): string | undefined {
 	command = withoutMessages(command);
 	const gitCommands = inFreshTempRepo(command) ? [] : [...command.matchAll(GIT_COMMAND)];
@@ -256,11 +280,12 @@ export function classify(
 		const risk = gitRisk(sub, wordsOf(args), currentBranch, elsewhere);
 		if (risk) return risk;
 	}
-	const tmpdir = process.env.TMPDIR ?? "";
+	// TMPDIR is kept unless the command names it other than as `$TMPDIR` (`TMPDIR=`, `unset TMPDIR`, `env -uTMPDIR`).
 	const tmpdirKept =
+		tmpdir !== undefined &&
 		TEMP_DIR.test(tmpdir) &&
-		!/(?:^|\/)\.\.(?:\/|$)/.test(tmpdir) &&
-		!/\bTMPDIR\b/.test(command.replace(TMPDIR_EXPANSION, "")) &&
+		!DOT_DOT.test(tmpdir) &&
+		!command.replace(TMPDIR_EXPANSION, "").includes("TMPDIR") &&
 		!REBINDS.test(command) &&
 		!OTHER_ENV.test(command);
 	const fresh = freshTempDir(command);

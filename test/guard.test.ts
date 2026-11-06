@@ -66,6 +66,7 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 		["rm -rf /tmp/`echo x`", onFeature, "recursive rm"],
 		["rm -rf /tmp/x/$y", onFeature, "recursive rm"],
 		["rm -rf /tmp/x/{..,y}/z", onFeature, "recursive rm"],
+		["rm -rf /tmp/{a..z}", onFeature, "recursive rm"],
 		["rm -rf dist/\\.\\./src", onFeature, "recursive rm"],
 		["rm -rf /tmp/a*", onFeature, "recursive rm"],
 		["rm -rf /tmp/x/../../etc", onFeature, "recursive rm"],
@@ -149,6 +150,7 @@ test("allows feature pushes, PRs, and routine commands", () => {
 		["rm -rf dist/a..b", onMain],
 		["rm -rf /var/folders/ab/cd/T/me-pi-x", onMain],
 		["rm -rf /tmp/me-pi-$$", onMain],
+		["rm -rf /tmp/build-{a,b}", onMain],
 		["git push -o ci.skip origin feature/x", onMain],
 		["git rebase --continue", onMain],
 		["git commit -m 'fix'", onMain],
@@ -163,17 +165,19 @@ test("allows feature pushes, PRs, and routine commands", () => {
 	}
 });
 
-test("recursive rm of $TMPDIR/… passes only while TMPDIR names a temp directory the command keeps", (t) => {
-	const saved = process.env.TMPDIR;
-	t.after(() => {
-		if (saved === undefined) delete process.env.TMPDIR;
-		else process.env.TMPDIR = saved;
-	});
+test("recursive rm of $TMPDIR/… passes only while TMPDIR names a temp directory the command keeps", () => {
 	const entries = ['rm -rf "$TMPDIR/x"', "rm -rf $TMPDIR/x", `rm -rf "\${TMPDIR}/x"`, 'rm -rf "$TMPDIR"/x'];
 	for (const tmpdir of ["/tmp", "/private/tmp/", "/var/folders/ab/cd/T/", "/var/folders/ab/cd/T/job-1"]) {
-		process.env.TMPDIR = tmpdir;
-		for (const command of [...entries, 'rm -rf "$TMPDIR/a/b"', `cd "$TMPDIR" && rm -rf "$TMPDIR/x"`])
-			assert.equal(classify(command, onMain), undefined, `TMPDIR=${tmpdir}: ${command}`);
+		for (const command of [
+			...entries,
+			'rm -rf "$TMPDIR/a/b"',
+			`cd "$TMPDIR" && rm -rf "$TMPDIR/x"`,
+			// Wrapper and builtin names inside a path are not commands.
+			'rm -rf "$TMPDIR/docker-build"',
+			'rm -rf "$TMPDIR/source"',
+			'rm -rf "$TMPDIR/build-{a,b}"',
+		])
+			assert.equal(classify(command, onMain, tmpdir), undefined, `TMPDIR=${tmpdir}: ${command}`);
 		for (const command of [
 			"rm -rf $TMPDIR",
 			'rm -rf "$TMPDIR/"',
@@ -183,28 +187,35 @@ test("recursive rm of $TMPDIR/… passes only while TMPDIR names a temp director
 			'TMPDIR=/ rm -rf "$TMPDIR/x"',
 			'unset TMPDIR; rm -rf "$TMPDIR/x"',
 			'export TMPDIR=/; rm -rf "$TMPDIR/x"',
+			// `env` with any option may drop or unset TMPDIR (`--ignore` abbreviates `--ignore-environment`).
 			`env -i bash -c 'rm -rf "$TMPDIR/x"'`,
+			`env -uTMPDIR bash -c 'rm -rf "$TMPDIR/Users"'`,
+			`env -u TMPDIR bash -c 'rm -rf "$TMPDIR/Users"'`,
+			`env --ignore bash -c 'rm -rf "$TMPDIR/Users"'`,
+			`env --unset=TMPDIR bash -c 'rm -rf "$TMPDIR/Users"'`,
 			'sudo rm -rf "$TMPDIR/x"',
 			'pkexec env rm -rf "$TMPDIR/x"',
 			// TMPDIR or word splitting changed without writing `TMPDIR=`.
 			`n=TMP; export \${n}DIR=/; rm -rf "$TMPDIR/x"`,
 			'source ./env.sh && rm -rf "$TMPDIR/x"',
+			'source .venv/bin/activate && rm -rf "$TMPDIR/x"',
+			". ./env.sh; rm -rf $TMPDIR/x",
 			"IFS=/; rm -rf $TMPDIR/x",
 			// Words the shell may expand into `..`.
 			'rm -rf "$TMPDIR"/x/\\.\\./\\.\\./y',
 			'rm -rf "$TMPDIR"/x/{..,y}/z',
+			'rm -rf "$TMPDIR"/x/.{a,}./y',
 			'rm -rf "$TMPDIR"/x/.[.]/y',
 			'rm -rf "$TMPDIR"/x/.?/y',
 		])
-			assert.equal(classify(command, onMain), "recursive rm", `TMPDIR=${tmpdir}: ${command}`);
+			assert.equal(classify(command, onMain, tmpdir), "recursive rm", `TMPDIR=${tmpdir}: ${command}`);
 	}
-	for (const tmpdir of [undefined, "", "/", "/home/me", "/tmp/../etc"]) {
-		if (tmpdir === undefined) delete process.env.TMPDIR;
-		else process.env.TMPDIR = tmpdir;
+	// An unset TMPDIR reaches `classify` as the default from `process.env`; "" stands for it here.
+	for (const tmpdir of ["", "/", "/home/me", "/tmp/../etc", "/tmp/a b"]) {
 		for (const command of entries)
-			assert.equal(classify(command, onMain), "recursive rm", `TMPDIR=${tmpdir}: ${command}`);
+			assert.equal(classify(command, onMain, tmpdir), "recursive rm", `TMPDIR=${tmpdir}: ${command}`);
 		assert.equal(
-			classify(`rm -rf "\${TMPDIR:?}/x"`, onMain),
+			classify(`rm -rf "\${TMPDIR:?}/x"`, onMain, tmpdir),
 			undefined,
 			`\${TMPDIR:?} fails instead of expanding to /x`,
 		);
@@ -245,6 +256,9 @@ test("recursive rm of a mktemp -d directory the command creates passes; reassign
 		'_=$(mktemp -d) && ls / && rm -rf "$_"/Users',
 		'd=$(mktemp -d) && printf -vd / && rm -rf "$d"/etc',
 		'd=$(mktemp -d) && rm -rf "$d"/.?/.?/etc',
+		// Only an opening assignment counts: a later one may not run (`false && d=…`) or follow a use of the old value.
+		'cd x && d=$(mktemp -d) && rm -rf "$d"',
+		'false && d=$(mktemp -d); rm -rf "$d"',
 	])
 		assert.equal(classify(command, onMain), "recursive rm", command);
 });
@@ -364,6 +378,10 @@ test("an implement worker's git in a fresh mktemp repo passes; leaving it or poi
 		'V=$(mktemp -d) && cd "$V" && cd && cd fun/me-pi && git push --force origin main',
 		'V=$(mktemp -d) && cd "$V" && pushd work && popd && git config user.name x',
 		'V=$(mktemp -d ./t.XXXX) && cd "$V" && git config user.name x',
+		// The temp repo rule shares the rm rule's checks on the variable.
+		'OLDPWD=$(mktemp -d) && cd "$OLDPWD" && cd - && git config user.name x',
+		'V=$(mktemp -d) && cd "$V" && read V && cd "$V" && git config user.name x',
+		'V=$(mktemp -d) && cd "$V" && printf -vV / && git config user.name x',
 	])
 		assert.ok(workerRisk(command), command);
 	delete process.env.ME_PI_ROLE;
