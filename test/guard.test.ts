@@ -81,6 +81,14 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 			"rm -rf dist >|log /Users",
 			"rm -rf dist 2>&- /Users",
 			'rm -rf dist ">" /Users',
+			// A redirect glued to a temp root: rm gets the root (`/tmp/`).
+			"rm -rf /tmp/&>/dev/null",
+			"rm -rf /tmp/&>>log",
+			`rm -rf "\${TMPDIR:?}/"&>/dev/null`,
+			`rm -rf \${TMPDIR:?}/&>/dev/null`,
+			"rm -rf /var/folders/ab/cd/T/&>/dev/null",
+			"rm -rf /tmp/>/dev/null",
+			"rm -rf /tmp/>&2",
 		].map((command) => [command, onFeature, "recursive rm"]),
 		// `${TMPDIR:?}` only catches an unset TMPDIR, not one the command rebinds first (#77).
 		...[
