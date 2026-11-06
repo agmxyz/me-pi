@@ -60,7 +60,7 @@ The run prints one line per attempt, then a table of passes over completed attem
 
 ## Checks and records
 
-`scenarios/routing.json` lists each check's prompt, follow-up turns, working directory (`repo` or a fixture), and assertions. `score.ts` defines the assertions: `skill`, `delegate` with `count`, `noTool`, `maxOwnRead`, `inline`, `noRerun`, `diffByPath`, `reply`, `maxReplyWords`.
+`scenarios/routing.json` lists each check's prompt, follow-up turns, working directory (`repo` or a fixture), and assertions. `score.ts` defines the assertions: `skill`, `delegate` with `count` (`named` matches runs that set a model or thinking), `noTool`, `maxOwnRead`, `inline`, `noRerun`, `diffByPath`, `reply`, `maxReplyWords`.
 
 Each record holds:
 - the commit, Pi and node versions, the coordinator and the policy;

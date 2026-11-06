@@ -22,6 +22,7 @@
 				{ "id": "one general with web", "delegate": { "role": "general", "web": true }, "count": 1 },
 				{ "id": "no other delegate", "delegate": {}, "count": 1 },
 				{ "id": "no web_enable", "noTool": "web_enable" },
+				{ "id": "no model named", "delegate": { "named": true }, "count": 0 },
 				{ "id": "no large own read", "maxOwnRead": 12000 }
 			]
 		},
@@ -64,6 +65,7 @@
 			],
 			"expect": [
 				{ "id": "background", "delegate": { "background": true }, "count": 1 },
+				{ "id": "no model named", "delegate": { "named": true }, "count": 0 },
 				{ "id": "states job id", "reply": "\\bbg\\d+\\b", "turn": 0 },
 				{ "id": "answers the side question", "reply": "[Ll]imit", "turn": 0 },
 				{ "id": "short handback", "maxReplyWords": 120, "turn": 1 }
