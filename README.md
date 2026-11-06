@@ -1,6 +1,6 @@
 # me-pi
 
-[![check](https://github.com/0bmario/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/0bmario/me-pi/actions/workflows/check.yml)
+[![check](https://github.com/agmxyz/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/agmxyz/me-pi/actions/workflows/check.yml)
 
 Bounded subagents for the [Pi](https://github.com/earendil-works/pi) coding agent. No worktrees, no sandbox, no agent files.
 
@@ -40,8 +40,10 @@ Also included: `guard` (asks before risky bash such as force pushes, `git reset 
 Requires Pi 1.5.0 (CI runs against it) on macOS or Linux.
 
 ```sh
-pi install git:github.com/0bmario/me-pi
+pi install git:github.com/agmxyz/me-pi
 ```
+
+The repo moved from `0bmario/me-pi`. If you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first so Pi doesn't load me-pi twice.
 
 Restart Pi or run `/reload`, then check with `/delegate status`. Try it, no config needed: *"Have a scout find where this repo parses CLI flags, with path:line evidence."*
 
@@ -59,12 +61,12 @@ Optional model pools in `~/.pi/agent/delegate.json` (without it, workers use you
 
 Calls with `web: true` need web tools: `pi install npm:pi-web-access`.
 
-To skip `guard`, replace the `git:github.com/0bmario/me-pi` entry in `~/.pi/agent/settings.json` with a filter (keep `skill.ts`: workers use it to load skills):
+To skip `guard`, replace the `git:github.com/agmxyz/me-pi` entry in `~/.pi/agent/settings.json` with a filter (keep `skill.ts`: workers use it to load skills):
 
 ```json
 {
   "packages": [
-    { "source": "git:github.com/0bmario/me-pi", "extensions": ["extensions/delegate.ts", "extensions/skill.ts"] }
+    { "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/delegate.ts", "extensions/skill.ts"] }
   ]
 }
 ```
@@ -110,7 +112,7 @@ These are prompt text, so your own `AGENTS.md` can refine or contradict them; th
 ## Uninstall
 
 ```sh
-pi remove git:github.com/0bmario/me-pi
+pi remove git:github.com/agmxyz/me-pi
 rm ~/.pi/agent/delegate.json   # if you created it
 ```
 
@@ -131,7 +133,7 @@ node --test test/guard.test.ts   # one test file
 
 Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt text, run the manual routing evals ([evals/README.md](evals/README.md)); they spend real money and never run in CI.
 
-Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR. Good first issues: [#35](https://github.com/0bmario/me-pi/issues/35), [#40](https://github.com/0bmario/me-pi/issues/40).
+Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR. Good first issues: [#35](https://github.com/agmxyz/me-pi/issues/35), [#40](https://github.com/agmxyz/me-pi/issues/40).
 
 ## License
 
