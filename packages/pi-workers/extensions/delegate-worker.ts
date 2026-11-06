@@ -232,6 +232,10 @@ export const workerContract = (web: boolean) =>
 		{ web },
 	);
 
+// Scratch path the implement contract teaches; `guard` lets recursive `rm` remove it, unlike a bare `$TMPDIR/…`.
+// biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion the worker types, not a JS template.
+const SCRATCH = "${TMPDIR:?}/<name>";
+
 /** The implement worker's contract; it names the branch and the check. */
 export const implementContract = (job: Checkout) =>
 	contract(
@@ -242,7 +246,7 @@ export const implementContract = (job: Checkout) =>
 			"- Never weaken, skip, or delete a test or check the task does not ask you to change. If the check passes only that way, leave it failing and list it as BLOCKED.",
 			"- You cannot push, use `gh`, run `git worktree`, reach git remotes, write inside the git directory, run `./install.sh` or `pi install|remove|update|config`, or change files under `~/.pi`. If the task or repo instructions need one, list it as BLOCKED.",
 			"- While iterating, give each focused test run a per-test timeout (e.g. `node --test --test-timeout=30000 <file>`) so a hang costs seconds; run the full check at the end.",
-			"- Keep scratch and repro files out of commits: create them under `$TMPDIR` with Bash (`write` and `edit` reach only the checkout), or delete them before committing; leftovers are swept into WIP.",
+			`- Keep scratch and repro files out of commits: create them with Bash in \`"${SCRATCH}"\` (\`write\` and \`edit\` reach only the checkout), and remove them with \`rm -rf "${SCRATCH}"\`; a bare \`$TMPDIR\` is blocked, since it may be unset. Or delete them before committing; leftovers are swept into WIP.`,
 			"- Stop any background process you start before you answer. Paths that may hold secrets are blocked.",
 		],
 		{ web: false }, // IMPLEMENT_TOOLS has no web tools
