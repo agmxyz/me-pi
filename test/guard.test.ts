@@ -99,6 +99,10 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 			`source ./vars; rm -rf "\${TMPDIR:?}/Users"`,
 			`. ./vars; rm -rf "\${TMPDIR:?}/Users"`,
 			`cd /tmp/x && . vars && rm -rf "\${TMPDIR:?}/Users"`,
+			// `.` followed by a redirect still sources.
+			`.>/dev/null ./v; rm -rf "\${TMPDIR:?}/Users"`,
+			`.>>x ./v; rm -rf "\${TMPDIR:?}/Users"`,
+			`.>|x ./v; rm -rf "\${TMPDIR:?}/Users"`,
 			`bash -c 'TMPDIR=/; rm -rf "\${TMPDIR:?}/Users"'`,
 			`z=TMP; z+=DIR=/; ((z)); rm -rf "\${TMPDIR:?}/Users"`,
 			`e{xport,} TMP{DIR,}=/; rm -rf "\${TMPDIR:?}/Users"`,

@@ -52,11 +52,12 @@ const DISPOSABLE = new RegExp(
 // `export TMPDIR=/;`, `sudo`, `z=TMP; z+=DIR=/; ((z))`, `bash -c '…'` reading rc files). Fail closed: outside those
 // expansions, the command must be plain characters (no expansion, assignment, arithmetic, brace, glob, escape, or single
 // quote), never spell `TMP` or `DIR` once quotes are dropped (`TMP""DIR`), and call nothing that changes the environment
-// or writes a variable, at any position. A false prompt is fine; a miss is not.
+// or writes a variable, at any position, including `.` at a command start unless a path continues it (`.>/dev/null v`
+// sources). A false prompt is fine; a miss is not.
 const TMPDIR_REF = `\${TMPDIR:?}`;
 const NOT_PLAIN = /[^\w\s/.,:@%+&|;>"-]/;
 const REBINDS_ENV =
-	/TMP|DIR|(?<![\w-])(?:env|sudo|doas|su|runuser|pkexec|export|unset|set|source|declare|local|typeset|readonly|read|readarray|mapfile|printf|getopts|eval|let|builtin|enable|exec|select|trap|alias|fc|history)(?![\w-])|(?:^|[\s;&|])\.(?![^\s;&|])/;
+	/TMP|DIR|(?<![\w-])(?:env|sudo|doas|su|runuser|pkexec|export|unset|set|source|declare|local|typeset|readonly|read|readarray|mapfile|printf|getopts|eval|let|builtin|enable|exec|select|trap|alias|fc|history)(?![\w-])|(?:^|[\s;&|(])\.(?![\w./-])/;
 
 function tmpdirMayChange(command: string): boolean {
 	const rest = command.replaceAll(TMPDIR_REF, "");
