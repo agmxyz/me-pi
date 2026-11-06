@@ -6,6 +6,16 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 
 - The delegate docs say that later worker-pool entries run only when you name them: the coordinator is not told the pool.
 
+## [0.1.3] - 2026-11-07
+
+- `guard` asks again before a recursive `rm` of `"${TMPDIR:?}/name"` when the command could rebind `TMPDIR` first (`TMPDIR=/ rm …`, `export TMPDIR=/;`, `env`, `sudo`, `unset`, `source`, quote-split names, and similar). `${TMPDIR:?}` only catches an unset `TMPDIR`. Plain cleanups such as `rm -rf "${TMPDIR:?}/x"` still pass.
+- `guard` now checks recursive `rm` targets that come after a redirect containing `&` or `|` (`rm -rf dist 2>&1 /Users`, `&>`, `>|`), targets glued to a redirect (`rm -rf /tmp/&>/dev/null` passes `/tmp/` to `rm`), and options glued to a redirect (`rm -rf>/dev/null /Users` is recursive). Before, it allowed these.
+- The README's Safety section says `guard` can't see symlinks or other state that earlier commands left on disk.
+
+## [0.1.2] - 2026-11-06
+
+- `guard` no longer asks when a command opens with a quoted heredoc fed to `python`, `python3`, or `node` (`python3 - <<'EOF'`, optionally after `cd <dir> &&`) just because the program's text mentions `rm -rf` or `git push`. Any other heredoc is still checked, and so is everything after the body.
+
 ## [0.1.1] - 2026-11-06
 
 - `implement` workers are told to keep scratch files in `"${TMPDIR:?}/<name>"`, which `guard` allows to remove, instead of a bare `$TMPDIR`, whose cleanup `guard` blocked in workers.

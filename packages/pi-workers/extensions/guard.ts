@@ -35,7 +35,10 @@ const ARGS = String.raw`[^;&|\n]*`;
 
 // Lookaheads, so a command nested in another one's arguments (`git log "$(git push ...)"`) is found too.
 const GIT_COMMAND = new RegExp(`(?=${AT_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
-const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${ARGS}))`, "g");
+// `rm`'s arguments: like `ARGS`, but steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so
+// targets after them are still read. Stops at `;`, `&&`, `||`, `|`, `|&`, a lone `&`, and newline.
+const RM_ARGS = String.raw`(?:[<>]&|&>|>\||[^;&|\n])*`;
+const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${RM_ARGS}))`, "g");
 // A quoted commit message (`-m "..."`, `-am '...'`, `--message=...`) is text, unless it runs a command.
 const MESSAGE_ARG = /(\s(?:-[A-Za-z]*m\s*|--message(?:=|\s+)))("(?:[^"\\]|\\.)*"|'[^']*')/g;
 // `cd` at a command position: a bare push may then target another repository's branch.
@@ -48,6 +51,22 @@ const TEMP_ENTRY = String.raw`[^/*?\s]+(?:/\S*)?$`;
 const DISPOSABLE = new RegExp(
 	String.raw`^(?:(?:\./)?(?:node_modules|dist|build|out|target|coverage|\.cache|\.next|\.turbo|tmp)(?:/|$)|(?:/private)?/tmp/${TEMP_ENTRY}|/var/folders/[^/*?\s]+/[^/*?\s]+/[^/*?\s]+/${TEMP_ENTRY}|\$\{TMPDIR:\?\}/${TEMP_ENTRY})`,
 );
+// `${TMPDIR:?}` is the session's temp dir only if the command can't rebind TMPDIR first (`TMPDIR=/ rm …`,
+// `export TMPDIR=/;`, `sudo`, `z=TMP; z+=DIR=/; ((z))`, `bash -c '…'` reading rc files). Fail closed: outside those
+// expansions, the command must be plain characters (no expansion, assignment, arithmetic, brace, glob, escape, or single
+// quote), never spell `TMP` or `DIR` once quotes are dropped (`TMP""DIR`), and call nothing that changes the environment
+// or writes a variable, at any position, including `.` at a command start unless a path continues it (`.>/dev/null v`
+// sources). A false prompt is fine; a miss is not.
+const TMPDIR_REF = `\${TMPDIR:?}`;
+const NOT_PLAIN = /[^\w\s/.,:@%+&|;>"-]/;
+const REBINDS_ENV =
+	/TMP|DIR|(?<![\w-])(?:env|sudo|doas|su|runuser|pkexec|export|unset|set|source|declare|local|typeset|readonly|read|readarray|mapfile|printf|getopts|eval|let|builtin|enable|exec|select|trap|alias|fc|history)(?![\w-])|(?:^|[\s;&|(])\.(?![\w./-])/;
+
+function tmpdirMayChange(command: string): boolean {
+	const rest = command.replaceAll(TMPDIR_REF, "");
+	return NOT_PLAIN.test(rest) || REBINDS_ENV.test(rest.replace(/["']/g, ""));
+}
+
 // Push options whose value is a separate word, so it is not mistaken for the remote or a refspec.
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
 export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
@@ -133,10 +152,31 @@ function gitRisk(
 // A heredoc read by `cat` or `git` (`-m "$(cat <<'EOF'`, `commit -F - <<EOF`): its body is text. The opener line is
 // kept; a heredoc fed to a shell (`bash <<EOF`) is still scanned.
 const TEXT_HEREDOC = /((?:\bcat|\bgit\s[^;&|\n]*?)\s*<<-?\s*(['"]?)(\w+)\2[^\n]*)\n[\s\S]*?\n\t*\3(?=\n|$)/g;
+// A command that opens with a program heredoc: `python3 - <<'EOF'` or `node - <<'EOF'`, optionally after `cd <dir> &&`,
+// alone on the first line. Its body is a program guard doesn't police (`python3 -c '…'` isn't scanned either). Being
+// the first line, it sits in no quote or other heredoc; being the whole line, its output goes to no pipe, file, or
+// substitution. Anything else (a later opener, `cat > f`, a second `<<`, a `\` continuation) keeps the body scanned.
+const SCRIPT_OPENER =
+	/^\s*(?:cd\s+[\w./~-]+\s*&&\s*)?(?:[\w.~-]*\/)*(?:python3?|node)(?:\s+-)?\s*<<(-?)\s*(['"])(\w+)\2\s*$/;
 
-// Empties quoted commit messages, unless they run a command, and text heredoc bodies.
+/**
+ * Drops the body of a `SCRIPT_OPENER` heredoc, ending it where bash does: at the first line equal to the word (with
+ * `<<-`, after leading tabs). Fails closed, returning the command unchanged, on a carriage return or an unterminated
+ * body. Lines after the body stay and are scanned as usual.
+ */
+function withoutScriptHeredoc(command: string): string {
+	if (command.includes("\r")) return command;
+	const lines = command.split("\n");
+	const opener = SCRIPT_OPENER.exec(lines[0]);
+	if (!opener) return command;
+	const [, dash, , word] = opener;
+	const end = lines.findIndex((line, i) => i > 0 && (dash ? line.replace(/^\t+/, "") : line) === word);
+	return end < 0 ? command : [lines[0], ...lines.slice(end + 1)].join("\n");
+}
+
+// Empties quoted commit messages, unless they run a command, text heredoc bodies, and an opening script heredoc body.
 function withoutMessages(command: string): string {
-	return command
+	return withoutScriptHeredoc(command)
 		.replace(TEXT_HEREDOC, "$1")
 		.replace(MESSAGE_ARG, (arg, flag: string, message: string) =>
 			message.startsWith('"') && /\$\(|\x60/.test(message) ? arg : `${flag}""`,
@@ -165,10 +205,43 @@ function inFreshTempRepo(command: string): boolean {
 	return !LEAVES_TEMP.test(rest.replace(new RegExp(`"\\$\\{?${name}\\}?"|\\$\\{?${name}\\}?(?!\\w)`, "g"), "TEMP"));
 }
 
+// A redirect word, read before quotes are dropped (a quoted `">"` is an argument): `2>/dev/null`, `&>log`, `>|log`.
+const REDIRECT = /^(?:\d*|&)[<>]/;
+// A redirect operator whose file is the next word (`> log`, `2>> log`, `&> log`, `>| log`, `>& log`). `2>&1`, `>&2`,
+// and `>file` carry their own operand, so the word after them is a target.
+const REDIRECT_OPERATOR = /^(?:\d*|&)[<>]+[&|]?$/;
+
+// Reads `rm`'s arguments once: whether it is recursive, and its targets (not options, `find -exec` placeholders, or
+// redirects and their files). A word with a glued redirect (`/tmp/&>log`, `dist>log`) yields both the part before it
+// (`/tmp/`, what rm gets) and the whole word, so the redirect can neither hide a temp root nor make a word disposable;
+// the redirect never takes the next word as its file. An option with a glued redirect (`-rf&>log`) counts as recursive
+// with no trusted targets, so it always asks: main asked for `rm -rf&>/dev/null dist`, and this keeps that.
+// Targets are undefined when a word holds `<`, `>`, `&`, or `|` in arguments with quotes or escapes: without a
+// tokenizer, a quoted character can't be told from a redirect (`"${TMPDIR:?}/"&>log`).
+function rmArgs(args: string): { recursive: boolean; targets: string[] | undefined } {
+	const quoted = /["'\\]/.test(args);
+	const raw = args.split(/\s+/).filter(Boolean);
+	if (raw.some((w) => /^["'\\]*-/.test(w) && /[<>&|]/.test(w))) return { recursive: true, targets: undefined };
+	const recursive = hasShort(wordsOf(args), "[rR]", "--recursive");
+	const targets: string[] = [];
+	for (const [i, w] of raw.entries()) {
+		if (REDIRECT.test(w) || (i > 0 && REDIRECT_OPERATOR.test(raw[i - 1]))) continue;
+		const cut = w.search(/[<>&|]/);
+		if (cut >= 0 && quoted) return { recursive, targets: undefined };
+		for (const part of cut > 0 ? [w.slice(0, cut), w] : [w]) {
+			const word = part.replace(/["'()\x60]/g, "");
+			if (word && !word.startsWith("-") && word !== "{}" && word !== "\\") targets.push(word);
+		}
+	}
+	return { recursive, targets };
+}
+
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
 ): string | undefined {
+	// Unstripped: a dropped message or heredoc body could hide a rebinding.
+	const tmpdirUnsafe = tmpdirMayChange(command);
 	command = withoutMessages(command);
 	const gitCommands = inFreshTempRepo(command) ? [] : [...command.matchAll(GIT_COMMAND)];
 	// The session's branch is read before the command runs, so it says nothing about the target after
@@ -180,15 +253,14 @@ export function classify(
 		if (risk) return risk;
 	}
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
-		const words = wordsOf(args);
-		if (!hasShort(words, "[rR]", "--recursive")) continue;
-		// Not targets: options, `find -exec` placeholders, and redirections (`2>/dev/null`, `> log`).
-		const isRedirect = (w: string | undefined) => w !== undefined && /^\d*(?:[<>]+|>&)\d*$/.test(w);
-		const targets = words.filter(
-			(w, i) => !w.startsWith("-") && w !== "{}" && w !== "\\" && !/^\d*[<>]/.test(w) && !isRedirect(words[i - 1]),
-		);
+		const { recursive, targets } = rmArgs(args);
+		if (!recursive) continue;
 		const disposable =
-			targets.length > 0 && targets.every((t) => DISPOSABLE.test(t) && !/(?:^|\/)\.\.(?:\/|$)/.test(t));
+			targets !== undefined &&
+			targets.length > 0 &&
+			targets.every(
+				(t) => DISPOSABLE.test(t) && !/(?:^|\/)\.\.(?:\/|$)/.test(t) && !(t.startsWith(TMPDIR_REF) && tmpdirUnsafe),
+			);
 		if (!disposable) return "recursive rm";
 	}
 	return undefined;
