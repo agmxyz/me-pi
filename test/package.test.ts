@@ -14,7 +14,8 @@ test("the root manifest declares only the three public Pi extensions", () => {
 	assert.notEqual(root.private, true);
 	assert.ok(root.description);
 	assert.equal(root.license, "MIT");
-	assert.equal(root.repository, "https://github.com/0bmario/me-pi");
+	assert.match(root.version, /^\d+\.\d+\.\d+$/);
+	assert.equal(root.repository, "https://github.com/agmxyz/me-pi");
 	assert.deepEqual(root.keywords, ["pi-package"]);
 	assert.equal(root.devDependencies["@earendil-works/pi-coding-agent"], "1.5.0");
 	assert.deepEqual(root.pi, {
@@ -24,6 +25,22 @@ test("the root manifest declares only the three public Pi extensions", () => {
 	for (const entrypoint of root.pi.extensions) {
 		assert.ok(existsSync(new URL(`../${entrypoint}`, import.meta.url)), `${entrypoint} exists`);
 	}
+});
+
+test("the published tarball holds the package, not the author's setup", () => {
+	const result = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+		cwd: fileURLToPath(new URL("../", import.meta.url)),
+		encoding: "utf8",
+	});
+	assert.ifError(result.error);
+	assert.equal(result.status, 0, result.stderr);
+	const files: string[] = JSON.parse(result.stdout)[0].files.map((file: { path: string }) => file.path);
+	const docs = ["package.json", "README.md", "LICENSE", "CHANGELOG.md"];
+	for (const file of [...root.pi.extensions, ...docs]) assert.ok(files.includes(file), `${file} is published`);
+	assert.deepEqual(
+		files.filter((file) => !docs.includes(file) && !/^extensions\/[\w-]+\.ts$/.test(file)),
+		[],
+	);
 });
 
 test("the package check uses read-only lint and formatter writes are explicit", () => {
