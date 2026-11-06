@@ -5,6 +5,7 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 ## [Unreleased]
 
 - `guard` asks again before a recursive `rm` of `"${TMPDIR:?}/name"` when the command could rebind `TMPDIR` first (`TMPDIR=/ rm …`, `export TMPDIR=/;`, `env`, `sudo`, `unset`, `source`, quote-split names, and similar). `${TMPDIR:?}` only catches an unset `TMPDIR`. Plain cleanups such as `rm -rf "${TMPDIR:?}/x"` still pass.
+- The README's Safety section says `guard` can't see symlinks or other state that earlier commands left on disk.
 
 ## [0.1.2] - 2026-11-06
 

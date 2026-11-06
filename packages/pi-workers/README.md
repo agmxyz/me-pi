@@ -105,6 +105,7 @@ These are prompt text, so your own `AGENTS.md` can refine or contradict them; th
 ## Safety
 
 - Not a sandbox. Extensions and workers run with your OS permissions; `guard` and the fences are guardrails, not security boundaries.
+- `guard` matches each command's text; it can't see what earlier commands left on disk. For example, it allows `rm -rf /tmp/x/old` even if `/tmp/x` is a symlink to `/`.
 - Worker file-read tools refuse common secret paths (`.env*`, keys, `~/.ssh`, `~/.pi/agent/auth.json`); `implement`'s bash is not path-fenced.
 - `implement` edits and commits in your real checkout, with Git remotes and `gh` cut off. ✓ means your check exited 0 on the delivered content, not that the code is right; review what it hands back.
 - The recovery rules in [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md) are guidance for the main session, not runtime enforcement.
