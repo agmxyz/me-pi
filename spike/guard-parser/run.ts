@@ -220,8 +220,14 @@ const summary = {
 
 // C: why the regex asked on a row bash-truth calls safe. First match wins; the first category is stage 3's proposal.
 const C_CATEGORIES: [string, RegExp][] = [
-	["quoted-delimiter heredoc into plain cat/tee writing a file (proposed allow)", /^(?:cat\s*>\s*[\w.]+|tee\s+[\w.]+)\s*<<-?\s*(?:'\w+'|"\w+"|\\\w+)[^\n]*\n[\s\S]*\n\w+$/],
-	["program heredoc (python/node/make); truth safe only because the stub doesn't run the program", /\b(?:python3?|node|make)\b/],
+	[
+		"quoted-delimiter heredoc into plain cat/tee writing a file (proposed allow)",
+		/^(?:cat\s*>\s*[\w.]+|tee\s+[\w.]+)\s*<<-?\s*(?:'\w+'|"\w+"|\\\w+)[^\n]*\n[\s\S]*\n\w+$/,
+	],
+	[
+		"program heredoc (python/node/make); truth safe only because the stub doesn't run the program",
+		/\b(?:python3?|node|make)\b/,
+	],
 	["TMPDIR may be rebound before ${TMPDIR:?} (guard's fail-closed tmpdirMayChange)", /\$\{TMPDIR:\?\}/],
 	["$TMPDIR / ${TMPDIR} without :? (guard trusts only ${TMPDIR:?})", /\$\{?TMPDIR\}?/],
 	["mktemp -d variable (guard doesn't track it on main)", /mktemp/],
@@ -271,7 +277,11 @@ const md = [
 	list(summary.B, (r) => `${r.argvMismatch} (parser ${r.parser})`),
 	"",
 	"## C. Candidate false alarms (regex asks, bash truth safe)",
-	...[...cCategories].flatMap(([name, ids]) => ["", `### ${name}: ${ids.length}`, list(ids, (r) => `parser ${r.parser}`)]),
+	...[...cCategories].flatMap(([name, ids]) => [
+		"",
+		`### ${name}: ${ids.length}`,
+		list(ids, (r) => `parser ${r.parser}`),
+	]),
 	"",
 	"## F. Unknowns",
 	list(summary.F, (r) => r.truthReasons.join("; ")),

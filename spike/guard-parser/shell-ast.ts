@@ -42,11 +42,22 @@ export interface SimpleCommand {
 	heredocs: Heredoc[];
 	/** `NAME=value` prefixes on this command (`GIT_DIR=x git …`), by name. */
 	assignments: string[];
+	/** Source offset of the top-level command this one came from (a re-parsed string takes its command's offset). */
+	at: number;
+	/** Found by re-parsing a string (`sh -c`, `eval`, `trap`, a heredoc or here-string body): its words aren't the outer
+	 * command's text, so the outer command's variable bindings don't apply to them. */
+	reparsed: boolean;
+	/** Runs whenever the script runs, in this shell (a top-level sequence item; see `certain`). */
+	certain: boolean;
+	/** Source ranges that run only after this command succeeded (the rest of its `&&` chain). */
+	after: [number, number][];
 }
 
 export const LIMITS = { maxSource: 100_000, maxDepth: 6, maxCommands: 5_000 };
 
 let parser: Parser | undefined;
+// Offset of the top-level command being walked; commands found in re-parsed strings take it.
+let currentAt = 0;
 
 export async function initShellAst(
 	wasmPath = new URL("./vendor/tree-sitter-bash.wasm", import.meta.url),
@@ -61,11 +72,190 @@ export async function initShellAst(
 
 class Bail extends Error {}
 
+/**
+ * Shell variables a command assigns, with every value it could hold: each `NAME=value` (plain, prefix, `export`/`local`)
+ * and each `for NAME in …` word. A name maps to null when its value can't be known from the text: an array or `+=`,
+ * a `for` without `in`, `read`/`mapfile`/`getopts`/`printf -v`/`unset` naming it, or more `NAME=` in the text than
+ * parsed assignments (one inside a `trap` or `eval` string). `opaque`: the command can bind names the text doesn't show
+ * (`eval`, `source`, `.`, `((…))`, `let`, `declare -n`, `${!x}`); then nothing resolves. Null on a parse failure.
+ */
+export interface Bindings {
+	values: Map<string, Word[] | null>;
+	/** Offset of each name's first binding: a use before it sees the session's value. */
+	firstAt: Map<string, number>;
+	/**
+	 * Names some binding of which may not run (`a && t=x`, `if …; then t=x; fi`), with the source ranges where every such
+	 * binding has run (the rest of its `&&` chain). A use outside them may see the session's value.
+	 */
+	conditional: Map<string, [number, number][]>;
+	opaque: boolean;
+}
+export function bindings(src: string): Bindings | null {
+	if (!parser) throw new Error("initShellAst() not awaited");
+	const tree = parser.parse(src);
+	if (!tree) return null;
+	try {
+		if (tree.rootNode.hasError) return null;
+		const values = new Map<string, Word[] | null>();
+		const parsedAssignments = new Map<string, number>();
+		const firstAt = new Map<string, number>();
+		const conditional = new Map<string, [number, number][]>();
+		const add = (name: string, ws: Word[] | null, at: number) => {
+			if (!firstAt.has(name)) firstAt.set(name, at);
+			const prev = values.get(name);
+			values.set(name, prev === null || ws === null ? null : [...(prev ?? []), ...ws]);
+		};
+		const visit = (n: Node) => {
+			if (n.type === "variable_assignment") {
+				const nameNode = n.childForFieldName("name");
+				const name = nameNode?.type === "variable_name" ? nameNode.text : nameNode?.text.replace(/\[.*$/s, "");
+				if (name) {
+					parsedAssignments.set(name, (parsedAssignments.get(name) ?? 0) + 1);
+					const value = n.childForFieldName("value");
+					const append = n.children.some((c) => c.type === "+=");
+					// `X=1 cmd "$X"`: a prefix assignment binds X for cmd's environment only; `$X` is the old value.
+					const prefix = n.parent?.type === "command";
+					if (prefix || nameNode?.type !== "variable_name" || append || value?.type === "array")
+						add(name, null, n.startIndex);
+					else {
+						add(name, [value ? word(value) : lit("")], n.startIndex);
+						if (!certain(n)) {
+							// Several conditional bindings: a use is safe only where all of them ran (kept simple: the first's range).
+							if (conditional.has(name)) conditional.set(name, []);
+							else conditional.set(name, dominated(n));
+						}
+					}
+				}
+			} else if (n.type === "for_statement") {
+				const name = n.childForFieldName("variable")?.text;
+				const ws = n.children.filter((_, i) => n.fieldNameForChild(i) === "value").map(word);
+				if (name) add(name, ws.length ? ws : null, n.startIndex);
+			} else if (
+				n.type === "c_style_for_statement" ||
+				n.type === "arithmetic_expansion" ||
+				(n.type === "compound_statement" && n.text.startsWith("((")) ||
+				(n.type === "expansion" && n.text.startsWith("${!"))
+			) {
+				opaque = true;
+			} else if (n.type === "declaration_command") {
+				// `declare -n`, or an operand that isn't a plain assignment (`export "$n=/"`, `export TMP""DIR=/`).
+				if (/^\S+\s+-\w*n/.test(n.text)) opaque = true;
+				for (const c of n.namedChildren) {
+					if (c.type !== "variable_assignment" && c.type !== "variable_name" && /[$`"'\\{]/.test(c.text))
+						opaque = true;
+					// `local X`, `declare X`: unset or kept, either way not a value the text shows.
+					if (c.type === "variable_name") add(c.text, null, n.startIndex);
+				}
+			} else if (n.type === "command") {
+				// A command that binds names its text doesn't spell out: by name (`eval`, `.`, `let`, `builtin export …`), a
+				// name that isn't plain text (`\export`, `e{xport,}`), or a name operand that expands (`read "$n"`, `printf -v "$n"`).
+				const nameText = n.childForFieldName("name")?.text ?? "";
+				const name = nameText.replace(/^.*\//, "");
+				// A name written with quotes, escapes, or braces (`\export`, `e{xport,}`, `ex""port`) may spell a binder; one
+				// that only expands a variable (`"$T/run.sh"`) is judged by policy.ts as an unknown command name.
+				const spelled = nameText.replace(/^"?\$\{?[A-Za-z_]\w*\}?[\w./-]*"?$/, "x");
+				if (OPAQUE_BINDERS.has(name) || /["'\\{}$`]/.test(spelled)) opaque = true;
+				const args = n.children.filter((_, i) => n.fieldNameForChild(i) === "argument").map((a) => a.text);
+				const binds = NAME_BINDERS.has(name) && (name !== "printf" || /^-v/.test(args[0] ?? ""));
+				if (binds && args.some((a) => /[$`]/.test(a))) opaque = true;
+				// `read X`, `unset X`, `printf -v X`, `getopts o X`: X's value isn't in the text.
+				if (binds)
+					for (const a of args)
+						for (const m of a.matchAll(/(?:^-v)?([A-Za-z_]\w*)$/g)) add(m[1], null, n.startIndex);
+			}
+			for (const c of n.children) visit(c);
+		};
+		let opaque = false;
+		visit(tree.rootNode);
+		for (const name of values.keys()) {
+			const n = name.replace(/\W/g, "");
+			const textual = src.match(new RegExp(`(?<![\\w$])${n}\\+?=`, "g"))?.length ?? 0;
+			const named = new RegExp(
+				String.raw`(?:^|[;&|(\s])(?:read|mapfile|readarray|getopts|unset|printf|declare|typeset|local|export|readonly)\b[^;&|\n]*?(?<![\w$])(?:-\w*v)?${n}(?![\w=])`,
+			);
+			if (textual > (parsedAssignments.get(name) ?? 0) || named.test(src) || SPECIAL_NAMES.has(name))
+				values.set(name, null);
+		}
+		return { values, firstAt, conditional, opaque };
+	} finally {
+		tree.delete();
+	}
+}
+/**
+ * Whether an assignment always runs before what follows it: every ancestor up to the script is a plain sequence, and
+ * in an `&&`/`||` list it is the left-most command (`d=$(mktemp -d) && cd "$d"`; not `false && d=x`). Inside `if`,
+ * loops, `case`, subshells, pipelines, or functions it may not run, or not in this shell.
+ */
+function certain(n: Node): boolean {
+	let child = n;
+	for (let p = n.parent; p; child = p, p = p.parent) {
+		if (p.type === "program") return true;
+		if (p.type === "declaration_command" || p.type === "redirected_statement" || p.type === "compound_statement")
+			continue;
+		if (p.type === "list" && p.firstChild?.id === child.id) continue;
+		if (misnested(p, child)) continue;
+		return false;
+	}
+	return false;
+}
+
+/**
+ * Where a conditional assignment has surely run: the right side of each `&&` it is (part of) the left side of, walking
+ * up through `&&` lists only (`a && t=x && b` → `b`). Empty under `||`, `if`, loops, or subshells.
+ */
+function dominated(n: Node): [number, number][] {
+	const out: [number, number][] = [];
+	let child = n;
+	for (let p = n.parent; p; child = p, p = p.parent) {
+		if (p.type === "declaration_command" || p.type === "redirected_statement" || misnested(p, child)) continue;
+		if (p.type !== "list") break;
+		const op = p.children.find((c) => !c.isNamed)?.type;
+		const right = p.lastChild;
+		if (p.firstChild?.id === child.id && op === "&&" && right) out.push([right.startIndex, right.endIndex]);
+		else if (p.firstChild?.id !== child.id && op !== "&&") break;
+	}
+	return out;
+}
+
+/**
+ * tree-sitter-bash nests `a && b 2>&1 | c` as `(a && b) 2>&1 | c`; bash binds `|` tighter: `a && (b 2>&1 | c)`. A bare
+ * list can't be a pipeline element in bash, so a list met (from its left part) under a pipeline is this mis-nesting,
+ * and its left part runs in the current shell.
+ */
+function misnested(p: Node, child: Node): boolean {
+	if (
+		child.type !== "list" &&
+		!(child.type === "redirected_statement" && child.childForFieldName("body")?.type === "list")
+	)
+		return false;
+	return p.type === "pipeline" || (p.type === "redirected_statement" && child.type === "list");
+}
+
+// Names bash itself sets (`cd` sets PWD and OLDPWD) or whose value changes word splitting or lookup.
+const SPECIAL_NAMES = new Set([
+	"PWD",
+	"OLDPWD",
+	"IFS",
+	"HOME",
+	"PATH",
+	"CDPATH",
+	"BASH_ENV",
+	"ENV",
+	"SHELLOPTS",
+	"BASHOPTS",
+	"GLOBIGNORE",
+]);
+// Bash features that can bind a name the text doesn't spell out.
+const OPAQUE_BINDERS = new Set(["eval", "source", ".", "let", "builtin", "command", "enable", "alias"]);
+// Commands whose operands name variables they bind (`read X`, `printf -v X`); an expanding operand hides the name.
+const NAME_BINDERS = new Set(["read", "mapfile", "readarray", "getopts", "printf", "unset"]);
+
 /** Every simple command in `src`, including ones unwrapped from wrappers and re-parsed strings; null fails closed. */
 export function commands(src: string): SimpleCommand[] | null {
 	if (!parser) throw new Error("initShellAst() not awaited");
 	try {
 		const out: SimpleCommand[] = [];
+		currentAt = 0;
 		parseScript(src, [], false, 0, out);
 		return out;
 	} catch (e) {
@@ -76,8 +266,21 @@ export function commands(src: string): SimpleCommand[] | null {
 
 function parseScript(src: string, via: string[], remote: boolean, depth: number, out: SimpleCommand[]): void {
 	if (src.length > LIMITS.maxSource || depth > LIMITS.maxDepth) throw new Bail();
-	const tree = parser!.parse(src);
+	let tree = parser!.parse(src);
 	if (!tree) throw new Bail();
+	// tree-sitter-bash 0.25.1 rejects a redirect after a heredoc opener (`cmd <<'EOF' 2>&1 | tail`), which bash accepts.
+	// Moving fd redirects before the `<<` keeps bash's meaning (the heredoc is fd 0); used only if that then parses.
+	if (tree.rootNode.hasError) {
+		const moved = src.replace(
+			HEREDOC_THEN_REDIRECTS,
+			(_, opener: string, _q, redirs: string) => `${redirs.trim()} ${opener}`,
+		);
+		const retry = moved !== src ? parser!.parse(moved) : null;
+		if (retry && !retry.rootNode.hasError) {
+			tree.delete();
+			tree = retry;
+		} else retry?.delete();
+	}
 	try {
 		if (tree.rootNode.hasError) throw new Bail();
 		walk(tree.rootNode, via, remote, depth, out);
@@ -85,6 +288,10 @@ function parseScript(src: string, via: string[], remote: boolean, depth: number,
 		tree.delete();
 	}
 }
+
+// `<<'EOF' 2>&1 >/dev/null`: an opener followed by fd redirects (`N>&M`, `N>file`, `>>file`, `&>file`).
+const HEREDOC_THEN_REDIRECTS =
+	/(<<-?[ \t]*(['"]?)\w+\2)((?:[ \t]+(?:\d*>>?&?\d+|\d*>>?[ \t]*[\w./-]+|&>>?[ \t]*[\w./-]+))+)(?=[ \t]*(?:\||&&|\|\||;|$))/gm;
 
 function walk(node: Node, via: string[], remote: boolean, depth: number, out: SimpleCommand[]): void {
 	if (node.type === "command") {
@@ -105,7 +312,7 @@ function walk(node: Node, via: string[], remote: boolean, depth: number, out: Si
 }
 
 const isRedirect = (n: Node) => ["file_redirect", "heredoc_redirect", "herestring_redirect"].includes(n.type);
-const destinations = (r: Node) => r.children.filter((c, i) => r.fieldNameForChild(i) === "destination");
+const destinations = (r: Node) => r.children.filter((_, i) => r.fieldNameForChild(i) === "destination");
 
 /** One `command` node plus the redirects its `redirected_statement` carries. */
 function simpleCommand(
@@ -116,6 +323,7 @@ function simpleCommand(
 	depth: number,
 	out: SimpleCommand[],
 ): void {
+	if (depth === 0) currentAt = node.startIndex;
 	const placed: { at: number; end: number; word: Word }[] = [];
 	const place = (n: Node) => placed.push({ at: n.startIndex, end: n.endIndex, word: word(n) });
 	const redirects: SimpleCommand["redirects"] = [];
@@ -184,7 +392,9 @@ function simpleCommand(
 	}
 	// Commands nested in words, assignments, redirect targets, and unquoted heredoc bodies run too.
 	for (const n of nested) walk(n, via, remote, depth, out);
-	emit(argv, via, remote, depth, out, { redirects, heredocs, herestrings, openArgs: false, assignments });
+	if (depth === 0) currentAt = node.startIndex;
+	const flow = depth === 0 ? { certain: certain(node), after: dominated(node) } : { certain: false, after: [] };
+	emit(argv, via, remote, depth, out, { redirects, heredocs, herestrings, openArgs: false, assignments, ...flow });
 }
 
 interface Stdin {
@@ -193,6 +403,8 @@ interface Stdin {
 	heredocs: Heredoc[];
 	herestrings: Word[];
 	openArgs: boolean;
+	certain: boolean;
+	after: [number, number][];
 }
 
 function emit(argv: Word[], via: string[], remote: boolean, depth: number, out: SimpleCommand[], io: Stdin): void {
@@ -208,6 +420,10 @@ function emit(argv: Word[], via: string[], remote: boolean, depth: number, out: 
 		redirects: io.redirects,
 		heredocs: io.heredocs,
 		assignments: io.assignments,
+		at: currentAt,
+		reparsed: depth > 0,
+		certain: io.certain,
+		after: io.after,
 	});
 	if (name === undefined) return;
 	for (const step of unwrap(name, argv.slice(1))) {
@@ -237,6 +453,10 @@ function emit(argv: Word[], via: string[], remote: boolean, depth: number, out: 
 					redirects: [],
 					heredocs: [],
 					assignments: [],
+					at: currentAt,
+					reparsed: depth > 0,
+					certain: false,
+					after: [],
 				});
 			}
 		}
@@ -257,6 +477,10 @@ function script(words: Word[], via: string[], remote: boolean, depth: number, ou
 			redirects: [],
 			heredocs: [],
 			assignments: [],
+			at: currentAt,
+			reparsed: depth > 0,
+			certain: false,
+			after: [],
 		});
 		return;
 	}
@@ -458,8 +682,9 @@ function options(args: Word[], i: number, spec: OptionSpec): { at: number; seen:
 const lit = (value: string): Word => ({ value, kind: "literal", raw: value, tmpdirOnly: false });
 const execFrom = (args: Word[], at: number, extra: Partial<Extract<Step, { kind: "exec" }>> = {}): Step[] =>
 	at < args.length ? [{ kind: "exec", argv: args.slice(at), ...extra }] : [];
+// `NAME=value` operands (`env PATH="$PATH" node`): the name decides, the value may expand.
 const skipAssignments = (args: Word[], at: number) => {
-	while (at < args.length && args[at].kind !== "expansion" && /^[A-Za-z_]\w*=/.test(args[at].value)) at++;
+	while (at < args.length && /^[A-Za-z_]\w*=/.test(args[at].raw)) at++;
 	return at;
 };
 
@@ -471,7 +696,11 @@ function shell(args: Word[]): Step[] {
 	let c = false;
 	while (i < args.length) {
 		const w = args[i].value;
-		if (args[i].kind === "expansion") return [{ kind: "script", body: [args[i]] }];
+		// An unquoted expansion could split into options (`bash $opts`); a quoted one is a word: the -c string or a file.
+		if (args[i].kind === "expansion" && !/^"[^"]*"$/.test(args[i].raw)) return [{ kind: "script", body: [args[i]] }];
+		if (args[i].kind === "expansion") break;
+		// `bash --version`, `bash -n f` (syntax check only) run nothing.
+		if (w === "--version" || w === "--help" || /^-[A-Za-z]*n[A-Za-z]*$/.test(w)) return [];
 		if (w === "--" || w === "-") {
 			i++;
 			break;

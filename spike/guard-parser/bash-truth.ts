@@ -81,10 +81,14 @@ export interface Call {
 	gitWorkTree: string;
 	/** A `cd`/`pushd`/`popd` ran earlier in this process chain. */
 	moved: boolean;
+	/** Where to: a logical absolute path, `./rel` from the row's start dir, or "?" when unknown; "" if no cd ran. */
+	cwdArg: string;
 	argv: string[];
 }
 
 export interface Truth {
+	/** The row's start dir (bash's `$PWD` before any cd), standing for the session's repo. */
+	startDir: string;
 	calls: Call[];
 	exit: number | null;
 	signal: string | null;
@@ -127,9 +131,12 @@ export function prepare(commands: string[]): Run {
 		"# bash-truth: sourced by every bash in a row (BASH_ENV).",
 		...[...pathNames].flatMap((n) => PATH_DIRS.map((d) => `${d}/${n}() { ${q(join(bin, n))} "$@"; }`)),
 		// `cd`/`pushd` always succeed (a missing dir would cut `cd x && git push` short) and mark the row as moved.
-		`cd() { builtin cd "$@" 2>/dev/null || builtin cd "$STUB_ROW_W" 2>/dev/null; export STUB_MOVED=1; return 0; }`,
-		"pushd() { export STUB_MOVED=1; return 0; }",
-		"popd() { export STUB_MOVED=1; return 0; }",
+		// STUB_MOVED holds the logical directory the command moved to (absolute), or `?` when unknown (`cd -`, `popd`).
+		`cd() { builtin cd "$@" 2>/dev/null || builtin cd "$STUB_ROW_W" 2>/dev/null; stub_moved "$@"; return 0; }`,
+		'pushd() { stub_moved "$@"; return 0; }',
+		"popd() { export STUB_MOVED='?'; return 0; }",
+		// Relative to the row's start dir: `./src`; `?` once unknown (`cd -`, `cd -P x`).
+		'stub_moved() { [[ ${1-} == -- ]] && shift; local t=${1-}; case $t in /*) export STUB_MOVED=$t ;; "" | -*) export STUB_MOVED="?" ;; *) case ${STUB_MOVED-} in "?") ;; "") export STUB_MOVED=./$t ;; *) export STUB_MOVED=$STUB_MOVED/$t ;; esac ;; esac; }',
 		// Tests are taken as true, so `[ -d /x ] && rm -rf /x` reaches rm (the real /x isn't visible in the sandbox).
 		"test() { return 0; }",
 		"[() { return 0; }",
@@ -189,6 +196,7 @@ export function truth(run: Run, command: string, opts: { tmpdir?: string } = {})
 				process.kill(-child.pid!, "SIGKILL");
 			} catch {}
 			resolve({
+				startDir: w,
 				calls: parseLog(readFileSync(logPath)),
 				exit,
 				signal,
@@ -209,7 +217,15 @@ function parseLog(buf: Buffer): Call[] {
 		const [name, cwd, gitDir, gitWorkTree, moved, argc] = f.slice(i, i + 6);
 		const n = Number(argc);
 		if (!Number.isInteger(n)) throw new Error(`corrupt stub log at field ${i}: ${JSON.stringify(f.slice(i, i + 7))}`);
-		calls.push({ name, cwd, gitDir, gitWorkTree, moved: moved === "1", argv: f.slice(i + 6, i + 6 + n) });
+		calls.push({
+			name,
+			cwd,
+			gitDir,
+			gitWorkTree,
+			moved: moved !== "",
+			cwdArg: moved,
+			argv: f.slice(i + 6, i + 6 + n),
+		});
 		i += 6 + n;
 	}
 	return calls;
