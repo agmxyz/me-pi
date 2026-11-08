@@ -626,3 +626,66 @@ test("PR #95 round 6: code the policy can't trace fails closed (git strings, std
 		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
 	assert.deepEqual(bad, []);
 });
+
+test("PR #95 round 7: git commands through options, env vars, and config written earlier fail closed", () => {
+	// /w/app is the session repo on feat; HOME is /Users/me. Text that only mentions a variable doesn't count.
+	const rows: [string, Level, string][] = [
+		["/w/app", "ask", "git fetch --upload-pack='rm -rf ~;:' ."],
+		["/w/app", "ask", "git fetch --upload='rm -rf ~;:' origin"],
+		["/w/app", "ask", "git ls-remote --upload-pack='x' ."],
+		["/w/app", "ask", "git clone -u 'x' . /tmp/x"],
+		["/w/app", "ask", "git pull -u x origin"],
+		["/w/app", "ask", "git push --receive-pack='x' ../bare.git feat"],
+		["/w/app", "ask", "git push --rec='x' origin feat"],
+		["/w/app", "ask", "git archive --remote=. --exec='x' HEAD"],
+		["/w/app", "ask", "git send-pack --exec=x ../r"],
+		["/w/app", "ask", "git grep -O'x' foo"],
+		["/w/app", "ask", "git grep --open-files-in-pager=x foo"],
+		["/w/app", "ask", "git --config-env=core.editor=ED commit"],
+		["/w/app", "ask", "git difftool --extcmd=x"],
+		["/w/app", "ask", "GIT_EDITOR='rm -rf ~' git commit --edit"],
+		["/w/app", "ask", "GIT_SEQUENCE_EDITOR='x' git rebase -i HEAD~2"],
+		["/w/app", "ask", "GIT_SSH_COMMAND='x' git fetch"],
+		["/w/app", "ask", "GIT_SSH=x git fetch"],
+		["/w/app", "ask", "GIT_EXTERNAL_DIFF=x git diff"],
+		["/w/app", "ask", "GIT_PAGER=x git log"],
+		["/w/app", "ask", "GIT_ASKPASS=x git push origin feat"],
+		["/w/app", "ask", "GIT_PROXY_COMMAND=x git fetch"],
+		["/w/app", "ask", "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=x git log"],
+		["/w/app", "ask", "GIT_CONFIG_PARAMETERS=\"'core.pager=x'\" git log"],
+		["/w/app", "ask", "GIT_CONFIG_GLOBAL=/tmp/evil git log"],
+		["/w/app", "ask", "EDITOR=x git commit"],
+		["/w/app", "ask", "VISUAL=x git commit"],
+		["/w/app", "ask", "PAGER=x git log"],
+		["/w/app", "ask", "env GIT_EDITOR=x git commit"],
+		["/w/app", "ask", "env -u HOME GIT_SSH_COMMAND=x git fetch"],
+		["/w/app", "ask", "export GIT_EDITOR=x; git commit"],
+		["/w/app", "ask", "export GIT_SSH_COMMAND=x && git fetch"],
+		["/w/app", "ask", "git config core.editor 'x' && git commit"],
+		["/w/app", "ask", "git config --global core.sshCommand x"],
+		["/w/app", "ask", "git config --local alias.x '!x'"],
+		["/w/app", "ask", "git config --add core.hooksPath x"],
+		["/w/app", "ask", "git config set core.pager x"],
+		["/w/app", "ask", "git config diff.foo.textconv x"],
+		["/w/app", "allow", "git config user.name 'A B'"],
+		["/w/app", "allow", "git config --global user.email a@b"],
+		["/w/app", "allow", "git config --get core.editor"],
+		["/w/app", "allow", "git config core.editor"],
+		["/w/app", "allow", "git config --list"],
+		["/w/app", "allow", "git config --unset core.editor"],
+		["/w/app", "allow", "git config get user.name"],
+		["/w/app", "allow", "git push -u origin feat"],
+		["/w/app", "allow", "git fetch origin"],
+		["/w/app", "allow", "git grep -n foo"],
+		["/w/app", "allow", "git log -5"],
+		["/w/app", "allow", "GIT_TRACE=1 git status"],
+		["/w/app", "allow", "GIT_AUTHOR_NAME=x git commit -m y"],
+		["/w/app", "allow", "export FOO=1; git status"],
+		["/w/app", "allow", "echo 'GIT_EDITOR=x'; git status"],
+		["/w/app", "allow", "git commit -m 'set EDITOR=vim in docs'"],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
+	assert.deepEqual(bad, []);
+});

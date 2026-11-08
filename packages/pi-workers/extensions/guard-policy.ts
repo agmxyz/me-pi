@@ -21,7 +21,15 @@
  */
 
 import { posix } from "node:path";
-import { GIT_SUBCOMMANDS, gitDataKey, gitLongOption, gitRunsString } from "./guard-git.ts";
+import {
+	GIT_COMMAND_ENV,
+	GIT_SUBCOMMANDS,
+	gitCommandOption,
+	gitConfigCodeWrite,
+	gitDataKey,
+	gitLongOption,
+	gitRunsString,
+} from "./guard-git.ts";
 import {
 	classify,
 	DISPOSABLE,
@@ -714,6 +722,37 @@ function diskLevel(v: string, src: string, base: string): LevelRule {
 }
 
 /**
+ * A variable that git, or a program it runs, reads as a command or config source (`GIT_EDITOR`, `GIT_SSH_COMMAND`,
+ * `GIT_CONFIG_*`, `EDITOR`, …), set for this git: as its prefix assignment, an `env X=…` wrapping it, or an
+ * `export`/`declare -x`/plain assignment in a command before it. Read from the parsed commands, so text in quotes,
+ * messages, and heredocs doesn't count. Returns its name, or undefined.
+ */
+function gitCommandEnv(c: SimpleCommand, cmds: SimpleCommand[], s: Scope): string | undefined {
+	// `export X=…`, `declare -x X=…`, `X=…` earlier in this shell: the bindings see declaration commands too. A bound
+	// name that git reads counts whatever its value (exported before, it changes git's environment).
+	if (s.b && !c.reparsed)
+		for (const [name, at] of s.b.firstAt) if (at < c.at && GIT_COMMAND_ENV.test(name)) return name;
+	const named = (text: string) => /^([A-Za-z_]\w*)(?:\+?=|$)/.exec(text)?.[1];
+	const hit = (names: (string | undefined)[]) => names.find((n) => n !== undefined && GIT_COMMAND_ENV.test(n));
+	const own = hit(c.assignments);
+	if (own) return own;
+	for (const x of cmds) {
+		if (x === c) break;
+		const operands = x.argv.slice(1).map((w) => (w.kind === "expansion" ? undefined : named(w.value)));
+		// `env X=… git`: env is an earlier command here (git is unwrapped from it); `export X=…`, `X=…` alone.
+		const binds = x.name === "env" || DECLARES.has(x.name ?? "") ? hit(operands) : undefined;
+		if (binds) return binds;
+		if (x.argv.length === 0 || x.name === undefined) continue;
+		if (!x.reparsed && x.assignments.length && x.argv.length <= 1) {
+			const a = hit(x.assignments);
+			if (a) return a;
+		}
+	}
+	return undefined;
+}
+const DECLARES = new Set(["export", "declare", "typeset", "local", "readonly"]);
+
+/**
  * Whether something in the command may point git at another repository or work tree than the directory it runs in:
  * `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR` (prefix, `export`, `env`) or `--git-dir`/`--work-tree`/`core.worktree`
  * anywhere in it. The text is the whole top-level command, so wrappers and earlier `export`s count too.
@@ -900,6 +939,27 @@ function gitFindings(
 	const codeKey = gitConfigKeys(globals).find((k) => !gitDataKey(k));
 	if (codeKey !== undefined) {
 		add("ask", "unknown:git-config-code", `git -c ${codeKey}=… may run a command`);
+		return;
+	}
+	// The same through the environment: a variable git (or a program it runs) reads as a command or config source,
+	// set anywhere in the command (a prefix, `env X=… git`, `export X=…;` before it).
+	const codeEnv = gitCommandEnv(c, cmds, s);
+	if (codeEnv !== undefined) {
+		add("ask", "unknown:git-env-code", `${codeEnv}=… may make git run a command`);
+		return;
+	}
+	// A config written earlier in the command (`git config core.editor … && git commit`) is code for what follows; the
+	// write itself is judged here, whatever comes after it.
+	if (sub === "config") {
+		const key = gitConfigCodeWrite(words);
+		if (key !== undefined) {
+			add("ask", "unknown:git-config-code", `git config ${key} … may make git run a command`);
+			return;
+		}
+	}
+	const cmdOpt = gitCommandOption(sub, words);
+	if (cmdOpt !== undefined) {
+		add("ask", "unknown:git-option-code", `git ${sub} ${cmdOpt} runs a command`);
 		return;
 	}
 	if (!GIT_SUBCOMMANDS.has(sub)) {

@@ -250,6 +250,11 @@ const GUARDED_LONG = [
 	"--delete",
 	"--all",
 	"--recursive",
+	"--upload-pack",
+	"--receive-pack",
+	"--open-files-in-pager",
+	"--config-env",
+	"--extcmd",
 	"--worktree",
 	"--staged",
 	"--dry-run",
@@ -266,4 +271,63 @@ export function gitLongOption(word: string): string {
 	const hits = GUARDED_LONG.filter((o) => o.startsWith(m[1])).sort((a, b) => a.length - b.length);
 	const best = hits[0];
 	return best !== undefined && hits.every((h) => h.startsWith(best)) ? best + (m[2] ?? "") : word;
+}
+
+/**
+ * Options whose value is a command git runs: `--upload-pack`/`-u` (fetch, clone, pull, ls-remote), `--receive-pack`
+ * and `--exec` (push, archive, send-pack), `-O`/`--open-files-in-pager` (grep), `--config-env` (a config key from the
+ * environment), `--extcmd` (difftool). Prefix forms count (`--upload` is `--upload-pack`). Returns the option as named
+ * in the command, or undefined.
+ */
+export function gitCommandOption(sub: string, words: string[]): string | undefined {
+	for (const w of words) {
+		if (w === "--") return undefined;
+		const long = /^--([\w-]+)(?:=|$)/.exec(w)?.[1];
+		if (long && long.length >= 2) {
+			const hit = COMMAND_OPTIONS.find((o) => o.startsWith(long));
+			if (hit && (long.length >= 3 || hit === long)) return `--${hit}`;
+		}
+		// Short forms: `-u <cmd>` takes a command for fetch/clone/pull/ls-remote (not `push -u`, upstream); `-O[cmd]` for
+		// grep.
+		if (/^-u/.test(w) && UPLOAD_U.has(sub)) return "-u";
+		if (/^-O/.test(w) && sub === "grep") return "-O";
+	}
+	return undefined;
+}
+const COMMAND_OPTIONS = ["upload-pack", "receive-pack", "exec", "open-files-in-pager", "config-env", "extcmd"];
+const UPLOAD_U = new Set(["fetch", "clone", "pull", "ls-remote"]);
+
+/**
+ * Environment variables git, or a program it runs, reads as a command or as a config source (which can name
+ * commands). Also the ones that point git at another repo or work tree (`GIT_DIR`, …): where it acts is then unknown.
+ */
+export const GIT_COMMAND_ENV =
+	/^(?:GIT_(?:EDITOR|SEQUENCE_EDITOR|SSH|SSH_COMMAND|SSH_VARIANT|EXTERNAL_DIFF|PAGER|ASKPASS|PROXY_COMMAND|EXEC_PATH|TEMPLATE_DIR|CONFIG|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|CONFIG_PARAMETERS|CONFIG_GLOBAL|CONFIG_SYSTEM|CONFIG_NOSYSTEM|DIFF_OPTS|ALTERNATE_OBJECT_DIRECTORIES|OBJECT_DIRECTORY|INDEX_FILE|NAMESPACE|TRACE2_EVENT|SSL_.*)|SSH_ASKPASS|EDITOR|VISUAL|PAGER|LESSOPEN|LESSCLOSE)$/;
+export const GIT_ELSEWHERE_ENV = /^GIT_(?:DIR|WORK_TREE|COMMON_DIR)$/;
+
+/**
+ * A `git config` that writes a key whose value git may run (`core.editor`, `core.sshCommand`, `alias.*`, …): the key,
+ * or undefined. Reads (`--get`, `--list`, `get`, one operand), removals (`--unset`), and data keys (`user.name`) are
+ * not writes of code. `--file`/`--blob` writes to another file are writes too.
+ */
+export function gitConfigCodeWrite(words: string[]): string | undefined {
+	const READS =
+		/^(?:--get(?:-all|-regexp|-urlmatch|-color(?:bool)?)?|--list|-l|--show-origin|--show-scope|--name-only|--null|-z|--unset(?:-all)?|--remove-section|--rename-section|-e|--edit)$/;
+	if (words.some((w) => READS.test(w))) return undefined;
+	const VALUE_OPTS = new Set(["--file", "-f", "--blob", "--type", "--default", "--comment", "--value"]);
+	const ops: string[] = [];
+	for (let i = 0; i < words.length; i++) {
+		const w = words[i];
+		if (VALUE_OPTS.has(w)) {
+			i++;
+			continue;
+		}
+		if (w.startsWith("-")) continue;
+		ops.push(w);
+	}
+	// The `git config set|unset|get|list…` sub-command form (git 2.46+).
+	if (["get", "list", "unset", "remove-section", "rename-section", "edit"].includes(ops[0] ?? "")) return undefined;
+	const rest = ops[0] === "set" ? ops.slice(1) : ops;
+	if (rest.length < 2) return undefined; // one operand reads
+	return gitDataKey(rest[0]) ? undefined : rest[0];
 }
