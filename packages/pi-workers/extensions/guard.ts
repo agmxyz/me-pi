@@ -95,7 +95,6 @@ export function registerGuard(
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timeout = new Promise<never>((_, reject) => {
 		timer = setTimeout(() => reject(new Error(`not loaded after ${loadTimeoutMs} ms`)), loadTimeoutMs);
-		timer.unref?.();
 	});
 	const ready = Promise.race([loadParser(), timeout])
 		.then(
