@@ -405,3 +405,49 @@ test("PR #95 review bypasses: each asks (they were allowed at 00c2e96)", () => {
 	assert.equal(asks("git reset --hard", failing).findings[0].dirty?.repo, undefined, "the repo can't be read");
 	assert.equal(policy("git push origin feat", failing).verdict, "allow", "a named feature branch needs no read");
 });
+
+test("find -delete is a recursive rm of each start path; find -exec/xargs rm is that rm (PR #95 round 3)", () => {
+	// /w/app is the session repo on feat; nothing else is a repo.
+	const env = fakeEnv("/w/app", "feat");
+	const rows: [Level, string][] = [
+		["ask", "find ~ -delete"],
+		["ask", "find -L / -delete"],
+		["ask", "find / -name core -delete"],
+		["ask", 'find "$HOME/x" -delete'],
+		["ask", "find ~/.pi/agent -type f -delete"],
+		["ask", "find $X -delete"],
+		["ask", "find /Users/nobody-guard-test ! -name keep -delete"],
+		["ask", "find ~ -exec rm -r {} \\;"],
+		["ask", "find ~ -execdir rm -rf {} +"],
+		["ask", "find ~ -ok rm -r {} \\;"],
+		["ask", "find ~ -okdir rm -rf {} \\;"],
+		["ask", "find ~ -print0 | xargs -0 rm -rf"],
+		["ask", "find / -name x | xargs rm -r"],
+		["ask-if-dirty", "find . -name '*.pyc' -delete"],
+		["ask-if-dirty", "find src -name x -delete"],
+		["allow", "find /tmp/x -delete"],
+		["allow", "find dist -name '*.map' -delete"],
+		["allow", "find node_modules -delete"],
+		["allow", 't=$(mktemp -d); find "$t" -delete'],
+		["allow", "find ~ -name x"],
+		["allow", "find / -name x -print"],
+		["allow", "find . -name '*.ts' -exec grep -l x {} +"],
+		["allow", "echo 'find ~ -delete'"],
+		["ask", "find -delete"],
+		["ask", "find . -delete"],
+		["ask", "find . -depth -delete"],
+		["ask-if-dirty", "find . -type f -name x -delete"],
+		["ask", "find .git -name x -delete"],
+		["ask", "find ~ -name x -delete"],
+	];
+	const bad = rows.filter(([want, command]) => policy(command, env).verdict !== want).map(([w, c]) => `${w}: ${c}`);
+	assert.deepEqual(bad, []);
+	const v = policy("find . -name '*.pyc' -delete", env);
+	assert.deepEqual(v.findings[0].dirty, {
+		repo: "/w/app",
+		paths: undefined,
+		untracked: true,
+		ignored: false,
+		always: false,
+	});
+});

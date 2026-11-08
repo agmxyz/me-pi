@@ -318,6 +318,7 @@ function judge(
 			continue;
 		}
 		if (c.name === "rm") rmFindings(c, src, add, scope, cwdAt(cmds, c, scope));
+		else if (c.name === "find") findFindings(c, src, add, scope, cwdAt(cmds, c, scope));
 		else if (c.name === "git") gitFindings(c, cmds, branch, add, dropped, scope);
 	}
 	// A heredoc written to a file that the same command then runs (`cat > run.sh <<'EOF' … EOF; bash run.sh`): the body
@@ -389,6 +390,72 @@ function rmFindings(c: SimpleCommand, src: string, add: Add, s: Scope, cwd: Cwd)
 		const r = targetLevel(w, src, s, c.at, cwd);
 		if (r.level === "allow") continue;
 		add(r.level, recursive ? r.rule : `${r.rule} (if an expansion holds -r)`, `rm target ${w.raw}`, r.dirty);
+	}
+}
+
+// `find` expression words that select nothing: with only these, `-delete` removes everything under a start path.
+const FIND_NO_TEST = new Set(["-delete", "-depth", "-d", "-xdev", "-mount", "-print", "-print0", "-follow", "-noleaf"]);
+const FIND_NO_TEST_VALUE = new Set(["-maxdepth", "-mindepth"]);
+
+/**
+ * `find` splits its argv the way it reads it: `-H`/`-L`/`-P` first, then start paths up to the first expression word
+ * (`-name`, `(`, `!`); none is `.`. `deletes`: the expression has `-delete` (it removes what it matches, depth-first,
+ * so up to a recursive rm of each start path). `filtered`: the expression also tests what it removes (`-name x`), so a
+ * repo root as the start is case 2 on the whole tree rather than case 1. Shared by the parse side and the bash side.
+ */
+export function findSplit(args: string[]): { starts: string[]; deletes: boolean; filtered: boolean } {
+	let i = 0;
+	while (i < args.length && /^-[HLP]+$/.test(args[i])) i++;
+	const starts: string[] = [];
+	for (; i < args.length && !/^[-(!]/.test(args[i]) && args[i] !== ")"; i++) starts.push(args[i]);
+	const expr = args.slice(i);
+	const filtered = expr.some(
+		(w, j) => !FIND_NO_TEST.has(w) && !FIND_NO_TEST_VALUE.has(w) && !FIND_NO_TEST_VALUE.has(expr[j - 1] ?? ""),
+	);
+	return { starts: starts.length ? starts : ["."], deletes: expr.includes("-delete"), filtered };
+}
+
+/**
+ * A filtered `find -delete` of a whole repo (`find . -name '*.pyc' -delete`): case 2 on that repo's whole tree; any
+ * other level stands. An unfiltered one removes the repo, `.git` included: case 1, as `rm -rf .`.
+ */
+function filteredRoot(r: LevelRule, abs: string | undefined, filtered: boolean): LevelRule {
+	if (!filtered || abs === undefined || !r.rule.startsWith("rm:catastrophic (repo root")) return r;
+	const root = E.repoRootOf(abs);
+	if (typeof root !== "string" || stripSlash(posix.normalize(abs)) !== root) return r;
+	return {
+		level: "ask-if-dirty",
+		rule: "rm:in-repo (find -delete over the repo)",
+		dirty: { repo: root, paths: undefined, untracked: true, ignored: false, always: false },
+	};
+}
+
+/**
+ * `find START… -delete`: each start path is judged like the target of a recursive rm (case 1 or 2, temp/build
+ * allowed). `find -exec rm …` is already the rm it runs (guard-shell unwraps it). An expansion before the
+ * expression could be the start path or an option (`find $X -delete`): judged as a target, as rm does.
+ */
+function findFindings(c: SimpleCommand, src: string, add: Add, s: Scope, cwd: Cwd): void {
+	const args = c.argv.slice(1);
+	const plain = values(args).map((v, i) => (args[i].kind === "expansion" ? "x" : v));
+	const { deletes, filtered } = findSplit(plain);
+	if (!deletes) return;
+	let i = 0;
+	while (i < args.length && args[i].kind !== "expansion" && /^-[HLP]+$/.test(args[i].value)) i++;
+	const starts: Word[] = [];
+	for (; i < args.length; i++) {
+		const w = args[i];
+		if (w.kind !== "expansion" && (/^[-(!]/.test(w.value) || w.value === ")")) break;
+		starts.push(w);
+	}
+	const targets = starts.length ? starts : [{ value: ".", kind: "literal", raw: "." } as Word];
+	for (const w of targets) {
+		const vals = w.kind === "expansion" ? resolveWord(w, s, c.at) : [w.value];
+		const one = vals?.length === 1 && cwd?.length === 1 ? vals[0] : undefined;
+		const abs =
+			one === undefined ? undefined : absOf(one.startsWith("/") || cwd?.[0] === "" ? one : `${cwd?.[0]}/${one}`);
+		const r = filteredRoot(targetLevel(w, src, s, c.at, cwd), abs, filtered);
+		if (r.level !== "allow") add(r.level, r.rule, `find -delete under ${w.raw}`, r.dirty);
 	}
 }
 
@@ -975,8 +1042,9 @@ function judgeArgv(calls: ArgvCall[], toDisk: (p: string) => string | undefined)
 	let newBranch: string | undefined;
 	const gitSoFar: string[][] = [];
 	for (const c of calls) {
-		if (c.name === "rm") {
-			const { options, operands } = rmSplit(c.argv);
+		const find = c.name === "find" ? findSplit(c.argv) : undefined;
+		if (c.name === "rm" || find?.deletes) {
+			const { options, operands } = find ? { options: ["-r"], operands: find.starts } : rmSplit(c.argv);
 			if (!rmRecursive(options)) continue;
 			const dir = dirOf(c);
 			for (const o of operands) {
@@ -991,6 +1059,7 @@ function judgeArgv(calls: ArgvCall[], toDisk: (p: string) => string | undefined)
 							: undefined;
 					r =
 						abs === undefined ? { level: "ask", rule: "unknown:rm-cwd (cd target unknown)" } : repoLevel(abs, "");
+					if (find) r = filteredRoot(r, abs, find.filtered);
 				}
 				if (r.level !== "allow")
 					findings.push({ level: r.level, rule: r.rule, detail: `rm ${c.argv.join(" ")}`, dirty: r.dirty });
