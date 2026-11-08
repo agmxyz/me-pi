@@ -26,11 +26,11 @@ Cite `file:line` at the review SHA for every claim.
 Exactly one, the first that applies:
 
 - `STALE`: already done, invalid, or a precondition unmet. Give the evidence.
-- `DECISION`: a missing decision blocks it. State the question.
+- `DECISION`: a missing decision blocks it, including scope only an owner can fix (a comment that changes the plan without settling how far). State the question.
 - `TOO_BIG`: over the size bar. Give the split.
-- `AMBIGUOUS`: a criterion is X, or the scope is unclear. Say which.
+- `AMBIGUOUS`: a criterion is X, or the scope is unclear in a way no single owner answer settles. Say which.
 - `LIVE_CHECK`: at least one criterion is L. Say which of two kinds: **code can ship**, with the live check queued for the user, or **cannot ship** without the live environment.
-- `READY`: valid, context enough, every criterion V with sound evidence, within size, risk low or medium.
+- `READY`: valid, context enough, every criterion V with sound evidence or H on wording or placement only, within size, risk low or medium. Such an H criterion is checked by the reviewer at merge: name it, and raise merge risk to at least medium so the queue marks it for review. An H product or security decision is `DECISION`.
 
 Add a **confidence** (high, medium, low) and a **Not checked** line naming what you did not read or could not confirm (git history, tests, host behaviour).
 

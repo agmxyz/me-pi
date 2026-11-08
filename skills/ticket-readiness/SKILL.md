@@ -19,9 +19,9 @@ Record `git rev-parse HEAD` as the review SHA and the branch it is on; every fin
 
 ## 2. Snapshot the tickets
 
-Read-only workers cannot run commands, so the coordinator fetches. Snapshot each ticket with its labels and **comments** (a later comment can change the body's decision) into `tickets.md` in the report directory, one `### #<n> <title>` section per ticket, using the repo's tracker instructions (for GitHub: `gh issue view <n> --json number,title,body,labels,comments`). Write `index.md` beside it: every open ticket in the repo as `#<n> <labels>: <title>`, including tickets outside this set, so workers can spot dependencies and overlaps.
+Read-only workers cannot run commands, so the coordinator fetches. Snapshot each ticket with its labels and **comments** (a later comment can change the body's decision) into `tickets.md` in the report directory, one `### #<n> <title>` section per ticket, using the repo's tracker instructions (for GitHub: `gh issue view <n> --json number,title,body,labels,comments`). Write `index.md` beside it: every open ticket in the repo as `#<n> <labels>: <title>`, including tickets outside this set, so workers can spot dependencies and overlaps. Append any closed ticket a requested ticket names, as `#<n> closed <date>: <title>`, so a worker can tell whether a dependency has landed.
 
-**Ready:** `tickets.md` holds every requested ticket with comments; `index.md` lists all open tickets.
+**Ready:** `tickets.md` holds every requested ticket with comments; `index.md` lists all open tickets and every closed ticket they name.
 
 ## 3. Group and dispatch
 
