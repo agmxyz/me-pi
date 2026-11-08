@@ -1,6 +1,6 @@
 ---
 name: ticket-readiness
-description: Read-only readiness review of a set of tickets against the repo's current code. Answers whether an agent can implement each ticket, prove it done, and merge it unattended now, and proposes a ship order. Use before shipping a ticket batch, when asked which tickets are ready, or when another skill needs a ship queue.
+description: Read-only readiness review of a set of tickets against the repo's current code. Answers whether an agent can implement each ticket, prove it done, and merge it unattended now, and proposes a ship order with one implementer brief per queued ticket. Use before shipping one ticket or a batch, or when asked which tickets are ready.
 ---
 
 # Ticket readiness
@@ -49,7 +49,7 @@ Each STALE, DECISION, TOO_BIG, AMBIGUOUS, and LIVE_CHECK verdict rests on one cl
 
 ## 6. Weakest-evidence pass
 
-Write the READY blocks and the LIVE_CHECK code-can-ship blocks to `ready.md`. Dispatch one read-only worker (a different model from step 3's when the user has one available, since a second model misses different things) with the repo, SHA, `RUBRIC.md`, and `ready.md`, and this brief: for every V criterion of every ticket in it, describe code that would pass the listed check without meeting the criterion, or state that none exists; for each cheat found, name the stronger check that would catch it, or state that none exists. The test found this pass worth more than any single check: a grep that a cast elsewhere also passes, a regex that accepts a fabricated digest, a green check as the only proof.
+Write the READY blocks and the LIVE_CHECK code-can-ship blocks to `ready.md`. Dispatch one read-only worker (a different model from step 3's when the user has one available, since a second model misses different things) with the repo, SHA, the check command and standards files from step 1, `RUBRIC.md`, and `ready.md`, and this brief: for every V criterion of every ticket in it, describe code that would pass the listed check without meeting the criterion, or state that none exists; for each cheat found, name the stronger check that would catch it, or state that none exists; a stronger check follows the repo's standards, since the implementer is bound by both. It catches what the step 3 worker accepts: a grep that a cast elsewhere also passes, a regex that accepts a fabricated digest, a green check as the only proof.
 
 A criterion with a cheat and a stronger check keeps its verdict, and the stronger check replaces the listed one in the block: the implementer proves the criterion with it. A criterion with a cheat and no stronger check is X: the ticket becomes AMBIGUOUS, naming the criterion.
 
@@ -61,7 +61,7 @@ Order the READY tickets: dependencies first; tickets that overlap in files adjac
 
 Collect every open question into one `## Questions` list: each DECISION question, and each `Calls:` default marked `ask`. A ticket with an unanswered question stays out of both queues; when the user answers in this run, write the answer into the block and send only that ticket back to a worker for its verdict.
 
-For each queued ticket, write its final block (with step 6 marks and any answers) to `brief-<n>.md`: the implementer's contract, not a second copy to edit. Its last line is the evidence rule: show each new or stronger check red at the review SHA, failing for the criterion's reason, before the fix; a check that cannot go red is named in the handback and does not count as proof. (In the #91 trial, one of two proposed stronger tests passed before the fix.)
+For each queued ticket, write `brief-<n>.md`, the implementer's contract, so it stands alone: a header with the repo path, review SHA, check command and its environment, and standards files from step 1; then its final block (with step 6 marks and any answers); last, the evidence rule: show each new or stronger check red at the review SHA, failing for the criterion's reason, before the fix; a check that cannot go red is named in the handback and does not count as proof, since a check proposed by reading can pass on unfixed code.
 
 Write `report.md`:
 

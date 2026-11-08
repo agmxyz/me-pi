@@ -47,7 +47,7 @@ for (const name of ["implement-me-pi", "implement-spec-me-pi", "pi-live-test"]) 
 	assert.equal(skill.filePath, join(resolvedAgentDir, "skills", name, "SKILL.md"));
 	assert.equal(skill.disableModelInvocation, true);
 }
-// Model-invocable: read-only, and a future ship skill calls it.
+// Model-invocable: read-only, and "which tickets are ready?" should reach it without a slash command.
 const readiness = byName.get("ticket-readiness");
 assert.equal(readiness.filePath, join(resolvedAgentDir, "skills", "ticket-readiness", "SKILL.md"));
 assert.equal(readiness.disableModelInvocation, false);

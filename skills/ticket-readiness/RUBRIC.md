@@ -32,7 +32,7 @@ Exactly one, the first that applies:
 - `TOO_BIG`: over the size bar. Give the split.
 - `AMBIGUOUS`: a criterion is X, or the scope is unclear in a way no single owner answer settles. Say which.
 - `LIVE_CHECK`: at least one criterion is L. Say which of two kinds: **code can ship**, with the live check queued for the user, or **cannot ship** without the live environment.
-- `READY`: valid, context enough, every criterion V with sound evidence or H on wording or placement only, within size, risk low or medium. Each such H criterion gets a `Calls:` entry, and the ticket's merge risk is at least medium. An H product or security decision is `DECISION`.
+- `READY`: valid, context enough, every criterion V with sound evidence or H on wording or placement only, within size, risk low or medium. Each such H criterion gets a `Calls:` entry with the exact text or location as its default, and you raise the ticket's merge risk to at least medium. An H product or security decision is `DECISION`.
 
 Add a **confidence** (high, medium, low) and a **Not checked** line naming what you did not read or could not confirm (git history, tests, host behaviour).
 
