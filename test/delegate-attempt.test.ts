@@ -10,7 +10,14 @@ const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../packages/pi-workers/exte
 
 const MODEL = "anthropic/claude-test";
 const FAR = Date.now() + 3_600_000;
-const BUDGET = { hardDeadline: FAR, hardCostCapUsd: 5, toolDeadline: FAR, toolCostCapUsd: 4, toolCalls: null };
+const BUDGET = {
+	limitSecs: 300,
+	hardDeadline: FAR,
+	hardCostCapUsd: 5,
+	toolDeadline: FAR,
+	toolCostCapUsd: 4,
+	toolCalls: null,
+};
 
 const usage = (cost: number) => ({
 	input: 10,
