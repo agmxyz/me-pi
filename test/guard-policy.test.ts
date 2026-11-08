@@ -136,7 +136,7 @@ const STEP1: Case[] = [
 	{ command: 'T=$(mktemp -d) && cd "$T" && rm -rf src', want: "allow" },
 	{ command: "cd /tmp && rm -rf fakehome", want: "allow" },
 	{ command: "cd /tmp && rm -rf ../x", want: "ask" },
-	{ command: "(cd /tmp); rm -rf src", want: "ask" }, // a subshell cd: the cwd after it is not read,
+	{ command: "(cd /tmp); rm -rf src", want: "ask-if-dirty" }, // round 8: a subshell cd never moves rm; both dirs are judged and the repo one is case 2
 	{ command: "S=/tmp/sx; rm -rf $S/t*/base", want: "allow" },
 	{ command: "~/.local/bin/herdr agent list", want: "allow" },
 	{ command: "L=$TMPDIR/x; $L/measure.sh", want: "allow" },
@@ -683,6 +683,50 @@ test("PR #95 round 7: git commands through options, env vars, and config written
 		["/w/app", "allow", "export FOO=1; git status"],
 		["/w/app", "allow", "echo 'GIT_EDITOR=x'; git status"],
 		["/w/app", "allow", "git commit -m 'set EDITOR=vim in docs'"],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
+	assert.deepEqual(bad, []);
+});
+
+test("PR #95 round 8: state set by an earlier command counts only if it surely ran first (same && chain)", () => {
+	// /w/app is the session repo on feat (origin network, local ../bare.git); /tmp/x is a temp dir; disks may be
+	// case-insensitive (APFS), so SRC is src and .GIT is .git.
+	const rows: [string, Level, string][] = [
+		["/w/app", "ask", "git checkout -b topic; git push -u origin HEAD"],
+		["/w/app", "ask", "git checkout -b topic & git push -u origin HEAD"],
+		["/w/app", "ask", "git checkout -b topic || git push -u origin HEAD"],
+		["/w/app", "allow", "git checkout -b topic && git push -u origin HEAD"],
+		["/w/app", "ask", 'B=topic & git checkout -b "$B" && git push'],
+		["/w/app", "ask", 'T=$(mktemp -d) & rm -rf "$T"'],
+		["/w/app", "ask", 'false && T=$(mktemp -d); rm -rf "$T"'],
+		["/w/app", "allow", 'T=$(mktemp -d) && rm -rf "$T"'],
+		["/w/app", "allow", 'T=$(mktemp -d); rm -rf "$T"'],
+		["/w/app", "ask-if-dirty", "cd /tmp/x & rm -rf src"],
+		["/w/app", "ask-if-dirty", "cd /tmp/x || rm -rf src"],
+		["/w/app", "ask", "cd /tmp/x; rm -rf *"],
+		["/w/app", "ask", "cd /tmp/x | rm -rf *"],
+		["/w/app", "ask", "(cd /tmp/x); rm -rf *"],
+		["/w/app", "ask", "if true; then cd /tmp/x; fi; rm -rf *"],
+		["/w/app", "ask", "pushd /tmp/x & rm -rf *"],
+		["/w/app", "allow", "cd /tmp/x && rm -rf *"],
+		["/w/app", "allow", "cd /tmp/x && cd y && rm -rf z"],
+		["/w/app", "ask-if-dirty", "cd /tmp/x; rm -rf src"],
+		["/w/app", "ask", "rm -rf /W/App"],
+		["/w/app", "ask", "rm -rf .GIT"],
+		["/w/app", "ask", "rm -rf src/.Git/x"],
+		["/w/app", "ask-if-dirty", "rm -rf SRC"],
+		["/w/app", "ask", "git remote add origin /tmp/nowhere; git push --force origin feat"],
+		["/w/app", "ask", "false && git remote set-url origin /tmp/x; git push -f origin main"],
+		["/w/app", "ask", "git -C /tmp remote add origin /x; git push -f origin feat"],
+		["/w/app", "ask", "git remote add up /tmp/r.git & git push -f up main"],
+		["/w/app", "allow", "git remote add up /tmp/r.git && git push -f up main"],
+		["/w/app", "allow", "git push -f local main"],
+		["/w/app", "ask", "git remote set-url local https://x/y.git; git push -f local main"],
+		["/w/app", "allow", "git remote set-url local /tmp/z.git && git push -f local main"],
+		["/w/app", "ask", "export GIT_EDITOR=x & git commit"],
+		["/w/app", "ask", "git config core.editor x; git commit"],
 	];
 	const bad = rows
 		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)

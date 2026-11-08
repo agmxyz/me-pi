@@ -452,7 +452,9 @@ function runString(w: Walk, words: Word[], f: Frame, placeholder?: string): void
 function certain(n: Node): boolean {
 	let child = n;
 	for (let p = n.parent; p; child = p, p = p.parent) {
-		if (p.type === "program") return true;
+		// A top-level item ended by `&` runs in a background subshell: nothing it sets (cwd, variables, the branch)
+		// reaches the commands after it.
+		if (p.type === "program") return child.nextSibling?.type !== "&";
 		if (p.type === "declaration_command" || p.type === "redirected_statement" || p.type === "compound_statement")
 			continue;
 		if (p.type === "list" && p.firstChild?.id === child.id) continue;
@@ -470,6 +472,8 @@ function dominated(n: Node): [number, number][] {
 	const out: [number, number][] = [];
 	let child = n;
 	for (let p = n.parent; p; child = p, p = p.parent) {
+		// Inside a backgrounded item (`cd x && a & b`), the `&&` chain still holds for `a`, but nothing reaches `b`.
+		if (p.type === "program") break;
 		if (p.type === "declaration_command" || p.type === "redirected_statement" || misnested(p, child)) continue;
 		if (p.type !== "list") break;
 		const op = p.children.find((c) => !c.isNamed)?.type;

@@ -93,7 +93,9 @@ export type Dirt = "clean" | "dirty" | "unknown";
 export function dirtIn(repo: string, paths: string[] | undefined, untracked: boolean, ignored = false): Dirt {
 	const args = ["status", "--porcelain", untracked ? "--untracked-files=all" : "--untracked-files=no"];
 	if (ignored) args.push("--ignored=matching");
-	const out = git(repo, paths?.length ? [...args, "--", ...paths.map((p) => `:(literal)${p}`)] : args);
+	// `icase`: on a case-insensitive disk (macOS's default) `rm -rf SRC` removes `src`; matching without case only
+	// over-matches (asks more) on a case-sensitive one.
+	const out = git(repo, paths?.length ? [...args, "--", ...paths.map((p) => `:(literal,icase)${p}`)] : args);
 	if (out === undefined) return "unknown";
 	return out.trim() ? "dirty" : "clean";
 }

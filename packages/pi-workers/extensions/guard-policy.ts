@@ -213,7 +213,7 @@ export function rmTargetLevel(target: string, src: string): LevelRule {
 	if (norm === "" || norm === ".") return { level: "ask", rule: "rm:catastrophic (repo root)" };
 	// `*`, `.*`, `./*`: every entry of the working directory, in effect the repo root.
 	if (parts.length === 1 && /^\.?\*+$/.test(norm)) return { level: "ask", rule: "rm:catastrophic (repo root glob)" };
-	if (parts.includes(".git")) return { level: "ask", rule: "rm:catastrophic (.git)" };
+	if (parts.some((part) => part.toLowerCase() === ".git")) return { level: "ask", rule: "rm:catastrophic (.git)" };
 	return { level: "ask-if-dirty", rule: "rm:in-repo", dirty: UNKNOWN_REPO };
 }
 // A case-2 finding whose repo isn't known: the caller asks.
@@ -592,38 +592,47 @@ function cwdAt(cmds: SimpleCommand[], c: SimpleCommand, s: Scope): Cwd {
 	for (const x of cmds) {
 		if (x === c) break;
 		if (x.name !== "cd" && x.name !== "pushd" && x.name !== "popd") continue;
-		const surely = !x.reparsed && (x.certain || x.after.some(([a, e]) => c.at >= a && c.at < e));
-		// One that may not have run (or ran in a subshell: the parser keeps no nesting) leaves the directory unknown.
-		if (!surely) {
-			cwd = undefined;
-			continue;
-		}
+		const before: Cwd = cwd;
+		cwd = cdTarget(x, cwd, s);
+		// `changedBefore`: a `cd` moves this command only if it surely succeeded first, in the same `&&` chain. After `;`,
+		// a newline, `||`, `&`, in a pipe, a subshell, or a branch, the command may run in either directory: both count.
+		if (!changedBefore(x, c))
+			cwd = cwd === undefined || before === undefined ? undefined : [...new Set([...before, ...cwd])];
+	}
+	return cwd;
+}
+
+/**
+ * Whether an earlier command `x` surely changed state (the working directory, a remote's URL, the branch) before `c`
+ * runs: `x` is in `c`'s own `&&` chain ahead of it, in the foreground of this shell. `cd x; …` may fail, `cd x & …`
+ * runs in a background subshell, `cd x || …` runs `…` only if it failed. One rule for every "state set earlier".
+ */
+function changedBefore(x: SimpleCommand, c: SimpleCommand): boolean {
+	return !x.reparsed && !c.reparsed && x.after.some(([a, e]) => c.at >= a && c.at < e);
+}
+
+/** The working directory after a `cd`/`pushd`/`popd` from `cwd` (as if it succeeded); undefined if unknown. */
+function cdTarget(x: SimpleCommand, cwd: Cwd, s: Scope): Cwd {
+	{
 		const arg = x.argv.slice(1).find((w) => !(w.kind !== "expansion" && w.value.startsWith("-")));
 		const opts = x.argv.slice(1).filter((w) => w.kind !== "expansion" && w.value.startsWith("-") && w.value !== "--");
-		if (x.name === "popd" || !arg || opts.length || arg.value === "-") {
-			cwd = undefined;
-			continue;
-		}
+		if (x.name === "popd" || !arg || opts.length || arg.value === "-") return undefined;
 		const vals = resolveWord(arg, s, x.at);
 		// An absolute target resets an unknown directory (`cd x && …; cd /tmp && rm -rf y`); `$PWD`/`~+` is relative to
 		// the directory so far, never absolute.
 		const absolute = vals?.every(
 			(v) => v.startsWith("/") || (v.startsWith(MARK) && !v.startsWith(ENV) && !v.startsWith(PWD)),
 		);
-		if (!vals || (!cwd && !absolute)) {
-			cwd = undefined;
-			continue;
-		}
-		cwd ??= [""];
+		if (!vals || (!cwd && !absolute)) return undefined;
+		const from = cwd ?? [""];
 		const next: string[] = [];
 		for (const raw of vals)
-			for (const base of cwd) {
+			for (const base of from) {
 				const v = raw.startsWith(PWD) ? `.${raw.slice(PWD.length)}` : raw;
 				next.push(v.startsWith("/") || v.startsWith(MARK) ? v : base === "" ? v : `${base}/${v}`);
 			}
-		cwd = next;
+		return next;
 	}
-	return cwd;
 }
 
 /**
@@ -667,16 +676,20 @@ function repoLevel(abs: string, src: string, at = abs): LevelRule {
 	// A failed read could hide a repo, even under a temp dir (scratch worktrees live there): unknown asks.
 	if (root === undefined) return { level: "ask", rule: "unknown:repo-root (lookup failed)" };
 	if (root === null) return temp ? ALLOW : { level: "ask", rule: "rm:catastrophic (not in a repo)" };
+	// Compare with the root without case too: `rm -rf /W/App` is `/w/app` on a case-insensitive disk.
+	const under = (a: string, b: string) =>
+		a.toLowerCase() === b.toLowerCase() || a.toLowerCase().startsWith(`${b.toLowerCase()}/`);
 	const whole = (rule: string): LevelRule => ({
 		level: "ask-if-dirty",
 		rule,
 		dirty: { repo: root, paths: undefined, untracked: true, ignored: false, always: false },
 	});
 	// A repo under a temp dir is still someone's work: case 2 there, never case 1 (removing it whole loses its tree).
-	if (p === root || !p.startsWith(`${root}/`))
+	if (p.toLowerCase() === root.toLowerCase() || !under(p, root))
 		return temp ? whole("rm:temp-repo") : { level: "ask", rule: "rm:catastrophic (repo root)" };
 	const rel = p.slice(root.length + 1);
-	if (rel.split("/").includes(".git")) return { level: "ask", rule: "rm:catastrophic (.git)" };
+	if (rel.split("/").some((part) => part.toLowerCase() === ".git"))
+		return { level: "ask", rule: "rm:catastrophic (.git)" };
 	if (disp(rel, src)) return ALLOW;
 	return {
 		level: "ask-if-dirty",
@@ -717,7 +730,9 @@ function diskLevel(v: string, src: string, base: string): LevelRule {
 	// A glob inside a named temp entry (`/tmp/x/*`) is temp unless it's in a repo (`repoLevel`); one at a temp root
 	// (`/tmp/*`, `/tmp/a*`) is not (guard).
 	if (!disp(d, src) && disp(`${d}/x`, src)) return { level: "ask", rule: "rm:catastrophic (glob at a temp root)" };
-	if (E.repoRootOf(d) === d) return { level: "ask", rule: "rm:catastrophic (repo root glob)" };
+	const globRoot = E.repoRootOf(d);
+	if (typeof globRoot === "string" && globRoot.toLowerCase() === d.toLowerCase())
+		return { level: "ask", rule: "rm:catastrophic (repo root glob)" };
 	return repoLevel(`${d}/x`, src, d);
 }
 
@@ -810,6 +825,47 @@ function pushIsLocal(remote: string | undefined, addedUrl: string | undefined, d
 		const u = E.remoteUrlOf(d, remote);
 		return u !== undefined && isLocalUrl(u);
 	});
+}
+
+/**
+ * The URL the last `git remote add|set-url NAME URL` before `c` gave remote `name`, and whether it surely took effect
+ * for `c`: it ran first (`changedBefore`), in the same repo (the same `gitDirs`, no other `-C`/`--git-dir`), and the
+ * disk agrees (for `add`, the remote doesn't exist yet; for `set-url`, it does). Undefined if no command set it.
+ */
+function remoteChangedBefore(
+	c: SimpleCommand,
+	cmds: SimpleCommand[],
+	name: string,
+	dirs: string[] | undefined,
+	s: Scope,
+): { url: string; sure: boolean } | undefined {
+	let out: { url: string; sure: boolean } | undefined;
+	for (const x of cmds.slice(0, cmds.indexOf(c))) {
+		if (x.name !== "git") continue;
+		const { globals, sub, words } = gitSplit(values(x.argv.slice(1)));
+		if (sub !== "remote") continue;
+		const ops = words.filter((w) => !w.startsWith("-"));
+		if (!((ops[0] === "add" || ops[0] === "set-url") && ops[1] === name && ops[2])) continue;
+		// Same repo: the same working directory as `c` (as the parse places both) and the same git-dir options; a fresh
+		// `mktemp -d` dir can't be placed on disk, so the parse's own values are compared.
+		const here = cwdAt(cmds, c, s);
+		const there = cwdAt(cmds, x, s);
+		const { globals: cGlobals } = gitSplit(values(c.argv.slice(1)));
+		const sameRepo =
+			here !== undefined &&
+			there !== undefined &&
+			here.join("\0") === there.join("\0") &&
+			cGlobals.join("\0") === globals.join("\0") &&
+			!GIT_ELSEWHERE.test(TOP);
+		// The disk must agree that the change could happen: `add` only if the remote doesn't exist yet (a repo made in a
+		// fresh mktemp dir by this command has none), `set-url` only if it does.
+		const fresh = here?.every((v) => v.startsWith(TEMP)) ?? false;
+		const onDisk = fresh ? undefined : dirs?.length === 1 ? E.remoteUrlOf(dirs[0], name) : undefined;
+		const known = fresh || dirs?.length === 1;
+		const agrees = known && (ops[0] === "add" ? onDisk === undefined : onDisk !== undefined);
+		out = { url: ops[2], sure: changedBefore(x, c) && sameRepo && agrees };
+	}
+	return out;
 }
 
 /** The URL an earlier `git remote add|set-url NAME URL` in argv lists gave remote `name` (last one wins). */
@@ -1002,13 +1058,17 @@ function gitFindings(
 	// doesn't ask, forced or not.
 	if (sub === "push" && r.level !== "allow") {
 		const remote = pushRemote(words);
-		const added = remote
-			? addedRemote(
-					before.filter((x) => x.name === "git").map((x) => values(x.argv.slice(1))),
-					remote,
-				)
-			: undefined;
-		if (pushIsLocal(remote, added, gitDirs(c, cmds, globals, s))) {
+		const dirs = gitDirs(c, cmds, globals, s);
+		const changed = remote ? remoteChangedBefore(c, cmds, remote, dirs, s) : undefined;
+		// A URL set earlier counts only if it surely took effect (`changedBefore`, same repo, and the disk agrees the
+		// remote was missing for `add`/present for `set-url`); otherwise the push may go to either URL: both must be local.
+		const local =
+			changed === undefined
+				? pushIsLocal(remote, undefined, dirs)
+				: changed.sure
+					? pushIsLocal(remote, changed.url, dirs)
+					: pushIsLocal(remote, changed.url, dirs) && pushIsLocal(remote, undefined, dirs);
+		if (local) {
 			dropped.push({ rule: "push:local", detail: `git push to the local path or remote ${remote}` });
 			return;
 		}
@@ -1113,6 +1173,9 @@ function newBranchBefore(cmds: SimpleCommand[], c: SimpleCommand, s: Scope): str
 		const word = i < 0 ? undefined : args[globals.length + 1 + i + 1];
 		const vals = word ? resolveWord(word, s, x.at) : undefined;
 		if (vals?.length !== 1 || /[\u0000\u0001\s]/.test(vals[0]) || vals[0].startsWith("-")) return undefined;
+		// The new branch is the one pushed only if the checkout surely ran first (`changedBefore`); after `;`, `&`, or
+		// `||` the push may push the branch from before it, which the disk can't show here.
+		if (!changedBefore(x, c)) return undefined;
 		last = vals[0];
 	}
 	return last;
