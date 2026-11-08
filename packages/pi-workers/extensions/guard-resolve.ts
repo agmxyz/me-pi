@@ -69,9 +69,14 @@ function resolveRaw(raw: string, s: Scope, usedAt: number, depth: number): strin
 		values = next;
 		return next.length <= MAX_VALUES;
 	};
-	if (raw === "~" || raw.startsWith("~/")) {
-		values = [HOME];
-		i = 1;
+	// A leading unquoted `~`: the home dir; `~+` is $PWD; `~-` ($OLDPWD) and `~name` (that user's home) are unknown here.
+	const tilde = /^~([^/]*)/.exec(raw);
+	if (tilde) {
+		const [whole, rest] = tilde;
+		if (rest === "") values = [HOME];
+		else if (rest === "+") values = [PWD];
+		else values = [`${ENV}${rest === "-" ? "OLDPWD" : `~${rest}`}`];
+		i = whole.length;
 	}
 	while (i < raw.length) {
 		const ch = raw[i];
@@ -96,9 +101,10 @@ function resolveRaw(raw: string, s: Scope, usedAt: number, depth: number): strin
 		if (ch === "$") {
 			const r = dollar(raw.slice(i), s, usedAt, depth);
 			if (!r) return undefined;
-			// Unquoted: a value with blanks splits (a session value may, too).
+			// Unquoted: a value with blanks splits (a session value may, too), and its glob characters glob (`p='src/*';
+			// rm -rf $p`), so they are marked like literal ones.
 			if (!dq && r.pieces.some((p) => /\s/.test(p) || p.startsWith(ENV))) return undefined;
-			if (!append(r.pieces)) return undefined;
+			if (!append(dq ? r.pieces : r.pieces.map(markGlobs))) return undefined;
 			i += r.len;
 			continue;
 		}
@@ -110,6 +116,10 @@ function resolveRaw(raw: string, s: Scope, usedAt: number, depth: number): strin
 	if (dq) return undefined;
 	return values;
 }
+
+/** Marks the glob characters of an unquoted expansion's value (resolve markers are left alone). */
+const markGlobs = (v: string) =>
+	v.startsWith(MARK) ? v : v.replace(new RegExp(`(?<!${GLOBCH})[*?[]`, "g"), (c) => GLOBCH + c);
 
 /** The values of the `$…` expansion at the start of `rest`, and its length; undefined if unknown. */
 function dollar(rest: string, s: Scope, usedAt: number, depth: number): { pieces: string[]; len: number } | undefined {

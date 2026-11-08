@@ -87,7 +87,7 @@ test("the pi-workers tarball holds the package, not the author's setup", () => {
 	);
 });
 
-test("a packed pi-workers tarball loads guard's parser from its own files", { timeout: 60_000 }, async (t) => {
+test("a packed pi-workers tarball loads guard and its parser from its own files", { timeout: 60_000 }, async (t) => {
 	const pkg = fileURLToPath(new URL("../packages/pi-workers/", import.meta.url));
 	const temp = mkdtempSync(join(tmpdir(), "pi-workers-pack-"));
 	t.after(() => rmSync(temp, { recursive: true, force: true }));
@@ -108,19 +108,36 @@ test("a packed pi-workers tarball loads guard's parser from its own files", { ti
 		join(installed, "node_modules/web-tree-sitter"),
 		{ recursive: true },
 	);
+	// guard.ts itself, as Pi loads it: register it, then drive its tool_call handler headless (no model, no Pi).
+	const home = join(temp, "home");
+	mkdirSync(home);
 	const probe = spawnSync(
 		process.execPath,
 		[
 			"--input-type=module",
 			"-e",
-			`const { initShell, parseShell } = await import(${JSON.stringify(join(installed, "extensions/guard-shell.ts"))});
-			 await initShell();
-			 console.log(JSON.stringify(parseShell("rm -rf x").ok));`,
+			`const { default: register } = await import(${JSON.stringify(join(installed, "extensions/guard.ts"))});
+			 let handler;
+			 const notes = [];
+			 register({ on: (_e, h) => (handler = h), registerCommand: () => {}, events: { emit: () => {} } });
+			 const ctx = { cwd: process.env.HOME, hasUI: false, ui: { notify: (m) => notes.push(m) } };
+			 const run = (command) => handler({ type: "tool_call", toolCallId: "c", toolName: "bash", input: { command } }, ctx);
+			 const text = await run("cat > notes.md <<'EOF'\\nrm -rf src\\nEOF");
+			 const danger = await run("rm -rf /Users/nobody-guard-test");
+			 console.log(JSON.stringify({ text: text ?? null, danger: danger?.block ?? null, notes }));`,
 		],
-		{ encoding: "utf8", timeout: 30_000 },
+		{
+			encoding: "utf8",
+			timeout: 30_000,
+			env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, PI_CODING_AGENT_DIR: join(home, "agent") },
+		},
 	);
 	assert.equal(probe.status, 0, probe.stderr);
-	assert.equal(probe.stdout.trim(), "true");
+	assert.deepEqual(
+		JSON.parse(probe.stdout.trim()),
+		{ text: null, danger: true, notes: [] },
+		"the parser loaded: no fallback warning",
+	);
 });
 
 test("the package check uses read-only lint and formatter writes are explicit", () => {

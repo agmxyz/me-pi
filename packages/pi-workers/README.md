@@ -110,6 +110,8 @@ These are prompt text, so your own `AGENTS.md` can refine or contradict them; th
   2. a command that would lose uncommitted work (`git reset --hard`, `clean -f`, `checkout --`, `restore`, `switch -f`, or a recursive `rm` inside a repo), only when `git status` shows changes there (gitignored files count only for `clean -x`/`-X`), and `git stash drop`/`clear` always;
   3. a force push, or a push to `main`/`master`, to a network remote.
 
+  A repo inside a temp directory still counts as a repo. A disk lookup that fails or times out counts as unknown, and asks.
+
   It no longer asks about `rm`/`git` that only appears as text (messages, heredocs written to files), about `commit --amend`, `rebase`, `filter-branch`/`filter-repo`, or `branch -D` (the reflog recovers them), or about pushes to a local path. Something it can't work out (an expansion, a command built at run time, a script read from a process substitution) asks only when it could fall into one of the three cases. If a command doesn't parse, `guard` judges it with its older pattern rules; if the parser can't load at all, it uses those rules for the session and shows one warning.
 - In workers, `guard` blocks anything it would ask about (a discard only when there is uncommitted work to lose), and still blocks amend, rebase, filter-branch/-repo and `branch -D`.
 - `guard` reads the command's text and the disk as it is just before the command runs; it can't see what earlier commands in the same call change, and it doesn't read the environment (a `TMPDIR` that was already wrong). For example, it allows `rm -rf /tmp/x/old` even if `/tmp/x` is a symlink to `/`.

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { type PolicyEnv, policy } from "../packages/pi-workers/extensions/guard-policy.ts";
 import { initShell } from "../packages/pi-workers/extensions/guard-shell.ts";
+import { isolate } from "./helpers/isolate.ts";
 
 const { default: registerGuard, registerGuard: registerWith } = await import(
 	"../packages/pi-workers/extensions/guard.ts"
@@ -262,7 +263,7 @@ test("the 3-case policy keeps every 0.1.3 row except the ones it deliberately al
 		home: "/Users/me",
 		branch: () => branch,
 		branchOf: (d) => (inRepo(d) ? branch : undefined),
-		repoRootOf: (d) => (inRepo(d) ? repo : undefined),
+		repoRootOf: (d) => (inRepo(d) ? repo : null),
 		remoteUrlOf: (d, n) => (inRepo(d) && n === "origin" ? "git@github.com:me/repo.git" : undefined),
 	});
 	const allowed = new Set<string>();
@@ -595,9 +596,10 @@ test("/guard toggles enforcement for the session", async () => {
 function scratchRepo(t: { after(fn: () => void): void }) {
 	const root = mkdtempSync(join(tmpdir(), "guard-test-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
+	isolate(t, root);
 	const repo = join(root, "repo");
 	mkdirSync(join(repo, "src"), { recursive: true });
-	const env = { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: "1" };
+	const env = { ...process.env };
 	const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, stdio: "pipe" });
 	git("init", "-q", "-b", "feat");
 	git("config", "user.email", "t@example.com");
@@ -616,7 +618,7 @@ test("asks about discarding work only when the tree has uncommitted changes ther
 	const { repo } = scratchRepo(t);
 	const { handler } = setup();
 	const ctx = { cwd: repo, hasUI: false };
-	for (const command of ["git reset --hard", "git checkout -- src", "git clean -fd src"])
+	for (const command of ["git reset --hard", "git checkout -- src", "git clean -fd src", "rm -rf src"])
 		assert.equal(await handler(bash(command), ctx), undefined, `clean tree: ${command}`);
 	mkdirSync(join(repo, "node_modules"));
 	writeFileSync(join(repo, "node_modules", "x.js"), "x\n");
@@ -629,14 +631,13 @@ test("asks about discarding work only when the tree has uncommitted changes ther
 	writeFileSync(join(repo, "src", "a.ts"), "changed\n");
 	for (const command of ["git reset --hard", "git checkout -- src"])
 		assert.equal((await handler(bash(command), ctx))?.block, true, `dirty tree: ${command}`);
-	// The scratch repo lives in the OS temp dir, so guard's temp rule allows removing in it whatever the tree holds; the
-	// rm-in-a-repo check is covered on a fake disk in guard-policy.test.ts, and `git clean` below takes the same path.
-	assert.equal(await handler(bash("rm -rf src"), ctx), undefined, "a named entry in a temp dir is disposable");
+	// A repo under the OS temp dir is still a repo: its dirty tree asks (the temp rule doesn't override it).
+	assert.equal((await handler(bash("rm -rf src"), ctx))?.block, true, "dirty: rm inside a repo under the temp dir");
 	assert.equal(await handler(bash("git checkout -- other"), ctx), undefined, "only the affected paths count");
 	writeFileSync(join(repo, "src", "new.ts"), "n\n");
 	assert.equal((await handler(bash("git clean -fd src"), ctx))?.block, true, "untracked files count for clean");
 	assert.equal((await handler(bash("git stash drop"), ctx))?.block, true, "a stash drop always asks");
-	assert.equal((await handler(bash("rm -rf ~/.pi/agent/x"), ctx))?.block, true, "case 1");
+	assert.equal((await handler(bash("rm -rf /Users/nobody-guard-test/.pi"), ctx))?.block, true, "case 1");
 	assert.equal((await handler(bash("git push --force origin feat"), ctx))?.block, true, "case 3");
 	assert.equal(await handler(bash("git push"), ctx), undefined, "a feature-branch push");
 	assert.equal(await handler(bash("git commit --amend --no-edit"), ctx), undefined, "history rewrites are allowed");
@@ -668,7 +669,11 @@ test("workers block every finding and the history rewrites the main session allo
 		assert.equal(r?.block, true, command);
 		assert.match(r.reason, /workers/, command);
 	}
-	assert.equal((await handler(bash("rm -rf ~/x"), ctx))?.block, true, "a worker never gets a confirm dialog");
+	assert.equal(
+		(await handler(bash("rm -rf /Users/nobody-guard-test/x"), ctx))?.block,
+		true,
+		"a worker never gets a confirm dialog",
+	);
 	assert.equal(await handler(bash("git reset --hard"), ctx), undefined, "clean tree: nothing to lose");
 	writeFileSync(join(repo, "src", "a.ts"), "changed\n");
 	assert.equal((await handler(bash("git reset --hard"), ctx))?.block, true, "dirty tree blocks");
@@ -682,11 +687,8 @@ test("a policy that throws fails closed on that command; guard keeps working", a
 	const { handler } = setup((pi) => registerWith(pi, undefined, boom));
 	const ctx = { cwd: repo, hasUI: false };
 	assert.match((await handler(bash("echo hi"), ctx))?.reason ?? "", /guard could not judge this command \(boom\)/);
-	assert.match(
-		(await handler(bash("rm -rf ~/x"), ctx))?.reason ?? "",
-		/recursive rm/,
-		"0.1.3's verdict when it has one",
-	);
+	const both = (await handler(bash("rm -rf /Users/nobody-guard-test/x"), ctx))?.reason ?? "";
+	assert.match(both, /^Blocked \(recursive rm; guard could not judge this command \(boom\)\)/, "both reasons show");
 });
 
 test("a parser that never loads counts as failed after the timeout", async () => {
@@ -708,9 +710,9 @@ test("a missing web-tree-sitter runtime is a load failure: guard and delegate st
 			"-e",
 			`await import(${JSON.stringify(`${ext}guard.ts`)});
 			 await import(${JSON.stringify(`${ext}delegate-worker.ts`)});
-			 const { initShell, shellReady } = await import(${JSON.stringify(`${ext}guard-shell.ts`)});
+			 const { initShell, parseShell } = await import(${JSON.stringify(`${ext}guard-shell.ts`)});
 			 await initShell(undefined, "web-tree-sitter-not-installed").then(() => console.log("loaded"), (e) => console.log(e.message));
-			 console.log("ready", shellReady());`,
+			 console.log("ready", parseShell("true").ok);`,
 		],
 		{ encoding: "utf8", timeout: 30_000 },
 	);

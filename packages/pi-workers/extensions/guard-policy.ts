@@ -21,7 +21,15 @@
  */
 
 import { posix } from "node:path";
-import { classify, DISPOSABLE, gitRisk, hasShort, PROTECTED_BRANCHES, TMPDIR_REF } from "./guard-regex.ts";
+import {
+	classify,
+	DISPOSABLE,
+	gitRisk,
+	hasShort,
+	PROTECTED_BRANCHES,
+	PUSH_VALUE_OPTIONS,
+	TMPDIR_REF,
+} from "./guard-regex.ts";
 import {
 	ENV,
 	expandBraces,
@@ -37,8 +45,10 @@ import {
 } from "./guard-resolve.ts";
 import {
 	type Bindings,
+	GLOB,
 	isWrapper,
 	parseShell,
+	RUNS_IN_NEW_SHELL,
 	SHELLS,
 	type SimpleCommand,
 	tmpdirRebinds,
@@ -91,8 +101,8 @@ export interface PolicyEnv {
 	branch(): string | undefined;
 	/** Decision 1: the branch checked out at `dir` (`HEAD` when detached), or undefined if `dir` isn't a repo. */
 	branchOf(dir: string): string | undefined;
-	/** Decision 4: the work tree root containing `dir`, or undefined if none. */
-	repoRootOf(dir: string): string | undefined;
+	/** Decision 4: the work tree root containing `dir`; `null` if none; undefined if unknown (a failed read). */
+	repoRootOf(dir: string): string | null | undefined;
 	/** Decision 5: remote `name`'s URL in the repo at `dir`, or undefined if unknown. */
 	remoteUrlOf(dir: string, name: string): string | undefined;
 }
@@ -120,7 +130,6 @@ const worst = (fs: Finding[]): Level => fs.reduce<Level>((a, f) => (RANK[f.level
 const worse = (a: LevelRule, b: LevelRule) => (RANK[b.level] > RANK[a.level] ? b : a);
 const ALLOW: LevelRule = { level: "allow", rule: "rm:temp-or-build" };
 const DOTDOT = /(?:^|\/)\.\.(?:\/|$)/;
-const GLOB = /[*?[]/;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Rules over argv (strings), shared with the bash-truth harness (test/guard-truth).
@@ -195,7 +204,10 @@ export function gitLevel(
 	branch: Branch,
 	elsewhere: boolean,
 ): LevelRule & { risk?: string } {
-	const risk = gitRisk(sub, words, branch, elsewhere);
+	// A push of the current branch where that branch can't be read (not a repo, git failing or timing out) could be
+	// main: the target is unknown, which asks (an unknown read never means "not protected").
+	const unread = sub === "push" && !elsewhere && branch() === undefined;
+	const risk = gitRisk(sub, words, branch, elsewhere || unread);
 	if (!risk) return { level: "allow", rule: "git:none" };
 	if (risk === "force push") return { level: "ask", rule: "push:force", risk };
 	if (risk === "push to main/master") return { level: "ask", rule: "push:main", risk };
@@ -263,7 +275,7 @@ function judge(
 	for (const c of cmds) {
 		// A re-parsed string run by another shell (`sh -c '…'`, `bash <<EOF`) doesn't see this shell's variables;
 		// `trap` and `eval` strings run in this shell and do.
-		const newShell = c.via.some((v) => RUNS_STRING.has(v));
+		const newShell = c.via.some((v) => RUNS_IN_NEW_SHELL.has(v));
 		const scope: Scope = { b: c.reparsed && newShell ? null : outerB, tmpdirStable: stable };
 		// Remote commands (`ssh host 'rm -rf ~'`) are judged like local ones; their dirtiness can't be checked here.
 		const add: Add = (level, rule, detail, dirty) =>
@@ -457,10 +469,19 @@ const stripSlash = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
  */
 function repoLevel(abs: string, src: string, at = abs): LevelRule {
 	const p = stripSlash(posix.normalize(abs));
-	if (disp(p, src)) return ALLOW;
-	const root = E.repoRootOf(p === "/" ? "/" : posix.dirname(p));
-	if (root === undefined) return { level: "ask", rule: "rm:catastrophic (not in a repo)" };
-	if (p === root || !p.startsWith(`${root}/`)) return { level: "ask", rule: "rm:catastrophic (repo root)" };
+	const temp = disp(p, src);
+	const root = E.repoRootOf(p);
+	// A failed read could hide a repo, even under a temp dir (scratch worktrees live there): unknown asks.
+	if (root === undefined) return { level: "ask", rule: "unknown:repo-root (lookup failed)" };
+	if (root === null) return temp ? ALLOW : { level: "ask", rule: "rm:catastrophic (not in a repo)" };
+	const whole = (rule: string): LevelRule => ({
+		level: "ask-if-dirty",
+		rule,
+		dirty: { repo: root, paths: undefined, untracked: true, ignored: false, always: false },
+	});
+	// A repo under a temp dir is still someone's work: case 2 there, never case 1 (removing it whole loses its tree).
+	if (p === root || !p.startsWith(`${root}/`))
+		return temp ? whole("rm:temp-repo") : { level: "ask", rule: "rm:catastrophic (repo root)" };
 	const rel = p.slice(root.length + 1);
 	if (rel.split("/").includes(".git")) return { level: "ask", rule: "rm:catastrophic (.git)" };
 	if (disp(rel, src)) return ALLOW;
@@ -491,7 +512,6 @@ function diskLevel(v: string, src: string, base: string): LevelRule {
 	const abs = absOf(expanded.replaceAll(GLOBCH, ""));
 	if (abs === undefined || (relative && baseAbs === undefined))
 		return { level: "ask", rule: "unknown:rm-target-expansion" };
-	if (disp(abs, src)) return ALLOW;
 	if (globAt < 0) return repoLevel(abs, src);
 	const dir = absOf(
 		expanded
@@ -501,15 +521,26 @@ function diskLevel(v: string, src: string, base: string): LevelRule {
 	);
 	if (dir === undefined) return { level: "ask", rule: "unknown:rm-target-expansion" };
 	const d = stripSlash(dir);
-	// A glob inside a named temp entry (`/tmp/x/*`) is temp; one at a temp root (`/tmp/*`, `/tmp/a*`) is not (guard).
-	if (disp(d, src)) return ALLOW;
-	if (disp(`${d}/x`, src)) return { level: "ask", rule: "rm:catastrophic (glob at a temp root)" };
+	// A glob inside a named temp entry (`/tmp/x/*`) is temp unless it's in a repo (`repoLevel`); one at a temp root
+	// (`/tmp/*`, `/tmp/a*`) is not (guard).
+	if (!disp(d, src) && disp(`${d}/x`, src)) return { level: "ask", rule: "rm:catastrophic (glob at a temp root)" };
 	if (E.repoRootOf(d) === d) return { level: "ask", rule: "rm:catastrophic (repo root glob)" };
 	return repoLevel(`${d}/x`, src, d);
 }
 
-/** Directories (absolute) a git command runs in, or undefined if any isn't a literal path on disk. */
+/**
+ * Whether something in the command may point git at another repository or work tree than the directory it runs in:
+ * `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR` (prefix, `export`, `env`) or `--git-dir`/`--work-tree`/`core.worktree`
+ * anywhere in it. The text is the whole top-level command, so wrappers and earlier `export`s count too.
+ */
+const GIT_ELSEWHERE = /\bGIT_(?:DIR|WORK_TREE|COMMON_DIR)\b|--(?:git-dir|work-tree)\b|\bcore\.worktree\b/;
+
+/**
+ * Directories (absolute) a git command runs in, or undefined if any isn't a literal path on disk, or git may be pointed
+ * at another repo or work tree (`GIT_ELSEWHERE`): then where it acts is unknown, and every disk read about it asks.
+ */
 function gitDirs(c: SimpleCommand, cmds: SimpleCommand[], globals: string[], s: Scope): string[] | undefined {
+	if (GIT_ELSEWHERE.test(TOP) || GIT_ELSEWHERE.test(c.script)) return undefined;
 	const cwd = cwdAt(cmds, c, s);
 	if (!cwd) return undefined;
 	const args = c.argv.slice(1);
@@ -539,7 +570,6 @@ function pushRemote(words: string[]): string | undefined {
 	if (i >= 0) return words[i + 1];
 	return words.find((w, j) => !w.startsWith("-") && !PUSH_VALUE_OPTIONS.has(words[j - 1]));
 }
-const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
 
 /**
  * Decision 5: whether every place a push could go is a local path. A path given as the remote; or a remote name added
@@ -626,7 +656,7 @@ function targetLevel(w: Word, src: string, s: Scope, at: number, cwd: Cwd): Leve
 		// or inside a repo (step 1 asked `cd / && rm -rf dist`; that stays).
 		const inProject = (b: string) => {
 			const abs = b === "" ? E.cwd : absOf(b);
-			return abs !== undefined && E.repoRootOf(abs) !== undefined;
+			return abs !== undefined && typeof E.repoRootOf(abs) === "string";
 		};
 		if (relative && cwd?.every(inProject) && !v.includes(GLOBCH) && disp(v, src)) continue;
 		// Decision 4: a relative target in an unknown working dir can't be placed on disk.
@@ -673,9 +703,8 @@ function gitFindings(
 	// Decision 1: a bare push after `cd`/`-C` to literal paths pushes the branch checked out there (read from disk, as
 	// the live guard would at classify time). Not after a checkout/switch in the same command (the disk shows the
 	// branch before it), and not where a path isn't a repo.
-	// Not when GIT_DIR/GIT_WORK_TREE or --git-dir/--work-tree could point git elsewhere (anywhere in the command).
-	const gitElsewhere = /\bGIT_(?:DIR|WORK_TREE|COMMON_DIR)\b|--(?:git-dir|work-tree)\b/.test(TOP);
-	if (r.rule === "push:target-unknown" && where === "elsewhere" && !switchedBefore(before) && !gitElsewhere) {
+	// Not when git may be pointed at another repo (`gitDirs` is then undefined).
+	if (r.rule === "push:target-unknown" && where === "elsewhere" && !switchedBefore(before)) {
 		const dirs = gitDirs(c, cmds, globals, s);
 		if (dirs) {
 			let best: LevelRule & { risk?: string } = { level: "allow", rule: "git:none" };
@@ -713,7 +742,7 @@ function gitFindings(
 		// A bare push after `git checkout -b x`/`switch -c x` in the same repo (no `cd` or `-C` between) pushes x. A push
 		// from a temp repo is not exempt: a clone there still pushes to its real remote.
 		if (r.rule === "push:target-unknown" && where === "switched") {
-			const target = newBranchBefore(cmds, c);
+			const target = newBranchBefore(cmds, c, s);
 			if (target !== undefined && !PROTECTED_BRANCHES.has(target)) return;
 		}
 		const dirty = r.level === "ask-if-dirty" ? discardCheck(sub, words, gitDirs(c, cmds, globals, s)) : undefined;
@@ -752,7 +781,7 @@ function discardCheck(sub: string, words: string[], dirs: string[] | undefined):
 	if (sub === "stash") return { repo: undefined, paths: undefined, untracked: false, ignored: false, always: true };
 	const dir = dirs?.length === 1 ? dirs[0] : undefined;
 	const repo = dir === undefined ? undefined : E.repoRootOf(dir);
-	if (dir === undefined || repo === undefined) return UNKNOWN_REPO;
+	if (dir === undefined || typeof repo !== "string") return UNKNOWN_REPO;
 	const untracked = sub === "clean";
 	const ignored = sub === "clean" && hasShort(words, "[xX]");
 	const named = sub === "checkout" ? words.slice(words.indexOf("--") + 1) : words;
@@ -784,51 +813,35 @@ function gitWhere(
 	}
 	if (movesGit(globals) || c.assignments.some((a) => a === "GIT_DIR" || a === "GIT_WORK_TREE")) return "elsewhere";
 	const cwd = cwdAt(cmds, c, s);
-	const before = cmds.slice(0, cmds.indexOf(c));
-	const switched = before.some(
-		(x) => x.name === "git" && ["checkout", "switch"].includes(gitSplit(values(x.argv.slice(1))).sub ?? ""),
-	);
 	if (cwd?.every((v) => v.startsWith(TEMP) && !DOTDOT.test(v))) return "temp";
 	if (cwd === undefined || cwd.some((v) => v !== "")) return "elsewhere";
-	return switched ? "switched" : "session";
+	return switchedBefore(cmds.slice(0, cmds.indexOf(c))) ? "switched" : "session";
 }
 
+/** Whether a `git checkout`/`switch` ran before: the branch the disk shows is no longer the one checked out. */
 const switchedBefore = (before: SimpleCommand[]) =>
 	before.some((x) => x.name === "git" && ["checkout", "switch"].includes(gitSplit(values(x.argv.slice(1))).sub ?? ""));
 
-/** The branch an earlier `git checkout -b X` / `switch -c X` in this command created, if exactly one. */
-function newBranchBefore(cmds: SimpleCommand[], c: SimpleCommand): string | undefined {
-	const names: string[] = [];
+/**
+ * The branch the last `git checkout -b|-B X` / `switch -c|-C X` before `c` created, resolved through the command's
+ * variables (`B=x; git checkout -B "$B"`); undefined if any checkout/switch before `c` doesn't name one plain, known
+ * branch (`checkout main`, `-B "$B"` with B unknown, `--orphan`, `-b=x`).
+ */
+function newBranchBefore(cmds: SimpleCommand[], c: SimpleCommand, s: Scope): string | undefined {
+	let last: string | undefined;
 	for (const x of cmds.slice(0, cmds.indexOf(c))) {
 		if (x.name !== "git") continue;
-		const { sub, words } = gitSplit(values(x.argv.slice(1)));
+		const args = x.argv.slice(1);
+		const { globals, sub, words } = gitSplit(values(args));
 		if (sub !== "checkout" && sub !== "switch") continue;
 		const i = words.findIndex((w) => /^-[bBcC]$/.test(w));
-		if (i < 0 || !words[i + 1]) return undefined;
-		names.push(words[i + 1]);
+		const word = i < 0 ? undefined : args[globals.length + 1 + i + 1];
+		const vals = word ? resolveWord(word, s, x.at) : undefined;
+		if (vals?.length !== 1 || /[\u0000\u0001\s]/.test(vals[0]) || vals[0].startsWith("-")) return undefined;
+		last = vals[0];
 	}
-	return names.length ? names.at(-1) : undefined;
+	return last;
 }
-
-// Wrappers that run a string or stdin in a new shell process (guard-shell's wrapper table); `trap`/`eval` strings run in
-// this shell.
-const RUNS_STRING = new Set([
-	"sh",
-	"bash",
-	"zsh",
-	"dash",
-	"ksh",
-	"mksh",
-	"ash",
-	"su",
-	"runuser",
-	"sudo",
-	"doas",
-	"env",
-	"flock",
-	"ssh",
-	"watch",
-]);
 
 // Sub-commands whose risk the policy checks (case 2 and 3).
 const GUARDED_SUBS = new Set(["push", "reset", "clean", "checkout", "restore", "switch", "stash"]);

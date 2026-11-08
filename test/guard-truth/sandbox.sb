@@ -12,10 +12,12 @@
 (deny file-write*)
 (allow file-write* (subpath (param "ROW")))
 (allow file-write-data (literal "/dev/null"))
-(allow file-write* (regex #"^/private/tmp/sh-thd"))
+; Only bash's own heredoc files there (`sh-thd-<number>`), not anything else under /tmp whose name starts so. Needed
+; because rows run with TMPDIR unset or unwritable (`/`), where bash 3.2 always falls back to /tmp.
+(allow file-write* (regex #"^/private/tmp/sh-thd-[0-9]+$"))
 ; Hide the user's files and the temp roots, so globs (`~/*`, `/tmp/*`) stay literal and nothing real is read.
 (deny file-read* (subpath "/Users") (subpath "/private/tmp") (subpath "/private/var/folders"))
-(allow file-read* (subpath (param "RUN")) (regex #"^/private/tmp/sh-thd"))
+(allow file-read* (subpath (param "RUN")) (regex #"^/private/tmp/sh-thd-[0-9]+$"))
 (allow file-read-metadata (literal "/private/tmp") (literal "/tmp") (literal "/Users") (literal "/private/var/folders"))
 ; Execute only bash, chmod (its writes are confined above), and files in the run dir (stubs, scripts a row writes):
 ; a real rm, git, or anything else fails with "Operation not permitted".

@@ -19,19 +19,25 @@ export function startBudget(ms = DECISION_BUDGET_MS): void {
 	deadline = Date.now() + ms;
 }
 
-/** One read-only git call: trimmed stdout on exit 0, undefined on any failure, timeout, or spent budget. */
-function git(dir: string, args: string[]): string | undefined {
+/**
+ * One read-only git call: trimmed stdout on exit 0 (`out`), else undefined; `notRepo` when git said `dir` is in no
+ * repository (anything else — a timeout, a spent budget, git missing or failing — is unknown).
+ */
+function gitCall(dir: string, args: string[]): { out: string | undefined; notRepo: boolean } {
 	const left = Math.min(GIT_TIMEOUT_MS, deadline - Date.now());
-	if (left <= 0) return undefined;
+	if (left <= 0) return { out: undefined, notRepo: false };
 	const res = spawnSync("git", ["-C", dir, "-c", "core.fsmonitor=false", ...args], {
 		encoding: "utf8",
 		timeout: left,
 		killSignal: "SIGKILL",
-		stdio: ["ignore", "pipe", "ignore"],
-		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+		stdio: ["ignore", "pipe", "pipe"],
+		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
 	});
-	return res.status === 0 && !res.error ? res.stdout.replace(/\n$/, "") : undefined;
+	const ok = res.status === 0 && !res.error;
+	const notRepo = res.status === 128 && /not a git repository/.test(res.stderr ?? "");
+	return { out: ok ? res.stdout.replace(/\n$/, "") : undefined, notRepo };
 }
+const git = (dir: string, args: string[]) => gitCall(dir, args).out;
 
 /** The checked-out branch at `dir`; `HEAD` when detached; undefined when not a repo or unreadable. */
 export function branchOf(dir: string): string | undefined {
@@ -40,14 +46,15 @@ export function branchOf(dir: string): string | undefined {
 
 /**
  * The work tree root containing `dir`, in the caller's spelling of `dir` (git prints the real path: `/private/tmp/…`
- * for `/tmp/…`, a symlink resolved), or undefined when `dir` is in no work tree. A `dir` that doesn't exist yet (a
- * target about to be created and removed) is read from its nearest existing parent.
+ * for `/tmp/…`, a symlink resolved); `null` when git says `dir` is in no work tree; undefined when that can't be read
+ * (git failing, a timeout, a spent budget), which the policy treats as possibly a repo. A `dir` that doesn't exist yet
+ * (a target about to be created and removed) is read from its nearest existing parent.
  */
-export function repoRootOf(dir: string): string | undefined {
+export function repoRootOf(dir: string): string | null | undefined {
 	let d = posix.normalize(dir);
 	while (d !== "/" && !isDir(d)) d = posix.dirname(d);
-	const root = git(d, ["rev-parse", "--show-toplevel"]);
-	if (!root) return undefined;
+	const { out: root, notRepo } = gitCall(d, ["rev-parse", "--show-toplevel"]);
+	if (!root) return notRepo ? null : undefined;
 	let real: string;
 	try {
 		real = realpathSync(d);

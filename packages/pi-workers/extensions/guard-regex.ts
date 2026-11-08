@@ -53,7 +53,14 @@ function tmpdirMayChange(command: string): boolean {
 }
 
 // Push options whose value is a separate word, so it is not mistaken for the remote or a refspec.
-const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
+/** `git push` options whose value is the next word (shared with guard-policy). */
+export const PUSH_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+	"-o",
+	"--push-option",
+	"--receive-pack",
+	"--exec",
+	"--repo",
+]);
 export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
 
 // Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`).

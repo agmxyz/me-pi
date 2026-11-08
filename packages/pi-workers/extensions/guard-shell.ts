@@ -26,8 +26,6 @@ export interface Word {
 }
 
 export interface Heredoc {
-	/** Delimiter quoted (`<<'EOF'`, `<<"EOF"`, `<<\EOF`): the body is literal text. */
-	quoted: boolean;
 	body: string;
 }
 
@@ -94,8 +92,6 @@ export type ParsedShell =
 			/** Every simple command, including ones unwrapped from wrappers and re-parsed strings, in source order. */
 			commands: SimpleCommand[];
 			bindings: Bindings;
-			/** Every source text parsed: `src` first, then each re-parsed string (`bash -c`, `eval`, heredoc bodies). */
-			scripts: string[];
 			/** Whether any parsed text may rebind TMPDIR (see `tmpdirRebinds`). */
 			rebindsTmpdir: boolean;
 	  }
@@ -141,10 +137,6 @@ async function load(wasm: URL | string, runtime: string): Promise<void> {
 	}
 }
 
-export function shellReady(): boolean {
-	return parser !== undefined;
-}
-
 class ShellFail extends Error {
 	reason: "syntax" | "limit";
 	constructor(reason: "syntax" | "limit") {
@@ -160,7 +152,6 @@ interface Walk {
 	at: number;
 	/** The source text being walked (the top-level script or a re-parsed string). */
 	script: string;
-	scripts: Set<string>;
 	rebinds: boolean;
 	bindings: Bindings | undefined;
 }
@@ -174,10 +165,10 @@ interface Frame {
 /** Parses a bash command string into its simple commands and top-level bindings. */
 export function parseShell(src: string): ParsedShell {
 	if (!parser) return { ok: false, reason: "not-loaded" };
-	const w: Walk = { out: [], at: 0, script: src, scripts: new Set(), rebinds: false, bindings: undefined };
+	const w: Walk = { out: [], at: 0, script: src, rebinds: false, bindings: undefined };
 	try {
 		parseScript(w, src, { via: [], remote: false, depth: 0 });
-		return { ok: true, commands: w.out, bindings: w.bindings!, scripts: [...w.scripts], rebindsTmpdir: w.rebinds };
+		return { ok: true, commands: w.out, bindings: w.bindings!, rebindsTmpdir: w.rebinds };
 	} catch (error) {
 		if (error instanceof ShellFail) return { ok: false, reason: error.reason };
 		throw error;
@@ -241,7 +232,6 @@ function parseScript(w: Walk, src: string, f: Frame): void {
 	if (!tree) throw new ShellFail("syntax");
 	const outer = w.script;
 	w.script = src;
-	w.scripts.add(src);
 	try {
 		// The first text parsed is the top-level script; bindings are read from it only.
 		w.bindings ??= readBindings(tree.rootNode, src);
@@ -314,9 +304,8 @@ function simpleCommand(w: Walk, node: Node, outerRedirects: Node[], f: Frame): v
 			if (hs) herestrings.push(word(hs));
 			redirects.push({ op: "<<<", target: undefined });
 		} else if (r.type === "heredoc_redirect") {
-			const start = r.children.find((c) => c.type === "heredoc_start")?.text ?? "";
 			const body = r.children.find((c) => c.type === "heredoc_body");
-			heredocs.push({ quoted: /["'\\]/.test(start), body: body?.text ?? "" });
+			heredocs.push({ body: body?.text ?? "" });
 			redirects.push({ op: "<<", target: undefined });
 			const kids = r.children;
 			for (let i = 0; i < kids.length; i++) {
@@ -559,12 +548,21 @@ function readBindings(root: Node, src: string): Bindings {
 			}
 		} else if (n.type === "command") {
 			const nameText = n.childForFieldName("name")?.text ?? "";
-			const name = nameText.replace(/^.*\//, "");
+			let name = nameText.replace(/^.*\//, "");
+			let args = argumentsOf(n);
+			// `command`/`builtin` bind only what the command they run binds (`command read X`); an option or a spelled
+			// name there stays opaque.
+			if ((name === "command" || name === "builtin") && args.length) {
+				if (/^-|["'\\{}$`]/.test(args[0])) opaque = true;
+				[name, ...args] = args;
+				// The parser reads `command export X=…` as plain words, not a declaration: its bindings are unseen.
+				if (DECLARERS.has(name)) opaque = true;
+			}
 			// A name written with quotes, escapes, or braces (`\export`, `e{xport,}`, `ex""port`) may spell a binder; one
 			// that only expands a variable (`"$T/run.sh"`) is the policy's unknown command name, not a binder.
 			const spelled = nameText.replace(/^"?\$\{?[A-Za-z_]\w*\}?[\w./-]*"?$/, "x");
-			if (OPAQUE_BINDERS.has(name) || /["'\\{}$`]/.test(spelled)) opaque = true;
-			const args = argumentsOf(n);
+			if ((OPAQUE_BINDERS.has(name) && name !== "command" && name !== "builtin") || /["'\\{}$`]/.test(spelled))
+				opaque = true;
 			const binds = NAME_BINDERS.has(name) && (name !== "printf" || /^-v/.test(args[0] ?? ""));
 			if (binds && args.some((a) => /[$`]/.test(a))) opaque = true;
 			// `read X`, `unset X`, `printf -v X`, `getopts o X`: X's value isn't in the text.
@@ -611,8 +609,15 @@ function rebindsTmpdir(root: Node): boolean {
 				);
 			case "command": {
 				const nameText = n.childForFieldName("name")?.text ?? "";
-				const name = nameText.replace(/^.*\//, "");
-				const args = argumentsOf(n);
+				let name = nameText.replace(/^.*\//, "");
+				let args = argumentsOf(n);
+				// `command`/`builtin` run the named command or builtin: they rebind only if what they run does
+				// (`command export TMPDIR=/`), not for `command echo ok`. An option or an odd name stays opaque.
+				if (name === "command" || name === "builtin") {
+					if (!args.length) return false;
+					if (/^-|["'\\{}$`]/.test(args[0])) return true;
+					[name, ...args] = args;
+				}
 				// A name that isn't plain text may spell a binder (`\export`, `ex""port`, `$CMD`).
 				if (/["'\\{}$`]/.test(nameText) || OPAQUE_BINDERS.has(name) || ENV_RESETTERS.has(name)) return true;
 				if (NAME_BINDERS.has(name) && (name !== "printf" || /^-v/.test(args[0] ?? "")))
@@ -635,7 +640,8 @@ function rebindsTmpdir(root: Node): boolean {
 // ---------------------------------------------------------------------------------------------------------------
 // Words
 
-const GLOB = /[*?[]/;
+/** An unquoted glob character (guard-policy shares it). */
+export const GLOB = /[*?[]/;
 const BRACE = /\{[^{}]*(?:,|\.\.)[^{}]*\}/;
 
 interface Piece {
@@ -974,3 +980,19 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 	},
 };
 for (const name of SHELLS) WRAPPERS[name] = shell;
+
+/**
+ * Wrappers whose string or stdin program runs in a new process (a shell, `su`, `sudo -s`, `ssh`…), so it doesn't see
+ * this shell's variables; `eval` and `trap` strings run in this shell and do. One owner with the wrapper table above.
+ */
+export const RUNS_IN_NEW_SHELL: ReadonlySet<string> = new Set([
+	...SHELLS,
+	"su",
+	"runuser",
+	"sudo",
+	"doas",
+	"env",
+	"flock",
+	"ssh",
+	"watch",
+]);

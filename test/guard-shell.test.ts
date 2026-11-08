@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { initShell, parseShell, shellReady, tmpdirRebinds, isWrapper } = await import(
+const { initShell, parseShell, tmpdirRebinds, isWrapper } = await import(
 	"../packages/pi-workers/extensions/guard-shell.ts"
 );
 
@@ -20,17 +20,17 @@ const find = (src: string, name: string) => parsed(src).commands.find((c) => c.n
 // Runs first: a failed load leaves the module unloaded and parsing reports it instead of throwing.
 test("initShell rejects a missing or broken grammar and stays unloaded", async () => {
 	await assert.rejects(initShell("/nonexistent/tree-sitter-bash.wasm"), /cannot load the bash parser/);
-	assert.equal(shellReady(), false);
+	assert.deepEqual(parseShell("true"), { ok: false, reason: "not-loaded" });
 	assert.deepEqual(parseShell("echo hi"), { ok: false, reason: "not-loaded" });
 	assert.equal(tmpdirRebinds("echo hi"), true);
 	// Not a WASM module at all.
 	await assert.rejects(initShell(new URL(import.meta.url)), /cannot load the bash parser/);
-	assert.equal(shellReady(), false);
+	assert.deepEqual(parseShell("true"), { ok: false, reason: "not-loaded" });
 });
 
 test("initShell loads the vendored grammar once", async () => {
 	await initShell();
-	assert.equal(shellReady(), true);
+	assert.equal(parseShell("true").ok, true);
 	await initShell(); // already loaded: a no-op
 	assert.deepEqual(argv("echo hi"), ["echo", "hi"]);
 });
@@ -86,7 +86,7 @@ test("a heredoc written to a file is data; one fed to a shell is commands", () =
 		written.commands.map((c) => c.name),
 		["cat"],
 	);
-	assert.deepEqual(written.commands[0].heredocs, [{ quoted: true, body: "rm -rf /\n" }]);
+	assert.deepEqual(written.commands[0].heredocs, [{ body: "rm -rf /\n" }]);
 	assert.equal(written.commands[0].redirects.find((x) => x.op === ">")?.target?.value, "f.sh");
 	const run = find("bash <<EOF\nrm -rf /\nEOF", "rm");
 	assert.ok(run);
@@ -96,7 +96,13 @@ test("a heredoc written to a file is data; one fed to a shell is commands", () =
 		run.argv.map((w) => w.value),
 		["rm", "-rf", "/"],
 	);
-	assert.equal(parsed("bash <<EOF\nrm -rf /\nEOF").scripts.length, 2);
+	assert.deepEqual(
+		parsed("bash <<EOF\nrm -rf /\nEOF").commands.map((c) => [c.name, c.reparsed]),
+		[
+			["bash", false],
+			["rm", true],
+		],
+	);
 });
 
 test("`bash --version` and `bash -n f` run nothing", () => {

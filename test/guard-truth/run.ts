@@ -16,6 +16,7 @@ import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	argvPolicy,
+	disposable,
 	gitSplit,
 	movesGit,
 	type PolicyEnv,
@@ -23,7 +24,7 @@ import {
 	rmRecursive,
 	rmSplit,
 } from "../../packages/pi-workers/extensions/guard-policy.ts";
-import { DISPOSABLE, gitRisk } from "../../packages/pi-workers/extensions/guard-regex.ts";
+import { gitRisk } from "../../packages/pi-workers/extensions/guard-regex.ts";
 import { initShell, parseShell } from "../../packages/pi-workers/extensions/guard-shell.ts";
 import { prepare, STUB_HOME, type Truth, truth } from "./bash-truth.ts";
 
@@ -80,7 +81,7 @@ const env = (branch: string): PolicyEnv => ({
 	home: STUB_HOME,
 	branch: () => branch,
 	branchOf: (d) => (inRepo(d) ? branch : undefined),
-	repoRootOf: (d) => (inRepo(d) ? REPO : undefined),
+	repoRootOf: (d) => (inRepo(d) ? REPO : null),
 	remoteUrlOf: (d, n) => (inRepo(d) && n === "origin" ? "git@github.com:me/repo.git" : undefined),
 });
 const strip = (p: string) => p.replace(/^\/private(?=\/(?:var|tmp)\/)/, "");
@@ -98,9 +99,7 @@ function dangerous(t: Truth, branch: string): string[] {
 		if (c.name === "rm") {
 			const { options, operands } = rmSplit(c.argv);
 			if (!rmRecursive(options)) continue;
-			const bad = operands
-				.map((o) => o.replace(/\/{2,}/g, "/"))
-				.filter((o) => !DISPOSABLE.test(o) || /(?:^|\/)\.\.(?:\/|$)/.test(o));
+			const bad = operands.map((o) => o.replace(/\/{2,}/g, "/")).filter((o) => !disposable(o));
 			if (bad.length) out.push(`rm ${c.argv.join(" ")}`);
 		} else if (c.name === "git") {
 			const { globals, sub, words } = gitSplit(c.argv);

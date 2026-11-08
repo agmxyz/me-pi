@@ -33,7 +33,7 @@ function fakeEnv(cwd: string, branch: string): PolicyEnv {
 			const r = rootOf(d);
 			return r ? repos[r].branch : undefined;
 		},
-		repoRootOf: rootOf,
+		repoRootOf: (d) => rootOf(d) ?? null,
 		remoteUrlOf: (d, n) => {
 			const r = rootOf(d);
 			return r ? repos[r].remotes[n] : undefined;
@@ -329,4 +329,79 @@ test("reports what the dropped history rules were, for the worker side", () => {
 		assert.equal(v.verdict, "allow", command);
 		assert.ok(v.dropped.length > 0, `${command} reports a dropped rule`);
 	}
+});
+
+test("PR #95 review bypasses: each asks (they were allowed at 00c2e96)", () => {
+	const app = fakeEnv("/w/app", "feat");
+	const asks = (command: string, env: PolicyEnv = app) => {
+		const v = policy(command, env);
+		assert.notEqual(v.verdict, "allow", command);
+		return v;
+	};
+	// 1. `~name` is that user's home, `~-` is $OLDPWD: unknown, never a relative path in the repo.
+	for (const command of [
+		"rm -rf ~mmo",
+		"rm -rf ~root",
+		"rm -rf ~root/.ssh",
+		"rm -rf ~-",
+		"rm -rf ~-/x",
+		"x=~root; rm -rf $x",
+	])
+		assert.equal(asks(command).verdict, "ask", command);
+	// `~+` is $PWD: a repo-relative path like any other.
+	assert.equal(policy("rm -rf ~+/dist", app).verdict, "allow");
+	assert.equal(policy("rm -rf ~+", app).verdict, "ask", "~+ is the repo root");
+	// 2. Glob characters from an unquoted expansion glob: judged by the directory they glob in, not as a literal name.
+	for (const command of [
+		"p='src/*'; rm -rf $p",
+		"p=src/*; rm -rf $p",
+		"p='src/[ab]'; rm -rf $p",
+		"p='src/?'; rm -rf $p",
+	]) {
+		const v = asks(command);
+		assert.deepEqual(v.findings[0].dirty?.paths, ["/w/app/src"], command);
+	}
+	assert.equal(asks("p='*'; rm -rf $p").verdict, "ask", "the repo root, globbed");
+	assert.deepEqual(
+		asks(`p='src/*'; rm -rf "$p"`).findings[0].dirty?.paths,
+		["/w/app/src/*"],
+		"quoted: a literal name",
+	);
+	// 3. git pointed at another repo or work tree: where it acts is unknown, so the dirty check can't be scoped.
+	for (const command of [
+		"git --git-dir=/w/lib/.git --work-tree=/w/lib reset --hard",
+		"git --work-tree=/w/lib checkout -- .",
+		"git --git-dir /w/lib/.git reset --hard",
+		"GIT_DIR=/w/lib/.git git reset --hard",
+		"GIT_WORK_TREE=/w/lib git clean -fd",
+		"export GIT_DIR=/w/lib/.git; git reset --hard",
+		"env GIT_DIR=/w/lib/.git git reset --hard",
+		"git -c core.worktree=/w/lib reset --hard",
+		"git -C /w/lib --git-dir=.git reset --hard",
+	])
+		assert.equal(asks(command).findings[0].dirty?.repo, undefined, command);
+	// 4. A new branch named through a variable is resolved; an unknown one asks.
+	for (const flag of ["-b", "-B"])
+		assert.equal(asks(`B=main; git checkout ${flag} "$B" && git push -u origin HEAD`).verdict, "ask", flag);
+	for (const flag of ["-c", "-C"])
+		assert.equal(asks(`B=master; git switch ${flag} $B && git push`).verdict, "ask", flag);
+	assert.equal(asks(`git checkout -B "$B" && git push -u origin HEAD`).verdict, "ask", "unknown B");
+	assert.equal(policy(`B=topic; git checkout -b "$B" && git push -u origin HEAD`, app).verdict, "allow");
+	assert.equal(policy("git checkout -b topic && git push -u origin HEAD", app).verdict, "allow");
+	// 5. A failed lookup is unknown, never "not protected", "not a repo", or "local".
+	const failing: PolicyEnv = {
+		...app,
+		branch: () => undefined,
+		branchOf: () => undefined,
+		repoRootOf: () => undefined,
+		remoteUrlOf: () => undefined,
+	};
+	assert.equal(asks("git push origin", failing).verdict, "ask", "the session branch can't be read");
+	assert.equal(asks("git push", failing).verdict, "ask");
+	assert.equal(asks("cd /w/lib && git push", failing).verdict, "ask", "the cd target's branch can't be read");
+	assert.equal(asks("git push local main", failing).verdict, "ask", "a remote whose URL can't be read isn't local");
+	assert.equal(asks("rm -rf /tmp/x", failing).verdict, "ask", "even a temp path: a repo there can't be ruled out");
+	assert.equal(asks("rm -rf src", failing).verdict, "ask");
+	assert.equal(asks("git reset --hard", failing).findings[0].dirty?.repo, undefined, "the repo can't be read");
+	assert.equal(policy("git push origin feat", failing).verdict, "allow", "a named feature branch needs no read");
 });

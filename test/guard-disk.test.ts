@@ -11,14 +11,16 @@ import {
 	repoRootOf,
 	startBudget,
 } from "../packages/pi-workers/extensions/guard-disk.ts";
+import { isolate } from "./helpers/isolate.ts";
 
 // A scratch repo under the OS temp dir; HOME points there so no user git config is read.
 function scratch(t: { after(fn: () => void): void }) {
 	const root = mkdtempSync(join(tmpdir(), "guard-disk-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
+	isolate(t, root);
 	const repo = join(root, "repo");
 	mkdirSync(repo);
-	const env = { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: "1" };
+	const env = { ...process.env };
 	const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, stdio: "pipe" });
 	git("init", "-q", "-b", "feat");
 	git("config", "user.email", "t@example.com");
@@ -39,7 +41,7 @@ test("reads branch, repo root, and remote URL; undefined outside a repo", (t) =>
 	assert.equal(branchOf(root), undefined);
 	assert.equal(repoRootOf(join(repo, "src")), repo);
 	assert.equal(repoRootOf(join(repo, "src", "not", "yet")), repo, "a missing dir reads from its nearest parent");
-	assert.equal(repoRootOf(root), undefined);
+	assert.equal(repoRootOf(root), null, "git says: not a repo");
 	assert.equal(remoteUrlOf(repo, "origin"), "git@github.com:me/app.git");
 	assert.equal(remoteUrlOf(repo, "nope"), undefined);
 	assert.equal(remoteUrlOf(repo, "a b"), undefined, "a remote name that isn't a plain word is never looked up");
@@ -84,7 +86,7 @@ test("a spent lookup budget reads unknown, and a failing git reads unknown", (t)
 	t.after(() => startBudget(60_000));
 	startBudget(0);
 	assert.equal(dirtIn(repo, undefined, true), "unknown", "no budget left: no git call, the caller asks");
-	assert.equal(repoRootOf(repo), undefined);
+	assert.equal(repoRootOf(repo), undefined, 'no budget: unknown, not "not a repo"');
 	startBudget(60_000);
 	assert.equal(dirtIn(repo, undefined, true), "clean");
 	const path = process.env.PATH;
@@ -94,4 +96,6 @@ test("a spent lookup budget reads unknown, and a failing git reads unknown", (t)
 	process.env.PATH = "/nonexistent";
 	assert.equal(dirtIn(repo, undefined, true), "unknown", "git can't run");
 	assert.equal(branchOf(repo), undefined);
+	assert.equal(repoRootOf(repo), undefined, 'git can\'t run: unknown, not "not a repo"');
+	assert.equal(remoteUrlOf(repo, "origin"), undefined);
 });

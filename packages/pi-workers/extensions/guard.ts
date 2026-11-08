@@ -44,27 +44,35 @@ function atRisk(f: Finding): boolean {
 	return dirtIn(repo, whole ? undefined : paths, d.untracked, d.ignored) !== "clean";
 }
 
+/** How `guardRisk` judges: `parser` false means the grammar failed to load; `judge` is injectable for tests. */
+export interface GuardOptions {
+	parser: boolean;
+	worker: boolean;
+	judge?: typeof policy;
+}
+
 /**
- * Why `command` needs approval (main session) or is blocked (worker), or undefined when it may run. `parser` false
- * means the grammar failed to load: guard 0.1.3's regex verdict judges the whole command. `judge` is the policy
- * (injectable so tests can make it throw).
+ * Why `command` needs approval (main session) or is blocked (worker), or undefined when it may run. Without the parser,
+ * guard 0.1.3's regex verdict judges the whole command.
  */
 export function guardRisk(
 	command: string,
 	cwd: string,
-	parser: boolean,
-	worker: boolean,
-	judge: typeof policy = policy,
+	{ parser, worker, judge = policy }: GuardOptions,
 ): string | undefined {
 	startBudget();
-	if (!parser) return classify(command, () => branchOf(cwd));
+	const regex = () => classify(command, () => branchOf(cwd));
+	if (!parser) return regex();
 	let v: ReturnType<typeof policy>;
 	try {
 		v = judge(command, liveEnv(cwd));
 	} catch (error) {
-		// A parser or policy bug must not let a command through unjudged, nor stop guard: fail closed on this one.
+		// A parser or policy bug must not let a command through unjudged, nor stop guard: fail closed on this one, and
+		// say so even when 0.1.3's rules also object.
 		const why = error instanceof Error ? error.message : String(error);
-		return classify(command, () => branchOf(cwd)) ?? `guard could not judge this command (${why})`;
+		const failed = `guard could not judge this command (${why})`;
+		const reason = regex();
+		return reason ? `${reason}; ${failed}` : failed;
 	}
 	const risks = v.findings
 		.filter((f) => f.level === "ask" || atRisk(f))
@@ -128,7 +136,7 @@ export function registerGuard(
 			);
 		}
 		const worker = isWorkerProcess();
-		const risk = guardRisk(command, ctx.cwd, parser, worker, judge);
+		const risk = guardRisk(command, ctx.cwd, { parser, worker, judge });
 		if (!risk) return undefined;
 		const block = (reason: string) => {
 			if (worker) {
