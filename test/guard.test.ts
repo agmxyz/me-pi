@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -248,7 +248,6 @@ const NOW_ALLOWED: [string, string][] = [
 	["git rebase -i HEAD~3", "rebase: recoverable from the reflog (workers still block it)"],
 	["git filter-repo --path x", "filter-repo: a local history rewrite (workers still block it)"],
 	["python3 - <<\\EOF\nrm -rf ~\nEOF", "a quoted heredoc fed to python is Python source, not shell"],
-	["source <(node - <<'EOF'\nrm -rf ~\nEOF\n)", "the heredoc is node source; what node prints is not visible"],
 	["cat > notes.md <<'EOF'\nrm -rf src\nEOF", "a heredoc written to a file that nothing runs is text"],
 	["sudo python3 - <<'EOF'\nrm -rf ~\nEOF", "the heredoc body is Python source"],
 	["ssh h python3 - <<'EOF'\nrm -rf ~\nEOF", "the heredoc body is Python source"],
@@ -621,7 +620,12 @@ test("asks about discarding work only when the tree has uncommitted changes ther
 		assert.equal(await handler(bash(command), ctx), undefined, `clean tree: ${command}`);
 	mkdirSync(join(repo, "node_modules"));
 	writeFileSync(join(repo, "node_modules", "x.js"), "x\n");
-	assert.equal(await handler(bash("git clean -fdX node_modules"), ctx), undefined, "ignored files count as clean");
+	assert.equal(await handler(bash("git checkout -- node_modules"), ctx), undefined, "ignored files count as clean");
+	assert.equal(
+		(await handler(bash("git clean -fdX"), ctx))?.block,
+		true,
+		"clean -X deletes ignored files: they count",
+	);
 	writeFileSync(join(repo, "src", "a.ts"), "changed\n");
 	for (const command of ["git reset --hard", "git checkout -- src"])
 		assert.equal((await handler(bash(command), ctx))?.block, true, `dirty tree: ${command}`);
@@ -668,6 +672,66 @@ test("workers block every finding and the history rewrites the main session allo
 	assert.equal(await handler(bash("git reset --hard"), ctx), undefined, "clean tree: nothing to lose");
 	writeFileSync(join(repo, "src", "a.ts"), "changed\n");
 	assert.equal((await handler(bash("git reset --hard"), ctx))?.block, true, "dirty tree blocks");
+});
+
+test("a policy that throws fails closed on that command; guard keeps working", async (t) => {
+	const { repo } = scratchRepo(t);
+	const boom = () => {
+		throw new Error("boom");
+	};
+	const { handler } = setup((pi) => registerWith(pi, undefined, boom));
+	const ctx = { cwd: repo, hasUI: false };
+	assert.match((await handler(bash("echo hi"), ctx))?.reason ?? "", /guard could not judge this command \(boom\)/);
+	assert.match(
+		(await handler(bash("rm -rf ~/x"), ctx))?.reason ?? "",
+		/recursive rm/,
+		"0.1.3's verdict when it has one",
+	);
+});
+
+test("a parser that never loads counts as failed after the timeout", async () => {
+	const { handler } = setup((pi) => registerWith(pi, () => new Promise(() => {}), undefined, 20));
+	const notes: string[] = [];
+	const ctx = { cwd: process.cwd(), hasUI: false, ui: { notify: (m: string) => notes.push(m) } };
+	assert.equal(await handler(bash("git status"), ctx), undefined);
+	assert.match(notes[0] ?? "", /not loaded after 20 ms/);
+});
+
+test("a missing web-tree-sitter runtime is a load failure: guard and delegate still import", () => {
+	// A fresh process, so nothing is loaded yet: guard.ts and delegate-worker.ts must import without the runtime, and
+	// initShell must reject (guard then falls back) instead of the import failing.
+	const ext = new URL("../packages/pi-workers/extensions/", import.meta.url).href;
+	const probe = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`await import(${JSON.stringify(`${ext}guard.ts`)});
+			 await import(${JSON.stringify(`${ext}delegate-worker.ts`)});
+			 const { initShell, shellReady } = await import(${JSON.stringify(`${ext}guard-shell.ts`)});
+			 await initShell(undefined, "web-tree-sitter-not-installed").then(() => console.log("loaded"), (e) => console.log(e.message));
+			 console.log("ready", shellReady());`,
+		],
+		{ encoding: "utf8", timeout: 30_000 },
+	);
+	assert.equal(probe.status, 0, probe.stderr);
+	assert.match(probe.stdout, /cannot load the bash parser \(web-tree-sitter-not-installed/);
+	assert.match(probe.stdout, /ready false/);
+});
+
+test("a parser that fails to load falls back to 0.1.3's rules and warns once, in workers too", async (t) => {
+	const saved = process.env.ME_PI_RUN;
+	t.after(() => {
+		if (saved === undefined) delete process.env.ME_PI_RUN;
+		else process.env.ME_PI_RUN = saved;
+	});
+	process.env.ME_PI_RUN = "1";
+	const { handler } = setup((pi) => registerWith(pi, () => Promise.reject(new Error("no wasm"))));
+	const notes: string[] = [];
+	const ctx = { cwd: process.cwd(), hasUI: false, ui: { notify: (m: string) => notes.push(m) } };
+	assert.match((await handler(bash("git rebase -i HEAD~2"), ctx))?.reason ?? "", /delegate workers can't run this/);
+	assert.equal(await handler(bash("git status"), ctx), undefined);
+	assert.equal(notes.length, 1);
 });
 
 test("a parser that fails to load falls back to 0.1.3's rules and warns once", async () => {

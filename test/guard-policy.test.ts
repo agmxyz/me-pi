@@ -287,27 +287,34 @@ test("a case-2 finding names the repo and paths to check for uncommitted work", 
 		assert.equal(v.verdict, "ask-if-dirty", command);
 		return v.findings.map((f) => f.dirty);
 	};
-	const whole = { paths: undefined, always: false };
+	const whole = { paths: undefined, ignored: false, always: false };
 	assert.deepEqual(check("git reset --hard"), [{ repo: "/w/app", ...whole, untracked: false }]);
 	assert.deepEqual(check("git switch -f other"), [{ repo: "/w/app", ...whole, untracked: false }]);
 	assert.deepEqual(check("git clean -fd src"), [
-		{ repo: "/w/app", paths: ["/w/app/src"], untracked: true, always: false },
+		{ repo: "/w/app", paths: ["/w/app/src"], untracked: true, ignored: false, always: false },
 	]);
 	assert.deepEqual(check("git checkout -- a.txt b/c.txt"), [
-		{ repo: "/w/app", paths: ["/w/app/a.txt", "/w/app/b/c.txt"], untracked: false, always: false },
+		{ repo: "/w/app", paths: ["/w/app/a.txt", "/w/app/b/c.txt"], untracked: false, ignored: false, always: false },
 	]);
 	assert.deepEqual(check("git -C /w/lib restore x"), [
-		{ repo: "/w/lib", paths: ["/w/lib/x"], untracked: false, always: false },
+		{ repo: "/w/lib", paths: ["/w/lib/x"], untracked: false, ignored: false, always: false },
 	]);
 	assert.deepEqual(check("git checkout -- '*.ts'"), [{ repo: "/w/app", ...whole, untracked: false }]);
 	assert.deepEqual(check("rm -rf src/x"), [
-		{ repo: "/w/app", paths: ["/w/app/src/x"], untracked: true, always: false },
+		{ repo: "/w/app", paths: ["/w/app/src/x"], untracked: true, ignored: false, always: false },
 	]);
 	assert.deepEqual(check("rm -rf /w/lib/x"), [
-		{ repo: "/w/lib", paths: ["/w/lib/x"], untracked: true, always: false },
+		{ repo: "/w/lib", paths: ["/w/lib/x"], untracked: true, ignored: false, always: false },
 	]);
-	assert.deepEqual(check("rm -rf src/*"), [{ repo: "/w/app", paths: ["/w/app/src"], untracked: true, always: false }]);
-	assert.deepEqual(check("git stash drop"), [{ repo: undefined, paths: undefined, untracked: false, always: true }]);
+	assert.deepEqual(check("rm -rf src/*"), [
+		{ repo: "/w/app", paths: ["/w/app/src"], untracked: true, ignored: false, always: false },
+	]);
+	assert.deepEqual(check("git clean -fdx"), [
+		{ repo: "/w/app", paths: undefined, untracked: true, ignored: true, always: false },
+	]);
+	assert.deepEqual(check("git stash drop"), [
+		{ repo: undefined, paths: undefined, untracked: false, ignored: false, always: true },
+	]);
 });
 
 test("reports what the dropped history rules were, for the worker side", () => {

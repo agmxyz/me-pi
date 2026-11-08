@@ -10,12 +10,22 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { posix } from "node:path";
 
 export const GIT_TIMEOUT_MS = 3_000;
+/** All lookups for one command share this budget, so many targets can't stack timeouts; past it, reads are unknown. */
+export const DECISION_BUDGET_MS = 5_000;
 
-/** One read-only git call: trimmed stdout on exit 0, undefined on any failure or timeout. */
+let deadline = Number.POSITIVE_INFINITY;
+/** Starts one command's lookup budget (`guard.ts` calls it per decision). */
+export function startBudget(ms = DECISION_BUDGET_MS): void {
+	deadline = Date.now() + ms;
+}
+
+/** One read-only git call: trimmed stdout on exit 0, undefined on any failure, timeout, or spent budget. */
 function git(dir: string, args: string[]): string | undefined {
+	const left = Math.min(GIT_TIMEOUT_MS, deadline - Date.now());
+	if (left <= 0) return undefined;
 	const res = spawnSync("git", ["-C", dir, "-c", "core.fsmonitor=false", ...args], {
 		encoding: "utf8",
-		timeout: GIT_TIMEOUT_MS,
+		timeout: left,
 		killSignal: "SIGKILL",
 		stdio: ["ignore", "pipe", "ignore"],
 		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
@@ -44,6 +54,9 @@ export function repoRootOf(dir: string): string | undefined {
 	} catch {
 		return undefined;
 	}
+	// Climb from `d` as many levels as the real path sits below the root. If `d` is itself a symlink into a repo's
+	// subdirectory, this may name the symlink's parent instead of a root; that's safe: `git status` there fails and the
+	// dirty check reads `unknown`, which asks.
 	const rel = posix.relative(root, real);
 	if (rel.startsWith("..")) return root;
 	return rel === "" ? d : posix.resolve(d, ...rel.split("/").map(() => ".."));
@@ -67,10 +80,12 @@ export type Dirt = "clean" | "dirty" | "unknown";
 
 /**
  * Whether the repo at `repo` has uncommitted changes under `paths` (relative to the repo; undefined = the whole tree).
- * `untracked` counts untracked files too (`git clean`, `rm`); ignored files never count (`node_modules` is clean).
+ * `untracked` counts untracked files too (`git clean`, `rm`); gitignored files count only with `ignored` (`git clean
+ * -x`/`-X` deletes them); otherwise `node_modules` is clean.
  */
-export function dirtIn(repo: string, paths: string[] | undefined, untracked: boolean): Dirt {
+export function dirtIn(repo: string, paths: string[] | undefined, untracked: boolean, ignored = false): Dirt {
 	const args = ["status", "--porcelain", untracked ? "--untracked-files=all" : "--untracked-files=no"];
+	if (ignored) args.push("--ignored=matching");
 	const out = git(repo, paths?.length ? [...args, "--", ...paths.map((p) => `:(literal)${p}`)] : args);
 	if (out === undefined) return "unknown";
 	return out.trim() ? "dirty" : "clean";

@@ -2,7 +2,8 @@
  * Safety net for really dangerous bash commands: a recursive rm outside every repo (or of a repo root or `.git`),
  * discarding uncommitted work, and force pushes or pushes to main/master on a network remote (`guard-policy.ts`).
  * With a UI it asks for confirmation; without one (print mode) it blocks. In a delegate worker it always blocks, and
- * also blocks the history rewrites the main session now allows (amend, rebase, filter-branch/-repo, `branch -D`).
+ * keeps blocking the history rewrites the main session no longer asks about (amend, rebase, filter-branch/-repo,
+ * `branch -D`).
  * `/guard on|off` toggles it for the current session; every session starts on.
  * The Approval policy in GLOBAL_AGENTS.md stays the primary rule; this is a guardrail, not a sandbox.
  */
@@ -11,7 +12,7 @@ import { homedir } from "node:os";
 import { posix } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isWorkerProcess, workerIdentity } from "./delegate-env.ts";
-import { branchOf, dirtIn, remoteUrlOf, repoRootOf } from "./guard-disk.ts";
+import { branchOf, dirtIn, remoteUrlOf, repoRootOf, startBudget } from "./guard-disk.ts";
 import { type Finding, type PolicyEnv, policy } from "./guard-policy.ts";
 import { classify } from "./guard-regex.ts";
 import { initShell } from "./guard-shell.ts";
@@ -40,24 +41,34 @@ function atRisk(f: Finding): boolean {
 	const { repo } = d;
 	const paths = d.paths?.map((p) => posix.relative(repo, p));
 	const whole = paths === undefined || paths.some((p) => p === "" || p.startsWith(".."));
-	return dirtIn(repo, whole ? undefined : paths, d.untracked) !== "clean";
+	return dirtIn(repo, whole ? undefined : paths, d.untracked, d.ignored) !== "clean";
 }
 
 /**
  * Why `command` needs approval (main session) or is blocked (worker), or undefined when it may run. `parser` false
- * means the grammar failed to load: guard 0.1.3's regex verdict judges the whole command.
+ * means the grammar failed to load: guard 0.1.3's regex verdict judges the whole command. `judge` is the policy
+ * (injectable so tests can make it throw).
  */
-export function guardRisk(command: string, cwd: string, parser: boolean, worker: boolean): string | undefined {
+export function guardRisk(
+	command: string,
+	cwd: string,
+	parser: boolean,
+	worker: boolean,
+	judge: typeof policy = policy,
+): string | undefined {
+	startBudget();
 	if (!parser) return classify(command, () => branchOf(cwd));
 	let v: ReturnType<typeof policy>;
 	try {
-		v = policy(command, liveEnv(cwd));
+		v = judge(command, liveEnv(cwd));
 	} catch (error) {
 		// A parser or policy bug must not let a command through unjudged, nor stop guard: fail closed on this one.
 		const why = error instanceof Error ? error.message : String(error);
 		return classify(command, () => branchOf(cwd)) ?? `guard could not judge this command (${why})`;
 	}
-	const risks = v.findings.filter((f) => f.level === "ask" || atRisk(f)).map((f) => f.detail);
+	const risks = v.findings
+		.filter((f) => f.level === "ask" || atRisk(f))
+		.map((f) => (f.level === "ask-if-dirty" ? `${f.detail} (uncommitted work would be lost)` : f.detail));
 	if (worker) risks.push(...v.dropped.filter((d) => d.rule === "history").map((d) => `${d.detail} (workers)`));
 	return risks.length ? [...new Set(risks)].join("; ") : undefined;
 }
@@ -66,19 +77,35 @@ export default function (pi: ExtensionAPI) {
 	registerGuard(pi);
 }
 
-/** The extension, with the parser loader injectable so tests can make it fail. */
-export function registerGuard(pi: ExtensionAPI, loadParser: () => Promise<void> = initShell) {
+// A parser that hasn't loaded by then counts as failed: guard never waits on it longer (it loads in ~10 ms).
+export const PARSER_LOAD_TIMEOUT_MS = 5_000;
+
+/** The extension, with the parser loader and the policy injectable so tests can make them fail. */
+export function registerGuard(
+	pi: ExtensionAPI,
+	loadParser: () => Promise<void> = initShell,
+	judge: typeof policy = policy,
+	loadTimeoutMs = PARSER_LOAD_TIMEOUT_MS,
+) {
 	let enabled = true;
-	// Loaded once, in the background, so startup never waits on it; the first bash call awaits it (~10 ms).
+	// Loaded once, in the background, so startup never waits on it; the first bash call awaits it, at most
+	// `loadTimeoutMs`.
 	let loadError: string | undefined;
 	let warned = false;
-	const ready = loadParser().then(
-		() => true,
-		(error: unknown) => {
-			loadError = error instanceof Error ? error.message : String(error);
-			return false;
-		},
-	);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`not loaded after ${loadTimeoutMs} ms`)), loadTimeoutMs);
+		timer.unref?.();
+	});
+	const ready = Promise.race([loadParser(), timeout])
+		.then(
+			() => true,
+			(error: unknown) => {
+				loadError = error instanceof Error ? error.message : String(error);
+				return false;
+			},
+		)
+		.finally(() => clearTimeout(timer));
 
 	pi.registerCommand("guard", {
 		description: "Dangerous-bash guard: /guard on | off (current session; default on)",
@@ -102,7 +129,7 @@ export function registerGuard(pi: ExtensionAPI, loadParser: () => Promise<void> 
 			);
 		}
 		const worker = isWorkerProcess();
-		const risk = guardRisk(command, ctx.cwd, parser, worker);
+		const risk = guardRisk(command, ctx.cwd, parser, worker, judge);
 		if (!risk) return undefined;
 		const block = (reason: string) => {
 			if (worker) {
@@ -123,7 +150,7 @@ export function registerGuard(pi: ExtensionAPI, loadParser: () => Promise<void> 
 		};
 		if (worker) return block(`Blocked (${risk}): delegate workers can't run this; leave it to the main session.`);
 		if (!ctx.hasUI) return block(`Blocked (${risk}): needs explicit user approval; no UI to confirm.`);
-		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command);
+		const ok = await ctx.ui.confirm(`guard: allow this command? ${risk}`, command);
 		return ok ? undefined : block(`Blocked by user (${risk}).`);
 	});
 }

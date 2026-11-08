@@ -13,7 +13,9 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { Language, type Node, Parser, type Tree } from "web-tree-sitter";
+// Types only: the runtime is imported inside `load`, so a missing or broken dependency is a load failure guard can
+// fall back from, not a module that fails to import (which would take guard, and anything importing it, down).
+import type { Node, Parser, Tree } from "web-tree-sitter";
 
 export type WordKind = "literal" | "quoted" | "expansion";
 export interface Word {
@@ -108,18 +110,20 @@ let loading: Promise<void> | undefined;
 
 /**
  * Loads web-tree-sitter and the bash grammar (default: the vendored one). Resolves at once when loaded; concurrent calls
- * share one load. Rejects on a missing or broken grammar and stays unloaded, so a later call may retry.
+ * share one load. Rejects on a missing or broken grammar or runtime (`runtime` is the module to import; tests pass a
+ * missing one) and stays unloaded, so a later call may retry.
  */
-export async function initShell(wasm: URL | string = DEFAULT_WASM): Promise<void> {
+export async function initShell(wasm: URL | string = DEFAULT_WASM, runtime = "web-tree-sitter"): Promise<void> {
 	if (parser) return;
-	loading ??= load(wasm).finally(() => {
+	loading ??= load(wasm, runtime).finally(() => {
 		loading = undefined;
 	});
 	await loading;
 }
 
-async function load(wasm: URL | string): Promise<void> {
+async function load(wasm: URL | string, runtime: string): Promise<void> {
 	try {
+		const { Language, Parser } = await import(runtime);
 		const bytes = await readFile(wasm);
 		if (!runtimeReady) {
 			await Parser.init();
@@ -131,7 +135,7 @@ async function load(wasm: URL | string): Promise<void> {
 		parser = p;
 	} catch (error) {
 		const why = error instanceof Error ? error.message : String(error);
-		throw new Error(`guard-shell: cannot load the tree-sitter-bash grammar from ${String(wasm)}: ${why}`, {
+		throw new Error(`guard-shell: cannot load the bash parser (${runtime}, ${String(wasm)}): ${why}`, {
 			cause: error,
 		});
 	}

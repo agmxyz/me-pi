@@ -19,12 +19,12 @@ const find = (src: string, name: string) => parsed(src).commands.find((c) => c.n
 
 // Runs first: a failed load leaves the module unloaded and parsing reports it instead of throwing.
 test("initShell rejects a missing or broken grammar and stays unloaded", async () => {
-	await assert.rejects(initShell("/nonexistent/tree-sitter-bash.wasm"), /cannot load the tree-sitter-bash grammar/);
+	await assert.rejects(initShell("/nonexistent/tree-sitter-bash.wasm"), /cannot load the bash parser/);
 	assert.equal(shellReady(), false);
 	assert.deepEqual(parseShell("echo hi"), { ok: false, reason: "not-loaded" });
 	assert.equal(tmpdirRebinds("echo hi"), true);
 	// Not a WASM module at all.
-	await assert.rejects(initShell(new URL(import.meta.url)), /cannot load the tree-sitter-bash grammar/);
+	await assert.rejects(initShell(new URL(import.meta.url)), /cannot load the bash parser/);
 	assert.equal(shellReady(), false);
 });
 

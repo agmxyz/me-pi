@@ -49,12 +49,15 @@ export type Level = "allow" | "ask-if-dirty" | "ask";
 /**
  * What a case-2 finding puts at risk, for the caller's `git status --porcelain`: changes under `paths` (absolute;
  * undefined = the whole tree) in the work tree `repo` (undefined = unknown, so ask). `untracked`: untracked files count
- * too (`clean`, `rm`). `always`: the work at risk isn't in the tree (`stash drop|clear`), so ask without a check.
+ * too (`clean`, `rm`). `ignored`: so do gitignored ones (`clean -x`/`-X` deletes them; a recursive `rm` of a named
+ * path is judged by guard's build-dir rule instead). `always`: the work at risk isn't in the tree (`stash
+ * drop|clear`), so ask without a check.
  */
 export interface DirtyCheck {
 	repo: string | undefined;
 	paths: string[] | undefined;
 	untracked: boolean;
+	ignored: boolean;
 	always: boolean;
 }
 export interface Finding {
@@ -183,7 +186,7 @@ export function rmTargetLevel(target: string, src: string): LevelRule {
 	return { level: "ask-if-dirty", rule: "rm:in-repo", dirty: UNKNOWN_REPO };
 }
 // A case-2 finding whose repo isn't known: the caller asks.
-const UNKNOWN_REPO: DirtyCheck = { repo: undefined, paths: undefined, untracked: true, always: false };
+const UNKNOWN_REPO: DirtyCheck = { repo: undefined, paths: undefined, untracked: true, ignored: false, always: false };
 
 /** A git call's level from guard's own `gitRisk`, re-mapped to the three cases. */
 export function gitLevel(
@@ -297,6 +300,11 @@ function judge(
 			if (!names || names.some(risky)) add("ask", "unknown:command-name", "command name is an expansion");
 			continue;
 		}
+		// `source <(node …)`, `bash <(curl …)`: the script is a program's output, as unknown as `eval "$(…)"`.
+		if ((c.name === "source" || c.name === "." || SHELLS.has(c.name)) && runsSubstitution(c)) {
+			add("ask", "unknown:dynamic-body", `${c.name} runs the output of a process substitution`);
+			continue;
+		}
 		if (c.name === "rm") rmFindings(c, src, add, scope, cwdAt(cmds, c, scope));
 		else if (c.name === "git") gitFindings(c, cmds, branch, add, dropped, scope);
 	}
@@ -315,6 +323,18 @@ function judge(
 		}
 		judge(w.body, body.commands, branch, findings, dropped, depth + 1, body.bindings, fallbacks);
 	}
+}
+
+/** Whether the script a `source`/`.` or a shell runs is a process substitution (`<(…)`), not a file or a `-c` string. */
+function runsSubstitution(c: SimpleCommand): boolean {
+	const args = c.argv.slice(1);
+	let i = 0;
+	if (c.name !== "source" && c.name !== ".")
+		while (i < args.length && args[i].kind !== "expansion" && /^[-+]/.test(args[i].value)) {
+			if (/^-[A-Za-z]*c/.test(args[i].value)) return false;
+			i += /^[-+]o$/.test(args[i].value) ? 2 : 1;
+		}
+	return args[i]?.kind === "expansion" && args[i].raw.startsWith("<(");
 }
 
 const values = (ws: Word[]) => ws.map((w) => w.value);
@@ -447,7 +467,7 @@ function repoLevel(abs: string, src: string, at = abs): LevelRule {
 	return {
 		level: "ask-if-dirty",
 		rule: "rm:in-repo",
-		dirty: { repo: root, paths: [stripSlash(posix.normalize(at))], untracked: true, always: false },
+		dirty: { repo: root, paths: [stripSlash(posix.normalize(at))], untracked: true, ignored: false, always: false },
 	};
 }
 
@@ -729,11 +749,12 @@ function gitFindings(
  * none named); `clean` untracked files under its paths; `stash drop|clear` the stash itself.
  */
 function discardCheck(sub: string, words: string[], dirs: string[] | undefined): DirtyCheck {
-	if (sub === "stash") return { repo: undefined, paths: undefined, untracked: false, always: true };
+	if (sub === "stash") return { repo: undefined, paths: undefined, untracked: false, ignored: false, always: true };
 	const dir = dirs?.length === 1 ? dirs[0] : undefined;
 	const repo = dir === undefined ? undefined : E.repoRootOf(dir);
 	if (dir === undefined || repo === undefined) return UNKNOWN_REPO;
 	const untracked = sub === "clean";
+	const ignored = sub === "clean" && hasShort(words, "[xX]");
 	const named = sub === "checkout" ? words.slice(words.indexOf("--") + 1) : words;
 	const paths =
 		sub === "reset" || sub === "switch" || (sub === "checkout" && !words.includes("--"))
@@ -741,8 +762,8 @@ function discardCheck(sub: string, words: string[], dirs: string[] | undefined):
 			: named.filter((w, i) => !w.startsWith("-") && !(sub === "clean" && /^-[eE]$/.test(named[i - 1] ?? "")));
 	// Anything that isn't a plain path (an expansion marker, a glob, a pathspec) checks the whole tree.
 	if (!paths.length || paths.some((p) => /[\u0000\u0001*?[:]/.test(p)))
-		return { repo, paths: undefined, untracked, always: false };
-	return { repo, paths: paths.map((p) => posix.resolve(dir, p)), untracked, always: false };
+		return { repo, paths: undefined, untracked, ignored, always: false };
+	return { repo, paths: paths.map((p) => posix.resolve(dir, p)), untracked, ignored, always: false };
 }
 
 /**
@@ -884,6 +905,8 @@ function ranFiles(cmds: SimpleCommand[]): string[] {
 // ---------------------------------------------------------------------------------------------------------------
 // The same rules over what `rm` and `git` really received (test/guard-truth runs commands in a sandboxed bash with
 // argv-recording stubs): the harness judges bash's argv with these, and `policy` must never allow less.
+// Named consumer: test/guard-truth (run.ts, sessions.ts). It shares this module's private rules (repoLevel, disp, the
+// env), so it lives here; delete it with the harness.
 
 /** A logged rm/git call: its argv, where `cd` had gone (`""` the start dir, an absolute path, or `?`), and git's env. */
 export interface ArgvCall {

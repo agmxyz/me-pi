@@ -4,7 +4,13 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { branchOf, dirtIn, remoteUrlOf, repoRootOf } from "../packages/pi-workers/extensions/guard-disk.ts";
+import {
+	branchOf,
+	dirtIn,
+	remoteUrlOf,
+	repoRootOf,
+	startBudget,
+} from "../packages/pi-workers/extensions/guard-disk.ts";
 
 // A scratch repo under the OS temp dir; HOME points there so no user git config is read.
 function scratch(t: { after(fn: () => void): void }) {
@@ -63,4 +69,29 @@ test("dirtIn: tracked changes, untracked files only when asked, ignored files ne
 	assert.equal(dirtIn(repo, ["a.txt"], false), "dirty");
 	assert.equal(dirtIn(repo, ["*"], false), "clean", "paths are literal, not pathspec globs");
 	assert.equal(dirtIn(join(repo, "..", "missing"), undefined, false), "unknown");
+});
+
+test("dirtIn counts ignored files only when asked (git clean -x)", (t) => {
+	const { repo } = scratch(t);
+	mkdirSync(join(repo, "node_modules"));
+	writeFileSync(join(repo, "node_modules", "x.js"), "x\n");
+	assert.equal(dirtIn(repo, undefined, true), "clean");
+	assert.equal(dirtIn(repo, undefined, true, true), "dirty");
+});
+
+test("a spent lookup budget reads unknown, and a failing git reads unknown", (t) => {
+	const { repo } = scratch(t);
+	t.after(() => startBudget(60_000));
+	startBudget(0);
+	assert.equal(dirtIn(repo, undefined, true), "unknown", "no budget left: no git call, the caller asks");
+	assert.equal(repoRootOf(repo), undefined);
+	startBudget(60_000);
+	assert.equal(dirtIn(repo, undefined, true), "clean");
+	const path = process.env.PATH;
+	t.after(() => {
+		process.env.PATH = path;
+	});
+	process.env.PATH = "/nonexistent";
+	assert.equal(dirtIn(repo, undefined, true), "unknown", "git can't run");
+	assert.equal(branchOf(repo), undefined);
 });
