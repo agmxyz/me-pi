@@ -1189,12 +1189,22 @@ function discardCheck(sub: string, words: string[], dirs: string[] | undefined):
 	const WHOLE = new Set(["reset", "switch", "read-tree", "checkout-index", "apply", "submodule"]);
 	// `checkout -f <branch>` / `--force` overwrites every modified file, whatever the operand names.
 	const forced = sub === "checkout" && words.some((w) => /^-[A-Za-z]*f[A-Za-z]*$|^--force$/.test(w));
+	// Paths read from a file or stdin (`--pathspec-from-file`, any sub-command): which ones isn't in the text, so the
+	// whole tree is checked.
+	const fromFile = words.some((w) => /^--pathspec-from-file(?:=|$)/.test(w));
+	// `checkout -p [<tree-ish>] [-- <paths>]`: a lone operand may be the tree-ish (`HEAD`), so without `--` the whole tree.
+	const patch =
+		sub === "checkout" && words.some((w) => /^-[A-Za-z]*p[A-Za-z]*$|^--patch$/.test(w)) && !words.includes("--");
 	const named = sub === "checkout" && words.includes("--") ? words.slice(words.indexOf("--") + 1) : words;
 	const positional = named.filter(
 		(w, i) => !w.startsWith("-") && !(sub === "clean" && /^-[eE]$|^--exclude$/.test(named[i - 1] ?? "")),
 	);
 	const paths =
-		WHOLE.has(sub) || forced || (sub === "checkout" && !words.includes("--") && positional.length !== 1)
+		WHOLE.has(sub) ||
+		forced ||
+		fromFile ||
+		patch ||
+		(sub === "checkout" && !words.includes("--") && positional.length !== 1)
 			? []
 			: positional;
 	// Anything that isn't a plain path (an expansion marker, a glob, a pathspec) checks the whole tree.

@@ -346,7 +346,18 @@ export function gitDiscards(
 	const has = (re: RegExp) => words.some((w) => re.test(w));
 	const force = has(/^-[A-Za-z]*f[A-Za-z]*$|^--force$/);
 	switch (sub) {
+		case "restore":
+			// `restore` already discards (0.1.3's rule); paths from a file or stdin make its scope the whole tree.
+			return has(/^--pathspec-from-file(?:=|$)/)
+				? { risk: "git restore --pathspec-from-file overwrites the paths it lists", whole: true }
+				: undefined;
 		case "checkout": {
+			// Paths from a file or stdin (`--pathspec-from-file=list`, `=-`): the whole tree. `-p`/`--patch` discards the
+			// hunks the user (or `yes |`) accepts: over its paths, else the whole tree.
+			if (has(/^--pathspec-from-file(?:=|$)/))
+				return { risk: "git checkout --pathspec-from-file overwrites the paths it lists", whole: true };
+			if (has(/^-[A-Za-z]*p[A-Za-z]*$|^--patch$/))
+				return { risk: "git checkout -p discards the hunks it is told to" };
 			// `checkout <branch>` switches; `checkout <tree-ish> <paths>` or `checkout <paths>` overwrites them. With no `--`,
 			// two or more operands always include a path. A single operand written as a path (`./x`, a trailing `/`, a
 			// glob) is one; any other single operand (`src`, `src/sub`, `feat`, `v1.2`) is a branch or a path, which only

@@ -888,3 +888,57 @@ test("PR #95 round 10: checkout -f is a whole-tree discard; a single checkout op
 	assert.equal(policy("git checkout feat", noLookup).verdict, "ask-if-dirty", "unknown lookup: treated as a path");
 	assert.deepEqual(policy("git checkout -f other", fakeEnv("/w/app", "feat")).findings[0].dirty?.paths, undefined);
 });
+
+test("PR #95 round 11: package-tool runners and tmux/screen run commands; checkout -p and --pathspec-from-file discard", () => {
+	// /w/app is the session repo on feat; HOME is /Users/me. Package tools are exempt only for text/package sub-commands.
+	const rows: [string, Level, string][] = [
+		["/w/app", "ask", "pnpm exec rm -rf ~"],
+		["/w/app", "ask", "npm exec -- rm -rf ~"],
+		["/w/app", "ask", "yarn exec rm -rf ~"],
+		["/w/app", "ask", "mise exec -- rm -rf ~"],
+		["/w/app", "ask", "mise x -- rm -rf ~"],
+		["/w/app", "ask", "bun x rm -rf ~"],
+		["/w/app", "ask", "pnpm dlx rm -rf ~"],
+		["/w/app", "ask", "npx rm -rf ~"],
+		["/w/app", "ask", "asdf exec rm -rf ~"],
+		["/w/app", "ask", "pnpm exec git push --force origin feat"],
+		["/w/app", "ask", "npm --silent exec -- rm -rf ~"],
+		["/w/app", "ask", "tmux new-session -d rm -rf ~"],
+		["/w/app", "ask", "tmux new 'rm -rf ~'"],
+		["/w/app", "ask", "tmux new-window -n x 'rm -rf ~'"],
+		["/w/app", "ask", "tmux split-window 'git push -f origin main'"],
+		["/w/app", "ask", "tmux run-shell 'rm -rf ~'"],
+		["/w/app", "ask", "screen -dm rm -rf ~"],
+		["/w/app", "ask", "screen -dmS s rm -rf ~"],
+		["/w/app", "ask-if-dirty", "git checkout HEAD --pathspec-from-file=list.txt"],
+		["/w/app", "ask-if-dirty", "git checkout --pathspec-from-file=-"],
+		["/w/app", "ask-if-dirty", "yes | git checkout -p"],
+		["/w/app", "ask-if-dirty", "yes | git checkout -p HEAD"],
+		["/w/app", "ask-if-dirty", "git checkout --patch -- src"],
+		["/w/app", "ask-if-dirty", "git restore --pathspec-from-file=list.txt"],
+		["/w/app", "ask-if-dirty", "git reset --hard --pathspec-from-file=x"],
+		["/w/app", "allow", "git reset --pathspec-from-file=list.txt"],
+		["/w/app", "allow", "git stash push --pathspec-from-file=list.txt"],
+		["/w/app", "allow", "npm run build"],
+		["/w/app", "allow", "pnpm install"],
+		["/w/app", "allow", "npm install rimraf git-cliff"],
+		["/w/app", "allow", "npm test"],
+		["/w/app", "allow", "pnpm add -D rm"],
+		["/w/app", "allow", "brew install git"],
+		["/w/app", "allow", "brew info rm"],
+		["/w/app", "allow", "make rm"],
+		["/w/app", "allow", "cargo build"],
+		["/w/app", "allow", "go test ./..."],
+		["/w/app", "allow", "mise use node@22"],
+		["/w/app", "allow", "tmux ls"],
+		["/w/app", "allow", "tmux new-session -d 'npm run dev'"],
+		["/w/app", "allow", "tmux send-keys -t s 'rm -rf ~' Enter"],
+		["/w/app", "allow", "screen -ls"],
+		["/w/app", "allow", "code rm.ts"],
+		["/w/app", "allow", "open git.png"],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
+	assert.deepEqual(bad, []);
+});
