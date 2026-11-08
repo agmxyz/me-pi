@@ -194,7 +194,21 @@ export function isWrapper(name: string): boolean {
 	return Object.hasOwn(WRAPPERS, name);
 }
 
-export const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"]);
+export const SHELLS: ReadonlySet<string> = new Set([
+	"sh",
+	"bash",
+	"zsh",
+	"dash",
+	"ksh",
+	"mksh",
+	"ash",
+	"csh",
+	"tcsh",
+	"fish",
+	"oksh",
+	"yash",
+	"posh",
+]);
 
 // ---------------------------------------------------------------------------------------------------------------
 // Parsing and walking
@@ -272,6 +286,8 @@ interface Io {
 	heredocs: Heredoc[];
 	herestrings: Word[];
 	openArgs: boolean;
+	/** Under `xargs -I R` / `find -exec`: the text replaced by run-time input in the command (`{}`). */
+	placeholder?: string;
 	certain: boolean;
 	after: [number, number][];
 }
@@ -396,8 +412,14 @@ function emit(w: Walk, argv: Word[], f: Frame, io: Io): void {
 	const via = [...f.via, name];
 	for (const step of WRAPPERS[name](argv.slice(1))) {
 		const inner: Frame = { via, remote: f.remote || !!step.remote, depth: f.depth };
-		if (step.kind === "exec") emit(w, step.argv, inner, { ...io, openArgs: io.openArgs || !!step.openArgs });
-		else if (step.kind === "script") runString(w, step.body, inner);
+		if (step.kind === "exec")
+			emit(w, step.argv, inner, {
+				...io,
+				openArgs: io.openArgs || !!step.openArgs,
+				placeholder: step.placeholder ?? io.placeholder,
+			});
+		else if (step.kind === "script")
+			runString(w, step.body, inner, io.openArgs ? (io.placeholder ?? "{}") : undefined);
 		else {
 			// A shell (or ssh) reading its program from stdin: a heredoc or here-string body is that program. An unquoted
 			// body is expanded first; its source text is parsed as an approximation (expansions stay expansions).
@@ -410,8 +432,12 @@ function emit(w: Walk, argv: Word[], f: Frame, io: Io): void {
 }
 
 /** Re-parses a command string made of words joined by spaces; a word with an expansion makes it dynamic. */
-function runString(w: Walk, words: Word[], f: Frame): void {
+function runString(w: Walk, words: Word[], f: Frame, placeholder?: string): void {
 	if (words.some((x) => x.kind === "expansion")) dynamic(w, f, words, words.map((x) => x.raw).join(" "));
+	// Under `xargs -I R` / `find -exec sh -c '… {} …'`, the placeholder is replaced with run-time text before the shell
+	// parses the string: what it runs, or on, isn't in the text (`sh -c 'rm -rf {}'`), so it is unknown.
+	else if (placeholder !== undefined && words.some((x) => x.value.includes(placeholder)))
+		dynamic(w, f, [], `<placeholder> ${words.map((x) => x.raw).join(" ")}`);
 	else parseScript(w, words.map((x) => x.value).join(" "), { ...f, depth: f.depth + 1 });
 }
 
@@ -759,7 +785,7 @@ function ansiC(s: string): string {
 // Wrappers: commands that run another command from their arguments. Each entry parses options like the real tool.
 
 type Step =
-	| { kind: "exec"; argv: Word[]; openArgs?: boolean; remote?: boolean }
+	| { kind: "exec"; argv: Word[]; openArgs?: boolean; remote?: boolean; placeholder?: string }
 	| { kind: "script"; body: Word[]; remote?: boolean }
 	| { kind: "stdin"; remote?: boolean };
 
@@ -814,8 +840,11 @@ function options(args: Word[], spec: OptionSpec): { at: number; seen: Map<string
 	return { at: i, seen };
 }
 
-const execFrom = (args: Word[], at: number, extra: { openArgs?: boolean; remote?: boolean } = {}): Step[] =>
-	at < args.length ? [{ kind: "exec", argv: args.slice(at), ...extra }] : [];
+const execFrom = (
+	args: Word[],
+	at: number,
+	extra: { openArgs?: boolean; remote?: boolean; placeholder?: string } = {},
+): Step[] => (at < args.length ? [{ kind: "exec", argv: args.slice(at), ...extra }] : []);
 // `NAME=value` operands (`env PATH="$PATH" node`): the name decides, the value may expand.
 function skipAssignments(args: Word[], from: number): number {
 	let at = from;
@@ -846,9 +875,15 @@ function shell(args: Word[]): Step[] {
 		else break;
 	}
 	if (c) return i < args.length ? [{ kind: "script", body: [args[i]] }] : [];
-	// A script file runs a program the text doesn't show (judged by the caller); no operand reads stdin.
+	// A file operand that is stdin (`bash /dev/stdin`, `sh /dev/fd/0`, `-`) reads the program from stdin (a process
+	// substitution, `bash <(curl …)`, asks in the policy). Otherwise a script file runs a program the text doesn't show
+	// (judged by the caller); no operand reads stdin.
+	if (i < args.length && READS_STDIN.test(args[i].value) && args[i].kind !== "expansion") return [{ kind: "stdin" }];
 	return i < args.length ? [] : [{ kind: "stdin" }];
 }
+
+/** A path a shell or `source` reads its program from that is its own stdin. */
+const READS_STDIN = /^(?:-|\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0)$/;
 
 /** `su [-] [user] -c CMD` / `runuser -u user -- cmd …` (GNU getopt permutes, so `-c` may follow the user). */
 function suLike(args: Word[], runuser: boolean): Step[] {
@@ -929,6 +964,17 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 	setsid: (args) => execFrom(args, options(args, {}).at),
 	ionice: (args) => execFrom(args, options(args, { short: "cnpPu", long: ["--class", "--classdata"] }).at),
 	caffeinate: (args) => execFrom(args, options(args, { short: "tw" }).at),
+	// macOS and BSD runners: `arch -arm64 cmd`, `script -q file cmd`, `lockf file cmd`, `chroot dir cmd`,
+	// `sandbox-exec -f profile cmd`, `taskpolicy -c class cmd`.
+	arch: (args) => execFrom(args, options(args, { long: ["-arch"] }).at),
+	script: (args) => {
+		const { at } = options(args, { short: "FtT" });
+		return at + 1 < args.length ? execFrom(args, at + 1) : []; // the transcript file, then the command
+	},
+	lockf: (args) => execFrom(args, options(args, { short: "t" }).at + 1), // the lock file
+	chroot: (args) => execFrom(args, options(args, { short: "ug", long: ["--userspec", "--groups"] }).at + 1), // the root
+	"sandbox-exec": (args) => execFrom(args, options(args, { short: "fpD" }).at),
+	taskpolicy: (args) => execFrom(args, options(args, { short: "cdgtlbp" }).at),
 	unbuffer: (args) => execFrom(args, options(args, {}).at),
 	rtk: (args) => execFrom(args, args[0]?.value === "proxy" ? 1 : 0),
 	xargs: (args) => {
@@ -941,7 +987,11 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 			"--arg-file",
 			"--replace",
 		];
-		return execFrom(args, options(args, { short: "ILnPsdEaJRS", long }).at, { openArgs: true });
+		const { at, seen } = options(args, { short: "ILnPsdEaJRS", long });
+		// `-I R` / `-J R` / `--replace[=R]`: R in the command is replaced by input (default `{}`).
+		const r = seen.get("I") ?? seen.get("J") ?? seen.get("--replace");
+		const placeholder = r === undefined ? undefined : r === true ? "{}" : r.value;
+		return execFrom(args, at, { openArgs: true, placeholder });
 	},
 	find: (args) => {
 		const steps: Step[] = [];
@@ -949,7 +999,7 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 			if (!["-exec", "-execdir", "-ok", "-okdir"].includes(args[i].value)) continue;
 			const end = args.findIndex((w, j) => j > i && (w.value === ";" || w.value === "+"));
 			const stop = end < 0 ? args.length : end;
-			steps.push(...execFrom(args.slice(0, stop), i + 1, { openArgs: true }));
+			steps.push(...execFrom(args.slice(0, stop), i + 1, { openArgs: true, placeholder: "{}" }));
 			i = stop;
 		}
 		return steps;
@@ -980,6 +1030,10 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 	},
 };
 for (const name of SHELLS) WRAPPERS[name] = shell;
+// `source /dev/stdin <<EOF` / `. /dev/fd/0`: the heredoc or here-string body is the sourced program.
+for (const name of ["source", "."])
+	WRAPPERS[name] = (args) =>
+		args[0] && args[0].kind !== "expansion" && READS_STDIN.test(args[0].value) ? [{ kind: "stdin" }] : [];
 
 /**
  * Wrappers whose string or stdin program runs in a new process (a shell, `su`, `sudo -s`, `ssh`…), so it doesn't see

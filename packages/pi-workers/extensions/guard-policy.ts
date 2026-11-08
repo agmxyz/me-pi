@@ -21,6 +21,7 @@
  */
 
 import { posix } from "node:path";
+import { GIT_SUBCOMMANDS, gitDataKey, gitLongOption, gitRunsString } from "./guard-git.ts";
 import {
 	classify,
 	DISPOSABLE,
@@ -142,7 +143,10 @@ export function disposable(target: string): boolean {
 export function rmRecursive(options: string[]): boolean {
 	return hasShort(options, "[rR]", "--recursive") || options.some((o) => o.length >= 3 && "--recursive".startsWith(o));
 }
-/** git's global options before the sub-command (`-C dir`, `-c k=v`, `--git-dir=x`); the rest is the sub-command. */
+/**
+ * git's global options before the sub-command (`-C dir`, `-c k=v`, `--git-dir=x`); the rest is the sub-command. Its
+ * words have git's unique-prefix long options spelled out (`reset --ha` is `reset --hard`), so every rule reads them.
+ */
 export function gitSplit(args: string[]): { globals: string[]; sub: string | undefined; words: string[] } {
 	let i = 0;
 	while (i < args.length && args[i].startsWith("-")) {
@@ -151,7 +155,17 @@ export function gitSplit(args: string[]): { globals: string[]; sub: string | und
 			i += 2;
 		else i++;
 	}
-	return { globals: args.slice(0, i), sub: args[i], words: args.slice(i + 1) };
+	return { globals: args.slice(0, i), sub: args[i], words: args.slice(i + 1).map(gitLongOption) };
+}
+
+/** The `-c KEY=VALUE` (and `--config-env=KEY=ENV`) keys among git's global options. */
+function gitConfigKeys(globals: string[]): string[] {
+	const keys: string[] = [];
+	for (let i = 0; i < globals.length; i++) {
+		if (globals[i] === "-c" || globals[i] === "--config-env") keys.push((globals[i + 1] ?? "").split("=")[0]);
+		else if (globals[i].startsWith("--config-env=")) keys.push(globals[i].slice(13).split("=")[0]);
+	}
+	return keys;
 }
 export const movesGit = (globals: string[]) =>
 	globals.some((g) => g === "-C" || /^--(?:git-dir|work-tree)(?:=|$)/.test(g));
@@ -208,6 +222,14 @@ export function gitLevel(
 	// main: the target is unknown, which asks (an unknown read never means "not protected").
 	const unread = sub === "push" && !elsewhere && branch() === undefined;
 	const risk = gitRisk(sub, words, branch, elsewhere || unread);
+	// A refspec with a glob (`refs/heads/*:refs/heads/*`, `*:*`, `refs/heads/m*`) pushes a set of branches that may
+	// include main/master: case 3 (decision 5 still drops it for a local remote). Tag-only globs are not branches.
+	if (
+		!risk &&
+		sub === "push" &&
+		words.some((w) => !w.startsWith("-") && /[*?[]/.test(w) && !/^\+?refs\/tags\//.test(w))
+	)
+		return { level: "ask", rule: "push:main", risk: "push of a glob refspec (may include main/master)" };
 	if (!risk) return { level: "allow", rule: "git:none" };
 	if (risk === "force push") return { level: "ask", rule: "push:force", risk };
 	if (risk === "push to main/master") return { level: "ask", rule: "push:main", risk };
@@ -286,7 +308,8 @@ function judge(
 			);
 		if (c.dynamicBody !== undefined) {
 			// `bash -c "$c"` / `eval "$x"` with every value bound in this command: judge each resulting script.
-			const scripts = depth < 2 && c.dynamicBody !== "<stdin>" ? resolveScripts(c.argv, scope, c.at) : undefined;
+			// No words (`<stdin>`, a `{}` placeholder string under xargs/find): nothing to resolve; unknown, so ask.
+			const scripts = depth < 2 && c.argv.length ? resolveScripts(c.argv, scope, c.at) : undefined;
 			if (!scripts) {
 				add("ask", "unknown:dynamic-body", `${c.via.at(-1)} runs a string or stdin not known statically`);
 				continue;
@@ -321,14 +344,15 @@ function judge(
 		else if (c.name === "find") findFindings(c, src, add, scope, cwdAt(cmds, c, scope));
 		else if (c.name === "git") gitFindings(c, cmds, branch, add, dropped, scope);
 	}
-	// A heredoc written to a file that the same command then runs (`cat > run.sh <<'EOF' … EOF; bash run.sh`): the body
-	// is a program after all. A run file the parser can't name (`./r*.sh`, `bash "$f"`) matches every written file.
+	// A heredoc written to a file, in a command that also runs any script file (`sh x`, `bash x`, `. x`, `./x`, `make`):
+	// every written body is judged as a program. Files aren't traced through `cp`/`mv`/`ln` or names (fail closed: the
+	// run may be the written file under another name), so the name doesn't have to match.
 	if (depth > 0) return;
 	const written = writtenHeredocs(cmds);
 	if (!written.length) return;
 	const runs = ranFiles(cmds);
+	if (!runs.length) return;
 	for (const w of written) {
-		if (!runs.some((r) => r === "*" || basename(r) === basename(w.file))) continue;
 		const body = parseShell(w.body);
 		if (!body.ok) {
 			parseFailed(w.body, body.reason, branch, findings, fallbacks, "a script written by a heredoc doesn't parse");
@@ -864,8 +888,27 @@ function gitFindings(
 	}
 	if (subWord?.kind === "expansion") {
 		const subs = resolveWord(subWord, s, c.at);
-		if (!subs || subs.some((v) => GUARDED_SUBS.has(v) || v.startsWith("-") || v.includes(MARK) || /\s/.test(v)))
+		const risky = (v: string) =>
+			GUARDED_SUBS.has(v) || v.startsWith("-") || v.includes(MARK) || /\s/.test(v) || !GIT_SUBCOMMANDS.has(v);
+		if (!subs || subs.some(risky))
 			add("ask", "unknown:git-sub-expansion", "git sub-command is an expansion that could be a guarded one");
+		return;
+	}
+	// Code git runs that the text doesn't trace (fail closed: case 1-3 could be inside): a `-c` key that isn't plain
+	// data (`alias.x=!rm …`, `core.fsmonitor=…`), a sub-command git doesn't have (an alias from config), or one that
+	// runs a shell string (`rebase -x`, `filter-branch --tree-filter`, `bisect run`, `submodule foreach`).
+	const codeKey = gitConfigKeys(globals).find((k) => !gitDataKey(k));
+	if (codeKey !== undefined) {
+		add("ask", "unknown:git-config-code", `git -c ${codeKey}=… may run a command`);
+		return;
+	}
+	if (!GIT_SUBCOMMANDS.has(sub)) {
+		add("ask", "unknown:git-alias", `git ${sub} is not a git command (an alias runs whatever config says)`);
+		return;
+	}
+	const runs = gitRunsString(sub, words);
+	if (runs) {
+		add("ask", "unknown:git-runs-string", runs);
 		return;
 	}
 	const where = gitWhere(c, cmds, globals, s);
