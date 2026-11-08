@@ -5,7 +5,7 @@
 Run `./install.sh` only from the live checkout's main session, never a worktree, temp clone, or worker. If you previously installed `npm:@agmxyz/pi-workers` or `git:github.com/agmxyz/me-pi`, remove that package with `pi remove` before installing this local checkout, to avoid loading the extensions twice. The script requires `pi` on `PATH` and changes personal Pi resources that apply across sessions and projects:
 
 - Links this checkout's `GLOBAL_AGENTS.md` to `~/.pi/agent/AGENTS.md` only when that destination is absent; every Pi session that reads it then uses this policy. An existing file or different link is left unchanged and causes the installer to report an error.
-- Links the repo-owned `implement-me-pi`, `implement-spec-me-pi`, and `pi-live-test` skill directories under `~/.pi/agent/skills/`. Pi discovers these user-level skills from any target project; no per-project copies are needed. Package discovery stays gated with `pi.skills: []`; the skills are exposed only through these user-level links.
+- Links the repo-owned `implement-me-pi`, `implement-spec-me-pi`, `pi-live-test`, and `ticket-readiness` skill directories under `~/.pi/agent/skills/`. Pi discovers these user-level skills from any target project; no per-project copies are needed. Package discovery stays gated with `pi.skills: []`; the skills are exposed only through these user-level links.
 - Preflights the literal repository skill destination paths under `~/.pi/agent/skills/<name>` and `~/.agents/skills/<name>` before setup mutation and leaves existing entries unchanged. It does not scan every discovered directory for duplicate `name` frontmatter in `SKILL.md`, so its preflight is not proof of unique discovery: a renamed pilot under a discovered root such as `~/.agents/skills/` can still collide in Pi's loader. The installer does not migrate a personal copy. For an adopter with a personal pilot, obtain explicit approval before preserving the complete pilot outside all applicable discovery roots and aliases, without a link back, then verify unique discovery through Pi's real loader from each intended project before activation.
 - Registers the checkout's root package in Pi and removes a prior `extensions/` package registration when Pi lists that local source, avoiding duplicate extension loading.
 - Installs the unpinned npm package `pi-web-access`, which supplies the web tools used when a delegate call sets `web: true`.
@@ -19,7 +19,7 @@ Review `GLOBAL_AGENTS.md` and the install script before choosing this setup. Res
 
 ```sh
 rm ~/.pi/agent/AGENTS.md                     # only if it links to this checkout's GLOBAL_AGENTS.md
-rm ~/.pi/agent/skills/implement-me-pi ~/.pi/agent/skills/implement-spec-me-pi ~/.pi/agent/skills/pi-live-test
+rm ~/.pi/agent/skills/implement-me-pi ~/.pi/agent/skills/implement-spec-me-pi ~/.pi/agent/skills/pi-live-test ~/.pi/agent/skills/ticket-readiness
 pi remove /path/to/me-pi                     # this checkout
 pi remove npm:pi-web-access                  # unless you use it elsewhere
 rm ~/.pi/agent/extensions/interactive-shell.ts ~/.pi/agent/extensions/handoff.ts   # if unedited

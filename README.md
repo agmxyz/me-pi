@@ -21,7 +21,7 @@ To track `main` instead, install `git:github.com/agmxyz/me-pi`; install only one
 Around `pi-workers`, I use:
 
 - **A global policy** ([`GLOBAL_AGENTS.md`](GLOBAL_AGENTS.md)): output style, engineering defaults, which actions need my approval, and how to handle secrets and untrusted content. Sections marked `(coordinator only)` stay out of worker prompts.
-- **Skills** ([`skills/`](skills)): `implement-me-pi` runs one task with a worker and independent review; `implement-spec-me-pi` implements a ticket graph on one branch; `pi-live-test` live-tests a me-pi change in a real Pi. `evolvability-review` is here too, but `install.sh` doesn't link it.
+- **Skills** ([`skills/`](skills)): `implement-me-pi` runs one task with a worker and independent review; `implement-spec-me-pi` implements a ticket graph on one branch; `pi-live-test` live-tests a me-pi change in a real Pi; `ticket-readiness` checks, at the current code, which tickets an agent could implement, prove, and merge unattended. `evolvability-review` is here too, but `install.sh` doesn't link it.
 - **[`install.sh`](install.sh)**, which wires these in machine-wide with a few extras.
 
 You don't need any of it for `pi-workers`; read and copy what's useful. Some skills expect others from my own collection.
