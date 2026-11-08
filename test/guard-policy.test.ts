@@ -788,7 +788,7 @@ test("PR #95 round 9: functions, loops and traps run out of text order; shell op
 		["/w/app", "allow", "mytool --verbose build"],
 		["/w/app", "allow", "parallel echo ::: a b"],
 		["/w/app", "allow", "git rm -r --cached extensions/node_modules -q"],
-		["/w/app", "allow", "git rm -rf skills"],
+		["/w/app", "ask-if-dirty", "git rm -rf skills"],
 		["/w/app", "allow", "git rm -q notes.md"],
 		["/w/app", "allow", "find . -name rm -print"],
 	];
@@ -796,4 +796,51 @@ test("PR #95 round 9: functions, loops and traps run out of text order; shell op
 		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
 		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
 	assert.deepEqual(bad, []);
+});
+
+test("PR #95 round 9b: more git discards and refspecs (each confirmed in a scratch repo); remote rename/remove", () => {
+	// /w/app is the session repo on feat (origin network, local ../bare.git). `git reset --merge` kept the change in a
+	// scratch repo, so it stays allowed.
+	const rows: [string, Level, string][] = [
+		["/w/app", "ask", "git remote add L ./l && git remote remove L && git remote rename origin L && git push L main"],
+		["/w/app", "ask", "git remote rename origin local && git push -f local main"],
+		["/w/app", "ask", "git remote remove local; git remote add local https://x/y.git; git push -f local main"],
+		["/w/app", "allow", "git remote add up /tmp/r.git && git push -f up main"],
+		["/w/app", "ask-if-dirty", "git checkout src/a.txt"],
+		["/w/app", "ask-if-dirty", "git checkout HEAD src"],
+		["/w/app", "ask-if-dirty", "git checkout main -- src"],
+		["/w/app", "allow", "git checkout feat"],
+		["/w/app", "allow", "git checkout -b topic"],
+		["/w/app", "ask-if-dirty", "git read-tree -u --reset HEAD"],
+		["/w/app", "ask-if-dirty", "git checkout-index -f -a"],
+		["/w/app", "ask-if-dirty", "git diff | git apply -R"],
+		["/w/app", "ask-if-dirty", "git apply -R p.patch"],
+		["/w/app", "ask-if-dirty", "git rm -rf src"],
+		["/w/app", "ask-if-dirty", "git rm -r -f src/a.txt"],
+		["/w/app", "allow", "git rm -r src"],
+		["/w/app", "allow", "git rm --cached -rf src"],
+		["/w/app", "ask-if-dirty", "git clean -fd -e -n"],
+		["/w/app", "ask-if-dirty", "git clean -fd -en"],
+		["/w/app", "allow", "git clean -fdn"],
+		["/w/app", "allow", "git reset --merge"],
+		["/w/app", "ask-if-dirty", "git submodule deinit -f --all"],
+		["/w/app", "ask", "git worktree remove --force ../w"],
+		["/w/app", "allow", "git worktree list"],
+		["/w/app", "allow", "git push origin @"],
+		["/w/app", "ask", "git push origin heads/main"],
+		["/w/app", "ask", "git push origin HEAD:heads/main"],
+		["/w/app", "ask", "git push origin feat:heads/master"],
+		["/w/app", "ask", "git branch -M main && git push -u origin HEAD"],
+		["/w/app", "ask", "git branch -m main && git push"],
+		["/w/app", "ask", "git symbolic-ref HEAD refs/heads/main && git push origin HEAD"],
+		["/w/app", "allow", "git branch -m topic2 && git push origin topic2"],
+		["/w/app", "allow", "git push origin feat"],
+		["/w/app", "allow", "git push origin @:refs/heads/feat"],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
+	assert.deepEqual(bad, []);
+	// `git push origin @` pushes the current branch: on main it is case 3.
+	assert.equal(policy("git push origin @", fakeEnv("/w/lib", "main")).verdict, "ask");
 });

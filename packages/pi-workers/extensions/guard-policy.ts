@@ -27,7 +27,9 @@ import {
 	gitCommandOption,
 	gitConfigCodeWrite,
 	gitDataKey,
+	gitDiscards,
 	gitLongOption,
+	gitRefIsProtected,
 	gitRunsString,
 } from "./guard-git.ts";
 import {
@@ -238,6 +240,26 @@ export function gitLevel(
 		words.some((w) => !w.startsWith("-") && /[*?[]/.test(w) && !/^\+?refs\/tags\//.test(w))
 	)
 		return { level: "ask", rule: "push:main", risk: "push of a glob refspec (may include main/master)" };
+	// Refspec destinations git resolves to main/master that 0.1.3's list missed: `heads/main`, `X:heads/main`, and
+	// `@` (HEAD) on main (confirmed in a scratch repo).
+	if (!risk && sub === "push") {
+		const positional = words.filter((w) => !w.startsWith("-"));
+		const dsts = positional.slice(1).map((r) => r.replace(/^\+/, "").split(":").pop() ?? "");
+		const current = () => branch();
+		const hit = dsts.some((d) =>
+			d === "@"
+				? elsewhere
+					? true
+					: PROTECTED_BRANCHES.has(current() ?? "")
+				: gitRefIsProtected(d, PROTECTED_BRANCHES),
+		);
+		if (hit) return { level: "ask", rule: "push:main", risk: "push to main/master" };
+	}
+	// More commands that discard uncommitted work (case 2), each confirmed to lose a modified file in a scratch repo.
+	if (!risk) {
+		const discard = gitDiscards(sub, words);
+		if (discard) return { level: "ask-if-dirty", rule: "git:discard", risk: discard.risk };
+	}
 	if (!risk) return { level: "allow", rule: "git:none" };
 	if (risk === "force push") return { level: "ask", rule: "push:force", risk };
 	if (risk === "push to main/master") return { level: "ask", rule: "push:main", risk };
@@ -849,6 +871,14 @@ function remoteChangedBefore(
 		const { globals, sub, words } = gitSplit(values(x.argv.slice(1)));
 		if (sub !== "remote") continue;
 		const ops = words.filter((w) => !w.startsWith("-"));
+		// `remote rename A name`, `rename name B`, `remove name` / `rm name` change what `name` points to in ways the URL
+		// table doesn't model: from here its URL is unknown (it may be a network remote, so a push to it can be case 3).
+		const renamed = ops[0] === "rename" && (ops[1] === name || ops[2] === name);
+		const removed = (ops[0] === "remove" || ops[0] === "rm") && ops[1] === name;
+		if (renamed || removed) {
+			out = { url: "unknown://renamed-or-removed", sure: true };
+			continue;
+		}
 		if (!((ops[0] === "add" || ops[0] === "set-url") && ops[1] === name && ops[2])) continue;
 		// Same repo: the same working directory as `c` (as the parse places both) and the same git-dir options; a fresh
 		// `mktemp -d` dir can't be placed on disk, so the parse's own values are compared.
@@ -1031,6 +1061,11 @@ function gitFindings(
 		add("ask", "unknown:git-runs-string", runs);
 		return;
 	}
+	// `worktree remove --force` deletes another work tree with its changes: guard doesn't place that tree, so ask.
+	if (sub === "worktree" && words[0] === "remove" && words.some((w) => /^-[A-Za-z]*f|^--force$/.test(w))) {
+		add("ask", "git:discard", "git worktree remove --force deletes that tree's changes");
+		return;
+	}
 	const where = gitWhere(c, cmds, globals, s);
 	let r = gitLevel(sub, words, branch, where !== "session");
 	if (r.rule.startsWith("dropped:")) dropped.push({ rule: "history", detail: r.rule.slice("dropped:".length) });
@@ -1124,11 +1159,16 @@ function discardCheck(sub: string, words: string[], dirs: string[] | undefined):
 	if (dir === undefined || typeof repo !== "string") return UNKNOWN_REPO;
 	const untracked = sub === "clean";
 	const ignored = sub === "clean" && hasShort(words, "[xX]");
-	const named = sub === "checkout" ? words.slice(words.indexOf("--") + 1) : words;
+	// Which paths the discard touches: `checkout`/`restore`/`rm`/`clean` name them (a `checkout` tree-ish before them,
+	// or anything before `--`, isn't a path: the whole tree is checked then); `reset`, `switch`, `read-tree`,
+	// `checkout-index`, `apply -R`, `submodule deinit` touch the whole tree (or the submodules in it).
+	const WHOLE = new Set(["reset", "switch", "read-tree", "checkout-index", "apply", "submodule"]);
+	const named = sub === "checkout" && words.includes("--") ? words.slice(words.indexOf("--") + 1) : words;
+	const positional = named.filter(
+		(w, i) => !w.startsWith("-") && !(sub === "clean" && /^-[eE]$|^--exclude$/.test(named[i - 1] ?? "")),
+	);
 	const paths =
-		sub === "reset" || sub === "switch" || (sub === "checkout" && !words.includes("--"))
-			? []
-			: named.filter((w, i) => !w.startsWith("-") && !(sub === "clean" && /^-[eE]$/.test(named[i - 1] ?? "")));
+		WHOLE.has(sub) || (sub === "checkout" && !words.includes("--") && positional.length !== 1) ? [] : positional;
 	// Anything that isn't a plain path (an expansion marker, a glob, a pathspec) checks the whole tree.
 	if (!paths.length || paths.some((p) => /[\u0000\u0001*?[:]/.test(p)))
 		return { repo, paths: undefined, untracked, ignored, always: false };
@@ -1160,9 +1200,19 @@ function gitWhere(
 		: "session";
 }
 
-/** Whether a `git checkout`/`switch` ran before: the branch the disk shows is no longer the one checked out. */
+/**
+ * Whether a command before may have changed which branch is checked out: `checkout`/`switch`, a branch rename
+ * (`branch -m`/`-M`, which can rename the current branch to main), or `symbolic-ref HEAD …`. The disk then shows the
+ * branch from before it.
+ */
 const switchedBefore = (before: SimpleCommand[]) =>
-	before.some((x) => x.name === "git" && ["checkout", "switch"].includes(gitSplit(values(x.argv.slice(1))).sub ?? ""));
+	before.some((x) => {
+		if (x.name !== "git") return false;
+		const { sub, words } = gitSplit(values(x.argv.slice(1)));
+		if (sub === "checkout" || sub === "switch") return true;
+		if (sub === "branch") return words.some((w) => /^-[A-Za-z]*[mM]|^--move$|^--copy$|^-[A-Za-z]*[cC]/.test(w));
+		return sub === "symbolic-ref" && words.filter((w) => !w.startsWith("-")).length >= 2;
+	});
 
 /**
  * The branch the last `git checkout -b|-B X` / `switch -c|-C X` before `c` created, resolved through the command's

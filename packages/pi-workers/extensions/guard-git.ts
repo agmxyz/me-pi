@@ -331,3 +331,76 @@ export function gitConfigCodeWrite(words: string[]): string | undefined {
 	if (rest.length < 2) return undefined; // one operand reads
 	return gitDataKey(rest[0]) ? undefined : rest[0];
 }
+
+/**
+ * Git commands that overwrite or delete uncommitted work beyond 0.1.3's list (each confirmed in a scratch repo): a
+ * `checkout` with a path operand (`git checkout src/a.txt`, `checkout HEAD src`: no `--` needed), `read-tree -u`
+ * with `--reset`/`-m`, `checkout-index -f`, `apply -R`/`--reverse`, `rm -f` (removes modified files), `clean -f`
+ * whose `-n` is `-e`'s value (`-e -n`, `-en`), `submodule deinit -f`, and `worktree remove --force` (another tree).
+ * Returns `{ risk, whole }` (`whole`: the work at risk isn't under the given paths of this tree), or undefined.
+ */
+export function gitDiscards(sub: string, words: string[]): { risk: string; whole?: boolean } | undefined {
+	const has = (re: RegExp) => words.some((w) => re.test(w));
+	const force = has(/^-[A-Za-z]*f[A-Za-z]*$|^--force$/);
+	switch (sub) {
+		case "checkout": {
+			// `checkout <branch>` switches; `checkout <tree-ish> <paths>` or `checkout <paths>` overwrites them. With no `--`,
+			// two or more operands always include a path. A single operand is a branch unless it is written as a path: a
+			// file name with an extension (`src/a.txt`), `./`/`../`, a trailing `/`, or a glob. (A bare directory name, `git
+			// checkout src`, reads as a branch: a known gap, since only the refs on disk tell them apart.)
+			const ops = words.filter((w) => !w.startsWith("-"));
+			if (words.includes("-b") || words.includes("-B") || words.includes("--orphan")) return undefined;
+			if (ops.length >= 2) return { risk: "git checkout <paths> overwrites them" };
+			if (ops.length === 1 && /\.[A-Za-z0-9]{1,8}$|^\.\.?\/|\/$|[*?[]/.test(ops[0]) && !/^@|\.\.\./.test(ops[0]))
+				return { risk: "git checkout <paths> overwrites them" };
+			return undefined;
+		}
+		case "read-tree":
+			return has(/^-u$/) && has(/^--reset$|^-m$/)
+				? { risk: "git read-tree -u overwrites the work tree", whole: true }
+				: undefined;
+		case "checkout-index":
+			return force ? { risk: "git checkout-index -f overwrites files", whole: true } : undefined;
+		case "apply":
+			return has(/^-R$|^--reverse$/) && !has(/^--cached$|^--index$|^--check$|^--stat$|^--numstat$/)
+				? { risk: "git apply -R reverts changes in the work tree", whole: true }
+				: undefined;
+		case "rm":
+			return force && !has(/^--cached$/) ? { risk: "git rm -f removes modified files" } : undefined;
+		case "clean": {
+			// `-e`/`--exclude` takes the next word as its value, so `-e -n` and `-en` are no dry run.
+			const flags: string[] = [];
+			for (let i = 0; i < words.length; i++) {
+				const w = words[i];
+				if (w === "-e" || w === "--exclude") {
+					i++;
+					continue;
+				}
+				const short = /^-([A-Za-z]+)$/.exec(w)?.[1];
+				if (short?.includes("e")) {
+					flags.push(`-${short.slice(0, short.indexOf("e"))}`);
+					continue;
+				}
+				flags.push(w);
+			}
+			const f = flags.some((w) => /^-[A-Za-z]*f[A-Za-z]*$|^--force$/.test(w));
+			const n = flags.some((w) => /^-[A-Za-z]*n[A-Za-z]*$|^--dry-run$/.test(w));
+			return f && !n ? { risk: "git clean -f" } : undefined;
+		}
+		case "submodule":
+			return words[0] === "deinit" && force
+				? { risk: "git submodule deinit -f drops submodule changes", whole: true }
+				: undefined;
+		default:
+			return undefined;
+	}
+}
+
+/**
+ * A push refspec destination that git could resolve to main/master: `main`, `refs/heads/main`, `heads/main`, and `@`
+ * or `HEAD` (the current branch, decided by the caller).
+ */
+export function gitRefIsProtected(dst: string, protectedNames: ReadonlySet<string>): boolean {
+	const name = dst.replace(/^refs\/heads\/|^heads\//, "");
+	return protectedNames.has(name);
+}
