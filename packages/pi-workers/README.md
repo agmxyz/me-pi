@@ -106,8 +106,8 @@ These are prompt text, so your own `AGENTS.md` can refine or contradict them; th
 
 - Not a sandbox. Extensions and workers run with your OS permissions; `guard` and the fences are guardrails, not security boundaries.
 - `guard` parses each bash command (tree-sitter) and asks in three cases only:
-  1. a recursive `rm` of something outside every Git repo that isn't a temp or build path (`~`, `/`, `~/.pi/agent/x`), or of a repo root or `.git`;
-  2. a command that would lose uncommitted work (`git reset --hard`, `clean -f`, `checkout --`, `restore`, `switch -f`, or a recursive `rm` inside a repo), only when `git status` shows changes there (gitignored files count only for `clean -x`/`-X`), and `git stash drop`/`clear` always;
+  1. a recursive `rm` (or `find … -delete`) of something outside every Git repo that isn't a temp or build path (`~`, `/`, `~/.pi/agent/x`), or of a repo root or `.git`;
+  2. a command that would lose uncommitted work (`git reset --hard`, `clean -f`, `checkout --`, `restore`, `switch -f`, or a recursive `rm` or `find -delete` inside a repo), only when `git status` shows changes there (gitignored files count only for `clean -x`/`-X`), and `git stash drop`/`clear` always;
   3. a force push, or a push to `main`/`master`, to a network remote.
 
   A repo inside a temp directory still counts as a repo. A disk lookup that fails or times out counts as unknown, and asks.
