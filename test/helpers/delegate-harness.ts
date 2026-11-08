@@ -578,6 +578,7 @@ process.stdin.on("end", () => {
   if (mode === "silent") process.exit(0);
   if (mode === "ended-midway") { emit("reading more files", { stopReason: "toolUse" }); process.exit(0); }
   if (mode === "crash") { process.stderr.write("boom: last stderr line\\n"); process.exit(3); }
+  // retry-then-hang needs FAKE_PI_MARKER: the launch appended above makes one line on the first launch.
   if (mode === "retry-then-hang" && readFileSync(process.env.FAKE_PI_MARKER, "utf8").trim().split("\\n").length === 1) {
     setTimeout(() => { retryable("429 rate_limit_error: too many requests"); process.exit(1); }, Number(process.env.FAKE_PI_RETRY_DELAY || 0));
     return;

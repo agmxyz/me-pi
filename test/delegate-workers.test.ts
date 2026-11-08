@@ -546,7 +546,6 @@ test("timeout SIGKILLs the worker group", { timeout: 20000 }, async (t) => {
 
 test("an infra retry that times out names the limit and keeps the deadline", { timeout: 20000 }, async (t) => {
 	const marker = scratch("retry-then-hang-marker");
-	writeFileSync(marker, "");
 	const { tool } = setup(t, {
 		env: { FAKE_PI_MODE: "retry-then-hang", FAKE_PI_MARKER: marker, FAKE_PI_RETRY_DELAY: "1000" },
 		limits: { scoutTimeoutSecs: 3, infraRetryDelaysMs: [1] },
@@ -559,7 +558,8 @@ test("an infra retry that times out names the limit and keeps the deadline", { t
 	const attempt = res.details.round1[0];
 	assert.equal(attempt.infraRetries?.length, 1);
 	assert.equal(attempt.provenance?.length, 2);
-	assert.ok(elapsed < 3000 + 700, `${elapsed}ms: the retry kept the first attempt's deadline`);
+	// A clock restarted on retry ends near 4000ms (1s first attempt + 3s); 500ms below that leaves CI room.
+	assert.ok(elapsed < 3500, `${elapsed}ms: the retry kept the first attempt's deadline`);
 });
 
 test("a non-scout timeout names that role's limit", { timeout: 20000 }, async (t) => {
