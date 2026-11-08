@@ -53,6 +53,9 @@ test("the pi-workers manifest declares only the three public Pi extensions", () 
 	assert.deepEqual(workers.peerDependencies, root.peerDependencies);
 	assert.deepEqual(workers.peerDependenciesMeta, root.peerDependenciesMeta);
 	assert.deepEqual(workers.engines, root.engines);
+	// guard's parser: pinned, and the root setup carries it too so Git installs of the whole repo load guard.
+	assert.deepEqual(workers.dependencies, { "web-tree-sitter": "0.27.1" });
+	assert.deepEqual(root.dependencies, workers.dependencies);
 	for (const entrypoint of workers.pi.extensions) {
 		assert.ok(existsSync(new URL(`../packages/pi-workers/${entrypoint}`, import.meta.url)), `${entrypoint} exists`);
 	}
@@ -66,7 +69,16 @@ test("the pi-workers tarball holds the package, not the author's setup", () => {
 	assert.ifError(result.error);
 	assert.equal(result.status, 0, result.stderr);
 	const files: string[] = JSON.parse(result.stdout)[0].files.map((file: { path: string }) => file.path);
-	const docs = ["package.json", "README.md", "LICENSE", "CHANGELOG.md", "docs/delegate.md"];
+	// guard's bash grammar is vendored (tree-sitter-bash 0.25.1, MIT) and loaded from the package at run time.
+	const docs = [
+		"package.json",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md",
+		"docs/delegate.md",
+		"vendor/tree-sitter-bash.wasm",
+		"vendor/tree-sitter-bash.LICENSE",
+	];
 	for (const file of [...workers.pi.extensions, ...docs]) assert.ok(files.includes(file), `${file} is published`);
 	assert.deepEqual(
 		files.filter((file) => !docs.includes(file) && !/^extensions\/[\w-]+\.ts$/.test(file)),
