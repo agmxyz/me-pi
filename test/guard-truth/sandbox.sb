@@ -1,0 +1,23 @@
+(version 1)
+; bash-truth: one corpus row runs in /bin/bash under this profile. Parameters: RUN (the run's fresh temp dir:
+; stub bin dir, bashenv, row dirs) and ROW (this row's fresh temp dir, inside RUN).
+(allow default)
+; No network at all.
+(deny network*)
+; Signals only to processes in this sandbox (the row's own children); never the runner or anything else.
+(deny signal)
+(allow signal (target same-sandbox))
+; Writes only inside this row's dir, plus /dev/null and bash 3.2's heredoc temp files when TMPDIR isn't writable
+; (it falls back to /tmp/sh-thd-*).
+(deny file-write*)
+(allow file-write* (subpath (param "ROW")))
+(allow file-write-data (literal "/dev/null"))
+(allow file-write* (regex #"^/private/tmp/sh-thd"))
+; Hide the user's files and the temp roots, so globs (`~/*`, `/tmp/*`) stay literal and nothing real is read.
+(deny file-read* (subpath "/Users") (subpath "/private/tmp") (subpath "/private/var/folders"))
+(allow file-read* (subpath (param "RUN")) (regex #"^/private/tmp/sh-thd"))
+(allow file-read-metadata (literal "/private/tmp") (literal "/tmp") (literal "/Users") (literal "/private/var/folders"))
+; Execute only bash, chmod (its writes are confined above), and files in the run dir (stubs, scripts a row writes):
+; a real rm, git, or anything else fails with "Operation not permitted".
+(deny process-exec*)
+(allow process-exec (literal "/bin/bash") (literal "/bin/chmod") (subpath (param "RUN")))

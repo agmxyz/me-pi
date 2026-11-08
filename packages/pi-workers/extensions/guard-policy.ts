@@ -880,3 +880,128 @@ function ranFiles(cmds: SimpleCommand[]): string[] {
 	}
 	return out;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The same rules over what `rm` and `git` really received (test/guard-truth runs commands in a sandboxed bash with
+// argv-recording stubs): the harness judges bash's argv with these, and `policy` must never allow less.
+
+/** A logged rm/git call: its argv, where `cd` had gone (`""` the start dir, an absolute path, or `?`), and git's env. */
+export interface ArgvCall {
+	name: string;
+	argv: string[];
+	/** The call ran after a `cd`/`pushd`/`popd`. */
+	moved: boolean;
+	cwdArg: string;
+	gitDir: string;
+	gitWorkTree: string;
+}
+
+/** rm's argv split as getopt does it (GNU permutes: options may follow operands; `--` ends them). */
+export function rmSplit(args: string[]): { options: string[]; operands: string[] } {
+	const end = args.indexOf("--");
+	const before = end < 0 ? args : args.slice(0, end);
+	const after = end < 0 ? [] : args.slice(end + 1);
+	return {
+		options: before.filter((a) => a.startsWith("-") && a !== "-"),
+		operands: [...before.filter((a) => !a.startsWith("-") || a === "-"), ...after],
+	};
+}
+
+/**
+ * The policy verdict for the calls bash made. `toDisk` maps a sandbox path to the disk path it stands for (the row's
+ * start dir is `env.cwd`, the stub home is `env.home`); undefined for an unknown place.
+ */
+export function argvPolicy(
+	calls: ArgvCall[],
+	env: PolicyEnv,
+	toDisk: (p: string) => string | undefined,
+): PolicyVerdict {
+	E = env;
+	TOP = "";
+	try {
+		return judgeArgv(calls, toDisk);
+	} finally {
+		E = NO_ENV;
+		rebindMemo.clear();
+	}
+}
+
+function judgeArgv(calls: ArgvCall[], toDisk: (p: string) => string | undefined): PolicyVerdict {
+	const findings: Finding[] = [];
+	const dropped: Dropped[] = [];
+	const dirOf = (c: ArgvCall): string | undefined => {
+		if (c.cwdArg === "") return E.cwd;
+		if (c.cwdArg === "?") return undefined;
+		if (c.cwdArg.startsWith("/")) return toDisk(c.cwdArg);
+		return posix.normalize(`${E.cwd}/${c.cwdArg}`);
+	};
+	let branchMoved = false;
+	let newBranch: string | undefined;
+	const gitSoFar: string[][] = [];
+	for (const c of calls) {
+		if (c.name === "rm") {
+			const { options, operands } = rmSplit(c.argv);
+			if (!rmRecursive(options)) continue;
+			const dir = dirOf(c);
+			for (const o of operands) {
+				let r: LevelRule;
+				if (DOTDOT.test(o)) r = { level: "ask", rule: "rm:catastrophic (.. leaves the dir)" };
+				else if (!o.startsWith("/") && disp(o, "")) r = ALLOW;
+				else {
+					const abs = o.startsWith("/")
+						? toDisk(o)
+						: dir !== undefined
+							? posix.normalize(`${dir}/${o}`)
+							: undefined;
+					r =
+						abs === undefined ? { level: "ask", rule: "unknown:rm-cwd (cd target unknown)" } : repoLevel(abs, "");
+				}
+				if (r.level !== "allow")
+					findings.push({ level: r.level, rule: r.rule, detail: `rm ${c.argv.join(" ")}`, dirty: r.dirty });
+			}
+		} else if (c.name === "git") {
+			const { globals, sub, words } = gitSplit(c.argv);
+			gitSoFar.push(c.argv);
+			if (!sub) continue;
+			const moved = c.moved || movesGit(globals) || c.gitDir !== "" || c.gitWorkTree !== "";
+			const made = newBranch;
+			let r =
+				!moved && branchMoved && made !== undefined
+					? gitLevel(sub, words, () => made, false)
+					: gitLevel(sub, words, E.branch, branchMoved || moved);
+			let dir = dirOf(c);
+			const cIdx = globals.indexOf("-C");
+			if (cIdx >= 0 && dir !== undefined) {
+				const v = globals[cIdx + 1] ?? "";
+				dir = v.startsWith("/") ? toDisk(v) : posix.normalize(`${dir}/${v}`);
+			}
+			const hidden = c.gitDir !== "" || c.gitWorkTree !== "" || /--(?:git-dir|work-tree)/.test(globals.join(" "));
+			// Decision 1, on what bash ran.
+			if (r.rule === "push:target-unknown" && !branchMoved && !hidden && dir !== undefined) {
+				const b = E.branchOf(dir);
+				r =
+					b === undefined || b === "HEAD"
+						? { level: "ask", rule: "push:target-unknown" }
+						: gitLevel(sub, words, () => b, false);
+			}
+			// Decision 5, on what bash ran.
+			if (sub === "push" && r.level !== "allow") {
+				const remote = pushRemote(words);
+				const added = remote ? addedRemote(gitSoFar.slice(0, -1), remote) : undefined;
+				if (pushIsLocal(remote, added, dir !== undefined && !hidden ? [dir] : undefined)) {
+					dropped.push({ rule: "push:local", detail: `git push to the local path or remote ${remote}` });
+					r = { level: "allow", rule: "git:none" };
+				}
+			}
+			if (r.rule.startsWith("dropped:")) dropped.push({ rule: "history", detail: r.rule.slice("dropped:".length) });
+			if (r.level !== "allow") findings.push({ level: r.level, rule: r.rule, detail: `git ${c.argv.join(" ")}` });
+			if (sub === "checkout" || sub === "switch") {
+				const i = words.findIndex((w) => /^-[bBcC]$/.test(w));
+				newBranch =
+					!moved && i >= 0 && words[i + 1] && (!branchMoved || newBranch !== undefined) ? words[i + 1] : undefined;
+				branchMoved = true;
+			}
+		}
+	}
+	return { verdict: worst(findings), findings, dropped, fallbacks: [] };
+}

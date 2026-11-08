@@ -34,6 +34,7 @@
 			"packages/pi-workers/extensions/*.ts",
 			"test/*.ts",
 			"test/fixtures/*.ts",
+			"test/guard-truth/*.ts",
 			"evals/*.ts"
 		]
 	}
