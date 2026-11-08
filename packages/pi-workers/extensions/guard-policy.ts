@@ -505,10 +505,19 @@ function findFindings(c: SimpleCommand, src: string, add: Add, s: Scope, cwd: Cw
 	// A value is risky if it isn't known text (an `ENV:` session value could be anything), could be read as an option
 	// or action (`-delete`, `-exec`), or splits into more words. Path markers (`~`, `$PWD`, mktemp) are known paths.
 	const risky = (x: string) => x.includes(ENV) || x.startsWith("-") || /\s/.test(x);
+	// Which words could still be read as an action: every expansion in the expression, and an unquoted expansion among
+	// the start paths (it may split into `x -delete`). A quoted start (`"$d"`, `"$HOME/x"`) is one start path whatever
+	// it holds; its value is judged as a target only if the expression deletes.
+	const quoted = (w: Word) => /^"[^"]*"$/.test(w.raw);
 	const unknownExpr = args.some((w, k) => {
-		if (w.kind !== "expansion" || k < (split.starts[0] ?? split.expr[0] ?? args.length)) return false;
+		if (w.kind !== "expansion") return false;
+		const inExpr = split.expr.includes(k);
+		if (!inExpr && (!split.starts.includes(k) || quoted(w))) return false;
 		const v = vals[k];
-		if (operandOf(k) && /^"/.test(w.raw) && v) return false;
+		if (inExpr && operandOf(k) && quoted(w) && v) return false;
+		// A start path's own blanks split only if they came from an unquoted expansion's value (`~/A\ B` is one word):
+		// an unresolved value (`ENV:`), or none at all, could hold ` -delete`.
+		if (!inExpr) return !v || v.some((x) => x.includes(ENV));
 		return !v || v.some(risky);
 	});
 	// An expansion before the expression may hold options (`find $OPTS ~ -delete`): where find starts is unknown.

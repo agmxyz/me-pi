@@ -519,3 +519,39 @@ test("PR #95 round 5: find options before the start paths, $PWD/~+ after cd, unk
 		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
 	assert.deepEqual(bad, []);
 });
+
+test("PR #95 round 5: a quoted find start path is one path; only an unknown word find may read as an action asks", () => {
+	// Real session commands (shapes): `find "$d" -name x -print` lists files; it must not ask because $d is unknown.
+	const rows: [string, Level, string][] = [
+		[
+			"/w/app",
+			"allow",
+			"find ~/.config ~/.local/share ~/Library/Application\\ Support -maxdepth 3 -iname '*agy*' -o -maxdepth 3 -iname '*an*'",
+		],
+		[
+			"/w/app",
+			"allow",
+			"find ~/Library/Application\\ Support/Antigravity ~/.antigravity -maxdepth 4 \\( -iname '*.db' -o -iname '*.sqlite*' \\) -print",
+		],
+		["/w/app", "allow", "find ~/A\\ B -name x"],
+		["/w/app", "ask", "p='~ -delete'; find $p"],
+		["/w/app", "ask", "p='x -delete'; find ~ $p"],
+		["/w/app", "allow", "p='~/A B'; find \"$p\" -name x"],
+		["/w/app", "allow", "find \"$d\" -type f \\( -name '*.jsonl' -o -name '*.ndjson' \\) -print"],
+		["/w/app", "allow", "find \"$HOME/Library/Preferences\" -maxdepth 1 -iname '*proton*' -print"],
+		["/w/app", "allow", "find \"$d\" -maxdepth 1 -name '*.plist' -print"],
+		["/w/app", "allow", "find ~/.config ~/.local/share -maxdepth 3 -iname '*agy*' -print"],
+		["/w/app", "allow", "find \"$f\" -type f -name '*.jsonl'"],
+		["/w/app", "allow", 'find "$d" -maxdepth 2 -type f -ls'],
+		["/w/app", "ask", "find $gd/objects -type f -newermt x"],
+		["/w/app", "allow", "gd=.git; find $gd/objects -type f -newermt x"],
+		["/w/app", "ask", 'find "$d" -delete'],
+		["/w/app", "ask", "find ~ $D"],
+		["/w/app", "ask", "find $D ~"],
+		["/w/app", "ask", 'find "$d" $X'],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
+	assert.deepEqual(bad, []);
+});
