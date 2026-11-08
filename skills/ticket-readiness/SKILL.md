@@ -61,7 +61,7 @@ Order the READY tickets: dependencies first; tickets that overlap in files adjac
 
 Collect every open question into one `## Questions` list: each DECISION question, and each `Calls:` default marked `ask`. A ticket with an unanswered question stays out of both queues; when the user answers in this run, write the answer into the block and send only that ticket back to a worker for its verdict.
 
-For each queued ticket, write its final block (with step 6 marks and any answers) to `brief-<n>.md`: the implementer's contract, not a second copy to edit.
+For each queued ticket, write its final block (with step 6 marks and any answers) to `brief-<n>.md`: the implementer's contract, not a second copy to edit. Its last line is the evidence rule: show each new or stronger check red at the review SHA, failing for the criterion's reason, before the fix; a check that cannot go red is named in the handback and does not count as proof. (In the #91 trial, one of two proposed stronger tests passed before the fix.)
 
 Write `report.md`:
 
