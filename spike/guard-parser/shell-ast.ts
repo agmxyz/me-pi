@@ -9,7 +9,7 @@
  *   `value` then keeps the expansion's source text; `tmpdirOnly` says the only expansion is a leading `${TMPDIR:?}`.
  */
 import { readFileSync } from "node:fs";
-import { Language, type Node, Parser } from "web-tree-sitter";
+import { Language, type Node, Parser, type Tree } from "web-tree-sitter";
 
 export type WordKind = "literal" | "quoted" | "expansion";
 export interface Word {
@@ -47,6 +47,8 @@ export interface SimpleCommand {
 	/** Found by re-parsing a string (`sh -c`, `eval`, `trap`, a heredoc or here-string body): its words aren't the outer
 	 * command's text, so the outer command's variable bindings don't apply to them. */
 	reparsed: boolean;
+	/** The source text this command was parsed from (`src`, or the re-parsed string). */
+	script: string;
 	/** Runs whenever the script runs, in this shell (a top-level sequence item; see `certain`). */
 	certain: boolean;
 	/** Source ranges that run only after this command succeeded (the rest of its `&&` chain). */
@@ -58,6 +60,8 @@ export const LIMITS = { maxSource: 100_000, maxDepth: 6, maxCommands: 5_000 };
 let parser: Parser | undefined;
 // Offset of the top-level command being walked; commands found in re-parsed strings take it.
 let currentAt = 0;
+// The source text being walked (the top-level command or a re-parsed string).
+let currentScript = "";
 
 export async function initShellAst(
 	wasmPath = new URL("./vendor/tree-sitter-bash.wasm", import.meta.url),
@@ -92,10 +96,9 @@ export interface Bindings {
 }
 export function bindings(src: string): Bindings | null {
 	if (!parser) throw new Error("initShellAst() not awaited");
-	const tree = parser.parse(src);
+	const tree = parseTree(src);
 	if (!tree) return null;
 	try {
-		if (tree.rootNode.hasError) return null;
 		const values = new Map<string, Word[] | null>();
 		const parsedAssignments = new Map<string, number>();
 		const firstAt = new Map<string, number>();
@@ -264,30 +267,147 @@ export function commands(src: string): SimpleCommand[] | null {
 	}
 }
 
+/**
+ * Parses `src`; null on a parse failure. tree-sitter-bash 0.25.1 rejects a redirect after a heredoc opener
+ * (`cmd <<'EOF' 2>&1 | tail`), which bash accepts: moving fd redirects before the `<<` keeps bash's meaning (the heredoc
+ * is fd 0), and is used only if that then parses. The offsets of such a retry are of the moved text, which differs from
+ * `src` only inside the opener line.
+ */
+function parseTree(src: string): Tree | null {
+	const tree = parser!.parse(src);
+	if (!tree) return null;
+	if (!tree.rootNode.hasError) return tree;
+	const moved = src.replace(
+		HEREDOC_THEN_REDIRECTS,
+		(_, opener: string, _q, redirs: string) => `${redirs.trim()} ${opener}`,
+	);
+	const retry = moved !== src ? parser!.parse(moved) : null;
+	tree.delete();
+	if (retry && !retry.rootNode.hasError) return retry;
+	retry?.delete();
+	return null;
+}
+
 function parseScript(src: string, via: string[], remote: boolean, depth: number, out: SimpleCommand[]): void {
 	if (src.length > LIMITS.maxSource || depth > LIMITS.maxDepth) throw new Bail();
-	let tree = parser!.parse(src);
+	const tree = parseTree(src);
 	if (!tree) throw new Bail();
-	// tree-sitter-bash 0.25.1 rejects a redirect after a heredoc opener (`cmd <<'EOF' 2>&1 | tail`), which bash accepts.
-	// Moving fd redirects before the `<<` keeps bash's meaning (the heredoc is fd 0); used only if that then parses.
-	if (tree.rootNode.hasError) {
-		const moved = src.replace(
-			HEREDOC_THEN_REDIRECTS,
-			(_, opener: string, _q, redirs: string) => `${redirs.trim()} ${opener}`,
-		);
-		const retry = moved !== src ? parser!.parse(moved) : null;
-		if (retry && !retry.rootNode.hasError) {
-			tree.delete();
-			tree = retry;
-		} else retry?.delete();
-	}
+	const outer = currentScript;
+	currentScript = src;
 	try {
-		if (tree.rootNode.hasError) throw new Bail();
 		walk(tree.rootNode, via, remote, depth, out);
 	} finally {
+		currentScript = outer;
 		tree.delete();
 	}
 }
+
+/** Every source text `commands(src)` parses: `src` and each re-parsed string (`bash -c`, `eval`, heredoc bodies). */
+export function scripts(src: string): string[] | null {
+	const cmds = commands(src);
+	if (!cmds) return null;
+	return [...new Set([src, ...cmds.map((c) => c.script)])];
+}
+
+/**
+ * Where TMPDIR may be rebound before or while the command runs, read from the parse (decision 3 of the guard-policy
+ * spike, replacing guard's textual `tmpdirMayChange`): an assignment to it (plain, prefix, `+=`, array, `export`,
+ * `declare`/`local`/`typeset`/`readonly`), `unset`, `read`/`mapfile`/`readarray`/`getopts`/`printf -v` naming it,
+ * `env TMPDIR=…`, or anything whose target the text doesn't show: an assignment or binder operand that isn't a
+ * plain name (`${z}=1`, `export "$n"=/`, `TMP""DIR=/`), `source`/`.`, `eval`, `((…))`/`let`, `declare -n`,
+ * `${!x}`, or a command name that is spelled (`\export`, `e{xport,}`) or expands. Each re-parsed string is checked too.
+ * True on a parse failure.
+ */
+export function tmpdirRebinds(src: string): boolean {
+	const all = scripts(src);
+	if (!all) return true;
+	return all.some((s) => {
+		const tree = parseTree(s);
+		if (!tree) return true;
+		try {
+			return rebindsIn(tree.rootNode);
+		} finally {
+			tree.delete();
+		}
+	});
+}
+
+const TMPDIR_NAME = /^TMPDIR$/;
+function rebindsIn(root: Node): boolean {
+	let hit = false;
+	const named = (t: string) => TMPDIR_NAME.test(t.replace(/\[.*$/s, ""));
+	const visit = (n: Node) => {
+		if (hit) return;
+		switch (n.type) {
+			case "variable_assignment": {
+				const name = n.childForFieldName("name");
+				// A plain name, or `a[N]` with a literal number, names its target; anything else hides it: `${z}=1`, and
+				// `a[z]=1`, whose subscript is arithmetic that evaluates z's value recursively (`z=TMPDIR=7` assigns TMPDIR).
+				const text = name?.text ?? "";
+				const plain = name?.type === "variable_name" || /^[A-Za-z_]\w*\[\d+\]$/.test(text);
+				if (!plain || named(text)) hit = true;
+				break;
+			}
+			case "unset_command":
+			case "declaration_command":
+				if (n.type === "declaration_command" && /^\S+\s+-\w*n/.test(n.text)) hit = true;
+				for (const c of n.namedChildren)
+					if (
+						c.type === "variable_name"
+							? named(c.text)
+							: c.type !== "variable_assignment" && !/^-\w+$/.test(c.text)
+					)
+						hit = true;
+				break;
+			case "c_style_for_statement":
+			case "arithmetic_expansion":
+				hit = true;
+				break;
+			case "compound_statement":
+				if (n.text.startsWith("((")) hit = true;
+				break;
+			case "expansion":
+				if (n.text.startsWith("${!")) hit = true;
+				break;
+			case "command": {
+				const nameNode = n.childForFieldName("name");
+				const nameText = nameNode?.text ?? "";
+				const name = nameText.replace(/^.*\//, "");
+				const args = n.children.filter((_, i) => n.fieldNameForChild(i) === "argument").map((a) => a.text);
+				// A name that isn't plain text may spell a binder (`\export`, `ex""port`, `$CMD`).
+				if (/["'\\{}$`]/.test(nameText)) hit = true;
+				else if (REBIND_ANY.has(name)) hit = true;
+				else if (NAME_BINDERS.has(name) && (name !== "printf" || args[0] === "-v" || /^-v/.test(args[0] ?? ""))) {
+					// Operands naming a variable: TMPDIR, or one that expands (`read "$n"`).
+					if (args.some((a) => named(a.replace(/^-v/, "")) || /[$`"'\\]/.test(a))) hit = true;
+				} else if (name === "env") {
+					// `env TMPDIR=/ cmd`, `env -u TMPDIR`, or any option (`-i`, `-u`, `-S`, `-C` reset or rewrite the environment).
+					if (args.some((a) => /TMP/.test(a) || /^-/.test(a) || /^["']?\$/.test(a))) hit = true;
+				} else if (ENV_RESETTERS.has(name)) {
+					// Privilege wrappers may reset the environment (guard's #77 rule, kept: its rows must still ask).
+					hit = true;
+				} else if (
+					name === "export" ||
+					name === "declare" ||
+					name === "typeset" ||
+					name === "local" ||
+					name === "readonly"
+				) {
+					// An operand that expands into an assignment.
+					if (args.some((a) => /TMP/.test(a) || /^["']?\$/.test(a))) hit = true;
+				}
+				break;
+			}
+		}
+		for (const c of n.children) visit(c);
+	};
+	visit(root);
+	return hit;
+}
+// Commands that can bind any name the text doesn't spell out.
+const REBIND_ANY = new Set(["eval", "source", ".", "let", "builtin", "command", "enable", "alias"]);
+// Privilege wrappers guard treats as rebinding TMPDIR wherever they appear (guard.ts `REBINDS_ENV`).
+const ENV_RESETTERS = new Set(["sudo", "doas", "su", "runuser", "pkexec"]);
 
 // `<<'EOF' 2>&1 >/dev/null`: an opener followed by fd redirects (`N>&M`, `N>file`, `>>file`, `&>file`).
 const HEREDOC_THEN_REDIRECTS =
@@ -422,6 +542,7 @@ function emit(argv: Word[], via: string[], remote: boolean, depth: number, out: 
 		assignments: io.assignments,
 		at: currentAt,
 		reparsed: depth > 0,
+		script: currentScript,
 		certain: io.certain,
 		after: io.after,
 	});
@@ -455,6 +576,7 @@ function emit(argv: Word[], via: string[], remote: boolean, depth: number, out: 
 					assignments: [],
 					at: currentAt,
 					reparsed: depth > 0,
+					script: currentScript,
 					certain: false,
 					after: [],
 				});
@@ -479,6 +601,7 @@ function script(words: Word[], via: string[], remote: boolean, depth: number, ou
 			assignments: [],
 			at: currentAt,
 			reparsed: depth > 0,
+			script: currentScript,
 			certain: false,
 			after: [],
 		});
