@@ -761,3 +761,25 @@ test("the user's false-alarm heredoc and #93's redirected push", async (t) => {
 	git("checkout", "-q", "-b", "main");
 	assert.match((await handler(bash("git push origin 2>&1"), ctx))?.reason ?? "", /main\/master/, "#93 on main");
 });
+
+test("live ~ rows: with a HOME outside every temp dir, ~ and $PWD after cd ~ are case 1", async (t) => {
+	const { repo } = scratchRepo(t);
+	// isolate() puts HOME under the OS temp dir, where ~ is a temp path; point it at a non-temp, nonexistent dir for
+	// the code under test (isolate restores the real HOME after the test). Nothing runs; guard only reads git.
+	process.env.HOME = "/Users/nobody-guard-home";
+	const { handler } = setup();
+	const ctx = { cwd: repo, hasUI: false };
+	for (const command of [
+		"rm -rf ~",
+		"rm -rf ~/.pi/agent/x",
+		"find ~ -delete",
+		"find -x ~ -delete",
+		"cd ~ && rm -rf ~+/Documents",
+		`cd ~ && rm -rf "$PWD/Documents"`,
+		"cd ~ && find ~+/Documents -delete",
+		"D=-delete; find ~ $D",
+	])
+		assert.equal((await handler(bash(command), ctx))?.block, true, command);
+	assert.equal(await handler(bash(`rm -rf "\${TMPDIR:?}/x"`), ctx), undefined, "a temp cleanup still passes");
+	assert.equal(await handler(bash("find ~ -name x"), ctx), undefined, "find without -delete deletes nothing");
+});

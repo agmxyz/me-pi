@@ -393,42 +393,149 @@ function rmFindings(c: SimpleCommand, src: string, add: Add, s: Scope, cwd: Cwd)
 	}
 }
 
+// `find` options before the start paths (BSD and GNU): flag letters, and the ones that take the next word.
+const FIND_FLAG_LETTERS = /^-[HLPEXdsx]+$/;
+const FIND_OPT_VALUE = new Set(["-D", "-f"]);
+
 /**
- * `find` splits its argv the way it reads it: `-H`/`-L`/`-P` first, then start paths up to the first expression word
- * (`-name`, `(`, `!`); none is `.`. `deletes`: the expression has `-delete`, which removes what it matches below each
- * start path. Whatever else the expression says (`-type f`, `! -name keep`, `-name '*.pyc'`), it is judged as a
- * recursive rm of each start path: at or above a repo root it can reach `.git`, so it is case 1 like `rm -rf .`;
- * proving that an expression spares `.git` is not attempted. Shared by the parse side and the bash side.
+ * `find`'s argv as it reads it: leading options (`-H -L -P -E -X -d -s -x`, `-O<n>`, `-D <debug>`, `-f <start>` whose
+ * operand is a start path, `--`), then start paths up to the first expression word (`-name`, `(`, `!`, `)`); none is
+ * `.`. `unknownStart`: a leading `-` word that isn't a known option, so where find starts can't be told (fails closed).
+ * `deletes`: the expression has `-delete` (it removes what it matches below each start path). Whatever else the
+ * expression says (`-type f`, `! -name keep`), it is judged as a recursive rm of each start path: at or above a repo
+ * root it can reach `.git`, so it is case 1 like `rm -rf .`; proving that it spares `.git` is not attempted. `words`:
+ * which argv indexes are starts and which the expression. Shared by the parse side and the bash side.
  */
-export function findSplit(args: string[]): { starts: string[]; deletes: boolean } {
+export function findSplit(args: string[]): {
+	starts: number[];
+	expr: number[];
+	unknownStart: boolean;
+	deletes: boolean;
+} {
+	const starts: number[] = [];
 	let i = 0;
-	while (i < args.length && /^-[HLP]+$/.test(args[i])) i++;
-	const starts: string[] = [];
-	for (; i < args.length && !/^[-(!]/.test(args[i]) && args[i] !== ")"; i++) starts.push(args[i]);
-	return { starts: starts.length ? starts : ["."], deletes: args.slice(i).includes("-delete") };
+	let unknownStart = false;
+	for (; i < args.length; i++) {
+		const a = args[i];
+		if (a === "--") {
+			i++;
+			break;
+		}
+		if (FIND_FLAG_LETTERS.test(a) || /^-O\d*$/.test(a)) continue;
+		if (FIND_OPT_VALUE.has(a)) {
+			if (a === "-f" && i + 1 < args.length) starts.push(i + 1);
+			i++;
+			continue;
+		}
+		// The first word that isn't a known option: an expression primary (`-name`, `-type`, `-delete`, …), so find
+		// starts at `.` (or the paths `-f` named). A single-letter or capital dash word that isn't a known option may be
+		// one this list lacks (`-Y` on some find): fail closed.
+		if (/^-[A-Z]$|^-[a-z]$/.test(a)) unknownStart = true;
+		break;
+	}
+	// Start paths: every word before the first expression word (also after `--`).
+	for (; i < args.length && !/^[-(!]/.test(args[i]) && args[i] !== ")"; i++) starts.push(i);
+	const expr: number[] = [];
+	for (; i < args.length; i++) expr.push(i);
+	return { starts, expr, unknownStart, deletes: expr.some((k) => args[k] === "-delete") };
 }
+
+// Expression primaries whose next word is their operand (a pattern, a type, a number), not another expression word.
+const FIND_TAKES_VALUE = new Set([
+	"-name",
+	"-iname",
+	"-path",
+	"-ipath",
+	"-wholename",
+	"-iwholename",
+	"-regex",
+	"-iregex",
+	"-lname",
+	"-ilname",
+	"-type",
+	"-xtype",
+	"-user",
+	"-group",
+	"-uid",
+	"-gid",
+	"-perm",
+	"-size",
+	"-newer",
+	"-anewer",
+	"-cnewer",
+	"-mtime",
+	"-atime",
+	"-ctime",
+	"-mmin",
+	"-amin",
+	"-cmin",
+	"-maxdepth",
+	"-mindepth",
+	"-links",
+	"-inum",
+	"-samefile",
+	"-fstype",
+	"-printf",
+	"-fprint",
+	"-fprint0",
+	"-fprintf",
+	"-fls",
+	"-context",
+]);
 
 /**
  * `find START… -delete`: each start path is judged like the target of a recursive rm (case 1 or 2, temp/build
- * allowed). `find -exec rm …` is already the rm it runs (guard-shell unwraps it). An expansion before the
- * expression could be the start path or an option (`find $X -delete`): judged as a target, as rm does.
+ * allowed). `find -exec rm …` is already the rm it runs (guard-shell unwraps it). An expansion in the expression that
+ * doesn't resolve could be `-delete` or `-exec`, and one in the option position could hide where find starts: then the
+ * start paths are judged as for `-delete`, and an unknown start asks.
  */
 function findFindings(c: SimpleCommand, src: string, add: Add, s: Scope, cwd: Cwd): void {
 	const args = c.argv.slice(1);
-	const plain = values(args).map((v, i) => (args[i].kind === "expansion" ? "x" : v));
-	if (!findSplit(plain).deletes) return;
-	let i = 0;
-	while (i < args.length && args[i].kind !== "expansion" && /^-[HLP]+$/.test(args[i].value)) i++;
-	const starts: Word[] = [];
-	for (; i < args.length; i++) {
-		const w = args[i];
-		if (w.kind !== "expansion" && (/^[-(!]/.test(w.value) || w.value === ")")) break;
-		starts.push(w);
+	// Each word's values (one per possibility); an unresolvable expansion is undefined.
+	const vals = args.map((w) => (w.kind === "expansion" ? resolveWord(w, s, c.at) : [w.value]));
+	// The literal shape, with every expansion standing for a non-option word (a start, or an expression operand).
+	const shape = args.map((w, k) =>
+		w.kind === "expansion" ? (vals[k]?.length === 1 ? (vals[k] as string[])[0] : "x") : w.value,
+	);
+	const split = findSplit(shape);
+	// An expansion find reads as a start or an expression word could be `-delete` or `-exec …` unless its value is
+	// known: unresolvable (`$D`, `$(printf -- -delete)`), or one that holds an action. The operand of a primary that
+	// takes one (`-name "$N"`) is not an action, if quoted (unquoted, it may split into more words).
+	const operandOf = (k: number) => FIND_TAKES_VALUE.has(shape[k - 1] ?? "") && split.expr.includes(k - 1);
+	// A value is risky if it isn't known text (an `ENV:` session value could be anything), could be read as an option
+	// or action (`-delete`, `-exec`), or splits into more words. Path markers (`~`, `$PWD`, mktemp) are known paths.
+	const risky = (x: string) => x.includes(ENV) || x.startsWith("-") || /\s/.test(x);
+	const unknownExpr = args.some((w, k) => {
+		if (w.kind !== "expansion" || k < (split.starts[0] ?? split.expr[0] ?? args.length)) return false;
+		const v = vals[k];
+		if (operandOf(k) && /^"/.test(w.raw) && v) return false;
+		return !v || v.some(risky);
+	});
+	// An expansion before the expression may hold options (`find $OPTS ~ -delete`): where find starts is unknown.
+	const unknownLead = args
+		.slice(0, split.starts[0] ?? split.expr[0] ?? args.length)
+		.some((w) => w.kind === "expansion");
+	if (!split.deletes && !unknownExpr) return;
+	if (split.unknownStart || unknownLead) {
+		add(
+			"ask",
+			"unknown:find-start",
+			"find with an option or expansion before its start paths: where it deletes is unknown",
+		);
+		return;
 	}
-	const targets = starts.length ? starts : [{ value: ".", kind: "literal", raw: "." } as Word];
+	const targets = split.starts.length
+		? split.starts.map((k) => args[k])
+		: [{ value: ".", kind: "literal", raw: "." } as Word];
 	for (const w of targets) {
 		const r = targetLevel(w, src, s, c.at, cwd);
-		if (r.level !== "allow") add(r.level, r.rule, `find -delete under ${w.raw}`, r.dirty);
+		if (r.level !== "allow")
+			add(
+				r.level,
+				r.rule,
+				`find ${split.deletes ? "-delete" : "with an unknown expression"} under ${w.raw}`,
+				r.dirty,
+			);
 	}
 }
 
@@ -457,17 +564,22 @@ function cwdAt(cmds: SimpleCommand[], c: SimpleCommand, s: Scope): Cwd {
 			continue;
 		}
 		const vals = resolveWord(arg, s, x.at);
-		// An absolute target resets an unknown directory (`cd x && …; cd /tmp && rm -rf y`).
-		const absolute = vals?.every((v) => v.startsWith("/") || (v.startsWith(MARK) && !v.startsWith(ENV)));
+		// An absolute target resets an unknown directory (`cd x && …; cd /tmp && rm -rf y`); `$PWD`/`~+` is relative to
+		// the directory so far, never absolute.
+		const absolute = vals?.every(
+			(v) => v.startsWith("/") || (v.startsWith(MARK) && !v.startsWith(ENV) && !v.startsWith(PWD)),
+		);
 		if (!vals || (!cwd && !absolute)) {
 			cwd = undefined;
 			continue;
 		}
 		cwd ??= [""];
 		const next: string[] = [];
-		for (const v of vals)
-			for (const base of cwd)
+		for (const raw of vals)
+			for (const base of cwd) {
+				const v = raw.startsWith(PWD) ? `.${raw.slice(PWD.length)}` : raw;
 				next.push(v.startsWith("/") || v.startsWith(MARK) ? v : base === "" ? v : `${base}/${v}`);
+			}
 		cwd = next;
 	}
 	return cwd;
@@ -690,7 +802,18 @@ function targetLevel(w: Word, src: string, s: Scope, at: number, cwd: Cwd): Leve
 	const vals = w.kind === "expansion" ? resolveWord(w, s, at) : [w.value];
 	if (!vals) return { level: "ask", rule: "unknown:rm-target-expansion" };
 	let out = ALLOW;
-	for (const v of vals) {
+	for (const raw of vals) {
+		// `$PWD`/`~+` is the working directory at this command, not the session's: `cd ~ && rm -rf "$PWD/x"`.
+		if (raw.startsWith(PWD)) {
+			if (cwd === undefined) {
+				out = worse(out, { level: "ask", rule: "unknown:rm-cwd ($PWD after an unknown cd)" });
+				continue;
+			}
+			const rest = raw.slice(PWD.length);
+			for (const base of cwd) out = worse(out, valueLevel(base === "" ? `.${rest}` : `${base}${rest}`, src, ""));
+			continue;
+		}
+		const v = raw;
 		const relative = !v.startsWith("/") && !v.startsWith(MARK);
 		// guard's rule: a relative build-dir name (`dist`, `node_modules/x`) is disposable, when the cwd is the session's
 		// or inside a repo (step 1 asked `cd / && rm -rf dist`; that stays).
@@ -1016,8 +1139,13 @@ function judgeArgv(calls: ArgvCall[], toDisk: (p: string) => string | undefined)
 	const gitSoFar: string[][] = [];
 	for (const c of calls) {
 		const find = c.name === "find" ? findSplit(c.argv) : undefined;
+		if (find?.deletes && find.unknownStart) {
+			findings.push({ level: "ask", rule: "unknown:find-start", detail: `find ${c.argv.join(" ")}` });
+			continue;
+		}
 		if (c.name === "rm" || find?.deletes) {
-			const { options, operands } = find ? { options: ["-r"], operands: find.starts } : rmSplit(c.argv);
+			const starts = find?.starts.length ? find.starts.map((k) => c.argv[k]) : ["."];
+			const { options, operands } = find ? { options: ["-r"], operands: starts } : rmSplit(c.argv);
 			if (!rmRecursive(options)) continue;
 			const dir = dirOf(c);
 			for (const o of operands) {

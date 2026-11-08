@@ -472,3 +472,50 @@ test("a find -delete at or above a repo root is case 1 whatever its expression (
 	assert.equal(policy("find src -type f -delete", atRoot).verdict, "ask-if-dirty");
 	assert.equal(policy("find . -type f -delete", inSrc).verdict, "ask-if-dirty");
 });
+
+test("PR #95 round 5: find options before the start paths, $PWD/~+ after cd, unknown find expressions", () => {
+	// /w/app is the session repo on feat; nothing else is a repo; HOME is /Users/me.
+	const rows: [string, Level, string][] = [
+		["/w/app", "ask", "find ~ $(printf -- -delete)"],
+		["/w/app", "ask", "find ~ `echo -delete`"],
+		["/w/app", "ask", "D=-delete; find ~ $D"],
+		["/w/app", "ask", "find ~ $D"],
+		["/w/app", "ask", "X=-exec; find ~ $X rm -rf {} +"],
+		["/w/app", "ask", "find -f ~ -delete"],
+		["/w/app", "ask", "find -d ~ -delete"],
+		["/w/app", "ask", "find -x / -delete"],
+		["/w/app", "ask", "find -- ~ -delete"],
+		["/w/app", "ask", "find -E ~ -delete"],
+		["/w/app", "ask", "find -s / -delete"],
+		["/w/app", "ask", "find -O3 ~ -delete"],
+		["/w/app", "ask", "find -D tree ~ -delete"],
+		["/w/app", "ask", "find -Y ~ -delete"],
+		["/w/app", "ask", "find $OPTS ~ -delete"],
+		["/w/app", "ask", "cd ~ && rm -rf ~+/Documents"],
+		["/w/app", "ask", 'cd ~ && rm -rf "$PWD/Documents"'],
+		["/w/app", "ask", "cd ~ && find ~+/Documents -delete"],
+		["/w/app", "ask", "cd /w/app && cd ~ && rm -rf ~-/x"],
+		["/w/app", "ask", "cd ~ && cd /tmp && rm -rf ~-/Documents"],
+		["/w/app", "ask", 'cd ~ && cd /tmp && rm -rf "$OLDPWD/Documents"'],
+		["/w/app", "ask", 'cd "$X" && rm -rf "$PWD/y"'],
+		["/w/app", "ask-if-dirty", 'rm -rf "$PWD/src"'],
+		["/w/app", "ask-if-dirty", "rm -rf ~+/src"],
+		["/w/app", "allow", 'rm -rf "$PWD/dist"'],
+		["/w/app", "allow", 'cd /tmp/x && rm -rf "$PWD/y"'],
+		["/w/app", "ask", "cd /tmp/x && cd /w/app && rm -rf ~-/y"],
+		["/w/app", "allow", "find -x /tmp/x -delete"],
+		["/w/app", "allow", "find -f /tmp/x -delete"],
+		["/w/app", "allow", "find -E dist -name x -delete"],
+		["/w/app", "ask", "find ~ $N -name x"],
+		["/w/app", "allow", "N=x; find ~ -name $N"],
+		["/w/app", "allow", 'find ~ -name "$N" -print'],
+		["/w/app", "allow", "find -x ~ -name x"],
+		["/w/app", "allow", 'find . -name "$N" -print'],
+		["/w/app", "ask", "find ~ -name $N -delete"],
+		["/w/app", "ask", "find ~ -name $N"],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
+	assert.deepEqual(bad, []);
+});
