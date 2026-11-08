@@ -83,6 +83,8 @@ const env = (branch: string): PolicyEnv => ({
 	branchOf: (d) => (inRepo(d) ? branch : undefined),
 	repoRootOf: (d) => (inRepo(d) ? REPO : null),
 	remoteUrlOf: (d, n) => (inRepo(d) && n === "origin" ? "git@github.com:me/repo.git" : undefined),
+	isCheckoutRef: (d, n) =>
+		inRepo(d) ? /^(?:main|master|feature\/[\w-]+|other|HEAD(?:[~^]\d*)*)$/.test(n) : undefined,
 });
 const strip = (p: string) => p.replace(/^\/private(?=\/(?:var|tmp)\/)/, "");
 /** A sandbox path as the fake-disk path it stands for: the start dir is the repo. */

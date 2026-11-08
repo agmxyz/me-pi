@@ -23,9 +23,12 @@ export function startBudget(ms = DECISION_BUDGET_MS): void {
  * One read-only git call: trimmed stdout on exit 0 (`out`), else undefined; `notRepo` when git said `dir` is in no
  * repository (anything else — a timeout, a spent budget, git missing or failing — is unknown).
  */
-function gitCall(dir: string, args: string[]): { out: string | undefined; notRepo: boolean } {
+function gitCall(
+	dir: string,
+	args: string[],
+): { out: string | undefined; notRepo: boolean; status: number | undefined } {
 	const left = Math.min(GIT_TIMEOUT_MS, deadline - Date.now());
-	if (left <= 0) return { out: undefined, notRepo: false };
+	if (left <= 0) return { out: undefined, notRepo: false, status: undefined };
 	const res = spawnSync("git", ["-C", dir, "-c", "core.fsmonitor=false", ...args], {
 		encoding: "utf8",
 		timeout: left,
@@ -35,7 +38,27 @@ function gitCall(dir: string, args: string[]): { out: string | undefined; notRep
 	});
 	const ok = res.status === 0 && !res.error;
 	const notRepo = res.status === 128 && /not a git repository/.test(res.stderr ?? "");
-	return { out: ok ? res.stdout.replace(/\n$/, "") : undefined, notRepo };
+	return {
+		out: ok ? res.stdout.replace(/\n$/, "") : undefined,
+		notRepo,
+		status: res.error ? undefined : (res.status ?? undefined),
+	};
+}
+
+/**
+ * Whether `git checkout NAME` (one operand, no `--`) would switch to a ref rather than overwrite a path named NAME,
+ * by git's own rule: NAME resolves to a commit (`rev-parse --verify --quiet NAME^{commit}`), or names exactly a
+ * remote-tracking branch `refs/remotes/<remote>/NAME` (checkout's branch guess). `false`: not a ref, so a path;
+ * undefined: unknown (a failed or timed-out read, an odd name), which the policy treats as possibly a path.
+ */
+export function isCheckoutRef(dir: string, name: string): boolean | undefined {
+	if (!/^[\w./@{}^~+-]+$/.test(name) || name.startsWith("-")) return undefined;
+	const commit = gitCall(dir, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${name}^{commit}`]);
+	if (commit.status === 0) return true;
+	if (commit.status !== 1) return undefined;
+	const guess = gitCall(dir, ["for-each-ref", "--format=%(refname)", `refs/remotes/*/${name}`]);
+	if (guess.status !== 0 || guess.out === undefined) return undefined;
+	return guess.out.trim() !== "";
 }
 const git = (dir: string, args: string[]) => gitCall(dir, args).out;
 

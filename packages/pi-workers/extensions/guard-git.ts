@@ -339,20 +339,25 @@ export function gitConfigCodeWrite(words: string[]): string | undefined {
  * whose `-n` is `-e`'s value (`-e -n`, `-en`), `submodule deinit -f`, and `worktree remove --force` (another tree).
  * Returns `{ risk, whole }` (`whole`: the work at risk isn't under the given paths of this tree), or undefined.
  */
-export function gitDiscards(sub: string, words: string[]): { risk: string; whole?: boolean } | undefined {
+export function gitDiscards(
+	sub: string,
+	words: string[],
+): { risk: string; whole?: boolean; refOrPath?: string } | undefined {
 	const has = (re: RegExp) => words.some((w) => re.test(w));
 	const force = has(/^-[A-Za-z]*f[A-Za-z]*$|^--force$/);
 	switch (sub) {
 		case "checkout": {
 			// `checkout <branch>` switches; `checkout <tree-ish> <paths>` or `checkout <paths>` overwrites them. With no `--`,
-			// two or more operands always include a path. A single operand is a branch unless it is written as a path: a
-			// file name with an extension (`src/a.txt`), `./`/`../`, a trailing `/`, or a glob. (A bare directory name, `git
-			// checkout src`, reads as a branch: a known gap, since only the refs on disk tell them apart.)
+			// two or more operands always include a path. A single operand written as a path (`./x`, a trailing `/`, a
+			// glob) is one; any other single operand (`src`, `src/sub`, `feat`, `v1.2`) is a branch or a path, which only
+			// the refs on disk tell: the caller looks it up (`refOrPath`).
 			const ops = words.filter((w) => !w.startsWith("-"));
 			if (words.includes("-b") || words.includes("-B") || words.includes("--orphan")) return undefined;
 			if (ops.length >= 2) return { risk: "git checkout <paths> overwrites them" };
-			if (ops.length === 1 && /\.[A-Za-z0-9]{1,8}$|^\.\.?\/|\/$|[*?[]/.test(ops[0]) && !/^@|\.\.\./.test(ops[0]))
+			if (ops.length === 1 && /^\.\.?\/|\/$|[*?[]/.test(ops[0]))
 				return { risk: "git checkout <paths> overwrites them" };
+			if (ops.length === 1 && !/^@|\.\.\./.test(ops[0]))
+				return { risk: "git checkout <path> overwrites it (if not a branch)", refOrPath: ops[0] };
 			return undefined;
 		}
 		case "read-tree":

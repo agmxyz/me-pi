@@ -38,8 +38,11 @@ function fakeEnv(cwd: string, branch: string): PolicyEnv {
 			const r = rootOf(d);
 			return r ? repos[r].remotes[n] : undefined;
 		},
+		isCheckoutRef: (d, n) => (rootOf(d) ? FAKE_REFS.test(n) : undefined),
 	};
 }
+// The fake repos' refs: the usual branch names; anything else (`src`, `src/sub`) is not a ref, so a path.
+const FAKE_REFS = /^(?:main|master|feat|feature\/[\w-]+|other|topic\d*|origin\/[\w/-]+|HEAD(?:[~^]\d*)*|v\d[\w.]*)$/;
 
 function judge(cases: Case[], cwd: string, defaultBranch: string) {
 	const bad: string[] = [];
@@ -395,6 +398,7 @@ test("PR #95 review bypasses: each asks (they were allowed at 00c2e96)", () => {
 		branchOf: () => undefined,
 		repoRootOf: () => undefined,
 		remoteUrlOf: () => undefined,
+		isCheckoutRef: () => undefined,
 	};
 	assert.equal(asks("git push origin", failing).verdict, "ask", "the session branch can't be read");
 	assert.equal(asks("git push", failing).verdict, "ask");
@@ -847,4 +851,36 @@ test("PR #95 round 9b: more git discards and refspecs (each confirmed in a scrat
 	assert.deepEqual(bad, []);
 	// `git push origin @` pushes the current branch: on main it is case 3.
 	assert.equal(policy("git push origin @", fakeEnv("/w/lib", "main")).verdict, "ask");
+});
+
+test("PR #95 round 10: checkout -f is a whole-tree discard; a single checkout operand is a path unless it is a ref", () => {
+	// /w/app is the session repo on feat; its refs are FAKE_REFS (main, feat, other, origin/main, HEAD~n, tags…), so
+	// `src`/`src/sub`/`a.ts` are paths. No ref lookup (or a failed one) counts as a path.
+	const rows: [string, Level, string][] = [
+		["/w/app", "ask-if-dirty", "git checkout -f other"],
+		["/w/app", "ask-if-dirty", "git checkout --force feat"],
+		["/w/app", "ask-if-dirty", "git checkout -f origin/main"],
+		["/w/app", "ask-if-dirty", "git checkout -f"],
+		["/w/app", "ask-if-dirty", "git checkout -qf other"],
+		["/w/app", "ask-if-dirty", "git switch -f other"],
+		["/w/app", "ask-if-dirty", "git switch --discard-changes feat"],
+		["/w/app", "ask-if-dirty", "git checkout src"],
+		["/w/app", "ask-if-dirty", "git checkout src/sub"],
+		["/w/app", "ask-if-dirty", "git checkout a.ts"],
+		["/w/app", "allow", "git checkout feat"],
+		["/w/app", "allow", "git checkout main"],
+		["/w/app", "allow", "git checkout feature/x"],
+		["/w/app", "allow", "git checkout origin/main"],
+		["/w/app", "allow", "git checkout HEAD~1"],
+		["/w/app", "allow", "git checkout v1.2.3"],
+		["/w/app", "allow", "git checkout -b src"],
+		["/w/app", "allow", "git switch feat"],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
+	assert.deepEqual(bad, []);
+	const noLookup: PolicyEnv = { ...fakeEnv("/w/app", "feat"), isCheckoutRef: () => undefined };
+	assert.equal(policy("git checkout feat", noLookup).verdict, "ask-if-dirty", "unknown lookup: treated as a path");
+	assert.deepEqual(policy("git checkout -f other", fakeEnv("/w/app", "feat")).findings[0].dirty?.paths, undefined);
 });

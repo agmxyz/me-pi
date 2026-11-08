@@ -265,6 +265,7 @@ test("the 3-case policy keeps every 0.1.3 row except the ones it deliberately al
 		branchOf: (d) => (inRepo(d) ? branch : undefined),
 		repoRootOf: (d) => (inRepo(d) ? repo : null),
 		remoteUrlOf: (d, n) => (inRepo(d) && n === "origin" ? "git@github.com:me/repo.git" : undefined),
+		isCheckoutRef: (d, n) => (inRepo(d) ? /^(?:main|master|feature\/[\w-]+|other|HEAD)$/.test(n) : undefined),
 	});
 	const allowed = new Set<string>();
 	for (const [command, branch] of FLAGGED)

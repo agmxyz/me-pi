@@ -7,6 +7,7 @@ import test from "node:test";
 import {
 	branchOf,
 	dirtIn,
+	isCheckoutRef,
 	remoteUrlOf,
 	repoRootOf,
 	startBudget,
@@ -98,4 +99,20 @@ test("a spent lookup budget reads unknown, and a failing git reads unknown", (t)
 	assert.equal(branchOf(repo), undefined);
 	assert.equal(repoRootOf(repo), undefined, 'git can\'t run: unknown, not "not a repo"');
 	assert.equal(remoteUrlOf(repo, "origin"), undefined);
+});
+
+test("isCheckoutRef: branches, tags, commits and remote-tracking names are refs; a directory is not", (t) => {
+	const { repo, git } = scratch(t);
+	git("branch", "other");
+	git("tag", "v1");
+	assert.equal(isCheckoutRef(repo, "feat"), true);
+	assert.equal(isCheckoutRef(repo, "other"), true);
+	assert.equal(isCheckoutRef(repo, "v1"), true);
+	assert.equal(isCheckoutRef(repo, "HEAD~0"), true);
+	assert.equal(isCheckoutRef(repo, "src"), false, "a directory");
+	assert.equal(isCheckoutRef(repo, "nosuch"), false);
+	assert.equal(isCheckoutRef(repo, "-f"), undefined, "an option is never looked up");
+	startBudget(0);
+	t.after(() => startBudget(60_000));
+	assert.equal(isCheckoutRef(repo, "feat"), undefined, "no budget: unknown");
 });

@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { posix } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isWorkerProcess, workerIdentity } from "./delegate-env.ts";
-import { branchOf, dirtIn, remoteUrlOf, repoRootOf, startBudget } from "./guard-disk.ts";
+import { branchOf, dirtIn, isCheckoutRef, remoteUrlOf, repoRootOf, startBudget } from "./guard-disk.ts";
 import { type Finding, type PolicyEnv, policy } from "./guard-policy.ts";
 import { classify } from "./guard-regex.ts";
 import { initShell } from "./guard-shell.ts";
@@ -31,7 +31,7 @@ export interface GuardStopEvent {
 
 /** The disk as the policy reads it, live, for a command run in `cwd`. */
 function liveEnv(cwd: string): PolicyEnv {
-	return { cwd, home: homedir(), branch: () => branchOf(cwd), branchOf, repoRootOf, remoteUrlOf };
+	return { cwd, home: homedir(), branch: () => branchOf(cwd), branchOf, repoRootOf, remoteUrlOf, isCheckoutRef };
 }
 
 /** Whether a case-2 finding's work is at risk now: uncommitted changes there, or a repo that can't be read. */

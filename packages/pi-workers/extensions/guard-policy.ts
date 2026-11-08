@@ -116,6 +116,11 @@ export interface PolicyEnv {
 	repoRootOf(dir: string): string | null | undefined;
 	/** Decision 5: remote `name`'s URL in the repo at `dir`, or undefined if unknown. */
 	remoteUrlOf(dir: string, name: string): string | undefined;
+	/**
+	 * Whether `git checkout NAME` in `dir` switches to a ref (true) or overwrites path NAME (false); undefined, or no
+	 * lookup at all, is unknown (treated as a path: case 2).
+	 */
+	isCheckoutRef?(dir: string, name: string): boolean | undefined;
 }
 type Branch = () => string | undefined;
 // The env and top-level command text of the `policy` call in progress: set on entry, cleared on exit. `policy` is
@@ -127,6 +132,7 @@ let E: PolicyEnv = {
 	branchOf: () => undefined,
 	repoRootOf: () => undefined,
 	remoteUrlOf: () => undefined,
+	isCheckoutRef: () => undefined,
 };
 const NO_ENV = E;
 let TOP = "";
@@ -134,6 +140,8 @@ interface LevelRule {
 	level: Level;
 	rule: string;
 	dirty?: DirtyCheck;
+	/** `git checkout NAME` with one operand: a branch switch if NAME is a ref, else NAME's path is overwritten. */
+	refOrPath?: string;
 }
 
 const RANK: Record<Level, number> = { allow: 0, "ask-if-dirty": 1, ask: 2 };
@@ -258,7 +266,8 @@ export function gitLevel(
 	// More commands that discard uncommitted work (case 2), each confirmed to lose a modified file in a scratch repo.
 	if (!risk) {
 		const discard = gitDiscards(sub, words);
-		if (discard) return { level: "ask-if-dirty", rule: "git:discard", risk: discard.risk };
+		if (discard)
+			return { level: "ask-if-dirty", rule: "git:discard", risk: discard.risk, refOrPath: discard.refOrPath };
 	}
 	if (!risk) return { level: "allow", rule: "git:none" };
 	if (risk === "force push") return { level: "ask", rule: "push:force", risk };
@@ -1128,6 +1137,13 @@ function gitFindings(
 			const target = newBranchBefore(cmds, c, s);
 			if (target !== undefined && !PROTECTED_BRANCHES.has(target)) return;
 		}
+		// `git checkout NAME` (one operand, no `-f`): a plain branch switch keeps local changes, so it is allowed when NAME
+		// is a ref in the repo it runs in. Not a ref, an unknown lookup, or an unplaced repo: NAME is a path (case 2).
+		if (r.refOrPath !== undefined) {
+			const dirs = gitDirs(c, cmds, globals, s);
+			const forced = words.some((w) => /^-[A-Za-z]*f[A-Za-z]*$|^--force$/.test(w));
+			if (!forced && dirs?.length === 1 && E.isCheckoutRef?.(dirs[0], r.refOrPath) === true) return;
+		}
 		const dirty = r.level === "ask-if-dirty" ? discardCheck(sub, words, gitDirs(c, cmds, globals, s)) : undefined;
 		add(r.level, r.rule, `git ${sub}: ${r.risk}`, dirty);
 		return;
@@ -1171,12 +1187,16 @@ function discardCheck(sub: string, words: string[], dirs: string[] | undefined):
 	// or anything before `--`, isn't a path: the whole tree is checked then); `reset`, `switch`, `read-tree`,
 	// `checkout-index`, `apply -R`, `submodule deinit` touch the whole tree (or the submodules in it).
 	const WHOLE = new Set(["reset", "switch", "read-tree", "checkout-index", "apply", "submodule"]);
+	// `checkout -f <branch>` / `--force` overwrites every modified file, whatever the operand names.
+	const forced = sub === "checkout" && words.some((w) => /^-[A-Za-z]*f[A-Za-z]*$|^--force$/.test(w));
 	const named = sub === "checkout" && words.includes("--") ? words.slice(words.indexOf("--") + 1) : words;
 	const positional = named.filter(
 		(w, i) => !w.startsWith("-") && !(sub === "clean" && /^-[eE]$|^--exclude$/.test(named[i - 1] ?? "")),
 	);
 	const paths =
-		WHOLE.has(sub) || (sub === "checkout" && !words.includes("--") && positional.length !== 1) ? [] : positional;
+		WHOLE.has(sub) || forced || (sub === "checkout" && !words.includes("--") && positional.length !== 1)
+			? []
+			: positional;
 	// Anything that isn't a plain path (an expansion marker, a glob, a pathspec) checks the whole tree.
 	if (!paths.length || paths.some((p) => /[\u0000\u0001*?[:]/.test(p)))
 		return { repo, paths: undefined, untracked, ignored, always: false };
@@ -1437,6 +1457,11 @@ function judgeArgv(calls: ArgvCall[], toDisk: (p: string) => string | undefined)
 					dropped.push({ rule: "push:local", detail: `git push to the local path or remote ${remote}` });
 					r = { level: "allow", rule: "git:none" };
 				}
+			}
+			// `git checkout NAME` (one operand, no `-f`): a branch switch when NAME is a ref there, as on the parse side.
+			if (r.refOrPath !== undefined && dir !== undefined && !hidden) {
+				const forced = words.some((w) => /^-[A-Za-z]*f[A-Za-z]*$|^--force$/.test(w));
+				if (!forced && E.isCheckoutRef?.(dir, r.refOrPath) === true) r = { level: "allow", rule: "git:none" };
 			}
 			if (r.rule.startsWith("dropped:")) dropped.push({ rule: "history", detail: r.rule.slice("dropped:".length) });
 			if (r.level !== "allow") findings.push({ level: r.level, rule: r.rule, detail: `git ${c.argv.join(" ")}` });
