@@ -875,6 +875,10 @@ test("PR #95 round 10: checkout -f is a whole-tree discard; a single checkout op
 		["/w/app", "allow", "git checkout v1.2.3"],
 		["/w/app", "allow", "git checkout -b src"],
 		["/w/app", "allow", "git switch feat"],
+		["/w/app", "allow", "git checkout -q --detach origin/feat/x"],
+		["/w/app", "allow", "git checkout --detach $M"],
+		["/w/app", "ask-if-dirty", "git checkout -f --detach main"],
+		["/w/app", "ask-if-dirty", "cd $E/h11; git checkout -q 0835ca1"],
 	];
 	const bad = rows
 		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)

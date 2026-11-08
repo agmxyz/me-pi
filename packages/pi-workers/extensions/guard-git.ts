@@ -352,7 +352,8 @@ export function gitDiscards(
 			// glob) is one; any other single operand (`src`, `src/sub`, `feat`, `v1.2`) is a branch or a path, which only
 			// the refs on disk tell: the caller looks it up (`refOrPath`).
 			const ops = words.filter((w) => !w.startsWith("-"));
-			if (words.includes("-b") || words.includes("-B") || words.includes("--orphan")) return undefined;
+			// `-b`/`-B`/`--orphan` make a branch; `--detach X` always names a commit, never a path.
+			if (words.some((w) => w === "-b" || w === "-B" || w === "--orphan" || w === "--detach")) return undefined;
 			if (ops.length >= 2) return { risk: "git checkout <paths> overwrites them" };
 			if (ops.length === 1 && /^\.\.?\/|\/$|[*?[]/.test(ops[0]))
 				return { risk: "git checkout <paths> overwrites them" };
