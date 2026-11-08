@@ -1061,9 +1061,17 @@ function gitFindings(
 		add("ask", "unknown:git-runs-string", runs);
 		return;
 	}
-	// `worktree remove --force` deletes another work tree with its changes: guard doesn't place that tree, so ask.
+	// `worktree remove --force` deletes that work tree with its uncommitted changes: judged as a recursive rm of the tree
+	// (case 2 in that tree's own repo: a dirty check there; outside temp, a repo root asks; an unknown path asks).
 	if (sub === "worktree" && words[0] === "remove" && words.some((w) => /^-[A-Za-z]*f|^--force$/.test(w))) {
-		add("ask", "git:discard", "git worktree remove --force deletes that tree's changes");
+		const k = words.findIndex((w, i) => i > 0 && !w.startsWith("-"));
+		const target = k < 0 ? undefined : args[globals.length + 1 + k];
+		if (!target) {
+			add("ask", "git:discard", "git worktree remove --force of a tree guard can't place");
+			return;
+		}
+		const r = targetLevel(target, TOP, s, c.at, cwdAt(cmds, c, s));
+		if (r.level !== "allow") add(r.level, r.rule, `git worktree remove --force ${target.raw}`, r.dirty);
 		return;
 	}
 	const where = gitWhere(c, cmds, globals, s);

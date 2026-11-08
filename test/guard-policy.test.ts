@@ -824,7 +824,6 @@ test("PR #95 round 9b: more git discards and refspecs (each confirmed in a scrat
 		["/w/app", "allow", "git clean -fdn"],
 		["/w/app", "allow", "git reset --merge"],
 		["/w/app", "ask-if-dirty", "git submodule deinit -f --all"],
-		["/w/app", "ask", "git worktree remove --force ../w"],
 		["/w/app", "allow", "git worktree list"],
 		["/w/app", "allow", "git push origin @"],
 		["/w/app", "ask", "git push origin heads/main"],
@@ -836,6 +835,11 @@ test("PR #95 round 9b: more git discards and refspecs (each confirmed in a scrat
 		["/w/app", "allow", "git branch -m topic2 && git push origin topic2"],
 		["/w/app", "allow", "git push origin feat"],
 		["/w/app", "allow", "git push origin @:refs/heads/feat"],
+		["/w/app", "ask", "git worktree remove --force ../w"],
+		["/w/app", "ask", 'git worktree remove --force "$w"'],
+		["/w/app", "allow", "git worktree remove --force /tmp/gone-wt"],
+		["/w/app", "ask-if-dirty", "git worktree remove --force /w/app/sub-wt"],
+		["/w/app", "allow", "git worktree remove /tmp/x"],
 	];
 	const bad = rows
 		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
