@@ -2,7 +2,7 @@
 
 Worker contract for `ticket-readiness`. You answer, for each ticket you own: can an agent implement it, prove it is done, and have it merged unattended, at the review SHA in your brief? Read the code; run nothing. A `ready-for-agent` label is evidence from intake, not now: re-check every ticket.
 
-The brief gives you the repo, the review SHA, the **done** rules (the exact check command, the standards files, the live environment that proves what fakes cannot), the ticket snapshot with comments, and the index of all open tickets. A comment that changes the body is the later decision; a comment that contradicts the body without resolving it is a context gap.
+The brief gives you the repo (or, when its working tree is dirty, an exported tree of the SHA to read instead), the review SHA, the **done** rules (the exact check command, the standards files, the live environment that proves what fakes cannot), the ticket snapshot with comments, and the index of all open tickets plus the closed ones they name. A comment that changes the body is the later decision; a comment that contradicts the body without resolving it is a context gap.
 
 ## Checks per ticket
 
@@ -28,11 +28,11 @@ Cite `file:line` at the review SHA for every claim.
 Exactly one, the first that applies:
 
 - `STALE`: already done, invalid, or a precondition unmet. Give the evidence.
-- `DECISION`: a missing decision blocks it, including scope only an owner can fix (a comment that changes the plan without settling how far). State the question.
+- `DECISION`: a missing decision blocks it, including scope only an owner can fix (a comment that changes the plan without settling how far) and any `Calls:` entry marked `ask`. State the question.
 - `TOO_BIG`: over the size bar. Give the split.
 - `AMBIGUOUS`: a criterion is X (including one whose every check can be passed without meeting it), or the scope is unclear in a way no single owner answer settles. Say which.
 - `LIVE_CHECK`: at least one criterion is L. Say which of two kinds: **code can ship**, with the live check queued for the user, or **cannot ship** without the live environment.
-- `READY`: valid, context enough, every criterion V with sound evidence or H on wording or placement only, within size. Any merge risk: the coordinator queues high risk for the user's review before merge. Each such H criterion gets a `Calls:` entry with the exact text or location as its default, and you raise the ticket's merge risk to at least medium. An H product or security decision is `DECISION`.
+- `READY`: valid, context enough, every criterion V (a `weak` flag is allowed: the coordinator replaces it with a stronger check) or H on wording or placement only, within size. Any merge risk: the coordinator queues high risk for the user's review before merge. Each such H criterion gets a `Calls:` entry with the exact text or location as its default, and you raise the ticket's merge risk to at least medium. An H product or security decision is `DECISION`.
 
 Add a **confidence** (high, medium, low) and a **Not checked** line naming what you did not read or could not confirm (git history, tests, host behaviour).
 
@@ -60,7 +60,7 @@ Stop if: <none | a condition, specific to this ticket, under which the implement
 Not checked: <...>
 ```
 
-`Ticket fix:` is a correction the implementer applies to its reading of the ticket; the tracker changes only when the user asks. A `Calls:` entry marked `default` binds the implementer, and the reviewer checks it; `ask` is a call only the owner can make, and the ticket waits for the answer. `Stop if:` names what the ticket's own risks make unsafe to decide alone (a security boundary, a scope larger than `Size:`, a check that cannot go red), not general caution.
+`Ticket fix:` is a correction the implementer applies to its reading of the ticket; the tracker changes only when the user asks. A `Calls:` entry marked `default` binds the implementer, and the PR's reviewer checks it; `ask` is a call only the owner can make, so the verdict is `DECISION`. `Stop if:` names what the ticket's own risks make unsafe to decide alone (a security boundary, a scope larger than `Size:`, the fix's own red-first check staying green at the SHA), not general caution.
 
 ```
 | #<n> | <VERDICT> | <confidence> | <one-phrase reason> |
