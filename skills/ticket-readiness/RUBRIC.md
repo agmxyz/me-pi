@@ -12,7 +12,7 @@ Cite `file:line` at the review SHA for every claim.
 2. **Context is enough.** Is a decision missing that would change the implementation? Does every interface, type, command, file, and ADR the ticket names exist? Name each gap. A ticket's stale `file:line` is drift: report the current location; it is never a gap or a failure by itself.
 3. **Acceptance map.** For each criterion, as written or implied, give the check an agent would use to prove it. The bar for a criterion: it names an observable pass/fail outcome a reviewer could check, not "works correctly" (the same bar as `triage`'s agent brief, "Complete acceptance criteria", when that skill is installed). Mark how it is met:
    - **V**: verifiable by the agent in this repo with fakes (a test, a red-then-green test, a command).
-   - **L**: live only; needs the live environment, docker, sudo, the network, or a provider. Name the repo's live-check skill and the step that proves it, the command, and what it observes. If that check runs on a stand-in (a container or VM in place of the real host), list what the stand-in does not prove; a criterion only the real target can prove makes the ticket `LIVE_CHECK` cannot-ship. With no live-check skill, say so.
+   - **L**: live only; needs the live environment, docker, sudo, the network, or a provider beyond what the done check itself needs (that environment is a prerequisite from the brief, not L). Name the repo's live-check skill and the step that proves it, the command, and what it observes. If that check runs on a stand-in (a container or VM in place of the real host), list what the stand-in does not prove; a criterion only the real target can prove makes the ticket `LIVE_CHECK` cannot-ship. With no live-check skill, say so.
    - **H**: human judgement; wording, taste, a product or security decision.
    - **X**: vague; no observable pass/fail.
 
@@ -30,7 +30,7 @@ Exactly one, the first that applies:
 - `TOO_BIG`: over the size bar. Give the split.
 - `AMBIGUOUS`: a criterion is X, or the scope is unclear in a way no single owner answer settles. Say which.
 - `LIVE_CHECK`: at least one criterion is L. Say which of two kinds: **code can ship**, with the live check queued for the user, or **cannot ship** without the live environment.
-- `READY`: valid, context enough, every criterion V with sound evidence or H on wording or placement only, within size, risk low or medium. Such an H criterion is checked by the reviewer at merge: name it, and raise merge risk to at least medium so the queue marks it for review. An H product or security decision is `DECISION`.
+- `READY`: valid, context enough, every criterion V with sound evidence or H on wording or placement only, within size, risk low or medium. Each such H criterion gets a `Calls:` entry, and the ticket's merge risk is at least medium. An H product or security decision is `DECISION`.
 
 Add a **confidence** (high, medium, low) and a **Not checked** line naming what you did not read or could not confirm (git history, tests, host behaviour).
 
@@ -52,8 +52,13 @@ Unattended-merge risk: <low|medium|high>: <reason>
 Drift: <none | ticket's ref → current location, ...>
 Ships: <code can ship, live check: ... | cannot ship | n/a>   (LIVE_CHECK only)
 Split: <...>   (TOO_BIG only)
+Ticket fix: <none | an edit the ticket text needs (a wrong name, a missing file, a broken check), or "close: superseded by #<m>" / "close: done at <file:line>">
+Calls: <none | AC<k>: <the call> → <proposed default> [default|ask]>
+Stop if: <none | a condition, specific to this ticket, under which the implementer stops and hands back instead of deciding>
 Not checked: <...>
 ```
+
+`Ticket fix:` is a correction the implementer applies to its reading of the ticket; the tracker changes only when the user asks. A `Calls:` entry marked `default` binds the implementer, and the reviewer checks it; `ask` is a call only the owner can make, and the ticket waits for the answer. `Stop if:` names what the ticket's own risks make unsafe to decide alone (a security boundary, a scope larger than `Size:`, a check that cannot go red), not general caution.
 
 ```
 | #<n> | <VERDICT> | <confidence> | <one-phrase reason> |
