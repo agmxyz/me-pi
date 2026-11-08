@@ -21,7 +21,7 @@ To track `main` instead, install `git:github.com/agmxyz/me-pi`; install only one
 Around `pi-workers`, I use:
 
 - **A global policy** ([`GLOBAL_AGENTS.md`](GLOBAL_AGENTS.md)): output style, engineering defaults, which actions need my approval, and how to handle secrets and untrusted content. Sections marked `(coordinator only)` stay out of worker prompts.
-- **Skills** ([`skills/`](skills)): `implement-me-pi` runs one task with a worker and independent review; `implement-spec-me-pi` implements a ticket graph on one branch; `pi-live-test` live-tests a me-pi change in a real Pi. `evolvability-review` is here too, but `install.sh` doesn't link it.
+- **Skills** ([`skills/`](skills)): `implement-me-pi` runs one task with a worker and independent review; `implement-spec-me-pi` implements a ticket graph on one branch; `pi-live-test` live-tests a me-pi change in a real Pi; `ticket-readiness` checks, at the current code, which tickets an agent could implement, prove, and merge unattended. `evolvability-review` is here too, but `install.sh` doesn't link it.
 - **[`install.sh`](install.sh)**, which wires these in machine-wide with a few extras.
 
 You don't need any of it for `pi-workers`; read and copy what's useful. Some skills expect others from my own collection.
@@ -46,6 +46,14 @@ Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOS
 To release `@agmxyz/pi-workers`, open a PR that bumps `version` in `package.json`, `packages/pi-workers/package.json`, and `package-lock.json`, and renames `## [Unreleased]` in `packages/pi-workers/CHANGELOG.md` to `## [x.y.z] - date`. Merging it runs [`release.yml`](.github/workflows/release.yml): check, publish to npm with provenance, then tag `pi-workers@x.y.z` and create a GitHub release from that changelog section.
 
 Good first issues: [#35](https://github.com/agmxyz/me-pi/issues/35), [#40](https://github.com/agmxyz/me-pi/issues/40).
+
+## Credits
+
+me-pi skills that adapt or build on others' skills (each skill's frontmatter `metadata.credits` holds the same):
+
+- `implement-me-pi` and `implement-spec-me-pi` adapt Matt Pocock's [`implement`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement) and [`implement-spec`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement-spec) (MIT).
+- `ticket-readiness` adapts the evidence rules of Lauren Tan's pstack [`create-verification-skill`](https://github.com/cursor/plugins/tree/6b03002/pstack/skills/create-verification-skill) (MIT) and uses the acceptance-criteria bar of Matt Pocock's [`triage`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/triage) (MIT).
+- `evolvability-review` loads Matt Pocock's [`codebase-design`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/codebase-design) (MIT) for its vocabulary.
 
 ## License
 

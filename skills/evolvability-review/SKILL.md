@@ -2,6 +2,13 @@
 name: evolvability-review
 description: Review a diff for the cost it adds to the next change, using code as the evidence.
 disable-model-invocation: true
+metadata:
+  credits:
+    - skill: codebase-design
+      author: Matt Pocock
+      license: MIT
+      url: "https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/codebase-design"
+      use: loaded for its vocabulary
 ---
 
 # Evolvability review
