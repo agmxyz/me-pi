@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -84,6 +85,42 @@ test("the pi-workers tarball holds the package, not the author's setup", () => {
 		files.filter((file) => !docs.includes(file) && !/^extensions\/[\w-]+\.ts$/.test(file)),
 		[],
 	);
+});
+
+test("a packed pi-workers tarball loads guard's parser from its own files", { timeout: 60_000 }, async (t) => {
+	const pkg = fileURLToPath(new URL("../packages/pi-workers/", import.meta.url));
+	const temp = mkdtempSync(join(tmpdir(), "pi-workers-pack-"));
+	t.after(() => rmSync(temp, { recursive: true, force: true }));
+	const packed = spawnSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temp], {
+		cwd: pkg,
+		encoding: "utf8",
+		timeout: 30_000,
+	});
+	assert.equal(packed.status, 0, packed.stderr);
+	const tarball = join(temp, JSON.parse(packed.stdout)[0].filename);
+	const untar = spawnSync("tar", ["-xzf", tarball, "-C", temp], { encoding: "utf8", timeout: 30_000 });
+	assert.equal(untar.status, 0, untar.stderr);
+	const installed = join(temp, "package");
+	// What an install provides beside the package: its one runtime dependency (Pi provides the peers).
+	mkdirSync(join(installed, "node_modules"));
+	cpSync(
+		fileURLToPath(new URL("../node_modules/web-tree-sitter", import.meta.url)),
+		join(installed, "node_modules/web-tree-sitter"),
+		{ recursive: true },
+	);
+	const probe = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`const { initShell, parseShell } = await import(${JSON.stringify(join(installed, "extensions/guard-shell.ts"))});
+			 await initShell();
+			 console.log(JSON.stringify(parseShell("rm -rf x").ok));`,
+		],
+		{ encoding: "utf8", timeout: 30_000 },
+	);
+	assert.equal(probe.status, 0, probe.stderr);
+	assert.equal(probe.stdout.trim(), "true");
 });
 
 test("the package check uses read-only lint and formatter writes are explicit", () => {
