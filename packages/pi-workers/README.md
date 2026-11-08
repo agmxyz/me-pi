@@ -45,7 +45,7 @@ The coordinator chooses a built-in role and briefs it for the task. The roles ar
 
 Workers load your own `AGENTS.md` and skills; `## ` sections marked `(coordinator only)` are stripped from worker prompts. Read-only workers can also write drafts to their own temp directory with `output: true`; web tools require `web: true` and aren't available to `implement`.
 
-The package also includes `guard`, which asks before risky bash and blocks matching commands in `implement`, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md).
+The package also includes `guard`, which asks before really dangerous bash (see [Safety](#safety)) and blocks it in workers, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md).
 
 ## Why use it?
 
@@ -91,7 +91,7 @@ To skip `guard`, replace the package entry in `~/.pi/agent/settings.json` with a
 }
 ```
 
-Without `guard`, `implement` workers also lose its blocks on recursive `rm`, `git reset --hard`, and force pushes.
+Without `guard`, workers also lose its blocks on dangerous `rm`, discarding uncommitted work, history rewrites, and force pushes.
 
 ## What it adds to your prompts
 
@@ -105,7 +105,14 @@ These are prompt text, so your own `AGENTS.md` can refine or contradict them; th
 ## Safety
 
 - Not a sandbox. Extensions and workers run with your OS permissions; `guard` and the fences are guardrails, not security boundaries.
-- `guard` matches each command's text; it can't see what earlier commands left on disk. For example, it allows `rm -rf /tmp/x/old` even if `/tmp/x` is a symlink to `/`.
+- `guard` parses each bash command (tree-sitter) and asks in three cases only:
+  1. a recursive `rm` of something outside every Git repo that isn't a temp or build path (`~`, `/`, `~/.pi/agent/x`), or of a repo root or `.git`;
+  2. a command that would lose uncommitted work (`git reset --hard`, `clean -f`, `checkout --`, `restore`, `switch -f`, `stash drop`, or a recursive `rm` inside a repo), and only when `git status` shows changes there;
+  3. a force push, or a push to `main`/`master`, to a network remote.
+
+  It no longer asks about `rm`/`git` that only appears as text (messages, heredocs written to files), about `commit --amend`, `rebase`, `filter-branch`/`filter-repo`, or `branch -D` (the reflog recovers them), or about pushes to a local path. Something it can't work out (an expansion, a command built at run time) asks only when it could fall into one of the three cases. If a command doesn't parse, `guard` judges it with its older pattern rules; if the parser can't load at all, it uses those rules for the session and shows one warning.
+- Workers get stricter treatment: `guard` blocks anything it would ask about, plus amend, rebase, filter-branch/-repo and `branch -D`.
+- `guard` reads the command's text and the disk as it is just before the command runs; it can't see what earlier commands in the same call change, and it doesn't read the environment (a `TMPDIR` that was already wrong). For example, it allows `rm -rf /tmp/x/old` even if `/tmp/x` is a symlink to `/`.
 - Worker file-read tools refuse common secret paths (`.env*`, keys, `~/.ssh`, `~/.pi/agent/auth.json`); `implement`'s bash is not path-fenced.
 - `implement` edits and commits in your real checkout, with Git remotes and `gh` cut off. ✓ means your check exited 0 on the delivered content, not that the code is right; review what it hands back.
 - The recovery rules in [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md) are guidance for the main session, not runtime enforcement.

@@ -2,6 +2,13 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
+## [Unreleased]
+
+- **Behavior change:** `guard` asks only when a bash command is really dangerous: a recursive `rm` outside every Git repo (or of a repo root or `.git`) that isn't a temp or build path; losing uncommitted work (`git reset --hard`, `clean -f`, `checkout --`, `restore`, `switch -f`, `stash drop`/`clear`, or a recursive `rm` inside a repo), asked only when `git status` shows changes there; and a force push or a push to `main`/`master` on a network remote. It now parses commands with tree-sitter instead of matching their text, so `rm`/`git` inside messages, quoted arguments, and heredocs written to files no longer prompts. It no longer asks about `commit --amend`, `rebase`, `filter-branch`/`filter-repo`, `branch -D`, or pushes to a local path. Over 6,702 distinct commands from real sessions it asks about 66 (59, plus 7 only on a dirty tree) on a feature branch, where 0.1.3 asked about 186.
+- **Behavior change:** delegate workers block every command `guard` would ask about (a discard only on a dirty tree), and still block `commit --amend`, `rebase`, `filter-branch`/`filter-repo`, and `branch -D`.
+- `guard` falls back to its older pattern rules for a command the parser can't read, and for the whole session, with one warning, if the parser fails to load.
+- New dependency `web-tree-sitter` 0.27.1; the bash grammar (`tree-sitter-bash` 0.25.1, MIT) ships in `vendor/`.
+
 ## [0.1.3] - 2026-11-07
 
 - `guard` asks again before a recursive `rm` of `"${TMPDIR:?}/name"` when the command could rebind `TMPDIR` first (`TMPDIR=/ rm …`, `export TMPDIR=/;`, `env`, `sudo`, `unset`, `source`, quote-split names, and similar). `${TMPDIR:?}` only catches an unset `TMPDIR`. Plain cleanups such as `rm -rf "${TMPDIR:?}/x"` still pass.

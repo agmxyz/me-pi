@@ -37,6 +37,8 @@ npm ci
 npm run check                    # lint, typecheck, tests, installer test
 npm run fix                      # apply Biome fixes
 node --test test/guard.test.ts   # one test file
+npm run guard-truth              # macOS only: guard's attack corpus in sandboxed real bash
+npm run guard-sessions           # macOS only: guard on your own Pi sessions (totals; details stay in /tmp)
 ```
 
 Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt text, run the manual routing evals ([evals/README.md](evals/README.md)); they spend real money and never run in CI.
