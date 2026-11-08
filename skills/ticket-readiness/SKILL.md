@@ -1,6 +1,19 @@
 ---
 name: ticket-readiness
 description: Read-only ticket readiness review against the repo's current code, with a ship order and one implementer brief per queued ticket. Use before shipping one ticket or a batch, or when asked which tickets are ready.
+metadata:
+  credits:
+    - skill: create-verification-skill
+      author: Lauren Tan
+      organisation: pstack (cursor/plugins)
+      license: MIT
+      url: "https://github.com/cursor/plugins/tree/6b03002/pstack/skills/create-verification-skill"
+      use: evidence rules in RUBRIC.md check 3 (user path over internal setters, side effects, dry runs, entry points, stand-ins)
+    - skill: triage
+      author: Matt Pocock
+      license: MIT
+      url: "https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/triage"
+      use: the "Complete acceptance criteria" bar in RUBRIC.md check 3
 ---
 
 # Ticket readiness

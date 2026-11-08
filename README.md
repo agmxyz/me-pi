@@ -47,6 +47,14 @@ To release `@agmxyz/pi-workers`, open a PR that bumps `version` in `package.json
 
 Good first issues: [#35](https://github.com/agmxyz/me-pi/issues/35), [#40](https://github.com/agmxyz/me-pi/issues/40).
 
+## Credits
+
+me-pi skills that adapt or build on others' skills (each skill's frontmatter `metadata.credits` holds the same):
+
+- `implement-me-pi` and `implement-spec-me-pi` adapt Matt Pocock's [`implement`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement) and [`implement-spec`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement-spec) (MIT).
+- `ticket-readiness` adapts the evidence rules of Lauren Tan's pstack [`create-verification-skill`](https://github.com/cursor/plugins/tree/6b03002/pstack/skills/create-verification-skill) (MIT) and uses the acceptance-criteria bar of Matt Pocock's [`triage`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/triage) (MIT).
+- `evolvability-review` loads Matt Pocock's [`codebase-design`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/codebase-design) (MIT) for its vocabulary.
+
 ## License
 
 [MIT](LICENSE)

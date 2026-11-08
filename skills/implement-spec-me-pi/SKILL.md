@@ -2,6 +2,13 @@
 name: implement-spec-me-pi
 description: Implement a ticket graph serially on one integration branch with independent final review.
 disable-model-invocation: true
+metadata:
+  credits:
+    - skill: implement-spec
+      author: Matt Pocock
+      license: MIT
+      url: "https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement-spec"
+      use: adapted
 ---
 
 # Implement a spec with me-pi

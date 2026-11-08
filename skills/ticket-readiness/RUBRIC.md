@@ -67,5 +67,3 @@ Not checked: <...>
 ```
 
 The handback names the file path and any `BLOCKED: <step>: <reason>`.
-
-The evidence rules in check 3 (user path over internal setters, side effects, dry runs, entry points, stand-ins) adapt ideas from pstack's `create-verification-skill` (MIT, Lauren Tan): https://github.com/cursor/plugins/tree/main/pstack/skills/create-verification-skill

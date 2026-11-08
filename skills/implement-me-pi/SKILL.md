@@ -2,6 +2,13 @@
 name: implement-me-pi
 description: Run one implementation task with a bounded worker and mandatory independent review.
 disable-model-invocation: true
+metadata:
+  credits:
+    - skill: implement
+      author: Matt Pocock
+      license: MIT
+      url: "https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement"
+      use: adapted
 ---
 
 # Implement one task with me-pi
