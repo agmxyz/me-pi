@@ -423,7 +423,6 @@ test("find -delete is a recursive rm of each start path; find -exec/xargs rm is 
 		["ask", "find ~ -okdir rm -rf {} \\;"],
 		["ask", "find ~ -print0 | xargs -0 rm -rf"],
 		["ask", "find / -name x | xargs rm -r"],
-		["ask-if-dirty", "find . -name '*.pyc' -delete"],
 		["ask-if-dirty", "find src -name x -delete"],
 		["allow", "find /tmp/x -delete"],
 		["allow", "find dist -name '*.map' -delete"],
@@ -436,18 +435,40 @@ test("find -delete is a recursive rm of each start path; find -exec/xargs rm is 
 		["ask", "find -delete"],
 		["ask", "find . -delete"],
 		["ask", "find . -depth -delete"],
-		["ask-if-dirty", "find . -type f -name x -delete"],
 		["ask", "find .git -name x -delete"],
 		["ask", "find ~ -name x -delete"],
 	];
 	const bad = rows.filter(([want, command]) => policy(command, env).verdict !== want).map(([w, c]) => `${w}: ${c}`);
 	assert.deepEqual(bad, []);
-	const v = policy("find . -name '*.pyc' -delete", env);
+	const v = policy("find src -name '*.pyc' -delete", env);
 	assert.deepEqual(v.findings[0].dirty, {
 		repo: "/w/app",
-		paths: undefined,
+		paths: ["/w/app/src"],
 		untracked: true,
 		ignored: false,
 		always: false,
 	});
+});
+
+test("a find -delete at or above a repo root is case 1 whatever its expression (PR #95 round 4)", () => {
+	// Real bash: `find . -type f -delete` at a repo root deletes .git's files too, so history is gone. Proving that an
+	// expression spares .git is not attempted: every start at or above a root asks, like `rm -rf .`.
+	const atRoot = fakeEnv("/w/app", "feat");
+	const inSrc = fakeEnv("/w/app/src", "feat");
+	for (const command of [
+		"find . -type f -delete",
+		"find . ! -name keep -delete",
+		`find "$PWD" -type f -delete`,
+		"find . -name '*.pyc' -delete",
+		"find -type f -delete",
+		"find ./ -name x -delete",
+		"find /w/app -type f -delete",
+		"find /w -name x -delete",
+	])
+		assert.equal(policy(command, atRoot).verdict, "ask", command);
+	for (const command of ["find .. -name x -delete", "find ../ -type f -delete"])
+		assert.equal(policy(command, inSrc).verdict, "ask", `from a subdir: ${command}`);
+	// A start inside the repo stays case 2 (asks only if src has uncommitted work).
+	assert.equal(policy("find src -type f -delete", atRoot).verdict, "ask-if-dirty");
+	assert.equal(policy("find . -type f -delete", inSrc).verdict, "ask-if-dirty");
 });
