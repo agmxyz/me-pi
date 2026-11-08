@@ -450,7 +450,8 @@ function emit(w: Walk, argv: Word[], f: Frame, io: Io): void {
 		const k = argv.findIndex(
 			(x, i) => i > 0 && x.kind === "literal" && GUARDED_NAMES.has(x.value.split("/").pop() ?? ""),
 		);
-		if (k > 0 && !NOT_WRAPPERS.has(name))
+		// Guard's own commands (`git rm`, `rm -- git`, `find -name rm`) are judged by their own rules, not as wrappers.
+		if (k > 0 && !NOT_WRAPPERS.has(name) && !GUARDED_NAMES.has(name))
 			emit(w, argv.slice(k), { via: [...f.via, name], remote: f.remote, depth: f.depth }, { ...io, openArgs: true });
 		return;
 	}

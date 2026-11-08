@@ -787,6 +787,10 @@ test("PR #95 round 9: functions, loops and traps run out of text order; shell op
 		["/w/app", "allow", "gh repo view"],
 		["/w/app", "allow", "mytool --verbose build"],
 		["/w/app", "allow", "parallel echo ::: a b"],
+		["/w/app", "allow", "git rm -r --cached extensions/node_modules -q"],
+		["/w/app", "allow", "git rm -rf skills"],
+		["/w/app", "allow", "git rm -q notes.md"],
+		["/w/app", "allow", "find . -name rm -print"],
 	];
 	const bad = rows
 		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
