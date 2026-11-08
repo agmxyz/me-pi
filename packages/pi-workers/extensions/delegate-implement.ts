@@ -24,7 +24,7 @@ import {
 	type ToolEffectFact,
 } from "./delegate-provenance.ts";
 import { blockedLines, capBlocked, isBlockedLine, RECOVERY_POINTER } from "./delegate-worker.ts";
-import { PROTECTED_BRANCHES } from "./guard.ts";
+import { PROTECTED_BRANCHES } from "./guard-regex.ts";
 
 const run = promisify(execFile);
 

@@ -71,7 +71,7 @@ import {
 	registerWorker,
 	workerLaunch,
 } from "./delegate-worker.ts";
-import { gitTreeWrite } from "./guard.ts";
+import { gitTreeWrite } from "./guard-regex.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
 export const LIMITS = {

@@ -1,0 +1,882 @@
+/**
+ * guard's "ask only when really dangerous" policy for a bash command the session is about to run. Pure given its
+ * `PolicyEnv` (the disk lookups a live guard makes at classify time); `await initShell()` first.
+ *
+ * Guard asks in exactly three cases:
+ * 1. catastrophic rm: a recursive `rm` whose target is outside every repo and not temp/build (`~`, `/`, `/Users`,
+ *    `~/.pi/agent/x`), or a repo root or `.git`. Temp/build is guard's `DISPOSABLE` + `${TMPDIR:?}` rule, plus a
+ *    `$(mktemp -d)` value bound earlier in the command;
+ * 2. uncommitted work lost: `git reset --hard`, `clean -f`, `checkout --|.|-f`, `restore` (worktree), `switch -f`,
+ *    `stash drop|clear`, or a recursive `rm` inside a repo. The verdict is `ask-if-dirty`: each such finding carries the
+ *    `DirtyCheck` (repo, paths) the caller runs `git status` on;
+ * 3. remote history: a force push (any branch), or a push to main/master, to a network remote.
+ * Dropped (reported in `dropped`; workers still block them): `commit --amend`, `rebase`, `filter-branch`/`filter-repo`,
+ * `branch -D` (reflog recovers them), and any push to a local path. Any rm/git that is only text (arguments, messages,
+ * heredoc bodies written to files) is not a command. An unknown (an expansion, a dynamic body, a command name built at
+ * run time) asks only where it could land in case 1-3. A text that doesn't parse takes guard 0.1.3's regex verdict.
+ *
+ * The user's decisions: 1. a bare push after `cd`/`-C` to a literal path reads that directory's branch; 2. a parse
+ * failure falls back to 0.1.3's `classify`; 3. TMPDIR is rebound only by what the parser sees rebinding it; 4. every
+ * recursive-rm target is placed by the repo containing it; 5. case 3 is network remotes only.
+ */
+
+import { posix } from "node:path";
+import { classify, DISPOSABLE, gitRisk, hasShort, PROTECTED_BRANCHES, TMPDIR_REF } from "./guard-regex.ts";
+import {
+	ENV,
+	expandBraces,
+	GLOBCH,
+	HOME,
+	MARK,
+	NOTMP,
+	PWD,
+	resolveWord,
+	type Scope,
+	TEMP,
+	TMPROOT,
+} from "./guard-resolve.ts";
+import {
+	type Bindings,
+	isWrapper,
+	parseShell,
+	SHELLS,
+	type SimpleCommand,
+	tmpdirRebinds,
+	type Word,
+} from "./guard-shell.ts";
+
+export type Level = "allow" | "ask-if-dirty" | "ask";
+/**
+ * What a case-2 finding puts at risk, for the caller's `git status --porcelain`: changes under `paths` (absolute;
+ * undefined = the whole tree) in the work tree `repo` (undefined = unknown, so ask). `untracked`: untracked files count
+ * too (`clean`, `rm`). `always`: the work at risk isn't in the tree (`stash drop|clear`), so ask without a check.
+ */
+export interface DirtyCheck {
+	repo: string | undefined;
+	paths: string[] | undefined;
+	untracked: boolean;
+	always: boolean;
+}
+export interface Finding {
+	level: Exclude<Level, "allow">;
+	/** Stable bucket for counting: `rm:catastrophic …`, `rm:in-repo`, `git:discard`, `push:…`, `unknown:…`. */
+	rule: string;
+	detail: string;
+	/** Set on every `ask-if-dirty` finding. */
+	dirty?: DirtyCheck;
+}
+/** A rule 0.1.3 asked on that the main session no longer does; `history` rules stay blocked in workers. */
+export interface Dropped {
+	rule: "history" | "push:local";
+	detail: string;
+}
+export interface PolicyVerdict {
+	verdict: Level;
+	findings: Finding[];
+	dropped: Dropped[];
+	/** Decision 2: texts that failed to parse, judged by guard 0.1.3's regex `classify` (its reason, or null). */
+	fallbacks: { text: string; failure: "syntax" | "limit" | "not-loaded"; reason: string | null }[];
+}
+
+/** The disk as the live guard reads it when the command is about to run (fakes in tests). */
+export interface PolicyEnv {
+	/** The session's working directory (absolute); relative paths and a bare `git` resolve against it. */
+	cwd: string;
+	/** The home directory, for `~` and `$HOME`. */
+	home: string | undefined;
+	/** The session's branch (read only when a bare push needs it); undefined if not a repo. */
+	branch(): string | undefined;
+	/** Decision 1: the branch checked out at `dir` (`HEAD` when detached), or undefined if `dir` isn't a repo. */
+	branchOf(dir: string): string | undefined;
+	/** Decision 4: the work tree root containing `dir`, or undefined if none. */
+	repoRootOf(dir: string): string | undefined;
+	/** Decision 5: remote `name`'s URL in the repo at `dir`, or undefined if unknown. */
+	remoteUrlOf(dir: string, name: string): string | undefined;
+}
+type Branch = () => string | undefined;
+// The env and top-level command text of the `policy` call in progress: set on entry, cleared on exit. `policy` is
+// synchronous and doesn't re-enter, so module state is safe and keeps the rule helpers' signatures short.
+let E: PolicyEnv = {
+	cwd: "/",
+	home: undefined,
+	branch: () => undefined,
+	branchOf: () => undefined,
+	repoRootOf: () => undefined,
+	remoteUrlOf: () => undefined,
+};
+const NO_ENV = E;
+let TOP = "";
+interface LevelRule {
+	level: Level;
+	rule: string;
+	dirty?: DirtyCheck;
+}
+
+const RANK: Record<Level, number> = { allow: 0, "ask-if-dirty": 1, ask: 2 };
+const worst = (fs: Finding[]): Level => fs.reduce<Level>((a, f) => (RANK[f.level] > RANK[a] ? f.level : a), "allow");
+const worse = (a: LevelRule, b: LevelRule) => (RANK[b.level] > RANK[a.level] ? b : a);
+const ALLOW: LevelRule = { level: "allow", rule: "rm:temp-or-build" };
+const DOTDOT = /(?:^|\/)\.\.(?:\/|$)/;
+const GLOB = /[*?[]/;
+
+// ---------------------------------------------------------------------------------------------------------------
+// Rules over argv (strings), shared with the bash-truth harness (test/guard-truth).
+
+/** A recursive-rm target by guard's temp/build rule alone (`DISPOSABLE`, never `..`); `${TMPDIR:?}` is checked by `disp`. */
+export function disposable(target: string): boolean {
+	return DISPOSABLE.test(target) && !DOTDOT.test(target);
+}
+/** rm's recursion as rm reads its options: a short cluster with `r`/`R`, `--recursive`, or a GNU prefix of it (`--rec`). */
+export function rmRecursive(options: string[]): boolean {
+	return hasShort(options, "[rR]", "--recursive") || options.some((o) => o.length >= 3 && "--recursive".startsWith(o));
+}
+/** git's global options before the sub-command (`-C dir`, `-c k=v`, `--git-dir=x`); the rest is the sub-command. */
+export function gitSplit(args: string[]): { globals: string[]; sub: string | undefined; words: string[] } {
+	let i = 0;
+	while (i < args.length && args[i].startsWith("-")) {
+		const a = args[i];
+		if (a === "-C" || a === "-c" || /^--(?:git-dir|work-tree|namespace|super-prefix|exec-path|config-env)$/.test(a))
+			i += 2;
+		else i++;
+	}
+	return { globals: args.slice(0, i), sub: args[i], words: args.slice(i + 1) };
+}
+export const movesGit = (globals: string[]) =>
+	globals.some((g) => g === "-C" || /^--(?:git-dir|work-tree)(?:=|$)/.test(g));
+
+/**
+ * guard's temp/build rule. `${TMPDIR:?}` is trusted only if nothing in the whole command (not just the inner script
+ * being judged) can rebind TMPDIR: guard's textual `tmpdirMayChange`, or with decision 3 the parse.
+ */
+function disp(t: string, src: string): boolean {
+	if (!disposable(t)) return false;
+	if (!t.startsWith(TMPDIR_REF)) return true;
+	return !tmpdirMayChangeIn(src);
+}
+function tmpdirMayChangeIn(src: string): boolean {
+	const texts = TOP && TOP !== src ? [TOP, src] : [src];
+	return texts.some(rebinds);
+}
+const rebindMemo = new Map<string, boolean>();
+function rebinds(src: string): boolean {
+	let r = rebindMemo.get(src);
+	if (r === undefined) {
+		r = tmpdirRebinds(src);
+		if (rebindMemo.size > 10_000) rebindMemo.clear();
+		rebindMemo.set(src, r);
+	}
+	return r;
+}
+
+/** One recursive-rm target, as rm receives it (a path relative to the session's repo, or absolute). */
+export function rmTargetLevel(target: string, src: string): LevelRule {
+	const t = target.replace(/\/{2,}/g, "/");
+	if (disp(t, src)) return ALLOW;
+	if (t.startsWith("/") || t.startsWith("~")) return { level: "ask", rule: "rm:catastrophic (outside the repo)" };
+	if (DOTDOT.test(t)) return { level: "ask", rule: "rm:catastrophic (.. leaves the repo)" };
+	const norm = t.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+	const parts = norm.split("/");
+	if (norm === "" || norm === ".") return { level: "ask", rule: "rm:catastrophic (repo root)" };
+	// `*`, `.*`, `./*`: every entry of the working directory, in effect the repo root.
+	if (parts.length === 1 && /^\.?\*+$/.test(norm)) return { level: "ask", rule: "rm:catastrophic (repo root glob)" };
+	if (parts.includes(".git")) return { level: "ask", rule: "rm:catastrophic (.git)" };
+	return { level: "ask-if-dirty", rule: "rm:in-repo", dirty: UNKNOWN_REPO };
+}
+// A case-2 finding whose repo isn't known: the caller asks.
+const UNKNOWN_REPO: DirtyCheck = { repo: undefined, paths: undefined, untracked: true, always: false };
+
+/** A git call's level from guard's own `gitRisk`, re-mapped to the three cases. */
+export function gitLevel(
+	sub: string,
+	words: string[],
+	branch: Branch,
+	elsewhere: boolean,
+): LevelRule & { risk?: string } {
+	const risk = gitRisk(sub, words, branch, elsewhere);
+	if (!risk) return { level: "allow", rule: "git:none" };
+	if (risk === "force push") return { level: "ask", rule: "push:force", risk };
+	if (risk === "push to main/master") return { level: "ask", rule: "push:main", risk };
+	if (risk.startsWith("push after changing")) return { level: "ask", rule: "push:target-unknown", risk };
+	if (/^history rewrite|^git branch -D/.test(risk)) return { level: "allow", rule: `dropped:${risk}`, risk };
+	return { level: "ask-if-dirty", rule: "git:discard", risk };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Parser side.
+
+/** The policy verdict for a command the session is about to run. */
+export function policy(command: string, env: PolicyEnv): PolicyVerdict {
+	E = env;
+	TOP = command;
+	let branchRead = false;
+	let sessionBranch: string | undefined;
+	const branch: Branch = () => {
+		if (!branchRead) [branchRead, sessionBranch] = [true, env.branch()];
+		return sessionBranch;
+	};
+	const findings: Finding[] = [];
+	const dropped: Dropped[] = [];
+	const fallbacks: PolicyVerdict["fallbacks"] = [];
+	try {
+		const p = parseShell(command);
+		if (!p.ok) parseFailed(command, p.reason, branch, findings, fallbacks, "the command doesn't parse");
+		else judge(command, p.commands, branch, findings, dropped, 0, p.bindings, fallbacks);
+		return { verdict: worst(findings), findings, dropped, fallbacks };
+	} finally {
+		E = NO_ENV;
+		TOP = "";
+		rebindMemo.clear();
+	}
+}
+
+/** Decision 2: a text that doesn't parse (or hits a parser limit) takes guard 0.1.3's regex verdict on that text. */
+function parseFailed(
+	text: string,
+	failure: "syntax" | "limit" | "not-loaded",
+	branch: Branch,
+	findings: Finding[],
+	fallbacks: PolicyVerdict["fallbacks"],
+	what: string,
+): void {
+	const reason = classify(text, branch);
+	fallbacks.push({ text, failure, reason: reason ?? null });
+	if (reason) findings.push({ level: "ask", rule: "fallback:0.1.3", detail: `${what}; guard 0.1.3: ${reason}` });
+}
+
+/** Whether nothing in the command can rebind TMPDIR (see `disp`). */
+const tmpdirStable = (src: string) => !tmpdirMayChangeIn(src);
+
+function judge(
+	src: string,
+	cmds: SimpleCommand[],
+	branch: Branch,
+	findings: Finding[],
+	dropped: Dropped[],
+	depth: number,
+	outerB: Bindings | null,
+	fallbacks: PolicyVerdict["fallbacks"],
+): void {
+	const stable = tmpdirStable(src);
+	for (const c of cmds) {
+		// A re-parsed string run by another shell (`sh -c '…'`, `bash <<EOF`) doesn't see this shell's variables;
+		// `trap` and `eval` strings run in this shell and do.
+		const newShell = c.via.some((v) => RUNS_STRING.has(v));
+		const scope: Scope = { b: c.reparsed && newShell ? null : outerB, tmpdirStable: stable };
+		// Remote commands (`ssh host 'rm -rf ~'`) are judged like local ones; their dirtiness can't be checked here.
+		const add: Add = (level, rule, detail, dirty) =>
+			findings.push(
+				c.remote && level === "ask-if-dirty"
+					? { level: "ask", rule, detail }
+					: { level, rule, detail, ...(level === "ask-if-dirty" ? { dirty: dirty ?? UNKNOWN_REPO } : {}) },
+			);
+		if (c.dynamicBody !== undefined) {
+			// `bash -c "$c"` / `eval "$x"` with every value bound in this command: judge each resulting script.
+			const scripts = depth < 2 && c.dynamicBody !== "<stdin>" ? resolveScripts(c.argv, scope, c.at) : undefined;
+			if (!scripts) {
+				add("ask", "unknown:dynamic-body", `${c.via.at(-1)} runs a string or stdin not known statically`);
+				continue;
+			}
+			for (const s of scripts) {
+				const inner = parseShell(s);
+				if (!inner.ok)
+					parseFailed(s, inner.reason, branch, findings, fallbacks, "a resolved command string doesn't parse");
+				else {
+					const marked = inner.commands.map((x) => ({ ...x, remote: x.remote || c.remote }));
+					judge(s, marked, branch, findings, dropped, depth + 1, inner.bindings, fallbacks);
+				}
+			}
+			continue;
+		}
+		if (c.name === undefined) {
+			// `~/.local/bin/herdr`, `$S/run.sh`: asks only if the name could be rm, git, or a command runner.
+			// A literal last path part names the program whatever the directory (`"$L/measure.sh"`).
+			const tail = /\/([\w.+-]+)"?$/.exec(c.argv[0].raw)?.[1];
+			const names = tail ? [tail] : resolveWord(c.argv[0], scope, c.at)?.map((v) => basename(v));
+			const risky = (n: string) =>
+				n === "rm" || n === "git" || n === "" || n.includes(MARK) || n.includes(GLOBCH) || isWrapper(n);
+			if (!names || names.some(risky)) add("ask", "unknown:command-name", "command name is an expansion");
+			continue;
+		}
+		if (c.name === "rm") rmFindings(c, src, add, scope, cwdAt(cmds, c, scope));
+		else if (c.name === "git") gitFindings(c, cmds, branch, add, dropped, scope);
+	}
+	// A heredoc written to a file that the same command then runs (`cat > run.sh <<'EOF' … EOF; bash run.sh`): the body
+	// is a program after all. A run file the parser can't name (`./r*.sh`, `bash "$f"`) matches every written file.
+	if (depth > 0) return;
+	const written = writtenHeredocs(cmds);
+	if (!written.length) return;
+	const runs = ranFiles(cmds);
+	for (const w of written) {
+		if (!runs.some((r) => r === "*" || basename(r) === basename(w.file))) continue;
+		const body = parseShell(w.body);
+		if (!body.ok) {
+			parseFailed(w.body, body.reason, branch, findings, fallbacks, "a script written by a heredoc doesn't parse");
+			continue;
+		}
+		judge(w.body, body.commands, branch, findings, dropped, depth + 1, body.bindings, fallbacks);
+	}
+}
+
+const values = (ws: Word[]) => ws.map((w) => w.value);
+const basename = (p: string) => p.replace(/\/+$/, "").split("/").pop() ?? p;
+
+type Add = (level: Exclude<Level, "allow">, rule: string, detail: string, dirty?: DirtyCheck) => void;
+
+function rmFindings(c: SimpleCommand, src: string, add: Add, s: Scope, cwd: Cwd): void {
+	const args = c.argv.slice(1);
+	const end = args.findIndex((w) => w.kind !== "expansion" && w.value === "--");
+	const before = end < 0 ? args : args.slice(0, end);
+	const after = end < 0 ? [] : args.slice(end + 1);
+	const options = before.filter((w) => w.kind !== "expansion" && w.value.startsWith("-") && w.value !== "-");
+	const operands = [
+		...before.filter((w) => w.kind === "expansion" || !w.value.startsWith("-") || w.value === "-"),
+		...after,
+	];
+	const recursive = rmRecursive(values(options));
+	// An expansion before `--` that starts the word could be an option (`rm $flags x`, `rm "$f" x` with f=-r), unless
+	// every value is known and none starts with `-`.
+	const candidates = before.filter((w) => {
+		if (w.kind !== "expansion" || !/^"?[$`]/.test(w.raw)) return false;
+		// `"$X/f"`, `"$X"/f`: whatever X holds, the word has a `/` after it, which no rm option (short cluster or
+		// `--long[=WHEN]`) accepts, so rm would reject it rather than recurse.
+		if (/^"\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*)"?\//.test(w.raw)) return false;
+		const vals = resolveWord(w, s, c.at);
+		return vals === undefined || vals.some((v) => v.startsWith("-") || v.startsWith(ENV));
+	});
+	if (!recursive && !candidates.length && !c.openArgs) return;
+	if (c.openArgs) {
+		add("ask", "unknown:rm-runtime-args", `rm via ${c.via.join(" > ")}: targets arrive at run time`);
+		return;
+	}
+	if (!operands.length) return; // `rm -rf` with no operand removes nothing
+	// Not recursive: a single quoted plain variable (`"$f"`) is either the `-r` (then not a target) or a target of a
+	// non-recursive rm; `"${a[@]}"`, `$@`, or an unquoted one can be `-r` and targets at once.
+	const oneWord = candidates.length === 1 && /^"\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*)"$/.test(candidates[0].raw);
+	const judged = recursive || !oneWord ? operands : operands.filter((w) => w !== candidates[0]);
+	for (const w of judged) {
+		const r = targetLevel(w, src, s, c.at, cwd);
+		if (r.level === "allow") continue;
+		add(r.level, recursive ? r.rule : `${r.rule} (if an expansion holds -r)`, `rm target ${w.raw}`, r.dirty);
+	}
+}
+
+/**
+ * The working directory a command runs in, as resolve.ts values: `[""]` is the session's (the repo); a `cd` to a
+ * fresh temp dir gives `[TEMP]`; to a path, that path; unknown gives undefined. Each `cd` before the command counts
+ * if it surely ran before it (a top-level sequence item, or earlier in the command's own `&&` chain); one that may or
+ * may not have run makes the directory unknown.
+ */
+type Cwd = string[] | undefined;
+function cwdAt(cmds: SimpleCommand[], c: SimpleCommand, s: Scope): Cwd {
+	let cwd: Cwd = [""];
+	for (const x of cmds) {
+		if (x === c) break;
+		if (x.name !== "cd" && x.name !== "pushd" && x.name !== "popd") continue;
+		const surely = !x.reparsed && (x.certain || x.after.some(([a, e]) => c.at >= a && c.at < e));
+		// One that may not have run (or ran in a subshell: the parser keeps no nesting) leaves the directory unknown.
+		if (!surely) {
+			cwd = undefined;
+			continue;
+		}
+		const arg = x.argv.slice(1).find((w) => !(w.kind !== "expansion" && w.value.startsWith("-")));
+		const opts = x.argv.slice(1).filter((w) => w.kind !== "expansion" && w.value.startsWith("-") && w.value !== "--");
+		if (x.name === "popd" || !arg || opts.length || arg.value === "-") {
+			cwd = undefined;
+			continue;
+		}
+		const vals = resolveWord(arg, s, x.at);
+		// An absolute target resets an unknown directory (`cd x && …; cd /tmp && rm -rf y`).
+		const absolute = vals?.every((v) => v.startsWith("/") || (v.startsWith(MARK) && !v.startsWith(ENV)));
+		if (!vals || (!cwd && !absolute)) {
+			cwd = undefined;
+			continue;
+		}
+		cwd ??= [""];
+		const next: string[] = [];
+		for (const v of vals)
+			for (const base of cwd)
+				next.push(v.startsWith("/") || v.startsWith(MARK) ? v : base === "" ? v : `${base}/${v}`);
+		cwd = next;
+	}
+	return cwd;
+}
+
+/**
+ * A relative target after `cd` to `base` (not a temp dir): the directory is some project, so a target inside it is
+ * case 2 there; a shallow base (`/`, `/Users`, `~`, `/Users/me`) makes it case 1.
+ */
+function afterCd(base: string, rel: string, src: string): LevelRule | undefined {
+	const b = base.replace(/\/+$/, "");
+	const shallow = b === "" || b === HOME || (b.startsWith("/") && b.split("/").filter(Boolean).length <= 2);
+	if (shallow || b.startsWith(TEMP) || b.startsWith(TMPROOT) || (b.startsWith("/") && disposable(`${b}/x`)))
+		return undefined;
+	const r = rmTargetLevel(rel, src);
+	return r.rule === "rm:in-repo" ? { ...r, rule: "rm:in-repo (after cd)" } : r;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Decisions 1, 4, 5: what the disk says (through `PolicyEnv` lookups).
+
+/**
+ * An absolute directory for a resolve.ts value relative to the session cwd: `""` is the cwd, `HOME…` the home dir, a
+ * relative path joins the cwd. Undefined for a fresh mktemp dir, an unknown value, or a missing cwd/home.
+ */
+function absOf(v: string): string | undefined {
+	if (v === "") return E.cwd;
+	if (v.startsWith(HOME)) return E.home ? posix.normalize(E.home + v.slice(HOME.length)) : undefined;
+	if (v.includes(MARK) || v.includes(GLOBCH)) return undefined;
+	if (v.startsWith("/")) return posix.normalize(v);
+	return posix.normalize(`${E.cwd}/${v}`);
+}
+const stripSlash = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
+
+/**
+ * Decision 4: an absolute recursive-rm target by the repo containing it. Temp (guard's rule) is allowed; outside every
+ * repo is case 1; the repo root itself and `.git` are case 1; inside a repo is case 2 (`ask-if-dirty`), except build
+ * dirs at the repo root (guard's `DISPOSABLE` on the path from the root).
+ */
+function repoLevel(abs: string, src: string, at = abs): LevelRule {
+	const p = stripSlash(posix.normalize(abs));
+	if (disp(p, src)) return ALLOW;
+	const root = E.repoRootOf(p === "/" ? "/" : posix.dirname(p));
+	if (root === undefined) return { level: "ask", rule: "rm:catastrophic (not in a repo)" };
+	if (p === root || !p.startsWith(`${root}/`)) return { level: "ask", rule: "rm:catastrophic (repo root)" };
+	const rel = p.slice(root.length + 1);
+	if (rel.split("/").includes(".git")) return { level: "ask", rule: "rm:catastrophic (.git)" };
+	if (disp(rel, src)) return ALLOW;
+	return {
+		level: "ask-if-dirty",
+		rule: "rm:in-repo",
+		dirty: { repo: root, paths: [stripSlash(posix.normalize(at))], untracked: true, always: false },
+	};
+}
+
+/**
+ * Decision 4 for one resolve.ts value `v` (braces expanded; may hold `HOME`/`PWD` markers and `GLOBCH` globs) in the
+ * working dir `base` (a cwdAt value: `""` is the session's cwd). The caller handles fresh mktemp and TMPDIR values.
+ *   1. Make it absolute; unknown (an `ENV:` value, an unknown cwd) asks.
+ *   2. guard's temp rule on the absolute path (no glob in a temp entry name) allows.
+ *   3. A glob is judged by the directory it globs in (`<dir>/x`); `<repo root>/*` is case 1.
+ *   4. `repoLevel`: not in a repo → case 1; repo root or `.git` → case 1; a build dir at the repo root → allow;
+ *      else case 2.
+ */
+function diskLevel(v: string, src: string, base: string): LevelRule {
+	const relative = !v.startsWith("/") && !v.startsWith(MARK);
+	const full = relative ? (base === "" ? v : `${base}/${v}`) : v;
+	const baseAbs = absOf(relative && base !== "" ? base : "");
+	// guard's rule: `..` may climb out through a symlink; never resolve it away.
+	if (DOTDOT.test(full.replaceAll(GLOBCH, ""))) return { level: "ask", rule: "rm:catastrophic (.. leaves the dir)" };
+	const expanded = full.startsWith(PWD) ? `${E.cwd}${full.slice(PWD.length)}` : full;
+	const globAt = expanded.indexOf(GLOBCH);
+	const abs = absOf(expanded.replaceAll(GLOBCH, ""));
+	if (abs === undefined || (relative && baseAbs === undefined))
+		return { level: "ask", rule: "unknown:rm-target-expansion" };
+	if (disp(abs, src)) return ALLOW;
+	if (globAt < 0) return repoLevel(abs, src);
+	const dir = absOf(
+		expanded
+			.slice(0, globAt)
+			.replace(/[^/]*$/, "")
+			.replaceAll(GLOBCH, "") || "",
+	);
+	if (dir === undefined) return { level: "ask", rule: "unknown:rm-target-expansion" };
+	const d = stripSlash(dir);
+	// A glob inside a named temp entry (`/tmp/x/*`) is temp; one at a temp root (`/tmp/*`, `/tmp/a*`) is not (guard).
+	if (disp(d, src)) return ALLOW;
+	if (disp(`${d}/x`, src)) return { level: "ask", rule: "rm:catastrophic (glob at a temp root)" };
+	if (E.repoRootOf(d) === d) return { level: "ask", rule: "rm:catastrophic (repo root glob)" };
+	return repoLevel(`${d}/x`, src, d);
+}
+
+/** Directories (absolute) a git command runs in, or undefined if any isn't a literal path on disk. */
+function gitDirs(c: SimpleCommand, cmds: SimpleCommand[], globals: string[], s: Scope): string[] | undefined {
+	const cwd = cwdAt(cmds, c, s);
+	if (!cwd) return undefined;
+	const args = c.argv.slice(1);
+	const cIdx = globals.indexOf("-C");
+	const dashC = cIdx >= 0 ? resolveWord(args[cIdx + 1], s, c.at) : [""];
+	if (!dashC) return undefined;
+	const out: string[] = [];
+	for (const base of cwd)
+		for (const d of dashC) {
+			const v = d === "" ? base : d.startsWith("/") || d.startsWith(MARK) || base === "" ? d : `${base}/${d}`;
+			const abs = absOf(v);
+			if (abs === undefined) return undefined;
+			out.push(abs);
+		}
+	return out;
+}
+
+/** A git remote URL or path that is on this machine: `/x`, `./x`, `../x`, `~/x`, `file://…`. */
+const isLocalUrl = (u: string) => /^(?:file:\/\/|\.{1,2}\/|\/|~\/)/.test(u);
+const isNetworkUrl = (u: string) => /^[\w+.-]+:\/\//.test(u) || /^(?:[\w.-]+@)?[\w.-]+:/.test(u);
+
+/** `git push`'s remote word, or undefined when it's the default (none given). */
+function pushRemote(words: string[]): string | undefined {
+	const repo = words.find((w) => w.startsWith("--repo="));
+	if (repo) return repo.slice(7);
+	const i = words.indexOf("--repo");
+	if (i >= 0) return words[i + 1];
+	return words.find((w, j) => !w.startsWith("-") && !PUSH_VALUE_OPTIONS.has(words[j - 1]));
+}
+const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
+
+/**
+ * Decision 5: whether every place a push could go is a local path. A path given as the remote; or a remote name added
+ * earlier in the command (`git remote add NAME URL`, `set-url`), or else configured on disk (`remoteUrlOf`). The
+ * default remote (none given) and an unknown name are not local.
+ */
+function pushIsLocal(remote: string | undefined, addedUrl: string | undefined, dirs: string[] | undefined): boolean {
+	if (remote === undefined) return false;
+	if (isLocalUrl(remote)) return true;
+	if (isNetworkUrl(remote) || remote.includes(MARK) || /[$`"']/.test(remote)) return false;
+	if (addedUrl !== undefined) return isLocalUrl(addedUrl);
+	if (!dirs?.length) return false;
+	return dirs.every((d) => {
+		const u = E.remoteUrlOf(d, remote);
+		return u !== undefined && isLocalUrl(u);
+	});
+}
+
+/** The URL an earlier `git remote add|set-url NAME URL` in argv lists gave remote `name` (last one wins). */
+function addedRemote(gitArgvs: string[][], name: string): string | undefined {
+	let url: string | undefined;
+	for (const argv of gitArgvs) {
+		const { sub, words } = gitSplit(argv);
+		if (sub !== "remote") continue;
+		const ops = words.filter((w) => !w.startsWith("-"));
+		if ((ops[0] === "add" || ops[0] === "set-url") && ops[1] === name && ops[2]) url = ops[2];
+	}
+	return url;
+}
+
+/** A resolved rm target (resolve.ts markers), relative to the working directory `base`. */
+function valueLevel(v: string, src: string, base: string): LevelRule {
+	// Unquoted globs and brace alternatives: judge each alternative, and a glob by the directory it globs in.
+	const alts = expandBraces(v);
+	if (!alts) return { level: "ask", rule: "unknown:rm-target-expansion" };
+	if (alts.length > 1) return alts.map((a) => valueLevel(a, src, base)).reduce(worse, ALLOW);
+	v = alts[0];
+	// Decision 4 for paths that live on disk; fresh mktemp dirs, the session temp dir, and unset-TMPDIR keep the rules
+	// below.
+	const special = (x: string) => x.startsWith(TEMP) || x.startsWith(TMPROOT) || x.startsWith(NOTMP);
+	const relative = !v.startsWith("/") && !v.startsWith(MARK);
+	if (!special(v) && !(relative && special(base))) return diskLevel(v, src, base);
+	if (relative && base !== "" && !v.includes(GLOBCH)) {
+		const r = afterCd(base, v, src);
+		if (r) return r;
+	}
+	const path = relative && base !== "" ? `${base}/${v}` : v;
+	const plain = (p: string) => p.replaceAll(GLOBCH, "");
+	if (path.startsWith(TEMP)) {
+		// The fresh mktemp dir itself or anything in it (a glob included) is temp.
+		const rest = plain(path.slice(TEMP.length));
+		return DOTDOT.test(rest) ? { level: "ask", rule: "rm:catastrophic (.. leaves the temp dir)" } : ALLOW;
+	}
+	if (path.startsWith(TMPROOT)) {
+		// The session temp dir: guard's own `${TMPDIR:?}/<named entry>` rule (no glob in the entry name). An unknown
+		// value in it (`${TMPDIR:?}/$n`) may be empty or `..`.
+		if (path.slice(TMPROOT.length).includes(MARK)) return { level: "ask", rule: "unknown:rm-target-expansion" };
+		const t = `\${TMPDIR:?}${plain(path.slice(TMPROOT.length))}`;
+		return disposable(t) ? ALLOW : { level: "ask", rule: "rm:catastrophic (temp root or glob in it)" };
+	}
+	if (path.startsWith(HOME)) return { level: "ask", rule: "rm:catastrophic (outside the repo)" };
+	if (path.startsWith(NOTMP)) return { level: "ask", rule: "rm:catastrophic (unset TMPDIR gives /…)" };
+	if (path.startsWith(PWD)) return valueLevel(`.${path.slice(PWD.length)}`, src, "");
+	if (path.includes(MARK)) return { level: "ask", rule: "unknown:rm-target-expansion" };
+	if (path.includes(GLOBCH)) {
+		// The directory the glob runs in decides: a glob of the repo root (`*`) is case 1, inside the repo case 2. An
+		// absolute glob (`/tmp/x*`) keeps guard's literal rule (no glob in a temp entry's name).
+		const dir = path.slice(0, path.indexOf(GLOBCH)).replace(/\/?[^/]*$/, "");
+		if (path.startsWith("/")) return rmTargetLevel(plain(path), src);
+		if (dir === "" || dir === ".") return { level: "ask", rule: "rm:catastrophic (repo root glob)" };
+		return disposable(`${dir}/x`) && !DOTDOT.test(dir) ? ALLOW : rmTargetLevel(dir, src);
+	}
+	return rmTargetLevel(path, src);
+}
+
+/** A parser word as an rm target: literal paths by `rmTargetLevel`; expansions by what they could become. */
+function targetLevel(w: Word, src: string, s: Scope, at: number, cwd: Cwd): LevelRule {
+	const vals = w.kind === "expansion" ? resolveWord(w, s, at) : [w.value];
+	if (!vals) return { level: "ask", rule: "unknown:rm-target-expansion" };
+	let out = ALLOW;
+	for (const v of vals) {
+		const relative = !v.startsWith("/") && !v.startsWith(MARK);
+		// guard's rule: a relative build-dir name (`dist`, `node_modules/x`) is disposable, when the cwd is the session's
+		// or inside a repo (step 1 asked `cd / && rm -rf dist`; that stays).
+		const inProject = (b: string) => {
+			const abs = b === "" ? E.cwd : absOf(b);
+			return abs !== undefined && E.repoRootOf(abs) !== undefined;
+		};
+		if (relative && cwd?.every(inProject) && !v.includes(GLOBCH) && disp(v, src)) continue;
+		// Decision 4: a relative target in an unknown working dir can't be placed on disk.
+		if (relative && cwd === undefined) {
+			out = worse(out, { level: "ask", rule: "unknown:rm-cwd (cd target unknown)" });
+			continue;
+		}
+		for (const base of relative ? (cwd ?? [""]) : [""]) out = worse(out, valueLevel(v, src, base));
+	}
+	return out;
+}
+
+function gitFindings(
+	c: SimpleCommand,
+	cmds: SimpleCommand[],
+	branch: Branch,
+	add: Add,
+	dropped: Dropped[],
+	s: Scope,
+): void {
+	const args = c.argv.slice(1);
+	const { globals, sub, words } = gitSplit(values(args));
+	if (!sub) return;
+	const subWord = args[globals.length];
+	// An expansion in a global option's value (`git -C "$T"`) only changes where git runs.
+	const globalWords = args.slice(0, globals.length);
+	if (globalWords.some((w) => w.kind === "expansion" && /^"?[$`]/.test(w.raw) && globals.indexOf(w.value) % 2 === 0)) {
+		const opt = globalWords.findIndex((w) => w.kind === "expansion");
+		if (opt === 0 || !/^-[Cc]$|^--(?:git-dir|work-tree|namespace)$/.test(globalWords[opt - 1]?.value ?? "")) {
+			add("ask", "unknown:git-sub-expansion", "a git global option is itself an expansion");
+			return;
+		}
+	}
+	if (subWord?.kind === "expansion") {
+		const subs = resolveWord(subWord, s, c.at);
+		if (!subs || subs.some((v) => GUARDED_SUBS.has(v) || v.startsWith("-") || v.includes(MARK) || /\s/.test(v)))
+			add("ask", "unknown:git-sub-expansion", "git sub-command is an expansion that could be a guarded one");
+		return;
+	}
+	const where = gitWhere(c, cmds, globals, s);
+	let r = gitLevel(sub, words, branch, where !== "session");
+	if (r.rule.startsWith("dropped:")) dropped.push({ rule: "history", detail: r.rule.slice("dropped:".length) });
+	const before = cmds.slice(0, cmds.indexOf(c));
+	// Decision 1: a bare push after `cd`/`-C` to literal paths pushes the branch checked out there (read from disk, as
+	// the live guard would at classify time). Not after a checkout/switch in the same command (the disk shows the
+	// branch before it), and not where a path isn't a repo.
+	// Not when GIT_DIR/GIT_WORK_TREE or --git-dir/--work-tree could point git elsewhere (anywhere in the command).
+	const gitElsewhere = /\bGIT_(?:DIR|WORK_TREE|COMMON_DIR)\b|--(?:git-dir|work-tree)\b/.test(TOP);
+	if (r.rule === "push:target-unknown" && where === "elsewhere" && !switchedBefore(before) && !gitElsewhere) {
+		const dirs = gitDirs(c, cmds, globals, s);
+		if (dirs) {
+			let best: LevelRule & { risk?: string } = { level: "allow", rule: "git:none" };
+			for (const d of dirs) {
+				const b = E.branchOf(d);
+				const x: LevelRule & { risk?: string } =
+					b === undefined || b === "HEAD"
+						? {
+								level: "ask",
+								rule: "push:target-unknown",
+								risk: "push from a path that isn't a repo (or detached)",
+							}
+						: gitLevel(sub, words, () => b, false);
+				if (RANK[x.level] > RANK[best.level]) best = x;
+			}
+			r = best;
+		}
+	}
+	// Decision 5: case 3 is about network remotes; a push to a local path (given, added in this command, or configured)
+	// doesn't ask, forced or not.
+	if (sub === "push" && r.level !== "allow") {
+		const remote = pushRemote(words);
+		const added = remote
+			? addedRemote(
+					before.filter((x) => x.name === "git").map((x) => values(x.argv.slice(1))),
+					remote,
+				)
+			: undefined;
+		if (pushIsLocal(remote, added, gitDirs(c, cmds, globals, s))) {
+			dropped.push({ rule: "push:local", detail: `git push to the local path or remote ${remote}` });
+			return;
+		}
+	}
+	if (r.level !== "allow") {
+		// A bare push after `git checkout -b x`/`switch -c x` in the same repo (no `cd` or `-C` between) pushes x. A push
+		// from a temp repo is not exempt: a clone there still pushes to its real remote.
+		if (r.rule === "push:target-unknown" && where === "switched") {
+			const target = newBranchBefore(cmds, c);
+			if (target !== undefined && !PROTECTED_BRANCHES.has(target)) return;
+		}
+		const dirty = r.level === "ask-if-dirty" ? discardCheck(sub, words, gitDirs(c, cmds, globals, s)) : undefined;
+		add(r.level, r.rule, `git ${sub}: ${r.risk}`, dirty);
+		return;
+	}
+	// A push whose remote or refspec is an expansion could name main or carry `+`, unless its values are known.
+	if (sub === "push" && args.slice(globals.length + 1).some((w) => w.kind === "expansion")) {
+		const resolved = args
+			.slice(globals.length + 1)
+			.map((w) => (w.kind === "expansion" ? resolveWord(w, s, c.at) : [w.value]));
+		if (resolved.some((v) => v === undefined || v.some((x) => x.includes(MARK)))) {
+			add("ask", "unknown:push-target-expansion", "push remote or refspec is an expansion");
+			return;
+		}
+		for (const ws of product(resolved as string[][])) {
+			const r2 = gitLevel(sub, ws, branch, where !== "session");
+			if (r2.level !== "allow" && pushIsLocal(pushRemote(ws), undefined, gitDirs(c, cmds, globals, s))) {
+				dropped.push({ rule: "push:local", detail: `git push to the local path or remote ${pushRemote(ws)}` });
+				continue;
+			}
+			if (r2.level !== "allow") {
+				add(r2.level, r2.rule, `git push: ${r2.risk}`);
+				return;
+			}
+		}
+	}
+}
+
+/**
+ * Case 2 for a discarding git command run in `dirs`: the repo and the paths it discards. `reset --hard` and
+ * `switch -f` lose tracked changes in the whole tree; `checkout`/`restore` the named paths (all of them for `.` or
+ * none named); `clean` untracked files under its paths; `stash drop|clear` the stash itself.
+ */
+function discardCheck(sub: string, words: string[], dirs: string[] | undefined): DirtyCheck {
+	if (sub === "stash") return { repo: undefined, paths: undefined, untracked: false, always: true };
+	const dir = dirs?.length === 1 ? dirs[0] : undefined;
+	const repo = dir === undefined ? undefined : E.repoRootOf(dir);
+	if (dir === undefined || repo === undefined) return UNKNOWN_REPO;
+	const untracked = sub === "clean";
+	const named = sub === "checkout" ? words.slice(words.indexOf("--") + 1) : words;
+	const paths =
+		sub === "reset" || sub === "switch" || (sub === "checkout" && !words.includes("--"))
+			? []
+			: named.filter((w, i) => !w.startsWith("-") && !(sub === "clean" && /^-[eE]$/.test(named[i - 1] ?? "")));
+	// Anything that isn't a plain path (an expansion marker, a glob, a pathspec) checks the whole tree.
+	if (!paths.length || paths.some((p) => /[\u0000\u0001*?[:]/.test(p)))
+		return { repo, paths: undefined, untracked, always: false };
+	return { repo, paths: paths.map((p) => posix.resolve(dir, p)), untracked, always: false };
+}
+
+/**
+ * Where a git command runs: the session's repo; a fresh temp repo (`-C "$T"` or after `cd "$T"` with T from mktemp);
+ * or elsewhere (any other `cd`, `-C`, GIT_DIR, or an earlier checkout/switch).
+ */
+function gitWhere(
+	c: SimpleCommand,
+	cmds: SimpleCommand[],
+	globals: string[],
+	s: Scope,
+): "session" | "temp" | "switched" | "elsewhere" {
+	const args = c.argv.slice(1);
+	const cIdx = globals.indexOf("-C");
+	if (cIdx >= 0) {
+		const vals = resolveWord(args[cIdx + 1], s, c.at);
+		return vals?.every((v) => v.startsWith(TEMP) && !DOTDOT.test(v)) ? "temp" : "elsewhere";
+	}
+	if (movesGit(globals) || c.assignments.some((a) => a === "GIT_DIR" || a === "GIT_WORK_TREE")) return "elsewhere";
+	const cwd = cwdAt(cmds, c, s);
+	const before = cmds.slice(0, cmds.indexOf(c));
+	const switched = before.some(
+		(x) => x.name === "git" && ["checkout", "switch"].includes(gitSplit(values(x.argv.slice(1))).sub ?? ""),
+	);
+	if (cwd?.every((v) => v.startsWith(TEMP) && !DOTDOT.test(v))) return "temp";
+	if (cwd === undefined || cwd.some((v) => v !== "")) return "elsewhere";
+	return switched ? "switched" : "session";
+}
+
+const switchedBefore = (before: SimpleCommand[]) =>
+	before.some((x) => x.name === "git" && ["checkout", "switch"].includes(gitSplit(values(x.argv.slice(1))).sub ?? ""));
+
+/** The branch an earlier `git checkout -b X` / `switch -c X` in this command created, if exactly one. */
+function newBranchBefore(cmds: SimpleCommand[], c: SimpleCommand): string | undefined {
+	const names: string[] = [];
+	for (const x of cmds.slice(0, cmds.indexOf(c))) {
+		if (x.name !== "git") continue;
+		const { sub, words } = gitSplit(values(x.argv.slice(1)));
+		if (sub !== "checkout" && sub !== "switch") continue;
+		const i = words.findIndex((w) => /^-[bBcC]$/.test(w));
+		if (i < 0 || !words[i + 1]) return undefined;
+		names.push(words[i + 1]);
+	}
+	return names.length ? names.at(-1) : undefined;
+}
+
+// Wrappers that run a string or stdin in a new shell process (guard-shell's wrapper table); `trap`/`eval` strings run in
+// this shell.
+const RUNS_STRING = new Set([
+	"sh",
+	"bash",
+	"zsh",
+	"dash",
+	"ksh",
+	"mksh",
+	"ash",
+	"su",
+	"runuser",
+	"sudo",
+	"doas",
+	"env",
+	"flock",
+	"ssh",
+	"watch",
+]);
+
+// Sub-commands whose risk the policy checks (case 2 and 3).
+const GUARDED_SUBS = new Set(["push", "reset", "clean", "checkout", "restore", "switch", "stash"]);
+
+function product(xs: string[][]): string[][] {
+	let out: string[][] = [[]];
+	for (const x of xs) {
+		out = out.flatMap((o) => x.map((v) => [...o, v]));
+		if (out.length > 64) return out.slice(0, 64);
+	}
+	return out;
+}
+
+/** Every script a dynamic body could be, if each of its words resolves to known plain text. */
+function resolveScripts(words: Word[], s: Scope, at: number): string[] | undefined {
+	const vals: string[][] = [];
+	for (const w of words) {
+		const r = resolveWord(w, s, at);
+		if (!r || r.some((v) => v.includes(MARK))) return undefined;
+		vals.push(r);
+	}
+	return product(vals).map((ws) => ws.join(" "));
+}
+
+/** Files a heredoc body is written to: `cat > f <<EOF`, `cat <<EOF >> f`, `tee f <<EOF`. */
+function writtenHeredocs(cmds: SimpleCommand[]): { file: string; body: string }[] {
+	const out: { file: string; body: string }[] = [];
+	for (const c of cmds) {
+		if (!c.heredocs.length) continue;
+		const files = c.redirects.flatMap((r) => (/^(?:\d*>>?\|?|&>>?)$/.test(r.op) && r.target ? [r.target.value] : []));
+		if (c.name === "tee") files.push(...values(c.argv.slice(1)).filter((v) => !v.startsWith("-")));
+		for (const file of files) for (const h of c.heredocs) out.push({ file, body: h.body });
+	}
+	return out;
+}
+
+/**
+ * Files the command runs as a program: `./x`, `/p/x`, `sh x`, `bash -e x`, `source x`, `. x`, and the makefile `make`
+ * reads (its recipes are shell); `*` if unknowable.
+ */
+function ranFiles(cmds: SimpleCommand[]): string[] {
+	const out: string[] = [];
+	for (const c of cmds) {
+		const a0 = c.argv[0];
+		if (!a0) continue;
+		if (a0.kind === "expansion") {
+			out.push("*");
+			continue;
+		}
+		if (a0.value.includes("/")) out.push(GLOB.test(a0.value) ? "*" : a0.value);
+		if ((c.name === "source" || c.name === ".") && c.argv[1])
+			out.push(c.argv[1].kind === "expansion" ? "*" : c.argv[1].value);
+		if (c.name === "make" || c.name === "gmake") {
+			const f = c.argv.findIndex((w) => w.value === "-f" || w.value === "--file" || w.value === "--makefile");
+			const file = f > 0 ? c.argv[f + 1] : undefined;
+			if (file) out.push(file.kind === "expansion" ? "*" : file.value);
+			else if (c.argv.some((w) => /^-f.|^--(?:make)?file=/.test(w.value))) out.push("*");
+			else out.push("GNUmakefile", "makefile", "Makefile");
+		}
+		if (c.name !== undefined && SHELLS.has(c.name)) {
+			const args = c.argv.slice(1);
+			let i = 0;
+			let dashC = false;
+			while (i < args.length && args[i].kind !== "expansion" && /^[-+]/.test(args[i].value)) {
+				if (/^-[A-Za-z]*c/.test(args[i].value)) dashC = true;
+				i += /^[-+]o$/.test(args[i].value) ? 2 : 1;
+			}
+			if (!dashC && args[i]) out.push(args[i].kind === "expansion" ? "*" : args[i].value);
+		}
+	}
+	return out;
+}
