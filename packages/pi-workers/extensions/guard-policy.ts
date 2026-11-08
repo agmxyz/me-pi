@@ -589,14 +589,18 @@ function findFindings(c: SimpleCommand, src: string, add: Add, s: Scope, cwd: Cw
 type Cwd = string[] | undefined;
 function cwdAt(cmds: SimpleCommand[], c: SimpleCommand, s: Scope): Cwd {
 	let cwd: Cwd = [""];
-	for (const x of cmds) {
-		if (x === c) break;
+	// A command in a function body, a loop, or a trap may run after any later `cd` too (at a call, a second pass,
+	// exit): it is judged in every directory the whole script can reach, its own text position ignored.
+	const upTo = c.outOfOrder ? cmds.length : cmds.indexOf(c);
+	for (const [k, x] of cmds.entries()) {
+		if (k >= upTo) break;
+		if (x === c) continue;
 		if (x.name !== "cd" && x.name !== "pushd" && x.name !== "popd") continue;
 		const before: Cwd = cwd;
 		cwd = cdTarget(x, cwd, s);
 		// `changedBefore`: a `cd` moves this command only if it surely succeeded first, in the same `&&` chain. After `;`,
 		// a newline, `||`, `&`, in a pipe, a subshell, or a branch, the command may run in either directory: both count.
-		if (!changedBefore(x, c))
+		if (c.outOfOrder || !changedBefore(x, c))
 			cwd = cwd === undefined || before === undefined ? undefined : [...new Set([...before, ...cwd])];
 	}
 	return cwd;
@@ -1030,7 +1034,8 @@ function gitFindings(
 	const where = gitWhere(c, cmds, globals, s);
 	let r = gitLevel(sub, words, branch, where !== "session");
 	if (r.rule.startsWith("dropped:")) dropped.push({ rule: "history", detail: r.rule.slice("dropped:".length) });
-	const before = cmds.slice(0, cmds.indexOf(c));
+	// Commands that may run before this one: those ahead of it in the text, or (in a function, loop or trap) any other.
+	const before = c.outOfOrder ? cmds.filter((x) => x !== c) : cmds.slice(0, cmds.indexOf(c));
 	// Decision 1: a bare push after `cd`/`-C` to literal paths pushes the branch checked out there (read from disk, as
 	// the live guard would at classify time). Not after a checkout/switch in the same command (the disk shows the
 	// branch before it), and not where a path isn't a repo.
@@ -1150,7 +1155,9 @@ function gitWhere(
 	const cwd = cwdAt(cmds, c, s);
 	if (cwd?.every((v) => v.startsWith(TEMP) && !DOTDOT.test(v))) return "temp";
 	if (cwd === undefined || cwd.some((v) => v !== "")) return "elsewhere";
-	return switchedBefore(cmds.slice(0, cmds.indexOf(c))) ? "switched" : "session";
+	return switchedBefore(c.outOfOrder ? cmds.filter((x) => x !== c) : cmds.slice(0, cmds.indexOf(c)))
+		? "switched"
+		: "session";
 }
 
 /** Whether a `git checkout`/`switch` ran before: the branch the disk shows is no longer the one checked out. */

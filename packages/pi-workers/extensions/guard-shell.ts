@@ -62,6 +62,12 @@ export interface SimpleCommand {
 	certain: boolean;
 	/** Source ranges that run only after this command succeeded (the rest of its `&&` chain). */
 	after: [number, number][];
+	/**
+	 * May run out of text order: inside a function body (it runs at each call, possibly after later commands), a loop
+	 * body (a second pass runs after the rest of the body), or a `trap` string (at a signal or exit). Any state another
+	 * command in the script sets may apply to it.
+	 */
+	outOfOrder: boolean;
 }
 
 /**
@@ -154,12 +160,16 @@ interface Walk {
 	script: string;
 	rebinds: boolean;
 	bindings: Bindings | undefined;
+	/** Walking inside a function body or loop (see `OUT_OF_ORDER`). */
+	outOfOrder?: boolean;
 }
 /** Where a command was found: the wrappers around it, whether it runs remotely, and its re-parse depth. */
 interface Frame {
 	via: string[];
 	remote: boolean;
 	depth: number;
+	/** Inside a `trap` string (or another body that runs out of text order). */
+	outOfOrder?: boolean;
 }
 
 /** Parses a bash command string into its simple commands and top-level bindings. */
@@ -277,6 +287,15 @@ function walk(w: Walk, node: Node, f: Frame): void {
 		for (const r of redirects)
 			if (r.type === "file_redirect" && destinations(r).length > 1) throw new ShellFail("syntax");
 	}
+	if (OUT_OF_ORDER.has(node.type) && !w.outOfOrder) {
+		w.outOfOrder = true;
+		try {
+			for (const c of node.children) walk(w, c, f);
+		} finally {
+			w.outOfOrder = false;
+		}
+		return;
+	}
 	for (const c of node.children) walk(w, c, f);
 }
 
@@ -375,10 +394,25 @@ function simpleCommand(w: Walk, node: Node, outerRedirects: Node[], f: Frame): v
 	emit(w, argv, f, { redirects, heredocs, herestrings, openArgs: false, assignments, ...flow });
 }
 
-function push(w: Walk, f: Frame, c: Omit<SimpleCommand, "via" | "remote" | "at" | "reparsed" | "script">): void {
+function push(
+	w: Walk,
+	f: Frame,
+	c: Omit<SimpleCommand, "via" | "remote" | "at" | "reparsed" | "script" | "outOfOrder">,
+): void {
 	if (w.out.length >= LIMITS.maxCommands) throw new ShellFail("limit");
-	w.out.push({ ...c, via: f.via, remote: f.remote, at: w.at, reparsed: f.depth > 0, script: w.script });
+	const outOfOrder = !!(f.outOfOrder || w.outOfOrder);
+	w.out.push({ ...c, via: f.via, remote: f.remote, at: w.at, reparsed: f.depth > 0, script: w.script, outOfOrder });
 }
+
+/** Node types whose body may run out of text order (see `SimpleCommand.outOfOrder`). */
+const OUT_OF_ORDER = new Set([
+	"function_definition",
+	"for_statement",
+	"c_style_for_statement",
+	"while_statement",
+	"until_statement",
+	"select_statement",
+]);
 
 /** A command string or stdin whose text is unknowable here. */
 function dynamic(w: Walk, f: Frame, argv: Word[], body: string): void {
@@ -408,10 +442,26 @@ function emit(w: Walk, argv: Word[], f: Frame, io: Io): void {
 		certain: io.certain,
 		after: io.after,
 	});
-	if (name === undefined || !isWrapper(name)) return;
+	if (name === undefined) return;
+	if (!isWrapper(name)) {
+		// A program guard doesn't know that is handed a guarded command name as a plain word (`mytool rm -rf ~`,
+		// `devbox run git push -f`) may run it: what follows is judged as a command too (fail closed), unless the program
+		// is known to take only text (`echo rm`, `grep git`, `man rm`).
+		const k = argv.findIndex(
+			(x, i) => i > 0 && x.kind === "literal" && GUARDED_NAMES.has(x.value.split("/").pop() ?? ""),
+		);
+		if (k > 0 && !NOT_WRAPPERS.has(name))
+			emit(w, argv.slice(k), { via: [...f.via, name], remote: f.remote, depth: f.depth }, { ...io, openArgs: true });
+		return;
+	}
 	const via = [...f.via, name];
 	for (const step of WRAPPERS[name](argv.slice(1))) {
-		const inner: Frame = { via, remote: f.remote || !!step.remote, depth: f.depth };
+		const inner: Frame = {
+			via,
+			remote: f.remote || !!step.remote,
+			depth: f.depth,
+			outOfOrder: f.outOfOrder || (step.kind === "script" && !!step.outOfOrder),
+		};
 		if (step.kind === "exec")
 			emit(w, step.argv, inner, {
 				...io,
@@ -421,6 +471,11 @@ function emit(w: Walk, argv: Word[], f: Frame, io: Io): void {
 		else if (step.kind === "script")
 			runString(w, step.body, inner, io.openArgs ? (io.placeholder ?? "{}") : undefined);
 		else {
+			// A shell option the table doesn't know: where the program comes from is unknown.
+			if (step.unknown) {
+				dynamic(w, inner, [], "<unknown shell option>");
+				continue;
+			}
 			// A shell (or ssh) reading its program from stdin: a heredoc or here-string body is that program. An unquoted
 			// body is expanded first; its source text is parsed as an approximation (expansions stay expansions).
 			for (const h of io.heredocs) parseScript(w, h.body, { ...inner, depth: f.depth + 1 });
@@ -790,8 +845,8 @@ function ansiC(s: string): string {
 
 type Step =
 	| { kind: "exec"; argv: Word[]; openArgs?: boolean; remote?: boolean; placeholder?: string }
-	| { kind: "script"; body: Word[]; remote?: boolean }
-	| { kind: "stdin"; remote?: boolean };
+	| { kind: "script"; body: Word[]; remote?: boolean; outOfOrder?: boolean }
+	| { kind: "stdin"; remote?: boolean; unknown?: boolean };
 
 interface OptionSpec {
 	/** Short option letters that take a value (`-u root`, `-uroot`). */
@@ -856,35 +911,233 @@ function skipAssignments(args: Word[], from: number): number {
 	return at;
 }
 
-/** A shell's `-c` string, a script file, or stdin. `bash -lc 'x'`, `bash -o pipefail -c 'x'`, `bash --norc -c 'x'`. */
+/**
+ * A shell's program, read with a real option table: `-c` (the first operand is the program), `-s` (stdin is the
+ * program, even with operands), `-o`/`+o`/`-O`/`+O`/`--rcfile`/`--init-file` (take the next word), `--`/`-` (end
+ * options), other single-letter flags (`-e`, `-x`, `-l`, `-i`, combined `-ec`), and the long flags bash knows. An
+ * option outside the table, or an unquoted expansion before the program, leaves where the program comes from unknown:
+ * then it is judged as unknown (asks). `bash --version`/`-n` (syntax only) run nothing.
+ */
 function shell(args: Word[]): Step[] {
 	let i = 0;
 	let c = false;
+	let s = false;
 	while (i < args.length) {
 		const w = args[i].value;
 		// An unquoted expansion could split into options (`bash $opts`); a quoted one is a word: the -c string or a file.
 		if (args[i].kind === "expansion" && !/^"[^"]*"$/.test(args[i].raw)) return [{ kind: "script", body: [args[i]] }];
 		if (args[i].kind === "expansion") break;
-		// `bash --version`, `bash -n f` (syntax check only) run nothing.
 		if (w === "--version" || w === "--help" || /^-[A-Za-z]*n[A-Za-z]*$/.test(w)) return [];
 		if (w === "--" || w === "-") {
 			i++;
 			break;
 		}
-		if (/^[-+]o$/.test(w) || w === "--rcfile" || w === "--init-file") i += 2;
-		else if (/^[-+][A-Za-z]+$/.test(w)) {
-			if (w.startsWith("-") && w.includes("c")) c = true;
+		if (SHELL_VALUE_OPTS.has(w)) {
+			i += 2;
+			continue;
+		}
+		if (/^--[\w-]+$/.test(w)) {
+			if (!SHELL_LONG_FLAGS.has(w)) return [{ kind: "stdin", unknown: true }];
 			i++;
-		} else if (w.startsWith("--")) i++;
-		else break;
+			continue;
+		}
+		if (/^[-+][A-Za-z]+$/.test(w)) {
+			if (![...w.slice(1)].every((l) => SHELL_FLAG_LETTERS.includes(l))) return [{ kind: "stdin", unknown: true }];
+			if (w.startsWith("-") && w.includes("c")) c = true;
+			if (w.startsWith("-") && w.includes("s")) s = true;
+			i++;
+			continue;
+		}
+		break;
 	}
 	if (c) return i < args.length ? [{ kind: "script", body: [args[i]] }] : [];
+	// `-s`: the program is stdin whatever operands follow (they become $1…).
+	if (s) return [{ kind: "stdin" }];
 	// A file operand that is stdin (`bash /dev/stdin`, `sh /dev/fd/0`, `-`) reads the program from stdin (a process
 	// substitution, `bash <(curl …)`, asks in the policy). Otherwise a script file runs a program the text doesn't show
 	// (judged by the caller); no operand reads stdin.
 	if (i < args.length && READS_STDIN.test(args[i].value) && args[i].kind !== "expansion") return [{ kind: "stdin" }];
 	return i < args.length ? [] : [{ kind: "stdin" }];
 }
+/** Command names guard's rules look at: when one appears as a word of an unknown program, it may be run. */
+const GUARDED_NAMES = new Set(["rm", "git", "find", "xargs", ...SHELLS]);
+/**
+ * Programs that take a guarded name only as text or as something to look up, never to run it: printing, searching,
+ * documentation, lookup, package and repo tools whose own sub-commands share the names (`gh repo`, `herdr agent`).
+ */
+const NOT_WRAPPERS = new Set([
+	"echo",
+	"printf",
+	"print",
+	"cat",
+	"less",
+	"more",
+	"head",
+	"tail",
+	"grep",
+	"egrep",
+	"fgrep",
+	"rg",
+	"ag",
+	"ack",
+	"sed",
+	"awk",
+	"tr",
+	"cut",
+	"sort",
+	"uniq",
+	"wc",
+	"jq",
+	"yq",
+	"man",
+	"info",
+	"help",
+	"which",
+	"type",
+	"whereis",
+	"whatis",
+	"apropos",
+	"hash",
+	"alias",
+	"unalias",
+	"complete",
+	"compgen",
+	"test",
+	"[",
+	"[[",
+	"true",
+	"false",
+	"gh",
+	"herdr",
+	"brew",
+	"apt",
+	"apt-get",
+	"dnf",
+	"yum",
+	"pacman",
+	"npm",
+	"npx",
+	"pnpm",
+	"yarn",
+	"bun",
+	"pip",
+	"pip3",
+	"cargo",
+	"go",
+	"rustup",
+	"mise",
+	"asdf",
+	"pi",
+	"claude",
+	"codex",
+	"node",
+	"python",
+	"python3",
+	"ruby",
+	"perl",
+	"diff",
+	"cmp",
+	"ls",
+	"stat",
+	"file",
+	"readlink",
+	"realpath",
+	"basename",
+	"dirname",
+	"touch",
+	"mkdir",
+	"cp",
+	"mv",
+	"ln",
+	"chmod",
+	"chown",
+	"tar",
+	"zip",
+	"unzip",
+	"gzip",
+	"curl",
+	"wget",
+	"ssh-keygen",
+	"tee",
+	"column",
+	"fold",
+	"fmt",
+	"nl",
+	"od",
+	"xxd",
+	"hexdump",
+	"strings",
+	"date",
+	"sleep",
+	"read",
+	"export",
+	"local",
+	"declare",
+	"set",
+	"unset",
+	"shift",
+	"return",
+	"exit",
+	"cd",
+	"pushd",
+	"popd",
+	"dirs",
+	"history",
+	"fc",
+	"bind",
+	"ulimit",
+	"umask",
+	"kill",
+	"wait",
+	"jobs",
+	"fg",
+	"bg",
+	"disown",
+	"logger",
+	"osascript",
+	"open",
+	"pbcopy",
+	"pbpaste",
+	"say",
+	"rtk",
+	"tmux",
+	"screen",
+	"code",
+	"vim",
+	"nvim",
+	"vi",
+	"nano",
+	"emacs",
+	"git-lfs",
+	"make",
+	"cmake",
+	"biome",
+	"tsc",
+	"eslint",
+	"prettier",
+	"deno",
+]);
+
+/** Shell options that take the next word as their value. */
+const SHELL_VALUE_OPTS = new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init-file"]);
+/** Single-letter shell flags (bash, sh, zsh, dash, ksh): `-c` and `-s` are read; the rest only set behaviour. */
+const SHELL_FLAG_LETTERS = "abcefhiklmnprstuvxBCEHPT";
+const SHELL_LONG_FLAGS = new Set([
+	"--login",
+	"--norc",
+	"--noprofile",
+	"--posix",
+	"--noediting",
+	"--restricted",
+	"--verbose",
+	"--debugger",
+	"--dump-strings",
+	"--dump-po-strings",
+	"--protected",
+	"--no-rcs",
+	"--no-globalrcs",
+	"--interactive",
+]);
 
 /** A path a shell or `source` reads its program from that is its own stdin. */
 const READS_STDIN = /^(?:-|\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0)$/;
@@ -979,6 +1232,30 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 	chroot: (args) => execFrom(args, options(args, { short: "ug", long: ["--userspec", "--groups"] }).at + 1), // the root
 	"sandbox-exec": (args) => execFrom(args, options(args, { short: "fpD" }).at),
 	taskpolicy: (args) => execFrom(args, options(args, { short: "cdgtlbp" }).at),
+	// More runners: `busybox rm …`, `fakeroot cmd`, `xcrun cmd`, `strace -f cmd`, `nsenter -t 1 cmd`, `unshare -r cmd`,
+	// `taskset -c 0 cmd`, `chrt -f 10 cmd`, `entr cmd`, `proxychains4 cmd`, `torsocks cmd`. `parallel cmd ::: args`
+	// gets its arguments at run time.
+	busybox: (args) => execFrom(args, 0),
+	fakeroot: (args) => execFrom(args, options(args, { short: "lsi" }).at),
+	xcrun: (args) => execFrom(args, options(args, { long: ["--sdk", "--toolchain"] }).at),
+	strace: (args) => execFrom(args, options(args, { short: "eopsuEIPXaSb" }).at),
+	ltrace: (args) => execFrom(args, options(args, { short: "eopsuEIPXaSb" }).at),
+	nsenter: (args) => execFrom(args, options(args, { short: "tSGwr" }).at),
+	unshare: (args) => execFrom(args, options(args, { short: "" }).at),
+	taskset: (args) => {
+		const { at, seen } = options(args, {});
+		return execFrom(args, seen.has("p") ? args.length : at + 1); // the mask
+	},
+	chrt: (args) => execFrom(args, options(args, {}).at + 1), // the priority
+	entr: (args) => execFrom(args, options(args, {}).at, { openArgs: true }),
+	proxychains4: (args) => execFrom(args, options(args, { short: "f" }).at),
+	proxychains: (args) => execFrom(args, options(args, { short: "f" }).at),
+	torsocks: (args) => execFrom(args, options(args, { short: "uapP" }).at),
+	parallel: (args) => {
+		const at = options(args, { short: "jSPN", long: ["--jobs", "--sshlogin", "--joblog"] }).at;
+		const end = args.findIndex((w, k) => k >= at && /^:::+$|^::::$/.test(w.value));
+		return execFrom(end < 0 ? args : args.slice(0, end), at, { openArgs: true, placeholder: "{}" });
+	},
 	unbuffer: (args) => execFrom(args, options(args, {}).at),
 	rtk: (args) => execFrom(args, args[0]?.value === "proxy" ? 1 : 0),
 	xargs: (args) => {
@@ -1018,8 +1295,10 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 	trap: (args) => {
 		const { at, seen } = options(args, {});
 		if (seen.has("p") || seen.has("l")) return [];
-		// `trap ACTION SIG…`; a single operand resets that signal.
-		return args.length - at >= 2 && args[at].value !== "-" ? [{ kind: "script", body: [args[at]] }] : [];
+		// `trap ACTION SIG…`; a single operand resets that signal. The action runs later (at a signal or exit).
+		return args.length - at >= 2 && args[at].value !== "-"
+			? [{ kind: "script", body: [args[at]], outOfOrder: true }]
+			: [];
 	},
 	watch: (args) => {
 		const { at, seen } = options(args, { short: "nq", long: ["--interval", "--equexit", "--differences"] });

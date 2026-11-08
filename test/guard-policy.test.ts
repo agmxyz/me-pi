@@ -733,3 +733,63 @@ test("PR #95 round 8: state set by an earlier command counts only if it surely r
 		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
 	assert.deepEqual(bad, []);
 });
+
+test("PR #95 round 9: functions, loops and traps run out of text order; shell options; unknown wrappers", () => {
+	// /w/app is the session repo on feat; HOME is /Users/me (Library is under it).
+	const rows: [string, Level, string][] = [
+		["/w/app", "ask", "f() { rm -rf Library; }; cd ~ && f"],
+		["/w/app", "ask", "for i in 1 2; do rm -rf Library; cd ~; done"],
+		["/w/app", "ask", "trap 'rm -rf Library' EXIT; cd ~"],
+		["/w/app", "ask", "f() { git push; }; git checkout main && f"],
+		["/w/app", "ask", "for i in 1 2; do git push; git checkout main; done"],
+		["/w/app", "ask", "while true; do rm -rf Library; cd ~; done"],
+		["/w/app", "ask", "until false; do rm -rf Library; cd ~; done"],
+		["/w/app", "ask", "function g { rm -rf Library; }; cd ~; g"],
+		["/w/app", "ask", "trap 'rm -rf Library' INT; cd ~"],
+		["/w/app", "ask-if-dirty", "f() { rm -rf src; }; f"],
+		["/w/app", "allow", "for f in a b; do echo $f; done"],
+		["/w/app", "allow", "f() { echo hi; }; cd /tmp && f"],
+		["/w/app", "allow", "for i in 1 2; do rm -rf dist; done"],
+		["/w/app", "ask", "bash -s -- x <<'EOF'\nrm -rf ~\nEOF"],
+		["/w/app", "ask", "sh -s foo <<EOF\nrm -rf ~\nEOF"],
+		["/w/app", "ask", "bash -es <<'EOF'\nrm -rf ~\nEOF"],
+		["/w/app", "ask", "bash -O extglob -c 'rm -rf ~'"],
+		["/w/app", "ask", "sh +O nullglob -c 'rm -rf ~'"],
+		["/w/app", "ask", "bash -o pipefail -c 'rm -rf ~'"],
+		["/w/app", "ask", "bash --rcfile x -c 'rm -rf ~'"],
+		["/w/app", "ask", "bash --norc -c 'rm -rf ~'"],
+		["/w/app", "ask", "bash -euxc 'rm -rf ~'"],
+		["/w/app", "ask", "bash --unknown-opt <<'EOF'\necho hi\nEOF"],
+		["/w/app", "ask", "bash -Q -c 'echo hi'"],
+		["/w/app", "allow", "bash -c 'echo hi'"],
+		["/w/app", "allow", "bash -o pipefail -c 'echo hi'"],
+		["/w/app", "allow", "bash -s <<'EOF'\necho hi\nEOF"],
+		["/w/app", "allow", "bash -n script.sh"],
+		["/w/app", "allow", "bash --version"],
+		["/w/app", "ask", "busybox rm -rf ~"],
+		["/w/app", "ask", "fakeroot rm -rf ~"],
+		["/w/app", "ask", "parallel rm -rf ::: ~"],
+		["/w/app", "ask", "xcrun rm -rf ~"],
+		["/w/app", "ask", "strace -f rm -rf ~"],
+		["/w/app", "ask", "nsenter -t 1 rm -rf ~"],
+		["/w/app", "ask", "unshare -r rm -rf ~"],
+		["/w/app", "ask", "taskset -c 0 rm -rf ~"],
+		["/w/app", "ask", "chrt -f 10 rm -rf ~"],
+		["/w/app", "ask", "proxychains4 git push -f origin main"],
+		["/w/app", "ask", "torsocks git push -f origin main"],
+		["/w/app", "ask", "mytool rm -rf ~"],
+		["/w/app", "ask", "devbox run git push -f origin main"],
+		["/w/app", "ask", "nix-shell -p x --run x rm -rf ~"],
+		["/w/app", "allow", "echo rm -rf ~"],
+		["/w/app", "allow", "grep -rn 'git push' ."],
+		["/w/app", "allow", "man rm"],
+		["/w/app", "allow", "which git"],
+		["/w/app", "allow", "gh repo view"],
+		["/w/app", "allow", "mytool --verbose build"],
+		["/w/app", "allow", "parallel echo ::: a b"],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
+	assert.deepEqual(bad, []);
+});
