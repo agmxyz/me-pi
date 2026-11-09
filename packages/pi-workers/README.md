@@ -45,7 +45,7 @@ The coordinator chooses a built-in role and briefs it for the task. The roles ar
 
 Workers load your own `AGENTS.md` and skills; `## ` sections marked `(coordinator only)` are stripped from worker prompts. Read-only workers can also write drafts to their own temp directory with `output: true`; web tools require `web: true` and aren't available to `implement`.
 
-The package also includes `guard`, which asks before risky bash and blocks matching commands in `implement`, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md).
+The package also includes `guard`, which asks before really dangerous bash (see [Safety](#safety)) and blocks it in workers, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md).
 
 ## Why use it?
 
@@ -91,7 +91,7 @@ To skip `guard`, replace the package entry in `~/.pi/agent/settings.json` with a
 }
 ```
 
-Without `guard`, `implement` workers also lose its blocks on recursive `rm`, `git reset --hard`, and force pushes.
+Without `guard`, workers also lose its blocks on dangerous `rm`, discarding uncommitted work, history rewrites, and force pushes.
 
 ## What it adds to your prompts
 
@@ -105,7 +105,16 @@ These are prompt text, so your own `AGENTS.md` can refine or contradict them; th
 ## Safety
 
 - Not a sandbox. Extensions and workers run with your OS permissions; `guard` and the fences are guardrails, not security boundaries.
-- `guard` matches each command's text; it can't see what earlier commands left on disk. For example, it allows `rm -rf /tmp/x/old` even if `/tmp/x` is a symlink to `/`.
+- `guard` parses each bash command (tree-sitter) and asks in three cases only:
+  1. a recursive `rm` (or `find … -delete`) of something outside every Git repo that isn't a temp or build path (`~`, `/`, `~/.pi/agent/x`), or of a repo root or `.git`;
+  2. a command that would lose uncommitted work (`git reset --hard`, `clean -f`, `checkout` of paths, `restore`, `switch -f`, `rm -f`, `read-tree -u`, `checkout-index -f`, `apply -R`, `submodule deinit -f`, `worktree remove --force`, or a recursive `rm` or `find -delete` inside a repo), only when `git status` shows changes there (gitignored files count only for `clean -x`/`-X`), and `git stash drop`/`clear` always;
+  3. a force push, or a push to `main`/`master`, to a network remote.
+
+  A repo inside a temp directory still counts as a repo. A disk lookup that fails or times out counts as unknown, and asks. A `cd`, `git remote add`/`set-url` or `git checkout -b` earlier in the command counts only if it surely ran first (ahead in the same `&&` chain, not backgrounded with `&`); otherwise guard judges both possibilities. Paths match without case, as macOS's disk does (`rm -rf SRC` is `src`). Commands in a function, a loop, or a `trap` may run after anything else in the command, so they are judged in every state the command reaches. A program guard doesn't know that is handed `rm`, `git`, `find` or a shell as a word is treated as running it.
+
+  It no longer asks about `rm`/`git` that only appears as text (messages, heredocs written to files), about `commit --amend`, `rebase`, `filter-branch`/`filter-repo`, or `branch -D` (the reflog recovers them), or about pushes to a local path. Something it can't work out (an expansion, a command built at run time, a script read from a process substitution) asks only when it could fall into one of the three cases. So does code it can't trace: a shell string git runs (`rebase -x`, `filter-branch --tree-filter`, `bisect run`, `submodule foreach`, a `git -c` setting that isn't plain data, a git alias, an option whose value is a command such as `--upload-pack` or `--exec`, a variable such as `GIT_EDITOR`/`GIT_SSH_COMMAND`/`GIT_CONFIG_*`/`EDITOR`, a `git config` write of such a setting), a script written by a heredoc and then run, and a `sh -c` string holding `xargs`/`find` placeholders. If a command doesn't parse, `guard` judges it with its older pattern rules; if the parser can't load at all, it uses those rules for the session and shows one warning.
+- In workers, `guard` blocks anything it would ask about (a discard only when there is uncommitted work to lose), and still blocks amend, rebase, filter-branch/-repo and `branch -D`.
+- `guard` reads the command's text and the disk as it is just before the command runs; it can't see what earlier commands in the same call change, and it doesn't read the environment (a `TMPDIR` that was already wrong). For example, it allows `rm -rf /tmp/x/old` even if `/tmp/x` is a symlink to `/`.
 - Worker file-read tools refuse common secret paths (`.env*`, keys, `~/.ssh`, `~/.pi/agent/auth.json`); `implement`'s bash is not path-fenced.
 - `implement` edits and commits in your real checkout, with Git remotes and `gh` cut off. ✓ means your check exited 0 on the delivered content, not that the code is right; review what it hands back.
 - The recovery rules in [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md) are guidance for the main session, not runtime enforcement.

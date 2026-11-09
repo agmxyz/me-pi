@@ -1,0 +1,6869 @@
+{
+ "note": "guard oracle corpus (method step 2, PR #95): confirmed findings from the review rounds, the hand-verified bypass rows, the round probes, and guard-truth's spike rows. cwd names a fixture repo (test/guard-oracle.ts); @CLEAN@/@DIRTY@/@MAIN@ are their paths, @USER@ the user. want: ask, allow, ask-if-dirty (on a clean fixture, ask-if-dirty allows), or unknown (not scored). known: an old gap both guards allow, reported but not failing.",
+ "rows": [
+  {
+   "cmd": "git checkout HEAD src",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json: checkout tree-ish paths, no --"
+  },
+  {
+   "cmd": "git checkout src/a.txt",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json: checkout path no --"
+  },
+  {
+   "cmd": "git read-tree -u --reset HEAD",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git checkout-index -f -a",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git diff | git apply -R",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git rm -rf src",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git rm -r -f --quiet src/a.txt",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git clean -fd -e -n",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json: -n is -e's value"
+  },
+  {
+   "cmd": "git clean -fd -en",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json: -en is exclude n"
+  },
+  {
+   "cmd": "git submodule deinit -f --all",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git worktree remove --force ../w",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git reset --merge",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git push origin @",
+   "cwd": "main",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json: @ is HEAD"
+  },
+  {
+   "cmd": "git push origin heads/main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git push origin HEAD:heads/main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git branch -M main && git push -u origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git branch -m main && git push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git symbolic-ref HEAD refs/heads/main && git push origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "git remote add x git@github.com:me/r.git && git remote set-url --add x /tmp/l && git push x main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json: multi url"
+  },
+  {
+   "cmd": "git remote add L ./l && git remote remove L && git remote rename origin L && git push L main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "(cd ../onmain && git push origin HEAD)",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "pushd ../onmain && git push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-B-1.json"
+  },
+  {
+   "cmd": "cd /tmp/x & rm -rf src",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-bg1.json: 1 cd in background; rm runs in the repo"
+  },
+  {
+   "cmd": "cd /tmp/x & rm -rf \"$PWD\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-bg1.json: 1 repo root"
+  },
+  {
+   "cmd": "cd /tmp/x & rm -rf *",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-bg1.json: 1 repo contents"
+  },
+  {
+   "cmd": "cd /tmp/nonexist-q || rm -rf src",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-bg1.json: 2 rm runs only if cd failed"
+  },
+  {
+   "cmd": "cd /tmp/nonexist-q; rm -rf *",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-bg1.json: 3 cd fails, rm in the repo"
+  },
+  {
+   "cmd": "cd /tmp/nonexist-q && rm -rf *",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "hunt95/cases-bg1.json: control: && means rm only runs if cd worked"
+  },
+  {
+   "cmd": "rm -rf SRC",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-bg1.json: 4 APFS case (dirty fixture has untracked files too)"
+  },
+  {
+   "cmd": "git remote add origin /tmp/nowhere; git push --force origin feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-bg1.json: 5 failed remote add, then force push to network origin"
+  },
+  {
+   "cmd": "false && git remote set-url origin /tmp/x; git push -f origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-bg1.json: 5 set-url never runs"
+  },
+  {
+   "cmd": "git -C /tmp remote add origin /x; git push -f origin feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-bg1.json: 5 remote add in another dir"
+  },
+  {
+   "cmd": "git checkout src",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-gap.json: known gap: bare dir name, no -- ; real git discards src changes if no branch named src"
+  },
+  {
+   "cmd": "git checkout src/sub",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-gap.json: path with a slash"
+  },
+  {
+   "cmd": "git checkout feat",
+   "cwd": "dirty",
+   "want": "allow",
+   "source": "hunt95/cases-gap.json: control: a real branch, keeps changes"
+  },
+  {
+   "cmd": "git checkout -f other",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-r10.json: 10.1 -f to another branch overwrites modified files"
+  },
+  {
+   "cmd": "git checkout --force feat",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-r10.json: 10.1 --force, same branch: resets modified files"
+  },
+  {
+   "cmd": "git checkout -f origin/main",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-r10.json: 10.1 -f to a remote ref"
+  },
+  {
+   "cmd": "git checkout -f",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-r10.json: control: -f with no operand, must ask"
+  },
+  {
+   "cmd": "git checkout HEAD --pathspec-from-file=list.txt",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.1 paths from a file"
+  },
+  {
+   "cmd": "git checkout --pathspec-from-file=-",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.1 paths from stdin"
+  },
+  {
+   "cmd": "yes | git checkout -p",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.2 patch mode, all hunks"
+  },
+  {
+   "cmd": "yes | git checkout -p HEAD",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.2"
+  },
+  {
+   "cmd": "pnpm exec rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.3 runner subcommand"
+  },
+  {
+   "cmd": "npm exec -- rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.3"
+  },
+  {
+   "cmd": "yarn exec rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.3"
+  },
+  {
+   "cmd": "mise exec -- rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.3"
+  },
+  {
+   "cmd": "bun x rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.3"
+  },
+  {
+   "cmd": "pnpm exec git push --force origin feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.3 case 3"
+  },
+  {
+   "cmd": "tmux new-session -d rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.4 tmux runs its args"
+  },
+  {
+   "cmd": "tmux new 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.4 quoted"
+  },
+  {
+   "cmd": "screen -dm rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r11.json: 11.4"
+  },
+  {
+   "cmd": "npm run build",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "hunt95/cases-r11.json: control: allow"
+  },
+  {
+   "cmd": "pnpm install",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "hunt95/cases-r11.json: control: allow"
+  },
+  {
+   "cmd": "f() { rm -rf Library; }; cd ~ && f",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.1 function body runs after cd"
+  },
+  {
+   "cmd": "for i in 1 2; do rm -rf Library; cd ~; done",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.2 second loop pass after cd"
+  },
+  {
+   "cmd": "trap 'rm -rf Library' EXIT; cd ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.2 EXIT trap runs after cd"
+  },
+  {
+   "cmd": "f() { git push; }; git checkout main && f",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.3 push after checkout main, via function"
+  },
+  {
+   "cmd": "for i in 1 2; do git push; git checkout main; done",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.3 loop version"
+  },
+  {
+   "cmd": "bash -s -- x <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.4 bash -s with operands reads stdin"
+  },
+  {
+   "cmd": "sh -s foo <<EOF\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.4 sh -s"
+  },
+  {
+   "cmd": "bash -O extglob -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.5 -O value not consumed"
+  },
+  {
+   "cmd": "sh +O nullglob -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.5 +O"
+  },
+  {
+   "cmd": "busybox rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.6 wrapper"
+  },
+  {
+   "cmd": "fakeroot rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.6 wrapper"
+  },
+  {
+   "cmd": "parallel rm -rf ::: ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.6 wrapper"
+  },
+  {
+   "cmd": "xcrun rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: 9.6 wrapper (macOS)"
+  },
+  {
+   "cmd": "f() { rm -rf src; }; f",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "hunt95/cases-r9.json: control: function in place, dirty, must ask"
+  },
+  {
+   "cmd": "git rebase -x 'rm -rf ~' HEAD~1",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git -c alias.x='!rm -rf ~' x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git -c alias.x='reset --hard' x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git filter-branch --tree-filter 'rm -rf ~' HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git submodule foreach 'git clean -fdx'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git bisect run sh -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git -c core.fsmonitor='rm -rf ~' status",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "bash /dev/stdin <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "sh /dev/fd/0 <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": ". /dev/stdin <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "cat > a.sh <<'EOF'\nrm -rf ~\nEOF\ncp a.sh b.sh; sh b.sh",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "echo ~ | xargs -I{} sh -c 'rm -rf {}'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "find ~ -maxdepth 1 -exec sh -c 'rm -rf {}' \\;",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git config remote.origin.url git@github.com:o/r.git; git push -f origin",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git push origin 'refs/heads/*:refs/heads/*'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "arch -arm64 rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "script -q /dev/null rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "zsh -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "csh -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git reset --ha",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git clean --fo -d",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/adv.mjs"
+  },
+  {
+   "cmd": "git fetch --upload-pack='rm -rf ~;:' .",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "git ls-remote --upload-pack='rm -rf ~;:' .",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "git clone -u 'rm -rf ~;:' . /tmp/x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "git push --receive-pack='rm -rf ~;:' ../bare.git feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "git archive --remote=. --exec='rm -rf ~;:' HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "git grep -O'rm -rf ~;:' foo",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "GIT_EDITOR='rm -rf ~;:' git commit --allow-empty",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "GIT_SEQUENCE_EDITOR='rm -rf ~;:' git rebase -i HEAD~1",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "GIT_SSH_COMMAND='rm -rf ~;:' git fetch origin",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "GIT_EXTERNAL_DIFF='rm -rf ~;:' git diff",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.editor GIT_CONFIG_VALUE_0='rm -rf ~;:' git commit --allow-empty",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "export GIT_EDITOR='rm -rf ~;:'; git commit --allow-empty",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "git config core.editor 'rm -rf ~;:' && git commit --allow-empty",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/r7.mjs"
+  },
+  {
+   "cmd": "cd /tmp/x && find -x / -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "cd /tmp/x && find -- ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "cd /tmp/x && find -E ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "cd /tmp/x && find -s / -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "cd ~ && rm -rf ~+/Documents",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "cd ~ && find ~+/Documents -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "cd ~ && rm -rf \"$PWD/Documents\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "D=-delete; find ~ $D",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "find ~ $(printf -- -delete)",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "find -x ~ -delete",
+   "cwd": "sub",
+   "want": "ask",
+   "source": "pr95-verify/final.mjs"
+  },
+  {
+   "cmd": "find ~ -name x -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find ~ -maxdepth 1 -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find \"$HOME\" -type f -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find -L / -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find . -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find src ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "X=~; find $X -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find . -name '*.py' -delete",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find . -name '*.pyc' -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find dist -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find \"${TMPDIR:?}/x\" -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find . -delete",
+   "cwd": "temp",
+   "want": "allow",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find ~ -name x -print",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/find.mjs"
+  },
+  {
+   "cmd": "find . -type f -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find . ! -name keep -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find \"$PWD\" -type f -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find ./ -mindepth 1 -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find -L . -type f -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find @CLEAN@ -type d -empty -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "cd .. && find . -name x -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find .. -name x -delete",
+   "cwd": "sub",
+   "want": "ask",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find ../.. -type f -delete",
+   "cwd": "sub",
+   "want": "ask",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find node_modules -name '*.map' -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find \"${TMPDIR:?}/x\" -type f -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "find . -name x -print",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/round4.mjs"
+  },
+  {
+   "cmd": "rm -rf .",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/root.mjs"
+  },
+  {
+   "cmd": "rm -rf ./",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/root.mjs"
+  },
+  {
+   "cmd": "rm -rf .git",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/root.mjs"
+  },
+  {
+   "cmd": "rm -rf \"$PWD\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/root.mjs"
+  },
+  {
+   "cmd": "rm -rf @CLEAN@",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/root.mjs"
+  },
+  {
+   "cmd": "find @CLEAN@ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/root.mjs"
+  },
+  {
+   "cmd": "find .git -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/root.mjs"
+  },
+  {
+   "cmd": "git reset --hard",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/prefix.mjs"
+  },
+  {
+   "cmd": "git reset --har",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/prefix.mjs"
+  },
+  {
+   "cmd": "git clean -fd",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/prefix.mjs"
+  },
+  {
+   "cmd": "git clean --force -d",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/prefix.mjs"
+  },
+  {
+   "cmd": "git switch --disc main",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/prefix.mjs"
+  },
+  {
+   "cmd": "rm -rf ~@USER@",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/verify.mjs"
+  },
+  {
+   "cmd": "p='src/*'; rm -rf $p",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/verify.mjs"
+  },
+  {
+   "cmd": "git --git-dir=@DIRTY@/.git --work-tree=@DIRTY@ reset --hard",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/verify.mjs"
+  },
+  {
+   "cmd": "B=main; git checkout -B \"$B\" && git push -u origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/verify.mjs"
+  },
+  {
+   "cmd": "rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/verify.mjs"
+  },
+  {
+   "cmd": "git push origin",
+   "cwd": "main",
+   "want": "ask",
+   "source": "pr95-verify/verify.mjs"
+  },
+  {
+   "cmd": "rm -rf ~root",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "u=$USER; rm -rf ~$u",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "rm -rf \"$HOME\"/..",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "GIT_DIR=@DIRTY@/.git GIT_WORK_TREE=@DIRTY@ git reset --hard",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "git -C @DIRTY@ checkout -- .",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "cd @DIRTY@ && git clean -fdx",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "B=main; git switch -C \"$B\" && git push origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "git checkout -b main && git push -u origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "git push origin HEAD:main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "git push origin +feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "git push origin :main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "git push --mirror origin",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "echo ~ | xargs rm -rf",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "find ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "find ~/x -exec rm -rf {} +",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "/bin/rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "command rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "sudo rm -rf /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "rm -rf -- ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "a=(src/*); rm -rf \"${a[@]}\"",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "p='sr?'; rm -rf $p",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "p='s[r]c'; rm -rf $p",
+   "cwd": "dirty",
+   "want": "ask",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}/x\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "t=$(mktemp -d); rm -rf \"$t\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "git reset --hard",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "rm -rf dist node_modules",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "cat > q.mjs <<'EOF'\nconst c = `rm -rf /Users`;\nEOF\nnode q.mjs",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "herdr agent prompt w3:p1 \"done: ran rm -rf /tmp/x\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "git commit -m \"docs: never rm -rf ~\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "git push -u origin feat",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "command echo ok; rm -rf \"${TMPDIR:?}/x\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "pr95-verify/extra.mjs"
+  },
+  {
+   "cmd": "find / -name core -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find \"$HOME/x\" -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find ~/.pi/agent -type f -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find $X -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find /Users/nobody-guard-test ! -name keep -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find ~ -exec rm -r {} \\;",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find ~ -execdir rm -rf {} +",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find ~ -ok rm -r {} \\;",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find ~ -okdir rm -rf {} \\;",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find ~ -print0 | xargs -0 rm -rf",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find / -name x | xargs rm -r",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find src -name x -delete",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find /tmp/x -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find dist -name '*.map' -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find node_modules -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "t=$(mktemp -d); find \"$t\" -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find ~ -name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find / -name x -print",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find . -name '*.ts' -exec grep -l x {} +",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "echo 'find ~ -delete'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find-probe.json"
+  },
+  {
+   "cmd": "find @CLEAN@ -type f -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find -type f -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find ./ -name x -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find ../ -type f -delete",
+   "cwd": "sub",
+   "want": "ask",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find .. -name x -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find /w -name x -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find .git -name x -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find src -type f -delete",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find src -name '*.pyc' -delete",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find . -type f -delete",
+   "cwd": "sub",
+   "want": "ask-if-dirty",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find dist -type f -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find node_modules -name x -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "find /tmp/x -type f -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/find4-probe.json"
+  },
+  {
+   "cmd": "cat > notes.md <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/installed-probe.json"
+  },
+  {
+   "cmd": "tmux send-keys -t s 'rm -rf /Users/nobody-guard-test' Enter",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/installed-probe.json"
+  },
+  {
+   "cmd": "pnpm exec rm -rf /Users/nobody-guard-test",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/installed-probe.json"
+  },
+  {
+   "cmd": "bun x rm -rf /Users/nobody-guard-test",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/installed-probe.json"
+  },
+  {
+   "cmd": "tmux new 'rm -rf /Users/nobody-guard-test'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/installed-probe.json"
+  },
+  {
+   "cmd": "screen -dm rm -rf /Users/nobody-guard-test",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/installed-probe.json"
+  },
+  {
+   "cmd": "git push --force origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/installed-probe.json"
+  },
+  {
+   "cmd": "git checkout -f other",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout --force feat",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout -f origin/main",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout -f",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout -qf other",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git switch -f other",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git switch --discard-changes feat",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout src/sub",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout a.ts",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout feat",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout feature/x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout origin/main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout HEAD~1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout v1.2.3",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git checkout -b src",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "git switch feat",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r10-probe.json"
+  },
+  {
+   "cmd": "mise x -- rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "pnpm dlx rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "npx rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "asdf exec rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "npm --silent exec -- rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "tmux new-window -n x 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "tmux split-window 'git push -f origin main'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "tmux run-shell 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "screen -dmS s rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "git checkout HEAD --pathspec-from-file=list.txt",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "git checkout --pathspec-from-file=-",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "yes | git checkout -p",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "yes | git checkout -p HEAD",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "git checkout --patch -- src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "git restore --pathspec-from-file=list.txt",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "git reset --hard --pathspec-from-file=x",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "git reset --pathspec-from-file=list.txt",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "git stash push --pathspec-from-file=list.txt",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "npm install rimraf git-cliff",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "npm test",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "pnpm add -D rm",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "brew install git",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "brew info rm",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "make rm",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "cargo build",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "go test ./...",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "mise use node@22",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "tmux ls",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "tmux new-session -d 'npm run dev'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "tmux send-keys -t s 'rm -rf ~' Enter",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "screen -ls",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "code rm.ts",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "open git.png",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r11-probe.json"
+  },
+  {
+   "cmd": "find ~ `echo -delete`",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find ~ $D",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "X=-exec; find ~ $X rm -rf {} +",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -f ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -d ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -x / -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -- ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -E ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -s / -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -O3 ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -D tree ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -Y ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find $OPTS ~ -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "cd @CLEAN@ && cd ~ && rm -rf ~-/x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "cd ~ && cd /tmp && rm -rf ~-/Documents",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "cd ~ && cd /tmp && rm -rf \"$OLDPWD/Documents\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "cd \"$X\" && rm -rf \"$PWD/y\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "rm -rf \"$PWD/src\"",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "rm -rf ~+/src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "rm -rf \"$PWD/dist\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "cd /tmp/x && rm -rf \"$PWD/y\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "cd /tmp/x && cd @CLEAN@ && rm -rf ~-/y",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -x /tmp/x -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -f /tmp/x -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -E dist -name x -delete",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find ~ $N -name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "N=x; find ~ -name $N",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find ~ -name \"$N\" -print",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find -x ~ -name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5-probe.json"
+  },
+  {
+   "cmd": "find \"$d\" -type f \\( -name '*.jsonl' -o -name '*.ndjson' \\) -print",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find \"$HOME/Library/Preferences\" -maxdepth 1 -iname '*proton*' -print",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find \"$d\" -maxdepth 1 -name '*.plist' -print",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find ~/.config ~/.local/share -maxdepth 3 -iname '*agy*' -print",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find \"$f\" -type f -name '*.jsonl'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find \"$d\" -maxdepth 2 -type f -ls",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find $gd/objects -type f -newermt x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "gd=.git; find $gd/objects -type f -newermt x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find \"$d\" -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find $D ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find \"$d\" $X",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r5b-probe.json"
+  },
+  {
+   "cmd": "find ~/.config ~/.local/share ~/Library/Application\\ Support -maxdepth 3 -iname '*agy*' -o -maxdepth 3 -iname '*an*'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5c-probe.json"
+  },
+  {
+   "cmd": "find ~/Library/Application\\ Support/Antigravity ~/.antigravity -maxdepth 4 \\( -iname '*.db' -o -iname '*.sqlite*' \\) -print",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5c-probe.json"
+  },
+  {
+   "cmd": "find ~/A\\ B -name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r5c-probe.json"
+  },
+  {
+   "cmd": "git reset --ha",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git clean --fo -d",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git push --fo origin feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git push --mi origin",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git push origin '*:*'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git push origin '+refs/heads/*:refs/heads/*'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git push origin 'refs/heads/m*'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git push --all origin",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git push local '*:*'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git push origin feat",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git push origin 'refs/tags/*'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git status --porcelain",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git log --oneline -5",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git -c user.email=a@b commit -m x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git -c color.ui=never log",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git -c core.sshCommand='rm -rf ~' fetch",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git -c core.pager='rm -rf ~' log",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git rebase --exec 'rm -rf ~' HEAD~1",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git filter-branch --index-filter x HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git st",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git rebase --continue",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git rebase -i HEAD~2",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git bisect start",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git submodule update --init",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "source /dev/stdin <<< 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "bash - <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "bash /proc/self/fd/0 <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "bash /dev/stdin <<'EOF'\necho hi\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "cat > a.sh <<'EOF'\nrm -rf ~\nEOF\nmv a.sh b.sh && bash b.sh",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "cat > a.sh <<'EOF'\nrm -rf ~\nEOF\nln -s a.sh b && ./b",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "cat > a.sh <<'EOF'\nrm -rf ~\nEOF\nchmod +x a.sh && ./a.sh",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "cat > a.sh <<'EOF'\necho hi\nEOF\ncp a.sh b.sh; sh b.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "find ~ -execdir sh -c 'rm -rf {}' +",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "ls | xargs -I % sh -c 'rm -rf %'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "find . -name '*.ts' -exec sh -c 'echo {}' \\;",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "tcsh -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "fish -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "lockf /tmp/l rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "chroot / rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "sandbox-exec -f p.sb rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "taskpolicy -c utility rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "caffeinate -i rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r6-probe.json"
+  },
+  {
+   "cmd": "git fetch --upload='rm -rf ~;:' origin",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git ls-remote --upload-pack='x' .",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git clone -u 'x' . /tmp/x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git pull -u x origin",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git push --receive-pack='x' ../bare.git feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git push --rec='x' origin feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git archive --remote=. --exec='x' HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git send-pack --exec=x ../r",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git grep -O'x' foo",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git grep --open-files-in-pager=x foo",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git --config-env=core.editor=ED commit",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git difftool --extcmd=x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_EDITOR='rm -rf ~' git commit --edit",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_SEQUENCE_EDITOR='x' git rebase -i HEAD~2",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_SSH_COMMAND='x' git fetch",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_SSH=x git fetch",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_EXTERNAL_DIFF=x git diff",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_PAGER=x git log",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_ASKPASS=x git push origin feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_PROXY_COMMAND=x git fetch",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=x git log",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_CONFIG_PARAMETERS=\"'core.pager=x'\" git log",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_CONFIG_GLOBAL=/tmp/evil git log",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "EDITOR=x git commit",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "VISUAL=x git commit",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "PAGER=x git log",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "env GIT_EDITOR=x git commit",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "env -u HOME GIT_SSH_COMMAND=x git fetch",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "export GIT_EDITOR=x; git commit",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "export GIT_SSH_COMMAND=x && git fetch",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config core.editor 'x' && git commit",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config --global core.sshCommand x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config --local alias.x '!x'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config --add core.hooksPath x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config set core.pager x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config diff.foo.textconv x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config user.name 'A B'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config --global user.email a@b",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config --get core.editor",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config core.editor",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config --list",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config --unset core.editor",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git config get user.name",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git fetch origin",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git grep -n foo",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git log -5",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_TRACE=1 git status",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "GIT_AUTHOR_NAME=x git commit -m y",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "export FOO=1; git status",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "echo 'GIT_EDITOR=x'; git status",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git commit -m 'set EDITOR=vim in docs'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r7-probe.json"
+  },
+  {
+   "cmd": "git checkout -b topic; git push -u origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "git checkout -b topic & git push -u origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "git checkout -b topic || git push -u origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "git checkout -b topic && git push -u origin HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "B=topic & git checkout -b \"$B\" && git push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "T=$(mktemp -d) & rm -rf \"$T\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "false && T=$(mktemp -d); rm -rf \"$T\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "T=$(mktemp -d) && rm -rf \"$T\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "T=$(mktemp -d); rm -rf \"$T\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "cd /tmp/x & rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "cd /tmp/x || rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "cd /tmp/x; rm -rf *",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "cd /tmp/x | rm -rf *",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "(cd /tmp/x); rm -rf *",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "if true; then cd /tmp/x; fi; rm -rf *",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "pushd /tmp/x & rm -rf *",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "cd /tmp/x && rm -rf *",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "cd /tmp/x && cd y && rm -rf z",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "cd /tmp/x; rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "rm -rf /W/App",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "rm -rf .GIT",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "rm -rf src/.Git/x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "rm -rf SRC",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "git remote add up /tmp/r.git & git push -f up main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "git remote add up /tmp/r.git && git push -f up main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "git push -f local main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "git remote set-url local https://x/y.git; git push -f local main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "git remote set-url local /tmp/z.git && git push -f local main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "export GIT_EDITOR=x & git commit",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "git config core.editor x; git commit",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r8-probe.json"
+  },
+  {
+   "cmd": "while true; do rm -rf Library; cd ~; done",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "until false; do rm -rf Library; cd ~; done",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "function g { rm -rf Library; }; cd ~; g",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "trap 'rm -rf Library' INT; cd ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "f() { rm -rf src; }; f",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "for f in a b; do echo $f; done",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "f() { echo hi; }; cd /tmp && f",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "for i in 1 2; do rm -rf dist; done",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash -es <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash -o pipefail -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash --rcfile x -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash --norc -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash -euxc 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash --unknown-opt <<'EOF'\necho hi\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash -Q -c 'echo hi'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash -c 'echo hi'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash -o pipefail -c 'echo hi'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash -s <<'EOF'\necho hi\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash -n script.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "bash --version",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "strace -f rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "nsenter -t 1 rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "unshare -r rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "taskset -c 0 rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "chrt -f 10 rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "proxychains4 git push -f origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "torsocks git push -f origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "mytool rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "devbox run git push -f origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "nix-shell -p x --run x rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "echo rm -rf ~",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "grep -rn 'git push' .",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "man rm",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "which git",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "gh repo view",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "mytool --verbose build",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "parallel echo ::: a b",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9-probe.json"
+  },
+  {
+   "cmd": "git remote rename origin local && git push -f local main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git remote remove local; git remote add local https://x/y.git; git push -f local main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git checkout src/a.txt",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git checkout HEAD src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git checkout main -- src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git checkout -b topic",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git read-tree -u --reset HEAD",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git checkout-index -f -a",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git diff | git apply -R",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git apply -R p.patch",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git rm -r -f src/a.txt",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git rm -r src",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git rm --cached -rf src",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git clean -fd -e -n",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git clean -fd -en",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git clean -fdn",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git reset --merge",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git submodule deinit -f --all",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git worktree remove --force ../w",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git worktree list",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git push origin @",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git push origin feat:heads/master",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git branch -m topic2 && git push origin topic2",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "git push origin @:refs/heads/feat",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "p94/r9b-probe.json"
+  },
+  {
+   "cmd": "find . -mindepth 1 -delete",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "p94/root4-probe.json"
+  },
+  {
+   "cmd": "git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #0"
+  },
+  {
+   "cmd": "git push -u origin master",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #1"
+  },
+  {
+   "cmd": "git push origin feature/x:refs/heads/main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #3"
+  },
+  {
+   "cmd": "git push",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #4"
+  },
+  {
+   "cmd": "git push origin HEAD",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #6"
+  },
+  {
+   "cmd": "git push origin main 2>&1 | tail",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #7"
+  },
+  {
+   "cmd": "git push --delete origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #9"
+  },
+  {
+   "cmd": "git -C /some/path push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #10"
+  },
+  {
+   "cmd": "rtk proxy git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #11"
+  },
+  {
+   "cmd": "GIT_SSH_COMMAND='ssh -i k' git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #12"
+  },
+  {
+   "cmd": "git push origin feature/x && git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #13"
+  },
+  {
+   "cmd": "bash -c \"git push origin main\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #14"
+  },
+  {
+   "cmd": "sh -c 'git push origin main'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #15"
+  },
+  {
+   "cmd": "(git push origin main)",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #16"
+  },
+  {
+   "cmd": "echo $(git push origin main)",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #17"
+  },
+  {
+   "cmd": "git push origin \"main\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #18"
+  },
+  {
+   "cmd": "git push origin 'master'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #19"
+  },
+  {
+   "cmd": "cd ../other && git push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #20"
+  },
+  {
+   "cmd": "git -C ../other push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #21"
+  },
+  {
+   "cmd": "git push --force origin feature/x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #22"
+  },
+  {
+   "cmd": "git push -f",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #23"
+  },
+  {
+   "cmd": "git push --force-with-lease origin feature/x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #24"
+  },
+  {
+   "cmd": "git push origin +feature/x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #25"
+  },
+  {
+   "cmd": "git reset --hard HEAD~1",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #26"
+  },
+  {
+   "cmd": "git clean -fdx",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #27"
+  },
+  {
+   "cmd": "git checkout -- src/a.ts",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #28"
+  },
+  {
+   "cmd": "git checkout .",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #29"
+  },
+  {
+   "cmd": "git restore src/a.ts",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #30"
+  },
+  {
+   "cmd": "git restore --staged --worktree src/a.ts",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #31"
+  },
+  {
+   "cmd": "git branch -D old",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #32"
+  },
+  {
+   "cmd": "git branch --delete --force old",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #33"
+  },
+  {
+   "cmd": "rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #34"
+  },
+  {
+   "cmd": "rm -rf dist src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #35"
+  },
+  {
+   "cmd": "rm -rf dist/../src",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #36"
+  },
+  {
+   "cmd": "rm -rf *",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #37"
+  },
+  {
+   "cmd": "rm -rf $DIR",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #38"
+  },
+  {
+   "cmd": "rm -rf /tmp/",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #40"
+  },
+  {
+   "cmd": "rm -rf /tmp/*",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #41"
+  },
+  {
+   "cmd": "rm -rf /var/folders/*",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #42"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR\"/*",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #43"
+  },
+  {
+   "cmd": "rm -rf $TMPDIR/x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #44"
+  },
+  {
+   "cmd": "rm -rf /tmp/a*",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #45"
+  },
+  {
+   "cmd": "rm -rf /tmp/x/../../etc",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #46"
+  },
+  {
+   "cmd": "rm -rf /tmpx",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #47"
+  },
+  {
+   "cmd": "rm -rf dist2",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #48"
+  },
+  {
+   "cmd": "rm -rf dist*",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #49"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}\"/*",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #50"
+  },
+  {
+   "cmd": "rm -rf /var/folders/ab/cd/T/x*",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #51"
+  },
+  {
+   "cmd": "rm -rf dist 2>&1 /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #52"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}/x\" &>/dev/null /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #53"
+  },
+  {
+   "cmd": "rm -rf dist >| log /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #54"
+  },
+  {
+   "cmd": "rm -rf dist &>>log /Users",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #55"
+  },
+  {
+   "cmd": "rm -rf dist >&2 /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #56"
+  },
+  {
+   "cmd": "rm -rf dist 2>&1 ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #57"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}/x\" 2>/dev/null /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #58"
+  },
+  {
+   "cmd": "rm -rf dist &> log /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #59"
+  },
+  {
+   "cmd": "rm -rf dist >|log /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #60"
+  },
+  {
+   "cmd": "rm -rf dist 2>&- /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #61"
+  },
+  {
+   "cmd": "rm -rf dist \">\" /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #62"
+  },
+  {
+   "cmd": "rm -rf /tmp/&>/dev/null",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #63"
+  },
+  {
+   "cmd": "rm -rf /tmp/&>>log",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #64"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}/\"&>/dev/null",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #65"
+  },
+  {
+   "cmd": "rm -rf ${TMPDIR:?}/&>/dev/null",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #66"
+  },
+  {
+   "cmd": "rm -rf /var/folders/ab/cd/T/&>/dev/null",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #67"
+  },
+  {
+   "cmd": "rm -rf /tmp/>/dev/null",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #68"
+  },
+  {
+   "cmd": "rm -rf /tmp/>&2",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #69"
+  },
+  {
+   "cmd": "rm -rf&>/dev/null /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #70"
+  },
+  {
+   "cmd": "rm -f --recursive&>/dev/null /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #71"
+  },
+  {
+   "cmd": "rm -R&>x /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #72"
+  },
+  {
+   "cmd": "rm -rf>/dev/null /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #73"
+  },
+  {
+   "cmd": "rm -r>log /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #74"
+  },
+  {
+   "cmd": "TMPDIR=/ rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #75"
+  },
+  {
+   "cmd": "export TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #76"
+  },
+  {
+   "cmd": "export TMPDIR=/ && rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #77"
+  },
+  {
+   "cmd": "\\export TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #78"
+  },
+  {
+   "cmd": "builtin export TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #79"
+  },
+  {
+   "cmd": "declare -x TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #80"
+  },
+  {
+   "cmd": "f() { local TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"; }; f",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #81"
+  },
+  {
+   "cmd": "typeset TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #82"
+  },
+  {
+   "cmd": "read TMPDIR <<< /; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #83"
+  },
+  {
+   "cmd": "printf -v TMPDIR /; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #84"
+  },
+  {
+   "cmd": "export TMP''DIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #85"
+  },
+  {
+   "cmd": "declare -x TM\"P\"DIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #86"
+  },
+  {
+   "cmd": "export TMP\"\"DIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #87"
+  },
+  {
+   "cmd": "env TMPDIR=/ rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #88"
+  },
+  {
+   "cmd": "/usr/bin/env TMPDIR=/ rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #89"
+  },
+  {
+   "cmd": "env -i rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #90"
+  },
+  {
+   "cmd": "sudo rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #91"
+  },
+  {
+   "cmd": "/usr/bin/sudo rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #92"
+  },
+  {
+   "cmd": "doas true; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #93"
+  },
+  {
+   "cmd": "su -l x; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #94"
+  },
+  {
+   "cmd": "runuser -u x true; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #95"
+  },
+  {
+   "cmd": "pkexec true; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #96"
+  },
+  {
+   "cmd": "unset TMPDIR; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #97"
+  },
+  {
+   "cmd": "set -a; . ./vars; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #98"
+  },
+  {
+   "cmd": "set -a && source vars && rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #99"
+  },
+  {
+   "cmd": "source ./vars; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #100"
+  },
+  {
+   "cmd": ". ./vars; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #101"
+  },
+  {
+   "cmd": "cd /tmp/x && . vars && rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #102"
+  },
+  {
+   "cmd": ".>/dev/null ./v; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #103"
+  },
+  {
+   "cmd": ".>>x ./v; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #104"
+  },
+  {
+   "cmd": ".>|x ./v; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #105"
+  },
+  {
+   "cmd": "bash -c 'TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #106"
+  },
+  {
+   "cmd": "z=TMP; z+=DIR=/; ((z)); rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #107"
+  },
+  {
+   "cmd": "e{xport,} TMP{DIR,}=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #108"
+  },
+  {
+   "cmd": "$x TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #109"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}/x\" \"${TMPDIR:?}/$y\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #110"
+  },
+  {
+   "cmd": "git commit -m \"x\" <<< \"$(export TMPDIR=/)\"; rm -rf \"${TMPDIR:?}/Users\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #111"
+  },
+  {
+   "cmd": "git push -o ci.skip origin",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #112"
+  },
+  {
+   "cmd": "git push --repo=origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #113"
+  },
+  {
+   "cmd": "/bin/rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #114"
+  },
+  {
+   "cmd": "find . -name x -exec rm -rf {} \\;",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #115"
+  },
+  {
+   "cmd": "find . -name x -print0 | xargs -0 rm -rf",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #116"
+  },
+  {
+   "cmd": "git checkout main && git push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #117"
+  },
+  {
+   "cmd": "git switch main; git push origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #118"
+  },
+  {
+   "cmd": "/usr/bin/git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #119"
+  },
+  {
+   "cmd": "bash -lc \"git push origin main\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #120"
+  },
+  {
+   "cmd": "zsh -c \"git push origin main\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #121"
+  },
+  {
+   "cmd": "eval \"git push origin main\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #122"
+  },
+  {
+   "cmd": "env -i git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #123"
+  },
+  {
+   "cmd": "if true; then git push origin main; fi",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #124"
+  },
+  {
+   "cmd": "nohup git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #125"
+  },
+  {
+   "cmd": "{ git push origin main; }",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #126"
+  },
+  {
+   "cmd": "bash <<EOF\ngit push origin main\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #127"
+  },
+  {
+   "cmd": "git commit -F - <<EOF && git push origin main\nmsg\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #128"
+  },
+  {
+   "cmd": "python3 - <<EOF\n$(rm -rf ~)\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #129"
+  },
+  {
+   "cmd": "python3 - <<\\EOF\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #130"
+  },
+  {
+   "cmd": "python3 - <<'EOF' | sh\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #131"
+  },
+  {
+   "cmd": "python3 - <<'EOF' 2>&1 | bash\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #132"
+  },
+  {
+   "cmd": "eval \"$(python3 - <<'EOF'\nrm -rf ~\nEOF\n)\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #133"
+  },
+  {
+   "cmd": "source <(node - <<'EOF'\nrm -rf ~\nEOF\n)",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #134"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nprint(1)\nEOF\nrm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #135"
+  },
+  {
+   "cmd": "python3 - <<'EOF' && rm -rf ~\nprint(1)\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #136"
+  },
+  {
+   "cmd": "echo \"\npython3 - <<'EOF'\n$(rm -rf ~)\nEOF\n\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #137"
+  },
+  {
+   "cmd": "wc -l <<X\npython3 - <<'EOF'\n$(rm -rf ~)\nEOF\nX",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #138"
+  },
+  {
+   "cmd": "cat <<'X'\npython3 - <<'EOF'\nX\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #139"
+  },
+  {
+   "cmd": "(\npython3 - <<'EOF'\nrm -rf ~\nEOF\n) | /bin/sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #140"
+  },
+  {
+   "cmd": "cat > notes.md <<'EOF'\nrm -rf src\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #141"
+  },
+  {
+   "cmd": "cat > run.sh <<'EOF'\nrm -rf ~\nEOF\nchmod +x r*.sh && ./r*.sh",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #142"
+  },
+  {
+   "cmd": "cat > Makefile <<'EOF'\nx:\n\trm -rf ~\nEOF\nmake x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #143"
+  },
+  {
+   "cmd": "sudo python3 - <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #144"
+  },
+  {
+   "cmd": "ssh h python3 - <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #145"
+  },
+  {
+   "cmd": "pythonx - <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #146"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nrm -rf ~\nEOFX\nrm -rf ~",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #147"
+  },
+  {
+   "cmd": "bash <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #148"
+  },
+  {
+   "cmd": "cat > run.sh <<'EOF' && sh run.sh\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #149"
+  },
+  {
+   "cmd": "cat > x <<EOF\n$(rm -rf ~)\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #150"
+  },
+  {
+   "cmd": "tee x <<'EOF' | sh\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #151"
+  },
+  {
+   "cmd": "bash <<X && python3 - <<'EOF'\nrm -rf ~\nX\nprint(1)\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #152"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nEOF\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #153"
+  },
+  {
+   "cmd": "cat > f <<'EOF'\n\nEOF\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #154"
+  },
+  {
+   "cmd": "python3 - <<'EOF'X\nprint(1)\nEOFX\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #155"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\r\nprint(1)\r\nEOF\r\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #156"
+  },
+  {
+   "cmd": "python3 - <<'EOF' \\\n| sh\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #157"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nrm -rf ~",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #158"
+  },
+  {
+   "cmd": "eval \"$(\npython3 - <<'EOF'\nrm -rf ~\nEOF\n)\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #159"
+  },
+  {
+   "cmd": "(python3 - <<'EOF'\nrm -rf ~\nEOF\n) | sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #160"
+  },
+  {
+   "cmd": "for i in 1; do\npython3 - <<'EOF'\nrm -rf ~\nEOF\ndone | bash",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #161"
+  },
+  {
+   "cmd": "python3 - <<'EOF' > >(sh)\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #162"
+  },
+  {
+   "cmd": "python3 - <<'EOF' > r.sh && sh r.sh\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #163"
+  },
+  {
+   "cmd": "cat > run.sh <<'EOF'\nrm -rf ~\nEOF\nbash run.sh",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #164"
+  },
+  {
+   "cmd": "cat > run.sh <<'EOF'\nrm -rf ~\nEOF\nchmod +x run.sh && ./run.sh",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #165"
+  },
+  {
+   "cmd": "python3 - <<'EOF' > out.sh\nrm -rf ~\nEOF\n. ./out.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #166"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nx = 1\nEOF\ngit push -f origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #167"
+  },
+  {
+   "cmd": "git commit --amend --no-edit",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #168"
+  },
+  {
+   "cmd": "git rebase -i HEAD~3",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #169"
+  },
+  {
+   "cmd": "git filter-repo --path x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #170"
+  },
+  {
+   "cmd": "git switch -f main",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #171"
+  },
+  {
+   "cmd": "git stash drop",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #172"
+  },
+  {
+   "cmd": "git stash clear",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #173"
+  },
+  {
+   "cmd": "git log --format=\"$(git push origin main)\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #174"
+  },
+  {
+   "cmd": "git commit -m \"$(git push origin main)\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #175"
+  },
+  {
+   "cmd": "git commit -m \"`rm -rf src`\"",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #176"
+  },
+  {
+   "cmd": "rm -R src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #177"
+  },
+  {
+   "cmd": "rm --recursive src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #178"
+  },
+  {
+   "cmd": "sh -c \"rm -rf x\"",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #179"
+  },
+  {
+   "cmd": "find . -name x | xargs rm -rf",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #180"
+  },
+  {
+   "cmd": "git push",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #181"
+  },
+  {
+   "cmd": "git push -u origin feature/x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #182"
+  },
+  {
+   "cmd": "git push origin HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #183"
+  },
+  {
+   "cmd": "git push origin main-fix",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #184"
+  },
+  {
+   "cmd": "gh pr create --fill",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #185"
+  },
+  {
+   "cmd": "git reset HEAD~1",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #186"
+  },
+  {
+   "cmd": "git reset --soft HEAD~1",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #187"
+  },
+  {
+   "cmd": "git clean -n",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #188"
+  },
+  {
+   "cmd": "git clean -fn",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #189"
+  },
+  {
+   "cmd": "git checkout feature/x",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #190"
+  },
+  {
+   "cmd": "git checkout -b feature/y",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #191"
+  },
+  {
+   "cmd": "git restore --staged src/a.ts",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #192"
+  },
+  {
+   "cmd": "git branch -d merged",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #193"
+  },
+  {
+   "cmd": "git log --grep push",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #194"
+  },
+  {
+   "cmd": "grep 'git push origin main' README.md",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #195"
+  },
+  {
+   "cmd": "echo \"rm -rf /\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #196"
+  },
+  {
+   "cmd": "git commit -m \"rm -rf old dir\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #197"
+  },
+  {
+   "cmd": "git commit -m \"fix: then rm -rf src\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #198"
+  },
+  {
+   "cmd": "git commit -am 'cd x && git push origin main'",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #199"
+  },
+  {
+   "cmd": "git commit --message=\"handle --amend\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #200"
+  },
+  {
+   "cmd": "git commit -m 'git reset --hard was wrong' && git push",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #201"
+  },
+  {
+   "cmd": "rm notes.txt",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #202"
+  },
+  {
+   "cmd": "rm -f notes.txt",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #203"
+  },
+  {
+   "cmd": "rm -rf dist",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #204"
+  },
+  {
+   "cmd": "rm -r -f build node_modules ./coverage",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #205"
+  },
+  {
+   "cmd": "rm -rf /tmp/me-pi-test",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #206"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #207"
+  },
+  {
+   "cmd": "cd /tmp/x && rm -rf \"${TMPDIR:?}/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #208"
+  },
+  {
+   "cmd": "rm -rf dist 2>/dev/null",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #209"
+  },
+  {
+   "cmd": "rm -rf dist 2> /dev/null",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #210"
+  },
+  {
+   "cmd": "rm -rf dist > log",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #211"
+  },
+  {
+   "cmd": "rm -rf dist 2>&1 | tail -2",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #212"
+  },
+  {
+   "cmd": "rm -rf dist >/dev/null 2>&1",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #213"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}/x\" 2>/dev/null || true",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #214"
+  },
+  {
+   "cmd": "rm -rf dist && echo ok",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #215"
+  },
+  {
+   "cmd": "rm -rf dist &>/dev/null",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #216"
+  },
+  {
+   "cmd": "rm -rf dist >| log",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #217"
+  },
+  {
+   "cmd": "rm -rf node_modules dist 2>&1",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #218"
+  },
+  {
+   "cmd": "rm -rf dist &> log",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #219"
+  },
+  {
+   "cmd": "rm -rf dist |& tail",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #220"
+  },
+  {
+   "cmd": "rm -rf /tmp/x/*",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #221"
+  },
+  {
+   "cmd": "rm -rf dist/a..b",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #222"
+  },
+  {
+   "cmd": "rm -rf /var/folders/ab/cd/T/me-pi-x",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #223"
+  },
+  {
+   "cmd": "git push -o ci.skip origin feature/x",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #224"
+  },
+  {
+   "cmd": "git rebase --continue",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #225"
+  },
+  {
+   "cmd": "git commit -m 'fix'",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #226"
+  },
+  {
+   "cmd": "git stash",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #227"
+  },
+  {
+   "cmd": "git stash pop",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #228"
+  },
+  {
+   "cmd": "git switch feature/y",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #229"
+  },
+  {
+   "cmd": "rmdir empty-dir",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #231"
+  },
+  {
+   "cmd": "git commit -m \"$(cat <<'EOF'\nfix: git push origin main and rm -rf src\nEOF\n)\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #232"
+  },
+  {
+   "cmd": "cd /tmp/x && python3 - <<'EOF'\ns = '[\"rm -rf /tmp/x/$y\", onFeature]'\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #233"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nprint(\"`rm -rf ~`\")\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #234"
+  },
+  {
+   "cmd": "node - <<'EOF'\nconst c = `git push -f origin main`;\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #235"
+  },
+  {
+   "cmd": "python - <<\"EOF\"\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #236"
+  },
+  {
+   "cmd": "/usr/bin/python3 <<-'EOF'\n\trm -rf ~\n\tEOF\nnode --test x 2>&1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #237"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nprint(1)\nEOF\nnode --test x 2>&1 | grep ok",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #238"
+  },
+  {
+   "cmd": "cd /tmp/x && python3 - <<'EOF'\nrm -rf ~\nEOF\nnpx biome check --write . && npm test",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #239"
+  },
+  {
+   "cmd": "python3 - <<-'EOF'\n\trm -rf ~\n\tEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #240"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\np = 1\n\nprint('rm -rf ~')\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #241"
+  },
+  {
+   "cmd": "git push origin x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #242"
+  },
+  {
+   "cmd": "git push . HEAD:main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #243"
+  },
+  {
+   "cmd": "git -C x worktree add",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #244"
+  },
+  {
+   "cmd": "git commit -nm x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #245"
+  },
+  {
+   "cmd": "git commit --no-verify -m x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #246"
+  },
+  {
+   "cmd": "gh pr list",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #247"
+  },
+  {
+   "cmd": "git config core.hooksPath x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #248"
+  },
+  {
+   "cmd": "git config --unset user.name",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #249"
+  },
+  {
+   "cmd": "git remote set-url origin x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #250"
+  },
+  {
+   "cmd": "git remote -v",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #251"
+  },
+  {
+   "cmd": "git update-ref refs/heads/main x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #252"
+  },
+  {
+   "cmd": "git symbolic-ref HEAD x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #253"
+  },
+  {
+   "cmd": "git branch -M x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #254"
+  },
+  {
+   "cmd": "git branch --move a b",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #255"
+  },
+  {
+   "cmd": "git tag -d v1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #256"
+  },
+  {
+   "cmd": "git tag --force v1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #257"
+  },
+  {
+   "cmd": "./install.sh",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #258"
+  },
+  {
+   "cmd": "bash install.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #259"
+  },
+  {
+   "cmd": "sh -x ./install.sh",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #260"
+  },
+  {
+   "cmd": "/abs/install.sh",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #261"
+  },
+  {
+   "cmd": "x/install.sh",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #262"
+  },
+  {
+   "cmd": "cd .. && ./install.sh",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #263"
+  },
+  {
+   "cmd": "bash -- install.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #264"
+  },
+  {
+   "cmd": "bash --noprofile install.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #265"
+  },
+  {
+   "cmd": "bash -n install.sh && ./install.sh",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #266"
+  },
+  {
+   "cmd": "bash -n install.sh && bash install.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #267"
+  },
+  {
+   "cmd": "bash -n -c './install.sh'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #268"
+  },
+  {
+   "cmd": "bash --noprofile -c './install.sh'",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #269"
+  },
+  {
+   "cmd": "pi install ./x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #270"
+  },
+  {
+   "cmd": "pi config",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #271"
+  },
+  {
+   "cmd": "git symbolic-ref -d HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #272"
+  },
+  {
+   "cmd": ". ./install.sh",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #273"
+  },
+  {
+   "cmd": "source install.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #274"
+  },
+  {
+   "cmd": "bash <<EOF\n./install.sh\nEOF",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #275"
+  },
+  {
+   "cmd": "git commit -F - <<EOF && git push\nmsg\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #276"
+  },
+  {
+   "cmd": "git switch other",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #277"
+  },
+  {
+   "cmd": "git switch -c other",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #278"
+  },
+  {
+   "cmd": "git checkout other",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #279"
+  },
+  {
+   "cmd": "git checkout -- a.ts",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #280"
+  },
+  {
+   "cmd": "git merge main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #281"
+  },
+  {
+   "cmd": "git cherry-pick abc123",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #282"
+  },
+  {
+   "cmd": "git stash",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #283"
+  },
+  {
+   "cmd": "git stash pop",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #284"
+  },
+  {
+   "cmd": "git pull",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #285"
+  },
+  {
+   "cmd": "git pull --rebase origin main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #286"
+  },
+  {
+   "cmd": "cd x && git checkout main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #287"
+  },
+  {
+   "cmd": "npm run check --prefix extensions",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #288"
+  },
+  {
+   "cmd": "test/install.test.sh",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #289"
+  },
+  {
+   "cmd": "git commit -m \"mention git push\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #290"
+  },
+  {
+   "cmd": "git commit -m 'run ./install.sh'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #291"
+  },
+  {
+   "cmd": "grep 'gh ' file",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #292"
+  },
+  {
+   "cmd": "git config --get user.name",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #293"
+  },
+  {
+   "cmd": "git config user.name",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #294"
+  },
+  {
+   "cmd": "git config --list --show-origin",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #295"
+  },
+  {
+   "cmd": "git branch -d old",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #297"
+  },
+  {
+   "cmd": "git log --oneline main..HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #298"
+  },
+  {
+   "cmd": "git merge-base main HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #299"
+  },
+  {
+   "cmd": "git stash list",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #300"
+  },
+  {
+   "cmd": "git stash show -p",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #301"
+  },
+  {
+   "cmd": "git commit -m \"merge and stash notes\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #302"
+  },
+  {
+   "cmd": "git tag v1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #303"
+  },
+  {
+   "cmd": "cat install.sh",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #304"
+  },
+  {
+   "cmd": "bash -n install.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #305"
+  },
+  {
+   "cmd": "bash -n install.sh test/install.test.sh",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #306"
+  },
+  {
+   "cmd": "bash -n ./install.sh && cmp -s README.md <(git show HEAD:README.md)",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #307"
+  },
+  {
+   "cmd": "pi --version",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #308"
+  },
+  {
+   "cmd": "git symbolic-ref -q HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #309"
+  },
+  {
+   "cmd": "git symbolic-ref --short HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #310"
+  },
+  {
+   "cmd": "git config --bool core.bare",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #311"
+  },
+  {
+   "cmd": "git config --type bool --get core.bare",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #312"
+  },
+  {
+   "cmd": "git config --type=int core.x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #313"
+  },
+  {
+   "cmd": "git commit -m \"$(cat <<'EOF'\ninstall.sh: link\ngit push is blocked\nEOF\n)\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #314"
+  },
+  {
+   "cmd": "git commit -F - <<EOF\nrun ./install.sh then gh pr list\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #315"
+  },
+  {
+   "cmd": "DIR=$(mktemp -d) && cd \"$DIR\" && git init -q source && cd source && git config user.email t@example.com && git remote add origin \"$DIR/origin.git\" && git push origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #316"
+  },
+  {
+   "cmd": "DIR=$(mktemp -d) && cd \"$DIR\" && git init -q source && cd source && git config user.email t@example.com && git remote add origin \"$DIR/origin.git\" && git push origin HEAD",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #317"
+  },
+  {
+   "cmd": "D=$(mktemp -d -t hooks); cd $D; git init -q --bare origin.git && git clone -q origin.git work && cd work && git push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #318"
+  },
+  {
+   "cmd": "D=$(mktemp -d -t hooks); cd $D; git init -q --bare origin.git && git clone -q origin.git work && cd work && git push",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #319"
+  },
+  {
+   "cmd": "T=$(mktemp -d) && cd \"${T}\" && git init -q && git commit -q --allow-empty -m x && git reset --hard",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #320"
+  },
+  {
+   "cmd": "T=$(mktemp -d) && cd \"${T}\" && git init -q && git commit -q --allow-empty -m x && git reset --hard",
+   "cwd": "main",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #321"
+  },
+  {
+   "cmd": "DIR=$(mktemp -d) && cd \"$DIR\" && cd /repo && git push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #322"
+  },
+  {
+   "cmd": "DIR=$(mktemp -d) && cd \"$DIR\" && git clone -q /repo work && cd work && git push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #323"
+  },
+  {
+   "cmd": "DIR=$(mktemp -d) && cd \"$DIR\" && cd .. && git config user.name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #324"
+  },
+  {
+   "cmd": "DIR=$(mktemp -d) && cd \"$DIR\" && git -C ~/repo push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #325"
+  },
+  {
+   "cmd": "DIR=$(mktemp -d) && cd \"$DIR\" && GIT_DIR=x git config user.name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #326"
+  },
+  {
+   "cmd": "DIR=$(mktemp -d) && cd \"$DIR\" && DIR=/repo && cd \"$DIR\" && git push",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #327"
+  },
+  {
+   "cmd": "DIR=$(mktemp -d) && cd \"$DIR\" && cd \"$HOME\" && git config user.name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #328"
+  },
+  {
+   "cmd": "cd \"$DIR\" && git config user.name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #329"
+  },
+  {
+   "cmd": "V=$(mktemp -d) && cd \"$V\" && cd - && git push --force origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #330"
+  },
+  {
+   "cmd": "V=$(mktemp -d) && cd \"$V\" && cd && cd fun/me-pi && git push --force origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #331"
+  },
+  {
+   "cmd": "V=$(mktemp -d) && cd \"$V\" && pushd work && popd && git config user.name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #332"
+  },
+  {
+   "cmd": "V=$(mktemp -d ./t.XXXX) && cd \"$V\" && git config user.name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #333"
+  },
+  {
+   "cmd": "git add -A",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #334"
+  },
+  {
+   "cmd": "git rm a.ts",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #335"
+  },
+  {
+   "cmd": "git mv a b",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #336"
+  },
+  {
+   "cmd": "git commit -m x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #337"
+  },
+  {
+   "cmd": "git merge x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #338"
+  },
+  {
+   "cmd": "git rebase main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #339"
+  },
+  {
+   "cmd": "git reset HEAD~1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #340"
+  },
+  {
+   "cmd": "git restore --staged a",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #341"
+  },
+  {
+   "cmd": "git checkout x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #342"
+  },
+  {
+   "cmd": "git switch -c goal/x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #343"
+  },
+  {
+   "cmd": "git stash list && git stash drop",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #344"
+  },
+  {
+   "cmd": "git cherry-pick abc",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #345"
+  },
+  {
+   "cmd": "git revert HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #346"
+  },
+  {
+   "cmd": "git am < p.mbox",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #347"
+  },
+  {
+   "cmd": "git apply p.diff",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #348"
+  },
+  {
+   "cmd": "git clean -fd",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #349"
+  },
+  {
+   "cmd": "git update-index --assume-unchanged a",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #350"
+  },
+  {
+   "cmd": "git read-tree HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #351"
+  },
+  {
+   "cmd": "git checkout-index -a -f",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #352"
+  },
+  {
+   "cmd": "git sparse-checkout set src",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #353"
+  },
+  {
+   "cmd": "git update-ref refs/heads/x HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #355"
+  },
+  {
+   "cmd": "git symbolic-ref HEAD refs/heads/x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #356"
+  },
+  {
+   "cmd": "git branch -f goal/x HEAD~1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #357"
+  },
+  {
+   "cmd": "git branch --force goal/x main",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #358"
+  },
+  {
+   "cmd": "git branch -m old new",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #359"
+  },
+  {
+   "cmd": "git branch -M new",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #360"
+  },
+  {
+   "cmd": "git branch --move old new",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #361"
+  },
+  {
+   "cmd": "git branch --delete old",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #362"
+  },
+  {
+   "cmd": "git -C /repo commit -m x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #363"
+  },
+  {
+   "cmd": "rtk git add .",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #364"
+  },
+  {
+   "cmd": "git status && git commit -m x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #365"
+  },
+  {
+   "cmd": "git log --format=\"$(git reset --hard)\"",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #366"
+  },
+  {
+   "cmd": "git log --oneline",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #367"
+  },
+  {
+   "cmd": "git blame README.md",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #369"
+  },
+  {
+   "cmd": "git grep foo",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #370"
+  },
+  {
+   "cmd": "git diff main..HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #372"
+  },
+  {
+   "cmd": "git show HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #373"
+  },
+  {
+   "cmd": "git branch --show-current",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #374"
+  },
+  {
+   "cmd": "git branch",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #375"
+  },
+  {
+   "cmd": "git branch -a",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #376"
+  },
+  {
+   "cmd": "git branch new-topic",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #377"
+  },
+  {
+   "cmd": "git rev-parse HEAD",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #379"
+  },
+  {
+   "cmd": "git stash show -p stash@{0}",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #380"
+  },
+  {
+   "cmd": "grep 'git commit' README.md",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #381"
+  },
+  {
+   "cmd": "echo \"git add -A\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #382"
+  },
+  {
+   "cmd": "rm -rf /tmp/$x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #383"
+  },
+  {
+   "cmd": "rm -rf \"/tmp/${name}/\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #384"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}/$n\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #385"
+  },
+  {
+   "cmd": "rm -rf /tmp/`echo x`",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #386"
+  },
+  {
+   "cmd": "rm -rf /tmp/x/$y",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #387"
+  },
+  {
+   "cmd": "rm -rf /tmp/x/{..,y}/z",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #388"
+  },
+  {
+   "cmd": "rm -rf /tmp/{a..z}",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #389"
+  },
+  {
+   "cmd": "rm -rf dist/\\.\\./src",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #390"
+  },
+  {
+   "cmd": "rm -rf /tmp/me-pi-$$",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #391"
+  },
+  {
+   "cmd": "rm -rf /tmp/build-{a,b}",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #392"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #461"
+  },
+  {
+   "cmd": "rm -rf $TMPDIR/x",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #462"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR}/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #463"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR\"/x",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #464"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR/a/b\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #465"
+  },
+  {
+   "cmd": "cd \"$TMPDIR\" && rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #466"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR/docker-build\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #467"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR/source\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #468"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR/build-{a,b}\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #469"
+  },
+  {
+   "cmd": "rm -rf $TMPDIR",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #470"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR/\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #471"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR\"/*",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #472"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR/$n\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #473"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR/../x\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #474"
+  },
+  {
+   "cmd": "TMPDIR=/ rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #475"
+  },
+  {
+   "cmd": "unset TMPDIR; rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #476"
+  },
+  {
+   "cmd": "export TMPDIR=/; rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #477"
+  },
+  {
+   "cmd": "env -i bash -c 'rm -rf \"$TMPDIR/x\"'",
+   "cwd": "main",
+   "want": "unknown",
+   "source": "guard-truth #478"
+  },
+  {
+   "cmd": "env -uTMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #479"
+  },
+  {
+   "cmd": "env -u TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #480"
+  },
+  {
+   "cmd": "env --ignore bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "cwd": "main",
+   "want": "unknown",
+   "source": "guard-truth #481"
+  },
+  {
+   "cmd": "env --unset=TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #482"
+  },
+  {
+   "cmd": "sudo rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #483"
+  },
+  {
+   "cmd": "pkexec env rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #484"
+  },
+  {
+   "cmd": "n=TMP; export ${n}DIR=/; rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #485"
+  },
+  {
+   "cmd": "source ./env.sh && rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "unknown",
+   "source": "guard-truth #486"
+  },
+  {
+   "cmd": "source .venv/bin/activate && rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "unknown",
+   "source": "guard-truth #487"
+  },
+  {
+   "cmd": ". ./env.sh; rm -rf $TMPDIR/x",
+   "cwd": "main",
+   "want": "unknown",
+   "source": "guard-truth #488"
+  },
+  {
+   "cmd": "IFS=/; rm -rf $TMPDIR/x",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #489"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR\"/x/\\.\\./\\.\\./y",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #490"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR\"/x/{..,y}/z",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #491"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR\"/x/.{a,}./y",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #492"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR\"/x/.[.]/y",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #493"
+  },
+  {
+   "cmd": "rm -rf \"$TMPDIR\"/x/.?/y",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #494"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && rm -rf \"$d\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #554"
+  },
+  {
+   "cmd": "d=$(mktemp -d); rm -rf \"$d\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #555"
+  },
+  {
+   "cmd": "tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #556"
+  },
+  {
+   "cmd": "d=$(mktemp -d -t me) && cd \"$d\" && touch x && rm -rf \"$d\"/*",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #557"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && rm -rf \"$d/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #558"
+  },
+  {
+   "cmd": "d=$(mktemp -d); rm -rf \"${d:?}\"/x",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #559"
+  },
+  {
+   "cmd": "d=$(mktemp -d)\nrm -rf \"${d}\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #560"
+  },
+  {
+   "cmd": "rm -rf \"$d\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #561"
+  },
+  {
+   "cmd": "d=$(mktemp -d); d=/; rm -rf \"$d\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #562"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && read d && rm -rf \"$d\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #563"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && for d in /x; do rm -rf \"$d\"; done",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #564"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && rm -rf $d",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #565"
+  },
+  {
+   "cmd": "d=$(mktemp -d); rm -rf \"$d\"/*",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #566"
+  },
+  {
+   "cmd": "d=$(mktemp -d); rm -rf \"$d/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #567"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && rm -rf \"$d/x\" || rm -rf \"$d/y\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #568"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && sh -c 'rm -rf \"$d\"/x'",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #569"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && rm -rf \"$d/\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #570"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && rm -rf \"$d/..\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #571"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && rm -rf \"$d/$y\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #572"
+  },
+  {
+   "cmd": "d=$(mktemp -d ./t.XXXX) && rm -rf \"$d\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #573"
+  },
+  {
+   "cmd": "x=1; d=$(mktemp -d) && rm -rf \"$d\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #574"
+  },
+  {
+   "cmd": "OLDPWD=$(mktemp -d) && cd src && rm -rf \"$OLDPWD\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #575"
+  },
+  {
+   "cmd": "PWD=$(mktemp -d) && cd ~/proj && rm -rf \"$PWD\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #576"
+  },
+  {
+   "cmd": "_=$(mktemp -d) && ls / && rm -rf \"$_\"/Users",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #577"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && printf -vd / && rm -rf \"$d\"/etc",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #578"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && rm -rf \"$d\"/.?/.?/etc",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #579"
+  },
+  {
+   "cmd": "cd x && d=$(mktemp -d) && rm -rf \"$d\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #580"
+  },
+  {
+   "cmd": "false && d=$(mktemp -d); rm -rf \"$d\"",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #581"
+  },
+  {
+   "cmd": "OLDPWD=$(mktemp -d) && cd \"$OLDPWD\" && cd - && git config user.name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #582"
+  },
+  {
+   "cmd": "V=$(mktemp -d) && cd \"$V\" && read V && cd \"$V\" && git config user.name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #583"
+  },
+  {
+   "cmd": "V=$(mktemp -d) && cd \"$V\" && printf -vV / && git config user.name x",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #584"
+  },
+  {
+   "cmd": "if rm -rf src; then :; fi",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #585"
+  },
+  {
+   "cmd": "while rm -rf src; do :; done",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #586"
+  },
+  {
+   "cmd": "! rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #587"
+  },
+  {
+   "cmd": "timeout 5 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #588"
+  },
+  {
+   "cmd": "timeout -s KILL 5s rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #589"
+  },
+  {
+   "cmd": "nice -n 10 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #590"
+  },
+  {
+   "cmd": "doas rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #591"
+  },
+  {
+   "cmd": "watch 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #592"
+  },
+  {
+   "cmd": "trap \"rm -rf /\" EXIT",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #593"
+  },
+  {
+   "cmd": "trap 'rm -rf src' EXIT",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #594"
+  },
+  {
+   "cmd": "ssh host \"rm -rf ~\"",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #595"
+  },
+  {
+   "cmd": "rm -rf dist\" \"x /etc",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #596"
+  },
+  {
+   "cmd": "trap 'rm -rf \"$d\" /etc' EXIT",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #597"
+  },
+  {
+   "cmd": "nice -n -5 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #598"
+  },
+  {
+   "cmd": "timeout --signal KILL 5 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #599"
+  },
+  {
+   "cmd": "timeout -k 5 10 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #600"
+  },
+  {
+   "cmd": "runuser -u me -- rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #601"
+  },
+  {
+   "cmd": "doas -u root rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #602"
+  },
+  {
+   "cmd": "ionice -c 3 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #603"
+  },
+  {
+   "cmd": "nice -n 5 git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #604"
+  },
+  {
+   "cmd": "timeout 5 'rm' -rf /",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #605"
+  },
+  {
+   "cmd": "nice \"rm\" -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #606"
+  },
+  {
+   "cmd": "eval 'rm' -rf /",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #607"
+  },
+  {
+   "cmd": "ssh host 'rm' -rf ~",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #608"
+  },
+  {
+   "cmd": "LC_ALL=\"C\" rm -rf dist \"$HOME\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #609"
+  },
+  {
+   "cmd": "X='y' /bin/rm -rf build '/'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #610"
+  },
+  {
+   "cmd": "env FOO=\"x\" rm -rf dist \"$PWD\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #611"
+  },
+  {
+   "cmd": "bash -c 'rm -rf dist '\"$HOME\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #612"
+  },
+  {
+   "cmd": "trap 'rm -rf dist '\"$HOME\" EXIT",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #613"
+  },
+  {
+   "cmd": "trap 'rm -rf dist' EXIT /etc",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #614"
+  },
+  {
+   "cmd": "rm -rf dist/\"Bob's\" ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #615"
+  },
+  {
+   "cmd": "rm -rf dist \"'\" /etc",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #616"
+  },
+  {
+   "cmd": "rm -rf dist \"x\\\\\" ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #617"
+  },
+  {
+   "cmd": "ssh -p 22 -i key user@host 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #618"
+  },
+  {
+   "cmd": "if git push origin main; then :; fi",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #619"
+  },
+  {
+   "cmd": "timeout 60 git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #620"
+  },
+  {
+   "cmd": "if [ -d dist ]; then rm -rf dist; fi",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #621"
+  },
+  {
+   "cmd": "timeout 5 rm -rf /tmp/me-pi-x",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #622"
+  },
+  {
+   "cmd": "echo done!",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #623"
+  },
+  {
+   "cmd": "ssh host ls",
+   "cwd": "main",
+   "want": "unknown",
+   "source": "guard-truth #624"
+  },
+  {
+   "cmd": "trap 'rm -f lock' EXIT",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #625"
+  },
+  {
+   "cmd": "trap 'rm -rf dist' EXIT INT TERM",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #626"
+  },
+  {
+   "cmd": "trap 'FOO=1 rm -rf /tmp/x' EXIT",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #627"
+  },
+  {
+   "cmd": "nice -n 10 make",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #628"
+  },
+  {
+   "cmd": "timeout 600 npm run check --prefix extensions",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #629"
+  },
+  {
+   "cmd": "doas -u root ls",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #630"
+  },
+  {
+   "cmd": "rg -n 'if git push origin main' scripts/",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #631"
+  },
+  {
+   "cmd": "grep -rn 'while rm -rf' .",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #632"
+  },
+  {
+   "cmd": "grep -rn \"trap 'rm -rf\" .",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #633"
+  },
+  {
+   "cmd": "ssh prod 'cd /srv && ./restart'; git push",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #634"
+  },
+  {
+   "cmd": "pkexec rm -rf \"$TMPDIR/x\"",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #637"
+  },
+  {
+   "cmd": "tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' 0",
+   "cwd": "main",
+   "want": "allow",
+   "source": "guard-truth #639"
+  },
+  {
+   "cmd": "ssh host git pull",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #640"
+  },
+  {
+   "cmd": "rg 'if git commit' .",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #641"
+  },
+  {
+   "cmd": "timeout -s \"KILL\" 5 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #642"
+  },
+  {
+   "cmd": "trap 'rm -rf /' EXIT",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #643"
+  },
+  {
+   "cmd": "trap -- 'rm -rf ~' EXIT",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #644"
+  },
+  {
+   "cmd": "ssh h 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #645"
+  },
+  {
+   "cmd": "sudo -u root rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #646"
+  },
+  {
+   "cmd": "env -u X rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #647"
+  },
+  {
+   "cmd": "nice -n \"-5\" git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #648"
+  },
+  {
+   "cmd": "'rm' -rf /",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #649"
+  },
+  {
+   "cmd": "/usr/bin/env rm -rf /",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #650"
+  },
+  {
+   "cmd": "/usr/bin/sudo rm -rf /",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #651"
+  },
+  {
+   "cmd": "\\export TMPDIR=/; rm -rf \"${TMPDIR:?}/x\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #652"
+  },
+  {
+   "cmd": "builtin export TMPDIR=/; rm -rf \"${TMPDIR:?}/x\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #653"
+  },
+  {
+   "cmd": "TMP\"\"DIR=/ rm -rf \"${TMPDIR:?}/x\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #654"
+  },
+  {
+   "cmd": "1=$(rm -rf ~)",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #655"
+  },
+  {
+   "cmd": "rm -rf '$TMPDIR'/x",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #656"
+  },
+  {
+   "cmd": "doas rm -rf /",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #657"
+  },
+  {
+   "cmd": "su -c \"rm -rf /\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #658"
+  },
+  {
+   "cmd": "runuser -u x rm -rf /",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #659"
+  },
+  {
+   "cmd": "pkexec rm -rf /",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #660"
+  },
+  {
+   "cmd": "doas true; rm -rf \"${TMPDIR:?}/x\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #661"
+  },
+  {
+   "cmd": "rm -rf dist \\\n         /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #662"
+  },
+  {
+   "cmd": "rm -rf dist \";\" /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #663"
+  },
+  {
+   "cmd": "rm -rf dist \\; /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #664"
+  },
+  {
+   "cmd": "rm -rf dist '&' /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #665"
+  },
+  {
+   "cmd": "rm -rf dist/x${IFS}/Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #666"
+  },
+  {
+   "cmd": "rm -rf /tmp/$(true)",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #667"
+  },
+  {
+   "cmd": "rm -rf /tmp/{,}",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #668"
+  },
+  {
+   "cmd": "rm \\-r /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #669"
+  },
+  {
+   "cmd": "rm --r /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #670"
+  },
+  {
+   "cmd": "rm -rf dist 2>&1 | tail -2",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #671"
+  },
+  {
+   "cmd": "rm -rf dist >/dev/null 2>&1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #672"
+  },
+  {
+   "cmd": "rm -rf \"${TMPDIR:?}/x\" 2>/dev/null || true",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #673"
+  },
+  {
+   "cmd": "rm -rf dist && echo ok",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #674"
+  },
+  {
+   "cmd": "rm -rf dist &>/dev/null",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #675"
+  },
+  {
+   "cmd": "rm -rf dist >| log",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #676"
+  },
+  {
+   "cmd": "rm -rf dist &> log",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #677"
+  },
+  {
+   "cmd": "rm -rf dist |& tail",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #678"
+  },
+  {
+   "cmd": "rm -rf node_modules dist 2>&1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #679"
+  },
+  {
+   "cmd": "git push origin 2>&1",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #680"
+  },
+  {
+   "cmd": "git push 2>&1",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #681"
+  },
+  {
+   "cmd": "git push origin main 2>&1 | tail",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #682"
+  },
+  {
+   "cmd": "git push origin >/dev/null 2>&1",
+   "cwd": "main",
+   "want": "ask",
+   "source": "guard-truth #683"
+  },
+  {
+   "cmd": "git checkout -- . 2>&1",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #684"
+  },
+  {
+   "cmd": "git restore . &>/dev/null",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #685"
+  },
+  {
+   "cmd": "git branch -D old 2>&1",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #686"
+  },
+  {
+   "cmd": "rm -rf '/tmp/x/ > /../../../Users'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #687"
+  },
+  {
+   "cmd": "cat > f <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #688"
+  },
+  {
+   "cmd": "cat > f <<'EOF'\nrm -rf ~\nEOF\nbash f",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #689"
+  },
+  {
+   "cmd": "bash <<EOF\nrm -rf $HOME\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #690"
+  },
+  {
+   "cmd": "cat <<EOF\n$(rm -rf ~)\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #691"
+  },
+  {
+   "cmd": "cat > f <<EOF\nx $(rm -rf ~) y\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #692"
+  },
+  {
+   "cmd": "cat <<'EOF' | bash\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #693"
+  },
+  {
+   "cmd": "tee f <<'EOF' >/dev/null\nrm -rf /\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #694"
+  },
+  {
+   "cmd": "sh -s <<'EOF'\ngit push --force origin main\nEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #695"
+  },
+  {
+   "cmd": "bash <<-'EOF'\n\trm -rf ~\n\tEOF",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #696"
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nimport os\nos.system('rm -rf ~')\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #697"
+  },
+  {
+   "cmd": "cat > notes.md <<'EOF'\nNever run git push --force origin main.\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #698"
+  },
+  {
+   "cmd": "tee notes.md <<'EOF' >/dev/null\nrm -rf ~ is bad\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #699"
+  },
+  {
+   "cmd": "/usr/bin/sudo rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #700"
+  },
+  {
+   "cmd": "/usr/bin/env -i /bin/rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #701"
+  },
+  {
+   "cmd": "/usr/bin/timeout 5 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #703"
+  },
+  {
+   "cmd": "/usr/bin/nice -n 5 /usr/bin/git push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #704"
+  },
+  {
+   "cmd": "/usr/bin/xargs rm -rf <<<'/Users'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #705"
+  },
+  {
+   "cmd": "/bin/bash -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #706"
+  },
+  {
+   "cmd": "/bin/sh -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #707"
+  },
+  {
+   "cmd": "rm -rf $'/Users'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #708"
+  },
+  {
+   "cmd": "$'r\\x6d' -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #709"
+  },
+  {
+   "cmd": "rm $'-rf' ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #710"
+  },
+  {
+   "cmd": "rm -rf $'dist\\n/Users'",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #711"
+  },
+  {
+   "cmd": "a=(rm -rf ~); \"${a[@]}\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #712"
+  },
+  {
+   "cmd": "args=(-rf /Users); rm \"${args[@]}\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #713"
+  },
+  {
+   "cmd": "a[0]=rm; ${a[0]} -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #714"
+  },
+  {
+   "cmd": "bash <<< 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #715"
+  },
+  {
+   "cmd": "sh <<< \"rm -rf $HOME\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #716"
+  },
+  {
+   "cmd": "rm -rf <<<'x' /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #717"
+  },
+  {
+   "cmd": "xargs rm -rf <<< /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #718"
+  },
+  {
+   "cmd": "sudo \\\n rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #719"
+  },
+  {
+   "cmd": "rm -r\\\nf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #720"
+  },
+  {
+   "cmd": "git push \\\n origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #721"
+  },
+  {
+   "cmd": "CMD=rm; $CMD -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #722"
+  },
+  {
+   "cmd": "$CMD -rf ~",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #723"
+  },
+  {
+   "cmd": "X=git; $X push origin main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #724"
+  },
+  {
+   "cmd": "\"$(echo rm)\" -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #725"
+  },
+  {
+   "cmd": "r=rm; eval \"$r -rf ~\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #726"
+  },
+  {
+   "cmd": "eval 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #727"
+  },
+  {
+   "cmd": "eval \"rm -rf $HOME\"",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #728"
+  },
+  {
+   "cmd": "bash -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #729"
+  },
+  {
+   "cmd": "bash -lc 'git push origin main'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #730"
+  },
+  {
+   "cmd": "su - root -c 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #732"
+  },
+  {
+   "cmd": "env -S 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #733"
+  },
+  {
+   "cmd": "sudo -s rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #734"
+  },
+  {
+   "cmd": "sudo -E env PATH=/x rm -rf ~",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #735"
+  },
+  {
+   "cmd": "timeout --signal=KILL 5 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #736"
+  },
+  {
+   "cmd": "nice -5 rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #737"
+  },
+  {
+   "cmd": "flock /tmp/l rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #738"
+  },
+  {
+   "cmd": "stdbuf -oL rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #739"
+  },
+  {
+   "cmd": "setsid rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #740"
+  },
+  {
+   "cmd": "rtk proxy rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #742"
+  },
+  {
+   "cmd": "command /bin/rm -rf ~",
+   "cwd": "clean",
+   "want": "unknown",
+   "source": "guard-truth #744"
+  },
+  {
+   "cmd": "exec rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #745"
+  },
+  {
+   "cmd": "builtin eval 'rm -rf ~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #746"
+  },
+  {
+   "cmd": "time rm -rf src",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #747"
+  },
+  {
+   "cmd": "nohup rm -rf src &",
+   "cwd": "clean",
+   "want": "ask-if-dirty",
+   "source": "guard-truth #748"
+  },
+  {
+   "cmd": "echo /Users | xargs rm -rf",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #749"
+  },
+  {
+   "cmd": "echo /Users | xargs -I{} rm -rf {}",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #750"
+  },
+  {
+   "cmd": "find / -name x -exec rm -rf {} +",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #751"
+  },
+  {
+   "cmd": "find . -name dist -exec rm -rf {} \\;",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #752"
+  },
+  {
+   "cmd": "(cd / && rm -rf usr)",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #754"
+  },
+  {
+   "cmd": "f() { rm -rf ~; }; f",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #755"
+  },
+  {
+   "cmd": "false || rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #756"
+  },
+  {
+   "cmd": "[ -d /x ] && rm -rf /x",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #757"
+  },
+  {
+   "cmd": "x=$(rm -rf ~)",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #758"
+  },
+  {
+   "cmd": "echo <(rm -rf ~)",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #759"
+  },
+  {
+   "cmd": "echo `rm -rf ~`",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #760"
+  },
+  {
+   "cmd": "while read d; do rm -rf \"$d\"; done <<< /Users",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #761"
+  },
+  {
+   "cmd": "for d in /Users; do rm -rf $d; done",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #762"
+  },
+  {
+   "cmd": "case x in x) rm -rf ~;; esac",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #763"
+  },
+  {
+   "cmd": "{ rm -rf ~; }",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #764"
+  },
+  {
+   "cmd": "rm -rf dist; git push --force",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #765"
+  },
+  {
+   "cmd": "git -C ../other push --force",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #766"
+  },
+  {
+   "cmd": "cd /; rm -rf dist",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #767"
+  },
+  {
+   "cmd": "GIT_DIR=/x git push origin HEAD",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #768"
+  },
+  {
+   "cmd": "git push origin HEAD:refs/heads/main",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "guard-truth #769"
+  },
+  {
+   "cmd": "rm -rf dist",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #771"
+  },
+  {
+   "cmd": "rm -rf ./node_modules/.cache",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #772"
+  },
+  {
+   "cmd": "rm -f a b c",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #773"
+  },
+  {
+   "cmd": "git status && git log --oneline -3",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #774"
+  },
+  {
+   "cmd": "grep -r 'rm -rf' .",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #775"
+  },
+  {
+   "cmd": "rg 'git push origin main' .",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #776"
+  },
+  {
+   "cmd": "echo \"rm -rf /\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #777"
+  },
+  {
+   "cmd": "git commit -m 'never rm -rf ~'",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #778"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && rm -rf \"$d\"",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #779"
+  },
+  {
+   "cmd": "cat <<'EOF'\nrm -rf ~\nEOF",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #780"
+  },
+  {
+   "cmd": "cat > q.mjs <<'EOF'\nconst a = \"rm -rf /tmp/x\";\nconst b = `rm -rf '/tmp/y'`;\nconst c = 'git push --force origin main';\nconsole.log(a, b, c);\nEOF\nnode q.mjs",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "guard-truth #781"
+  }
+ ]
+}

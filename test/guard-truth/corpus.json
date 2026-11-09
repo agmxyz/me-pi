@@ -1,0 +1,4991 @@
+{
+ "note": "Frozen from the #78 spike (spike/guard-parser-78, b8d34a9): guard test rows from main and two fix branches plus hand-written attack rows; ids are the spike report ids. selfChecks: rows whose rm/git argv is known by hand.",
+ "rows": [
+  {
+   "id": 0,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 1,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push -u origin master",
+   "branch": "feature/x"
+  },
+  {
+   "id": 2,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin HEAD:main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 3,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin feature/x:refs/heads/main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 4,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push",
+   "branch": "main"
+  },
+  {
+   "id": 5,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin",
+   "branch": "main"
+  },
+  {
+   "id": 6,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin HEAD",
+   "branch": "main"
+  },
+  {
+   "id": 7,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "git push origin main 2>&1 | tail",
+   "branch": "feature/x"
+  },
+  {
+   "id": 8,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push --all origin",
+   "branch": "feature/x"
+  },
+  {
+   "id": 9,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push --delete origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 10,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git -C /some/path push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 11,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rtk proxy git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 12,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "GIT_SSH_COMMAND='ssh -i k' git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 13,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin feature/x && git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 14,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "bash -c \"git push origin main\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 15,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "sh -c 'git push origin main'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 16,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "(git push origin main)",
+   "branch": "feature/x"
+  },
+  {
+   "id": 17,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "echo $(git push origin main)",
+   "branch": "feature/x"
+  },
+  {
+   "id": 18,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin \"main\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 19,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin 'master'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 20,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "cd ../other && git push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 21,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git -C ../other push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 22,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push --force origin feature/x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 23,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push -f",
+   "branch": "feature/x"
+  },
+  {
+   "id": 24,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push --force-with-lease origin feature/x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 25,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin +feature/x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 26,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git reset --hard HEAD~1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 27,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git clean -fdx",
+   "branch": "feature/x"
+  },
+  {
+   "id": 28,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git checkout -- src/a.ts",
+   "branch": "feature/x"
+  },
+  {
+   "id": 29,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git checkout .",
+   "branch": "feature/x"
+  },
+  {
+   "id": 30,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git restore src/a.ts",
+   "branch": "feature/x"
+  },
+  {
+   "id": 31,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git restore --staged --worktree src/a.ts",
+   "branch": "feature/x"
+  },
+  {
+   "id": 32,
+   "source": "test/guard.test.ts (classify); test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (classify); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (classify); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch -D old",
+   "branch": "feature/x"
+  },
+  {
+   "id": 33,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git branch --delete --force old",
+   "branch": "feature/x"
+  },
+  {
+   "id": 34,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 35,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 36,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist/../src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 37,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf *",
+   "branch": "feature/x"
+  },
+  {
+   "id": 38,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $DIR",
+   "branch": "feature/x"
+  },
+  {
+   "id": 39,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 40,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/",
+   "branch": "feature/x"
+  },
+  {
+   "id": 41,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/*",
+   "branch": "feature/x"
+  },
+  {
+   "id": 42,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /var/folders/*",
+   "branch": "feature/x"
+  },
+  {
+   "id": 43,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/*",
+   "branch": "feature/x"
+  },
+  {
+   "id": 44,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 45,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/a*",
+   "branch": "feature/x"
+  },
+  {
+   "id": 46,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/x/../../etc",
+   "branch": "feature/x"
+  },
+  {
+   "id": 47,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmpx",
+   "branch": "feature/x"
+  },
+  {
+   "id": 48,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist2",
+   "branch": "feature/x"
+  },
+  {
+   "id": 49,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist*",
+   "branch": "feature/x"
+  },
+  {
+   "id": 50,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR:?}\"/*",
+   "branch": "feature/x"
+  },
+  {
+   "id": 51,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /var/folders/ab/cd/T/x*",
+   "branch": "feature/x"
+  },
+  {
+   "id": 52,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf dist 2>&1 /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 53,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf \"${TMPDIR:?}/x\" &>/dev/null /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 54,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf dist >| log /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 55,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf dist &>>log /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 56,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf dist >&2 /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 57,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf dist 2>&1 ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 58,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf \"${TMPDIR:?}/x\" 2>/dev/null /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 59,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf dist &> log /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 60,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf dist >|log /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 61,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf dist 2>&- /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 62,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf dist \">\" /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 63,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf /tmp/&>/dev/null",
+   "branch": "feature/x"
+  },
+  {
+   "id": 64,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf /tmp/&>>log",
+   "branch": "feature/x"
+  },
+  {
+   "id": 65,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf \"${TMPDIR:?}/\"&>/dev/null",
+   "branch": "feature/x"
+  },
+  {
+   "id": 66,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf ${TMPDIR:?}/&>/dev/null",
+   "branch": "feature/x"
+  },
+  {
+   "id": 67,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf /var/folders/ab/cd/T/&>/dev/null",
+   "branch": "feature/x"
+  },
+  {
+   "id": 68,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf /tmp/>/dev/null",
+   "branch": "feature/x"
+  },
+  {
+   "id": 69,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf /tmp/>&2",
+   "branch": "feature/x"
+  },
+  {
+   "id": 70,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf&>/dev/null /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 71,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -f --recursive&>/dev/null /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 72,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -R&>x /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 73,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -rf>/dev/null /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 74,
+   "source": "test/guard.test.ts (classify); #92",
+   "command": "rm -r>log /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 75,
+   "source": "test/guard.test.ts (classify)",
+   "command": "TMPDIR=/ rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 76,
+   "source": "test/guard.test.ts (classify)",
+   "command": "export TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 77,
+   "source": "test/guard.test.ts (classify)",
+   "command": "export TMPDIR=/ && rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 78,
+   "source": "test/guard.test.ts (classify)",
+   "command": "\\export TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 79,
+   "source": "test/guard.test.ts (classify)",
+   "command": "builtin export TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 80,
+   "source": "test/guard.test.ts (classify)",
+   "command": "declare -x TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 81,
+   "source": "test/guard.test.ts (classify)",
+   "command": "f() { local TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"; }; f",
+   "branch": "feature/x"
+  },
+  {
+   "id": 82,
+   "source": "test/guard.test.ts (classify)",
+   "command": "typeset TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 83,
+   "source": "test/guard.test.ts (classify)",
+   "command": "read TMPDIR <<< /; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 84,
+   "source": "test/guard.test.ts (classify)",
+   "command": "printf -v TMPDIR /; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 85,
+   "source": "test/guard.test.ts (classify)",
+   "command": "export TMP''DIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 86,
+   "source": "test/guard.test.ts (classify)",
+   "command": "declare -x TM\"P\"DIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 87,
+   "source": "test/guard.test.ts (classify)",
+   "command": "export TMP\"\"DIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 88,
+   "source": "test/guard.test.ts (classify)",
+   "command": "env TMPDIR=/ rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 89,
+   "source": "test/guard.test.ts (classify)",
+   "command": "/usr/bin/env TMPDIR=/ rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 90,
+   "source": "test/guard.test.ts (classify)",
+   "command": "env -i rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 91,
+   "source": "test/guard.test.ts (classify)",
+   "command": "sudo rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 92,
+   "source": "test/guard.test.ts (classify)",
+   "command": "/usr/bin/sudo rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 93,
+   "source": "test/guard.test.ts (classify)",
+   "command": "doas true; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 94,
+   "source": "test/guard.test.ts (classify)",
+   "command": "su -l x; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 95,
+   "source": "test/guard.test.ts (classify)",
+   "command": "runuser -u x true; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 96,
+   "source": "test/guard.test.ts (classify)",
+   "command": "pkexec true; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 97,
+   "source": "test/guard.test.ts (classify)",
+   "command": "unset TMPDIR; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 98,
+   "source": "test/guard.test.ts (classify)",
+   "command": "set -a; . ./vars; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 99,
+   "source": "test/guard.test.ts (classify)",
+   "command": "set -a && source vars && rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 100,
+   "source": "test/guard.test.ts (classify)",
+   "command": "source ./vars; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 101,
+   "source": "test/guard.test.ts (classify)",
+   "command": ". ./vars; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 102,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cd /tmp/x && . vars && rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 103,
+   "source": "test/guard.test.ts (classify)",
+   "command": ".>/dev/null ./v; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 104,
+   "source": "test/guard.test.ts (classify)",
+   "command": ".>>x ./v; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 105,
+   "source": "test/guard.test.ts (classify)",
+   "command": ".>|x ./v; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 106,
+   "source": "test/guard.test.ts (classify)",
+   "command": "bash -c 'TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 107,
+   "source": "test/guard.test.ts (classify)",
+   "command": "z=TMP; z+=DIR=/; ((z)); rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 108,
+   "source": "test/guard.test.ts (classify)",
+   "command": "e{xport,} TMP{DIR,}=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 109,
+   "source": "test/guard.test.ts (classify)",
+   "command": "$x TMPDIR=/; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 110,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf \"${TMPDIR:?}/x\" \"${TMPDIR:?}/$y\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 111,
+   "source": "test/guard.test.ts (classify)",
+   "command": "git commit -m \"x\" <<< \"$(export TMPDIR=/)\"; rm -rf \"${TMPDIR:?}/Users\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 112,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push -o ci.skip origin",
+   "branch": "main"
+  },
+  {
+   "id": 113,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push --repo=origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 114,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "/bin/rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 115,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "find . -name x -exec rm -rf {} \\;",
+   "branch": "feature/x"
+  },
+  {
+   "id": 116,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "find . -name x -print0 | xargs -0 rm -rf",
+   "branch": "feature/x"
+  },
+  {
+   "id": 117,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git checkout main && git push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 118,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git switch main; git push origin HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 119,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "/usr/bin/git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 120,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "bash -lc \"git push origin main\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 121,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "zsh -c \"git push origin main\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 122,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "eval \"git push origin main\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 123,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -i git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 124,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "if true; then git push origin main; fi",
+   "branch": "feature/x"
+  },
+  {
+   "id": 125,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "nohup git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 126,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "{ git push origin main; }",
+   "branch": "feature/x"
+  },
+  {
+   "id": 127,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "bash <<EOF\ngit push origin main\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 128,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit -F - <<EOF && git push origin main\nmsg\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 129,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<EOF\n$(rm -rf ~)\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 130,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<\\EOF\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 131,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF' | sh\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 132,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF' 2>&1 | bash\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 133,
+   "source": "test/guard.test.ts (classify)",
+   "command": "eval \"$(python3 - <<'EOF'\nrm -rf ~\nEOF\n)\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 134,
+   "source": "test/guard.test.ts (classify)",
+   "command": "source <(node - <<'EOF'\nrm -rf ~\nEOF\n)",
+   "branch": "feature/x"
+  },
+  {
+   "id": 135,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'\nprint(1)\nEOF\nrm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 136,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF' && rm -rf ~\nprint(1)\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 137,
+   "source": "test/guard.test.ts (classify)",
+   "command": "echo \"\npython3 - <<'EOF'\n$(rm -rf ~)\nEOF\n\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 138,
+   "source": "test/guard.test.ts (classify)",
+   "command": "wc -l <<X\npython3 - <<'EOF'\n$(rm -rf ~)\nEOF\nX",
+   "branch": "feature/x"
+  },
+  {
+   "id": 139,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cat <<'X'\npython3 - <<'EOF'\nX\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 140,
+   "source": "test/guard.test.ts (classify)",
+   "command": "(\npython3 - <<'EOF'\nrm -rf ~\nEOF\n) | /bin/sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 141,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cat > notes.md <<'EOF'\nrm -rf src\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 142,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cat > run.sh <<'EOF'\nrm -rf ~\nEOF\nchmod +x r*.sh && ./r*.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 143,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cat > Makefile <<'EOF'\nx:\n\trm -rf ~\nEOF\nmake x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 144,
+   "source": "test/guard.test.ts (classify)",
+   "command": "sudo python3 - <<'EOF'\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 145,
+   "source": "test/guard.test.ts (classify)",
+   "command": "ssh h python3 - <<'EOF'\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 146,
+   "source": "test/guard.test.ts (classify)",
+   "command": "pythonx - <<'EOF'\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 147,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'\nrm -rf ~\nEOFX\nrm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 148,
+   "source": "test/guard.test.ts (classify); adversarial",
+   "command": "bash <<'EOF'\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 149,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cat > run.sh <<'EOF' && sh run.sh\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 150,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cat > x <<EOF\n$(rm -rf ~)\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 151,
+   "source": "test/guard.test.ts (classify)",
+   "command": "tee x <<'EOF' | sh\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 152,
+   "source": "test/guard.test.ts (classify)",
+   "command": "bash <<X && python3 - <<'EOF'\nrm -rf ~\nX\nprint(1)\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 153,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'\nEOF\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 154,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cat > f <<'EOF'\n\nEOF\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 155,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'X\nprint(1)\nEOFX\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 156,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'\r\nprint(1)\r\nEOF\r\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 157,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF' \\\n| sh\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 158,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'\nrm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 159,
+   "source": "test/guard.test.ts (classify)",
+   "command": "eval \"$(\npython3 - <<'EOF'\nrm -rf ~\nEOF\n)\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 160,
+   "source": "test/guard.test.ts (classify)",
+   "command": "(python3 - <<'EOF'\nrm -rf ~\nEOF\n) | sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 161,
+   "source": "test/guard.test.ts (classify)",
+   "command": "for i in 1; do\npython3 - <<'EOF'\nrm -rf ~\nEOF\ndone | bash",
+   "branch": "feature/x"
+  },
+  {
+   "id": 162,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF' > >(sh)\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 163,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF' > r.sh && sh r.sh\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 164,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cat > run.sh <<'EOF'\nrm -rf ~\nEOF\nbash run.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 165,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cat > run.sh <<'EOF'\nrm -rf ~\nEOF\nchmod +x run.sh && ./run.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 166,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF' > out.sh\nrm -rf ~\nEOF\n. ./out.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 167,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'\nx = 1\nEOF\ngit push -f origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 168,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit --amend --no-edit",
+   "branch": "feature/x"
+  },
+  {
+   "id": 169,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git rebase -i HEAD~3",
+   "branch": "feature/x"
+  },
+  {
+   "id": 170,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git filter-repo --path x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 171,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git switch -f main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 172,
+   "source": "test/guard.test.ts (classify); test/guard.test.ts (workerRisk); fix/guard-temp-rm (classify); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (classify); fix/guard-command-positions (workerRisk)",
+   "command": "git stash drop",
+   "branch": "feature/x"
+  },
+  {
+   "id": 173,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git stash clear",
+   "branch": "feature/x"
+  },
+  {
+   "id": 174,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git log --format=\"$(git push origin main)\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 175,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit -m \"$(git push origin main)\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 176,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit -m \"`rm -rf src`\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 177,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -R src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 178,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm --recursive src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 179,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "sh -c \"rm -rf x\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 180,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "find . -name x | xargs rm -rf",
+   "branch": "feature/x"
+  },
+  {
+   "id": 181,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 182,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push -u origin feature/x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 183,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 184,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push origin main-fix",
+   "branch": "feature/x"
+  },
+  {
+   "id": 185,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "gh pr create --fill",
+   "branch": "main"
+  },
+  {
+   "id": 186,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git reset HEAD~1",
+   "branch": "main"
+  },
+  {
+   "id": 187,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git reset --soft HEAD~1",
+   "branch": "main"
+  },
+  {
+   "id": 188,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git clean -n",
+   "branch": "main"
+  },
+  {
+   "id": 189,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git clean -fn",
+   "branch": "main"
+  },
+  {
+   "id": 190,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git checkout feature/x",
+   "branch": "main"
+  },
+  {
+   "id": 191,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git checkout -b feature/y",
+   "branch": "main"
+  },
+  {
+   "id": 192,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git restore --staged src/a.ts",
+   "branch": "main"
+  },
+  {
+   "id": 193,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git branch -d merged",
+   "branch": "main"
+  },
+  {
+   "id": 194,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git log --grep push",
+   "branch": "main"
+  },
+  {
+   "id": 195,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "grep 'git push origin main' README.md",
+   "branch": "main"
+  },
+  {
+   "id": 196,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "echo \"rm -rf /\"",
+   "branch": "main"
+  },
+  {
+   "id": 197,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit -m \"rm -rf old dir\"",
+   "branch": "main"
+  },
+  {
+   "id": 198,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit -m \"fix: then rm -rf src\"",
+   "branch": "main"
+  },
+  {
+   "id": 199,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit -am 'cd x && git push origin main'",
+   "branch": "main"
+  },
+  {
+   "id": 200,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit --message=\"handle --amend\"",
+   "branch": "main"
+  },
+  {
+   "id": 201,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit -m 'git reset --hard was wrong' && git push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 202,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm notes.txt",
+   "branch": "main"
+  },
+  {
+   "id": 203,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -f notes.txt",
+   "branch": "main"
+  },
+  {
+   "id": 204,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist",
+   "branch": "main"
+  },
+  {
+   "id": 205,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -r -f build node_modules ./coverage",
+   "branch": "main"
+  },
+  {
+   "id": 206,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/me-pi-test",
+   "branch": "main"
+  },
+  {
+   "id": 207,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "main"
+  },
+  {
+   "id": 208,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cd /tmp/x && rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "main"
+  },
+  {
+   "id": 209,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist 2>/dev/null",
+   "branch": "main"
+  },
+  {
+   "id": 210,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist 2> /dev/null",
+   "branch": "main"
+  },
+  {
+   "id": 211,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist > log",
+   "branch": "main"
+  },
+  {
+   "id": 212,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf dist 2>&1 | tail -2",
+   "branch": "main"
+  },
+  {
+   "id": 213,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf dist >/dev/null 2>&1",
+   "branch": "main"
+  },
+  {
+   "id": 214,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf \"${TMPDIR:?}/x\" 2>/dev/null || true",
+   "branch": "main"
+  },
+  {
+   "id": 215,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf dist && echo ok",
+   "branch": "main"
+  },
+  {
+   "id": 216,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf dist &>/dev/null",
+   "branch": "main"
+  },
+  {
+   "id": 217,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf dist >| log",
+   "branch": "main"
+  },
+  {
+   "id": 218,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf node_modules dist 2>&1",
+   "branch": "main"
+  },
+  {
+   "id": 219,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf dist &> log",
+   "branch": "main"
+  },
+  {
+   "id": 220,
+   "source": "test/guard.test.ts (classify)",
+   "command": "rm -rf dist |& tail",
+   "branch": "main"
+  },
+  {
+   "id": 221,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/x/*",
+   "branch": "main"
+  },
+  {
+   "id": 222,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist/a..b",
+   "branch": "main"
+  },
+  {
+   "id": 223,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /var/folders/ab/cd/T/me-pi-x",
+   "branch": "main"
+  },
+  {
+   "id": 224,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git push -o ci.skip origin feature/x",
+   "branch": "main"
+  },
+  {
+   "id": 225,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git rebase --continue",
+   "branch": "main"
+  },
+  {
+   "id": 226,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit -m 'fix'",
+   "branch": "main"
+  },
+  {
+   "id": 227,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git stash",
+   "branch": "main"
+  },
+  {
+   "id": 228,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git stash pop",
+   "branch": "main"
+  },
+  {
+   "id": 229,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git switch feature/y",
+   "branch": "main"
+  },
+  {
+   "id": 230,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git checkout main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 231,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rmdir empty-dir",
+   "branch": "main"
+  },
+  {
+   "id": 232,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "git commit -m \"$(cat <<'EOF'\nfix: git push origin main and rm -rf src\nEOF\n)\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 233,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cd /tmp/x && python3 - <<'EOF'\ns = '[\"rm -rf /tmp/x/$y\", onFeature]'\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 234,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'\nprint(\"`rm -rf ~`\")\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 235,
+   "source": "test/guard.test.ts (classify)",
+   "command": "node - <<'EOF'\nconst c = `git push -f origin main`;\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 236,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python - <<\"EOF\"\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 237,
+   "source": "test/guard.test.ts (classify)",
+   "command": "/usr/bin/python3 <<-'EOF'\n\trm -rf ~\n\tEOF\nnode --test x 2>&1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 238,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'\nprint(1)\nEOF\nnode --test x 2>&1 | grep ok",
+   "branch": "feature/x"
+  },
+  {
+   "id": 239,
+   "source": "test/guard.test.ts (classify)",
+   "command": "cd /tmp/x && python3 - <<'EOF'\nrm -rf ~\nEOF\nnpx biome check --write . && npm test",
+   "branch": "feature/x"
+  },
+  {
+   "id": 240,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<-'EOF'\n\trm -rf ~\n\tEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 241,
+   "source": "test/guard.test.ts (classify)",
+   "command": "python3 - <<'EOF'\np = 1\n\nprint('rm -rf ~')\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 242,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git push origin x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 243,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git push . HEAD:main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 244,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git -C x worktree add",
+   "branch": "feature/x"
+  },
+  {
+   "id": 245,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git commit -nm x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 246,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git commit --no-verify -m x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 247,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "gh pr list",
+   "branch": "feature/x"
+  },
+  {
+   "id": 248,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git config core.hooksPath x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 249,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git config --unset user.name",
+   "branch": "feature/x"
+  },
+  {
+   "id": 250,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git remote set-url origin x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 251,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git remote -v",
+   "branch": "feature/x"
+  },
+  {
+   "id": 252,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git update-ref refs/heads/main x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 253,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git symbolic-ref HEAD x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 254,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git branch -M x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 255,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git branch --move a b",
+   "branch": "feature/x"
+  },
+  {
+   "id": 256,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git tag -d v1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 257,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git tag --force v1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 258,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "./install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 259,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 260,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "sh -x ./install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 261,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "/abs/install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 262,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "x/install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 263,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "cd .. && ./install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 264,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash -- install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 265,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash --noprofile install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 266,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash -n install.sh && ./install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 267,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash -n install.sh && bash install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 268,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash -n -c './install.sh'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 269,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash --noprofile -c './install.sh'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 270,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "pi install ./x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 271,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "pi config",
+   "branch": "feature/x"
+  },
+  {
+   "id": 272,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git symbolic-ref -d HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 273,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": ". ./install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 274,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "source install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 275,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash <<EOF\n./install.sh\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 276,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git commit -F - <<EOF && git push\nmsg\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 277,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git switch other",
+   "branch": "feature/x"
+  },
+  {
+   "id": 278,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git switch -c other",
+   "branch": "feature/x"
+  },
+  {
+   "id": 279,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git checkout other",
+   "branch": "feature/x"
+  },
+  {
+   "id": 280,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git checkout -- a.ts",
+   "branch": "feature/x"
+  },
+  {
+   "id": 281,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git merge main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 282,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git cherry-pick abc123",
+   "branch": "feature/x"
+  },
+  {
+   "id": 283,
+   "source": "test/guard.test.ts (workerRisk); test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (workerRisk); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (workerRisk); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git stash",
+   "branch": "feature/x"
+  },
+  {
+   "id": 284,
+   "source": "test/guard.test.ts (workerRisk); test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (workerRisk); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (workerRisk); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git stash pop",
+   "branch": "feature/x"
+  },
+  {
+   "id": 285,
+   "source": "test/guard.test.ts (workerRisk); test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (workerRisk); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (workerRisk); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git pull",
+   "branch": "feature/x"
+  },
+  {
+   "id": 286,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git pull --rebase origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 287,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "cd x && git checkout main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 288,
+   "source": "test/guard.test.ts (workerRisk); test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (workerRisk); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (workerRisk); fix/guard-command-positions (gitTreeWrite)",
+   "command": "npm run check --prefix extensions",
+   "branch": "feature/x"
+  },
+  {
+   "id": 289,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "test/install.test.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 290,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git commit -m \"mention git push\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 291,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git commit -m 'run ./install.sh'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 292,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "grep 'gh ' file",
+   "branch": "feature/x"
+  },
+  {
+   "id": 293,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git config --get user.name",
+   "branch": "feature/x"
+  },
+  {
+   "id": 294,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git config user.name",
+   "branch": "feature/x"
+  },
+  {
+   "id": 295,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git config --list --show-origin",
+   "branch": "feature/x"
+  },
+  {
+   "id": 296,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git config get user.name",
+   "branch": "feature/x"
+  },
+  {
+   "id": 297,
+   "source": "test/guard.test.ts (workerRisk); test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (workerRisk); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (workerRisk); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch -d old",
+   "branch": "feature/x"
+  },
+  {
+   "id": 298,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git log --oneline main..HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 299,
+   "source": "test/guard.test.ts (workerRisk); test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (workerRisk); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (workerRisk); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git merge-base main HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 300,
+   "source": "test/guard.test.ts (workerRisk); test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (workerRisk); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (workerRisk); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git stash list",
+   "branch": "feature/x"
+  },
+  {
+   "id": 301,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git stash show -p",
+   "branch": "feature/x"
+  },
+  {
+   "id": 302,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git commit -m \"merge and stash notes\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 303,
+   "source": "test/guard.test.ts (workerRisk); test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (workerRisk); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (workerRisk); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git tag v1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 304,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "cat install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 305,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash -n install.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 306,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash -n install.sh test/install.test.sh",
+   "branch": "feature/x"
+  },
+  {
+   "id": 307,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "bash -n ./install.sh && cmp -s README.md <(git show HEAD:README.md)",
+   "branch": "feature/x"
+  },
+  {
+   "id": 308,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "pi --version",
+   "branch": "feature/x"
+  },
+  {
+   "id": 309,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git symbolic-ref -q HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 310,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git symbolic-ref --short HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 311,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git config --bool core.bare",
+   "branch": "feature/x"
+  },
+  {
+   "id": 312,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git config --type bool --get core.bare",
+   "branch": "feature/x"
+  },
+  {
+   "id": 313,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git config --type=int core.x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 314,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git commit -m \"$(cat <<'EOF'\ninstall.sh: link\ngit push is blocked\nEOF\n)\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 315,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "git commit -F - <<EOF\nrun ./install.sh then gh pr list\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 316,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "DIR=$(mktemp -d) && cd \"$DIR\" && git init -q source && cd source && git config user.email t@example.com && git remote add origin \"$DIR/origin.git\" && git push origin HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 317,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "DIR=$(mktemp -d) && cd \"$DIR\" && git init -q source && cd source && git config user.email t@example.com && git remote add origin \"$DIR/origin.git\" && git push origin HEAD",
+   "branch": "main"
+  },
+  {
+   "id": 318,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "D=$(mktemp -d -t hooks); cd $D; git init -q --bare origin.git && git clone -q origin.git work && cd work && git push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 319,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "D=$(mktemp -d -t hooks); cd $D; git init -q --bare origin.git && git clone -q origin.git work && cd work && git push",
+   "branch": "main"
+  },
+  {
+   "id": 320,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "T=$(mktemp -d) && cd \"${T}\" && git init -q && git commit -q --allow-empty -m x && git reset --hard",
+   "branch": "feature/x"
+  },
+  {
+   "id": 321,
+   "source": "test/guard.test.ts (classify); fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "T=$(mktemp -d) && cd \"${T}\" && git init -q && git commit -q --allow-empty -m x && git reset --hard",
+   "branch": "main"
+  },
+  {
+   "id": 322,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "DIR=$(mktemp -d) && cd \"$DIR\" && cd /repo && git push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 323,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "DIR=$(mktemp -d) && cd \"$DIR\" && git clone -q /repo work && cd work && git push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 324,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "DIR=$(mktemp -d) && cd \"$DIR\" && cd .. && git config user.name x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 325,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "DIR=$(mktemp -d) && cd \"$DIR\" && git -C ~/repo push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 326,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "DIR=$(mktemp -d) && cd \"$DIR\" && GIT_DIR=x git config user.name x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 327,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "DIR=$(mktemp -d) && cd \"$DIR\" && DIR=/repo && cd \"$DIR\" && git push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 328,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "DIR=$(mktemp -d) && cd \"$DIR\" && cd \"$HOME\" && git config user.name x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 329,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "cd \"$DIR\" && git config user.name x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 330,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "V=$(mktemp -d) && cd \"$V\" && cd - && git push --force origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 331,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "V=$(mktemp -d) && cd \"$V\" && cd && cd fun/me-pi && git push --force origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 332,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "V=$(mktemp -d) && cd \"$V\" && pushd work && popd && git config user.name x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 333,
+   "source": "test/guard.test.ts (workerRisk); fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "V=$(mktemp -d ./t.XXXX) && cd \"$V\" && git config user.name x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 334,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git add -A",
+   "branch": "feature/x"
+  },
+  {
+   "id": 335,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git rm a.ts",
+   "branch": "feature/x"
+  },
+  {
+   "id": 336,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git mv a b",
+   "branch": "feature/x"
+  },
+  {
+   "id": 337,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git commit -m x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 338,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git merge x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 339,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git rebase main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 340,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git reset HEAD~1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 341,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git restore --staged a",
+   "branch": "feature/x"
+  },
+  {
+   "id": 342,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git checkout x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 343,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git switch -c goal/x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 344,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git stash list && git stash drop",
+   "branch": "feature/x"
+  },
+  {
+   "id": 345,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git cherry-pick abc",
+   "branch": "feature/x"
+  },
+  {
+   "id": 346,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git revert HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 347,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git am < p.mbox",
+   "branch": "feature/x"
+  },
+  {
+   "id": 348,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git apply p.diff",
+   "branch": "feature/x"
+  },
+  {
+   "id": 349,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git clean -fd",
+   "branch": "feature/x"
+  },
+  {
+   "id": 350,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git update-index --assume-unchanged a",
+   "branch": "feature/x"
+  },
+  {
+   "id": 351,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git read-tree HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 352,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git checkout-index -a -f",
+   "branch": "feature/x"
+  },
+  {
+   "id": 353,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git sparse-checkout set src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 354,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git submodule update --init",
+   "branch": "feature/x"
+  },
+  {
+   "id": 355,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git update-ref refs/heads/x HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 356,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git symbolic-ref HEAD refs/heads/x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 357,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch -f goal/x HEAD~1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 358,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch --force goal/x main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 359,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch -m old new",
+   "branch": "feature/x"
+  },
+  {
+   "id": 360,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch -M new",
+   "branch": "feature/x"
+  },
+  {
+   "id": 361,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch --move old new",
+   "branch": "feature/x"
+  },
+  {
+   "id": 362,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch --delete old",
+   "branch": "feature/x"
+  },
+  {
+   "id": 363,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git -C /repo commit -m x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 364,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "rtk git add .",
+   "branch": "feature/x"
+  },
+  {
+   "id": 365,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git status && git commit -m x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 366,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git log --format=\"$(git reset --hard)\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 367,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git log --oneline",
+   "branch": "feature/x"
+  },
+  {
+   "id": 368,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git log --oneline -5",
+   "branch": "feature/x"
+  },
+  {
+   "id": 369,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git blame README.md",
+   "branch": "feature/x"
+  },
+  {
+   "id": 370,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git grep foo",
+   "branch": "feature/x"
+  },
+  {
+   "id": 371,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git status --porcelain",
+   "branch": "feature/x"
+  },
+  {
+   "id": 372,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git diff main..HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 373,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git show HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 374,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch --show-current",
+   "branch": "feature/x"
+  },
+  {
+   "id": 375,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch",
+   "branch": "feature/x"
+  },
+  {
+   "id": 376,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch -a",
+   "branch": "feature/x"
+  },
+  {
+   "id": 377,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git branch new-topic",
+   "branch": "feature/x"
+  },
+  {
+   "id": 378,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git fetch origin",
+   "branch": "feature/x"
+  },
+  {
+   "id": 379,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git rev-parse HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 380,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "git stash show -p stash@{0}",
+   "branch": "feature/x"
+  },
+  {
+   "id": 381,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "grep 'git commit' README.md",
+   "branch": "feature/x"
+  },
+  {
+   "id": 382,
+   "source": "test/guard.test.ts (gitTreeWrite); fix/guard-temp-rm (gitTreeWrite); fix/guard-command-positions (gitTreeWrite)",
+   "command": "echo \"git add -A\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 383,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/$x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 384,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"/tmp/${name}/\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 385,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR:?}/$n\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 386,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/`echo x`",
+   "branch": "feature/x"
+  },
+  {
+   "id": 387,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/x/$y",
+   "branch": "feature/x"
+  },
+  {
+   "id": 388,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/x/{..,y}/z",
+   "branch": "feature/x"
+  },
+  {
+   "id": 389,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/{a..z}",
+   "branch": "feature/x"
+  },
+  {
+   "id": 390,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf dist/\\.\\./src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 391,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/me-pi-$$",
+   "branch": "main"
+  },
+  {
+   "id": 392,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf /tmp/build-{a,b}",
+   "branch": "main"
+  },
+  {
+   "id": 393,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 394,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 395,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR}/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 396,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 397,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/a/b\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 398,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "cd \"$TMPDIR\" && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 399,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/docker-build\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 400,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/source\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 401,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/build-{a,b}\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 402,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 403,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 404,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/*",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 405,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/$n\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 406,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/../x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 407,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "TMPDIR=/ rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 408,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "unset TMPDIR; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 409,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "export TMPDIR=/; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 410,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -i bash -c 'rm -rf \"$TMPDIR/x\"'",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 411,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -uTMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 412,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -u TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 413,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env --ignore bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 414,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env --unset=TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 415,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "sudo rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 416,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "pkexec env rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 417,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "n=TMP; export ${n}DIR=/; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 418,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "source ./env.sh && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 419,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "source .venv/bin/activate && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 420,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": ". ./env.sh; rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 421,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "IFS=/; rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 422,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/\\.\\./\\.\\./y",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 423,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/{..,y}/z",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 424,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.{a,}./y",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 425,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.[.]/y",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 426,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.?/y",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 427,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 428,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 429,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR}/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 430,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 431,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/a/b\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 432,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "cd \"$TMPDIR\" && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 433,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/docker-build\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 434,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/source\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 435,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/build-{a,b}\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 436,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 437,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 438,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/*",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 439,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/$n\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 440,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/../x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 441,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "TMPDIR=/ rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 442,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "unset TMPDIR; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 443,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "export TMPDIR=/; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 444,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -i bash -c 'rm -rf \"$TMPDIR/x\"'",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 445,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -uTMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 446,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -u TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 447,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env --ignore bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 448,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env --unset=TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 449,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "sudo rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 450,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "pkexec env rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 451,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "n=TMP; export ${n}DIR=/; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 452,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "source ./env.sh && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 453,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "source .venv/bin/activate && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 454,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": ". ./env.sh; rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 455,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "IFS=/; rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 456,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/\\.\\./\\.\\./y",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 457,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/{..,y}/z",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 458,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.{a,}./y",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 459,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.[.]/y",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 460,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.?/y",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 461,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 462,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 463,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR}/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 464,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 465,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/a/b\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 466,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "cd \"$TMPDIR\" && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 467,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/docker-build\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 468,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/source\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 469,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/build-{a,b}\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 470,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 471,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 472,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/*",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 473,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/$n\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 474,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/../x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 475,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "TMPDIR=/ rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 476,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "unset TMPDIR; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 477,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "export TMPDIR=/; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 478,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -i bash -c 'rm -rf \"$TMPDIR/x\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 479,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -uTMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 480,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -u TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 481,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env --ignore bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 482,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env --unset=TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 483,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "sudo rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 484,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "pkexec env rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 485,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "n=TMP; export ${n}DIR=/; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 486,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "source ./env.sh && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 487,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "source .venv/bin/activate && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 488,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": ". ./env.sh; rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 489,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "IFS=/; rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 490,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/\\.\\./\\.\\./y",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 491,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/{..,y}/z",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 492,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.{a,}./y",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 493,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.[.]/y",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 494,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.?/y",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 495,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 496,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 497,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR}/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 498,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 499,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/a/b\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 500,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "cd \"$TMPDIR\" && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 501,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/docker-build\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 502,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/source\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 503,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/build-{a,b}\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 504,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 505,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 506,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/*",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 507,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/$n\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 508,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/../x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 509,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "TMPDIR=/ rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 510,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "unset TMPDIR; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 511,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "export TMPDIR=/; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 512,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -i bash -c 'rm -rf \"$TMPDIR/x\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 513,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -uTMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 514,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env -u TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 515,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env --ignore bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 516,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "env --unset=TMPDIR bash -c 'rm -rf \"$TMPDIR/Users\"'",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 517,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "sudo rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 518,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "pkexec env rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 519,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "n=TMP; export ${n}DIR=/; rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 520,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "source ./env.sh && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 521,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "source .venv/bin/activate && rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 522,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": ". ./env.sh; rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 523,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "IFS=/; rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 524,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/\\.\\./\\.\\./y",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 525,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/{..,y}/z",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 526,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.{a,}./y",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 527,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.[.]/y",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 528,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x/.?/y",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 529,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": ""
+  },
+  {
+   "id": 530,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": ""
+  },
+  {
+   "id": 531,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR}/x\"",
+   "branch": "main",
+   "tmpdir": ""
+  },
+  {
+   "id": 532,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x",
+   "branch": "main",
+   "tmpdir": ""
+  },
+  {
+   "id": 533,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "main",
+   "tmpdir": ""
+  },
+  {
+   "id": 534,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/"
+  },
+  {
+   "id": 535,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/"
+  },
+  {
+   "id": 536,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR}/x\"",
+   "branch": "main",
+   "tmpdir": "/"
+  },
+  {
+   "id": 537,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x",
+   "branch": "main",
+   "tmpdir": "/"
+  },
+  {
+   "id": 538,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "main",
+   "tmpdir": "/"
+  },
+  {
+   "id": 539,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/home/me"
+  },
+  {
+   "id": 540,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/home/me"
+  },
+  {
+   "id": 541,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR}/x\"",
+   "branch": "main",
+   "tmpdir": "/home/me"
+  },
+  {
+   "id": 542,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x",
+   "branch": "main",
+   "tmpdir": "/home/me"
+  },
+  {
+   "id": 543,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "main",
+   "tmpdir": "/home/me"
+  },
+  {
+   "id": 544,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp/../etc"
+  },
+  {
+   "id": 545,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/tmp/../etc"
+  },
+  {
+   "id": 546,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR}/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp/../etc"
+  },
+  {
+   "id": 547,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x",
+   "branch": "main",
+   "tmpdir": "/tmp/../etc"
+  },
+  {
+   "id": 548,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp/../etc"
+  },
+  {
+   "id": 549,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp/a b"
+  },
+  {
+   "id": 550,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf $TMPDIR/x",
+   "branch": "main",
+   "tmpdir": "/tmp/a b"
+  },
+  {
+   "id": 551,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR}/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp/a b"
+  },
+  {
+   "id": 552,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$TMPDIR\"/x",
+   "branch": "main",
+   "tmpdir": "/tmp/a b"
+  },
+  {
+   "id": 553,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp/a b"
+  },
+  {
+   "id": 554,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && rm -rf \"$d\"",
+   "branch": "main"
+  },
+  {
+   "id": 555,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d); rm -rf \"$d\"",
+   "branch": "main"
+  },
+  {
+   "id": 556,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT",
+   "branch": "main"
+  },
+  {
+   "id": 557,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d -t me) && cd \"$d\" && touch x && rm -rf \"$d\"/*",
+   "branch": "main"
+  },
+  {
+   "id": 558,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && rm -rf \"$d/x\"",
+   "branch": "main"
+  },
+  {
+   "id": 559,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d); rm -rf \"${d:?}\"/x",
+   "branch": "main"
+  },
+  {
+   "id": 560,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d)\nrm -rf \"${d}\"",
+   "branch": "main"
+  },
+  {
+   "id": 561,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "rm -rf \"$d\"",
+   "branch": "main"
+  },
+  {
+   "id": 562,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d); d=/; rm -rf \"$d\"",
+   "branch": "main"
+  },
+  {
+   "id": 563,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && read d && rm -rf \"$d\"",
+   "branch": "main"
+  },
+  {
+   "id": 564,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && for d in /x; do rm -rf \"$d\"; done",
+   "branch": "main"
+  },
+  {
+   "id": 565,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && rm -rf $d",
+   "branch": "main"
+  },
+  {
+   "id": 566,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d); rm -rf \"$d\"/*",
+   "branch": "main"
+  },
+  {
+   "id": 567,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d); rm -rf \"$d/x\"",
+   "branch": "main"
+  },
+  {
+   "id": 568,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && rm -rf \"$d/x\" || rm -rf \"$d/y\"",
+   "branch": "main"
+  },
+  {
+   "id": 569,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && sh -c 'rm -rf \"$d\"/x'",
+   "branch": "main"
+  },
+  {
+   "id": 570,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && rm -rf \"$d/\"",
+   "branch": "main"
+  },
+  {
+   "id": 571,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && rm -rf \"$d/..\"",
+   "branch": "main"
+  },
+  {
+   "id": 572,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && rm -rf \"$d/$y\"",
+   "branch": "main"
+  },
+  {
+   "id": 573,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d ./t.XXXX) && rm -rf \"$d\"",
+   "branch": "main"
+  },
+  {
+   "id": 574,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "x=1; d=$(mktemp -d) && rm -rf \"$d\"",
+   "branch": "main"
+  },
+  {
+   "id": 575,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "OLDPWD=$(mktemp -d) && cd src && rm -rf \"$OLDPWD\"",
+   "branch": "main"
+  },
+  {
+   "id": 576,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "PWD=$(mktemp -d) && cd ~/proj && rm -rf \"$PWD\"",
+   "branch": "main"
+  },
+  {
+   "id": 577,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "_=$(mktemp -d) && ls / && rm -rf \"$_\"/Users",
+   "branch": "main"
+  },
+  {
+   "id": 578,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && printf -vd / && rm -rf \"$d\"/etc",
+   "branch": "main"
+  },
+  {
+   "id": 579,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "d=$(mktemp -d) && rm -rf \"$d\"/.?/.?/etc",
+   "branch": "main"
+  },
+  {
+   "id": 580,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "cd x && d=$(mktemp -d) && rm -rf \"$d\"",
+   "branch": "main"
+  },
+  {
+   "id": 581,
+   "source": "fix/guard-temp-rm (classify); fix/guard-command-positions (classify)",
+   "command": "false && d=$(mktemp -d); rm -rf \"$d\"",
+   "branch": "main"
+  },
+  {
+   "id": 582,
+   "source": "fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "OLDPWD=$(mktemp -d) && cd \"$OLDPWD\" && cd - && git config user.name x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 583,
+   "source": "fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "V=$(mktemp -d) && cd \"$V\" && read V && cd \"$V\" && git config user.name x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 584,
+   "source": "fix/guard-temp-rm (workerRisk); fix/guard-command-positions (workerRisk)",
+   "command": "V=$(mktemp -d) && cd \"$V\" && printf -vV / && git config user.name x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 585,
+   "source": "fix/guard-command-positions (classify); #78",
+   "command": "if rm -rf src; then :; fi",
+   "branch": "feature/x"
+  },
+  {
+   "id": 586,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "while rm -rf src; do :; done",
+   "branch": "feature/x"
+  },
+  {
+   "id": 587,
+   "source": "fix/guard-command-positions (classify); #78",
+   "command": "! rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 588,
+   "source": "fix/guard-command-positions (classify); #78",
+   "command": "timeout 5 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 589,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "timeout -s KILL 5s rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 590,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "nice -n 10 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 591,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "doas rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 592,
+   "source": "fix/guard-command-positions (classify); #78",
+   "command": "watch 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 593,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "trap \"rm -rf /\" EXIT",
+   "branch": "feature/x"
+  },
+  {
+   "id": 594,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "trap 'rm -rf src' EXIT",
+   "branch": "feature/x"
+  },
+  {
+   "id": 595,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "ssh host \"rm -rf ~\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 596,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "rm -rf dist\" \"x /etc",
+   "branch": "feature/x"
+  },
+  {
+   "id": 597,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "trap 'rm -rf \"$d\" /etc' EXIT",
+   "branch": "feature/x"
+  },
+  {
+   "id": 598,
+   "source": "fix/guard-command-positions (classify); #78",
+   "command": "nice -n -5 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 599,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "timeout --signal KILL 5 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 600,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "timeout -k 5 10 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 601,
+   "source": "fix/guard-command-positions (classify); #78",
+   "command": "runuser -u me -- rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 602,
+   "source": "fix/guard-command-positions (classify); #78",
+   "command": "doas -u root rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 603,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "ionice -c 3 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 604,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "nice -n 5 git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 605,
+   "source": "fix/guard-command-positions (classify); #78 body (#76 classes)",
+   "command": "timeout 5 'rm' -rf /",
+   "branch": "feature/x"
+  },
+  {
+   "id": 606,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "nice \"rm\" -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 607,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "eval 'rm' -rf /",
+   "branch": "feature/x"
+  },
+  {
+   "id": 608,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "ssh host 'rm' -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 609,
+   "source": "fix/guard-command-positions (classify); #78 body (#76 classes)",
+   "command": "LC_ALL=\"C\" rm -rf dist \"$HOME\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 610,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "X='y' /bin/rm -rf build '/'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 611,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "env FOO=\"x\" rm -rf dist \"$PWD\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 612,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "bash -c 'rm -rf dist '\"$HOME\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 613,
+   "source": "fix/guard-command-positions (classify); #78 body (#76 classes)",
+   "command": "trap 'rm -rf dist '\"$HOME\" EXIT",
+   "branch": "feature/x"
+  },
+  {
+   "id": 614,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "trap 'rm -rf dist' EXIT /etc",
+   "branch": "feature/x"
+  },
+  {
+   "id": 615,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "rm -rf dist/\"Bob's\" ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 616,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "rm -rf dist \"'\" /etc",
+   "branch": "feature/x"
+  },
+  {
+   "id": 617,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "rm -rf dist \"x\\\\\" ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 618,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "ssh -p 22 -i key user@host 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 619,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "if git push origin main; then :; fi",
+   "branch": "feature/x"
+  },
+  {
+   "id": 620,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "timeout 60 git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 621,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "if [ -d dist ]; then rm -rf dist; fi",
+   "branch": "main"
+  },
+  {
+   "id": 622,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "timeout 5 rm -rf /tmp/me-pi-x",
+   "branch": "main"
+  },
+  {
+   "id": 623,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "echo done!",
+   "branch": "main"
+  },
+  {
+   "id": 624,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "ssh host ls",
+   "branch": "main"
+  },
+  {
+   "id": 625,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "trap 'rm -f lock' EXIT",
+   "branch": "main"
+  },
+  {
+   "id": 626,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "trap 'rm -rf dist' EXIT INT TERM",
+   "branch": "main"
+  },
+  {
+   "id": 627,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "trap 'FOO=1 rm -rf /tmp/x' EXIT",
+   "branch": "main"
+  },
+  {
+   "id": 628,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "nice -n 10 make",
+   "branch": "main"
+  },
+  {
+   "id": 629,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "timeout 600 npm run check --prefix extensions",
+   "branch": "main"
+  },
+  {
+   "id": 630,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "doas -u root ls",
+   "branch": "main"
+  },
+  {
+   "id": 631,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "rg -n 'if git push origin main' scripts/",
+   "branch": "main"
+  },
+  {
+   "id": 632,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "grep -rn 'while rm -rf' .",
+   "branch": "main"
+  },
+  {
+   "id": 633,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "grep -rn \"trap 'rm -rf\" .",
+   "branch": "main"
+  },
+  {
+   "id": 634,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "ssh prod 'cd /srv && ./restart'; git push",
+   "branch": "feature/x"
+  },
+  {
+   "id": 635,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "pkexec rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/tmp"
+  },
+  {
+   "id": 636,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "pkexec rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/private/tmp/"
+  },
+  {
+   "id": 637,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "pkexec rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/"
+  },
+  {
+   "id": 638,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "pkexec rm -rf \"$TMPDIR/x\"",
+   "branch": "main",
+   "tmpdir": "/var/folders/ab/cd/T/job-1"
+  },
+  {
+   "id": 639,
+   "source": "fix/guard-command-positions (classify)",
+   "command": "tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' 0",
+   "branch": "main"
+  },
+  {
+   "id": 640,
+   "source": "fix/guard-command-positions (gitTreeWrite)",
+   "command": "ssh host git pull",
+   "branch": "feature/x"
+  },
+  {
+   "id": 641,
+   "source": "fix/guard-command-positions (gitTreeWrite)",
+   "command": "rg 'if git commit' .",
+   "branch": "feature/x"
+  },
+  {
+   "id": 642,
+   "source": "#78",
+   "command": "timeout -s \"KILL\" 5 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 643,
+   "source": "#78",
+   "command": "trap 'rm -rf /' EXIT",
+   "branch": "feature/x"
+  },
+  {
+   "id": 644,
+   "source": "#78",
+   "command": "trap -- 'rm -rf ~' EXIT",
+   "branch": "feature/x"
+  },
+  {
+   "id": 645,
+   "source": "#78",
+   "command": "ssh h 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 646,
+   "source": "#78",
+   "command": "sudo -u root rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 647,
+   "source": "#78",
+   "command": "env -u X rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 648,
+   "source": "#78",
+   "command": "nice -n \"-5\" git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 649,
+   "source": "#78 body (#76 classes)",
+   "command": "'rm' -rf /",
+   "branch": "feature/x"
+  },
+  {
+   "id": 650,
+   "source": "#78 body (#76 classes)",
+   "command": "/usr/bin/env rm -rf /",
+   "branch": "feature/x"
+  },
+  {
+   "id": 651,
+   "source": "#78 body (#76 classes)",
+   "command": "/usr/bin/sudo rm -rf /",
+   "branch": "feature/x"
+  },
+  {
+   "id": 652,
+   "source": "#78 body (#76 classes)",
+   "command": "\\export TMPDIR=/; rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 653,
+   "source": "#78 body (#76 classes)",
+   "command": "builtin export TMPDIR=/; rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 654,
+   "source": "#78 body (#76 classes)",
+   "command": "TMP\"\"DIR=/ rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 655,
+   "source": "#78 body (#76 classes)",
+   "command": "1=$(rm -rf ~)",
+   "branch": "feature/x"
+  },
+  {
+   "id": 656,
+   "source": "#78 body (#76 classes)",
+   "command": "rm -rf '$TMPDIR'/x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 657,
+   "source": "#78 comment 1",
+   "command": "doas rm -rf /",
+   "branch": "feature/x"
+  },
+  {
+   "id": 658,
+   "source": "#78 comment 1",
+   "command": "su -c \"rm -rf /\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 659,
+   "source": "#78 comment 1",
+   "command": "runuser -u x rm -rf /",
+   "branch": "feature/x"
+  },
+  {
+   "id": 660,
+   "source": "#78 comment 1",
+   "command": "pkexec rm -rf /",
+   "branch": "feature/x"
+  },
+  {
+   "id": 661,
+   "source": "#78 comment 1",
+   "command": "doas true; rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 662,
+   "source": "#78 comment 2",
+   "command": "rm -rf dist \\\n         /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 663,
+   "source": "#78 comment 2",
+   "command": "rm -rf dist \";\" /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 664,
+   "source": "#78 comment 2",
+   "command": "rm -rf dist \\; /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 665,
+   "source": "#78 comment 2",
+   "command": "rm -rf dist '&' /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 666,
+   "source": "#78 comment 2",
+   "command": "rm -rf dist/x${IFS}/Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 667,
+   "source": "#78 comment 2",
+   "command": "rm -rf /tmp/$(true)",
+   "branch": "feature/x"
+  },
+  {
+   "id": 668,
+   "source": "#78 comment 2",
+   "command": "rm -rf /tmp/{,}",
+   "branch": "feature/x"
+  },
+  {
+   "id": 669,
+   "source": "#78 comment 2",
+   "command": "rm \\-r /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 670,
+   "source": "#78 comment 2",
+   "command": "rm --r /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 671,
+   "source": "#92",
+   "command": "rm -rf dist 2>&1 | tail -2",
+   "branch": "feature/x"
+  },
+  {
+   "id": 672,
+   "source": "#92",
+   "command": "rm -rf dist >/dev/null 2>&1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 673,
+   "source": "#92",
+   "command": "rm -rf \"${TMPDIR:?}/x\" 2>/dev/null || true",
+   "branch": "feature/x"
+  },
+  {
+   "id": 674,
+   "source": "#92",
+   "command": "rm -rf dist && echo ok",
+   "branch": "feature/x"
+  },
+  {
+   "id": 675,
+   "source": "#92",
+   "command": "rm -rf dist &>/dev/null",
+   "branch": "feature/x"
+  },
+  {
+   "id": 676,
+   "source": "#92",
+   "command": "rm -rf dist >| log",
+   "branch": "feature/x"
+  },
+  {
+   "id": 677,
+   "source": "#92",
+   "command": "rm -rf dist &> log",
+   "branch": "feature/x"
+  },
+  {
+   "id": 678,
+   "source": "#92",
+   "command": "rm -rf dist |& tail",
+   "branch": "feature/x"
+  },
+  {
+   "id": 679,
+   "source": "#92",
+   "command": "rm -rf node_modules dist 2>&1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 680,
+   "source": "#93",
+   "command": "git push origin 2>&1",
+   "branch": "main"
+  },
+  {
+   "id": 681,
+   "source": "#93",
+   "command": "git push 2>&1",
+   "branch": "main"
+  },
+  {
+   "id": 682,
+   "source": "#93",
+   "command": "git push origin main 2>&1 | tail",
+   "branch": "main"
+  },
+  {
+   "id": 683,
+   "source": "#93",
+   "command": "git push origin >/dev/null 2>&1",
+   "branch": "main"
+  },
+  {
+   "id": 684,
+   "source": "#93",
+   "command": "git checkout -- . 2>&1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 685,
+   "source": "#93",
+   "command": "git restore . &>/dev/null",
+   "branch": "feature/x"
+  },
+  {
+   "id": 686,
+   "source": "#93",
+   "command": "git branch -D old 2>&1",
+   "branch": "feature/x"
+  },
+  {
+   "id": 687,
+   "source": "quoted >",
+   "command": "rm -rf '/tmp/x/ > /../../../Users'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 688,
+   "source": "adversarial",
+   "command": "cat > f <<'EOF'\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 689,
+   "source": "adversarial",
+   "command": "cat > f <<'EOF'\nrm -rf ~\nEOF\nbash f",
+   "branch": "feature/x"
+  },
+  {
+   "id": 690,
+   "source": "adversarial",
+   "command": "bash <<EOF\nrm -rf $HOME\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 691,
+   "source": "adversarial",
+   "command": "cat <<EOF\n$(rm -rf ~)\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 692,
+   "source": "adversarial",
+   "command": "cat > f <<EOF\nx $(rm -rf ~) y\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 693,
+   "source": "adversarial",
+   "command": "cat <<'EOF' | bash\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 694,
+   "source": "adversarial",
+   "command": "tee f <<'EOF' >/dev/null\nrm -rf /\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 695,
+   "source": "adversarial",
+   "command": "sh -s <<'EOF'\ngit push --force origin main\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 696,
+   "source": "adversarial",
+   "command": "bash <<-'EOF'\n\trm -rf ~\n\tEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 697,
+   "source": "adversarial",
+   "command": "python3 - <<'EOF'\nimport os\nos.system('rm -rf ~')\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 698,
+   "source": "adversarial",
+   "command": "cat > notes.md <<'EOF'\nNever run git push --force origin main.\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 699,
+   "source": "adversarial",
+   "command": "tee notes.md <<'EOF' >/dev/null\nrm -rf ~ is bad\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 700,
+   "source": "adversarial",
+   "command": "/usr/bin/sudo rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 701,
+   "source": "adversarial",
+   "command": "/usr/bin/env -i /bin/rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 702,
+   "source": "adversarial",
+   "command": "/bin/rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 703,
+   "source": "adversarial",
+   "command": "/usr/bin/timeout 5 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 704,
+   "source": "adversarial",
+   "command": "/usr/bin/nice -n 5 /usr/bin/git push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 705,
+   "source": "adversarial",
+   "command": "/usr/bin/xargs rm -rf <<<'/Users'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 706,
+   "source": "adversarial",
+   "command": "/bin/bash -c 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 707,
+   "source": "adversarial",
+   "command": "/bin/sh -c 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 708,
+   "source": "adversarial",
+   "command": "rm -rf $'/Users'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 709,
+   "source": "adversarial",
+   "command": "$'r\\x6d' -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 710,
+   "source": "adversarial",
+   "command": "rm $'-rf' ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 711,
+   "source": "adversarial",
+   "command": "rm -rf $'dist\\n/Users'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 712,
+   "source": "adversarial",
+   "command": "a=(rm -rf ~); \"${a[@]}\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 713,
+   "source": "adversarial",
+   "command": "args=(-rf /Users); rm \"${args[@]}\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 714,
+   "source": "adversarial",
+   "command": "a[0]=rm; ${a[0]} -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 715,
+   "source": "adversarial",
+   "command": "bash <<< 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 716,
+   "source": "adversarial",
+   "command": "sh <<< \"rm -rf $HOME\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 717,
+   "source": "adversarial",
+   "command": "rm -rf <<<'x' /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 718,
+   "source": "adversarial",
+   "command": "xargs rm -rf <<< /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 719,
+   "source": "adversarial",
+   "command": "sudo \\\n rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 720,
+   "source": "adversarial",
+   "command": "rm -r\\\nf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 721,
+   "source": "adversarial",
+   "command": "git push \\\n origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 722,
+   "source": "adversarial",
+   "command": "CMD=rm; $CMD -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 723,
+   "source": "adversarial",
+   "command": "$CMD -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 724,
+   "source": "adversarial",
+   "command": "X=git; $X push origin main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 725,
+   "source": "adversarial",
+   "command": "\"$(echo rm)\" -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 726,
+   "source": "adversarial",
+   "command": "r=rm; eval \"$r -rf ~\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 727,
+   "source": "adversarial",
+   "command": "eval 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 728,
+   "source": "adversarial",
+   "command": "eval \"rm -rf $HOME\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 729,
+   "source": "adversarial",
+   "command": "bash -c 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 730,
+   "source": "adversarial",
+   "command": "bash -lc 'git push origin main'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 731,
+   "source": "adversarial",
+   "command": "bash -o pipefail -c 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 732,
+   "source": "adversarial",
+   "command": "su - root -c 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 733,
+   "source": "adversarial",
+   "command": "env -S 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 734,
+   "source": "adversarial",
+   "command": "sudo -s rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 735,
+   "source": "adversarial",
+   "command": "sudo -E env PATH=/x rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 736,
+   "source": "adversarial",
+   "command": "timeout --signal=KILL 5 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 737,
+   "source": "adversarial",
+   "command": "nice -5 rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 738,
+   "source": "adversarial",
+   "command": "flock /tmp/l rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 739,
+   "source": "adversarial",
+   "command": "stdbuf -oL rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 740,
+   "source": "adversarial",
+   "command": "setsid rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 741,
+   "source": "adversarial",
+   "command": "caffeinate -i rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 742,
+   "source": "adversarial",
+   "command": "rtk proxy rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 743,
+   "source": "adversarial",
+   "command": "command rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 744,
+   "source": "adversarial",
+   "command": "command /bin/rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 745,
+   "source": "adversarial",
+   "command": "exec rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 746,
+   "source": "adversarial",
+   "command": "builtin eval 'rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 747,
+   "source": "adversarial",
+   "command": "time rm -rf src",
+   "branch": "feature/x"
+  },
+  {
+   "id": 748,
+   "source": "adversarial",
+   "command": "nohup rm -rf src &",
+   "branch": "feature/x"
+  },
+  {
+   "id": 749,
+   "source": "adversarial",
+   "command": "echo /Users | xargs rm -rf",
+   "branch": "feature/x"
+  },
+  {
+   "id": 750,
+   "source": "adversarial",
+   "command": "echo /Users | xargs -I{} rm -rf {}",
+   "branch": "feature/x"
+  },
+  {
+   "id": 751,
+   "source": "adversarial",
+   "command": "find / -name x -exec rm -rf {} +",
+   "branch": "feature/x"
+  },
+  {
+   "id": 752,
+   "source": "adversarial",
+   "command": "find . -name dist -exec rm -rf {} \\;",
+   "branch": "feature/x"
+  },
+  {
+   "id": 753,
+   "source": "adversarial",
+   "command": "find . -delete",
+   "branch": "feature/x"
+  },
+  {
+   "id": 754,
+   "source": "adversarial",
+   "command": "(cd / && rm -rf usr)",
+   "branch": "feature/x"
+  },
+  {
+   "id": 755,
+   "source": "adversarial",
+   "command": "f() { rm -rf ~; }; f",
+   "branch": "feature/x"
+  },
+  {
+   "id": 756,
+   "source": "adversarial",
+   "command": "false || rm -rf ~",
+   "branch": "feature/x"
+  },
+  {
+   "id": 757,
+   "source": "adversarial",
+   "command": "[ -d /x ] && rm -rf /x",
+   "branch": "feature/x"
+  },
+  {
+   "id": 758,
+   "source": "adversarial",
+   "command": "x=$(rm -rf ~)",
+   "branch": "feature/x"
+  },
+  {
+   "id": 759,
+   "source": "adversarial",
+   "command": "echo <(rm -rf ~)",
+   "branch": "feature/x"
+  },
+  {
+   "id": 760,
+   "source": "adversarial",
+   "command": "echo `rm -rf ~`",
+   "branch": "feature/x"
+  },
+  {
+   "id": 761,
+   "source": "adversarial",
+   "command": "while read d; do rm -rf \"$d\"; done <<< /Users",
+   "branch": "feature/x"
+  },
+  {
+   "id": 762,
+   "source": "adversarial",
+   "command": "for d in /Users; do rm -rf $d; done",
+   "branch": "feature/x"
+  },
+  {
+   "id": 763,
+   "source": "adversarial",
+   "command": "case x in x) rm -rf ~;; esac",
+   "branch": "feature/x"
+  },
+  {
+   "id": 764,
+   "source": "adversarial",
+   "command": "{ rm -rf ~; }",
+   "branch": "feature/x"
+  },
+  {
+   "id": 765,
+   "source": "adversarial",
+   "command": "rm -rf dist; git push --force",
+   "branch": "feature/x"
+  },
+  {
+   "id": 766,
+   "source": "adversarial",
+   "command": "git -C ../other push --force",
+   "branch": "feature/x"
+  },
+  {
+   "id": 767,
+   "source": "adversarial",
+   "command": "cd /; rm -rf dist",
+   "branch": "feature/x"
+  },
+  {
+   "id": 768,
+   "source": "adversarial",
+   "command": "GIT_DIR=/x git push origin HEAD",
+   "branch": "feature/x"
+  },
+  {
+   "id": 769,
+   "source": "adversarial",
+   "command": "git push origin HEAD:refs/heads/main",
+   "branch": "feature/x"
+  },
+  {
+   "id": 770,
+   "source": "adversarial",
+   "command": "rm -rf \"${TMPDIR:?}/x\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 771,
+   "source": "adversarial",
+   "command": "rm -rf dist",
+   "branch": "feature/x"
+  },
+  {
+   "id": 772,
+   "source": "adversarial",
+   "command": "rm -rf ./node_modules/.cache",
+   "branch": "feature/x"
+  },
+  {
+   "id": 773,
+   "source": "adversarial",
+   "command": "rm -f a b c",
+   "branch": "feature/x"
+  },
+  {
+   "id": 774,
+   "source": "adversarial",
+   "command": "git status && git log --oneline -3",
+   "branch": "feature/x"
+  },
+  {
+   "id": 775,
+   "source": "adversarial",
+   "command": "grep -r 'rm -rf' .",
+   "branch": "feature/x"
+  },
+  {
+   "id": 776,
+   "source": "adversarial",
+   "command": "rg 'git push origin main' .",
+   "branch": "feature/x"
+  },
+  {
+   "id": 777,
+   "source": "adversarial",
+   "command": "echo \"rm -rf /\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 778,
+   "source": "adversarial",
+   "command": "git commit -m 'never rm -rf ~'",
+   "branch": "feature/x"
+  },
+  {
+   "id": 779,
+   "source": "adversarial",
+   "command": "d=$(mktemp -d) && rm -rf \"$d\"",
+   "branch": "feature/x"
+  },
+  {
+   "id": 780,
+   "source": "adversarial",
+   "command": "cat <<'EOF'\nrm -rf ~\nEOF",
+   "branch": "feature/x"
+  },
+  {
+   "id": 781,
+   "source": "user false-alarm",
+   "command": "cat > q.mjs <<'EOF'\nconst a = \"rm -rf /tmp/x\";\nconst b = `rm -rf '/tmp/y'`;\nconst c = 'git push --force origin main';\nconsole.log(a, b, c);\nEOF\nnode q.mjs",
+   "branch": "feature/x"
+  }
+ ],
+ "selfChecks": [
+  {
+   "command": "rm -rf dist \\\n /Users",
+   "rm": [
+    [
+     "-rf",
+     "dist",
+     "/Users"
+    ]
+   ]
+  },
+  {
+   "command": "sudo -u root rm -rf src",
+   "rm": [
+    [
+     "-rf",
+     "src"
+    ]
+   ]
+  },
+  {
+   "command": "rm -rf \"a b\" 'c'\"d\"",
+   "rm": [
+    [
+     "-rf",
+     "a b",
+     "cd"
+    ]
+   ]
+  },
+  {
+   "command": "timeout -s KILL 5 rm -rf src 2>&1 /Users",
+   "rm": [
+    [
+     "-rf",
+     "src",
+     "/Users"
+    ]
+   ]
+  },
+  {
+   "command": "echo /Users | xargs rm -rf",
+   "rm": [
+    [
+     "-rf",
+     "/Users"
+    ]
+   ]
+  },
+  {
+   "command": "/usr/bin/env -i /bin/rm -rf x",
+   "rm": [
+    [
+     "-rf",
+     "x"
+    ]
+   ]
+  },
+  {
+   "command": "rm -rf dist 2>&- /Users",
+   "rm": [
+    [
+     "-rf",
+     "dist",
+     "/Users"
+    ]
+   ]
+  },
+  {
+   "command": "rm -rf \"${TMPDIR:?}/x\"",
+   "tmpdir": "/var/folders/zz/stub/T",
+   "rm": [
+    [
+     "-rf",
+     "/var/folders/zz/stub/T/x"
+    ]
+   ]
+  },
+  {
+   "command": "rm -rf \"${TMPDIR:?}/x\"",
+   "tmpdir": "",
+   "rm": []
+  },
+  {
+   "command": "git -C x push origin main 2>&1 | tail",
+   "git": [
+    [
+     "-C",
+     "x",
+     "push",
+     "origin",
+     "main"
+    ]
+   ]
+  },
+  {
+   "command": "bash -c 'git push origin main'",
+   "git": [
+    [
+     "push",
+     "origin",
+     "main"
+    ]
+   ]
+  },
+  {
+   "command": "trap 'rm -rf ~' EXIT",
+   "rm": [
+    [
+     "-rf",
+     "/Users/stub"
+    ]
+   ]
+  },
+  {
+   "command": "echo rm -rf / && grep 'git push' x",
+   "rm": [],
+   "git": []
+  },
+  {
+   "command": "cat > f <<'EOF'\nrm -rf ~\nEOF\nbash f",
+   "rm": [
+    [
+     "-rf",
+     "/Users/stub"
+    ]
+   ]
+  }
+ ]
+}

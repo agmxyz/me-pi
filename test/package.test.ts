@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -53,6 +54,9 @@ test("the pi-workers manifest declares only the three public Pi extensions", () 
 	assert.deepEqual(workers.peerDependencies, root.peerDependencies);
 	assert.deepEqual(workers.peerDependenciesMeta, root.peerDependenciesMeta);
 	assert.deepEqual(workers.engines, root.engines);
+	// guard's parser: pinned, and the root setup carries it too so Git installs of the whole repo load guard.
+	assert.deepEqual(workers.dependencies, { "web-tree-sitter": "0.27.1" });
+	assert.deepEqual(root.dependencies, workers.dependencies);
 	for (const entrypoint of workers.pi.extensions) {
 		assert.ok(existsSync(new URL(`../packages/pi-workers/${entrypoint}`, import.meta.url)), `${entrypoint} exists`);
 	}
@@ -66,11 +70,73 @@ test("the pi-workers tarball holds the package, not the author's setup", () => {
 	assert.ifError(result.error);
 	assert.equal(result.status, 0, result.stderr);
 	const files: string[] = JSON.parse(result.stdout)[0].files.map((file: { path: string }) => file.path);
-	const docs = ["package.json", "README.md", "LICENSE", "CHANGELOG.md", "docs/delegate.md"];
+	// guard's bash grammar is vendored (tree-sitter-bash 0.25.1, MIT) and loaded from the package at run time.
+	const docs = [
+		"package.json",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md",
+		"docs/delegate.md",
+		"vendor/tree-sitter-bash.wasm",
+		"vendor/tree-sitter-bash.LICENSE",
+	];
 	for (const file of [...workers.pi.extensions, ...docs]) assert.ok(files.includes(file), `${file} is published`);
 	assert.deepEqual(
 		files.filter((file) => !docs.includes(file) && !/^extensions\/[\w-]+\.ts$/.test(file)),
 		[],
+	);
+});
+
+test("a packed pi-workers tarball loads guard and its parser from its own files", { timeout: 60_000 }, async (t) => {
+	const pkg = fileURLToPath(new URL("../packages/pi-workers/", import.meta.url));
+	const temp = mkdtempSync(join(tmpdir(), "pi-workers-pack-"));
+	t.after(() => rmSync(temp, { recursive: true, force: true }));
+	const packed = spawnSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temp], {
+		cwd: pkg,
+		encoding: "utf8",
+		timeout: 30_000,
+	});
+	assert.equal(packed.status, 0, packed.stderr);
+	const tarball = join(temp, JSON.parse(packed.stdout)[0].filename);
+	const untar = spawnSync("tar", ["-xzf", tarball, "-C", temp], { encoding: "utf8", timeout: 30_000 });
+	assert.equal(untar.status, 0, untar.stderr);
+	const installed = join(temp, "package");
+	// What an install provides beside the package: its one runtime dependency (Pi provides the peers).
+	mkdirSync(join(installed, "node_modules"));
+	cpSync(
+		fileURLToPath(new URL("../node_modules/web-tree-sitter", import.meta.url)),
+		join(installed, "node_modules/web-tree-sitter"),
+		{ recursive: true },
+	);
+	// guard.ts itself, as Pi loads it: register it, then drive its tool_call handler headless (no model, no Pi).
+	const home = join(temp, "home");
+	mkdirSync(home);
+	const probe = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`const { default: register } = await import(${JSON.stringify(join(installed, "extensions/guard.ts"))});
+			 let handler;
+			 const notes = [];
+			 register({ on: (_e, h) => (handler = h), registerCommand: () => {}, events: { emit: () => {} } });
+			 const ctx = { cwd: process.env.HOME, hasUI: false, ui: { notify: (m) => notes.push(m) } };
+			 const run = (command) => handler({ type: "tool_call", toolCallId: "c", toolName: "bash", input: { command } }, ctx);
+			 const text = await run("cat > notes.md <<'EOF'\\nrm -rf src\\nEOF");
+			 const danger = await run("rm -rf /Users/nobody-guard-test");
+			 console.log(JSON.stringify({ text: text ?? null, danger: danger?.block ?? null, notes }));`,
+		],
+		{
+			encoding: "utf8",
+			timeout: 30_000,
+			env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, PI_CODING_AGENT_DIR: join(home, "agent") },
+		},
+	);
+	assert.equal(probe.status, 0, probe.stderr);
+	assert.deepEqual(
+		JSON.parse(probe.stdout.trim()),
+		{ text: null, danger: true, notes: [] },
+		"the parser loaded: no fallback warning",
 	);
 });
 

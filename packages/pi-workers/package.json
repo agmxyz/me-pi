@@ -17,6 +17,8 @@
   "type": "module",
   "files": [
     "extensions/*.ts",
+    "vendor/tree-sitter-bash.wasm",
+    "vendor/tree-sitter-bash.LICENSE",
     "docs/delegate.md",
     "CHANGELOG.md"
   ],
@@ -38,6 +40,9 @@
     "@earendil-works/pi-tui": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "web-tree-sitter": "0.27.1"
   },
   "engines": {
     "node": ">=22.19.0"

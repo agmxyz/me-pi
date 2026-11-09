@@ -372,6 +372,8 @@ if [ "$INSTALL_RC" -ne 0 ]; then
   exit 1
 fi
 
+check "guard's vendored bash grammar ships in Git installs" test -s "$FIXTURE/packages/pi-workers/vendor/tree-sitter-bash.wasm" -a -s "$FIXTURE/packages/pi-workers/vendor/tree-sitter-bash.LICENSE"
+check "guard's parser dependency is declared for Git installs of the whole repo" grep -Fq '"web-tree-sitter": "0.27.1"' "$FIXTURE/package.json"
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
 check "both repo skills linked once at user level" assert_skill_links "$PI_AGENT" "$FIXTURE"
 mkdir -p "$TMP/target-project-one" "$TMP/target-project-two"

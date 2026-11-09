@@ -24,7 +24,8 @@ import {
 	type StopResource,
 	TOOL_PROVENANCE_DETAIL_KEY,
 } from "./delegate-provenance.ts";
-import { GUARD_STOP_EVENT, workerRisk } from "./guard.ts";
+import { GUARD_STOP_EVENT } from "./guard.ts";
+import { workerRisk } from "./guard-regex.ts";
 
 // --- Wrap-up budget (enforced inside workers) ------------------------------------------------------
 

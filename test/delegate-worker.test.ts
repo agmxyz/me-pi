@@ -15,7 +15,7 @@ import {
 	workerLaunch,
 	workerSystemPrompt,
 } from "../packages/pi-workers/extensions/delegate-worker.ts";
-import { classify, workerRisk } from "../packages/pi-workers/extensions/guard.ts";
+import { classify, workerRisk } from "../packages/pi-workers/extensions/guard-regex.ts";
 
 const POLICY = readFileSync(new URL("../GLOBAL_AGENTS.md", import.meta.url), "utf8");
 const headings = (text: string) => text.split("\n").filter((line) => line.startsWith("## "));
