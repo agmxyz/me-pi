@@ -1,6 +1,6 @@
 {
   "name": "me-pi",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "My Pi setup: global policy, skills and the pi-workers extensions",
   "license": "MIT",

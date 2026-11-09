@@ -1,6 +1,6 @@
 {
   "name": "@agmxyz/pi-workers",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Delegate searches, reviews and checked changes to separate Pi worker processes",
   "license": "MIT",
   "repository": {

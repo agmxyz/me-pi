@@ -2,7 +2,7 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
-## [Unreleased]
+## [0.1.5] - 2026-11-09
 
 - `guard` asks again before `git push origin 2>&1` (and `>/dev/null 2>&1`, `&>log`, `>|log`, `>&2`) on main: a redirect was read as the refspec, so the push of the current branch looked like a push to another branch. Redirects are now dropped from every git command's words.
 - The delegate docs say that later worker-pool entries run only when you name them: the coordinator is not told the pool.
