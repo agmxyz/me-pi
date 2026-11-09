@@ -12,8 +12,6 @@ My [Pi](https://github.com/earendil-works/pi) setup, shared as a reference rathe
 
 [`@agmxyz/pi-workers`](packages/pi-workers/README.md) hands searches, reviews and code changes to separate workers, so your main session stays focused.
 
-Requires Pi 1.5.0 on macOS or Linux.
-
 ```sh
 pi install npm:@agmxyz/pi-workers
 ```
@@ -47,8 +45,6 @@ node --test test/guard.test.ts   # one test file
 - Follow [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md).
 - A user-visible change to an extension package adds a line under `## [Unreleased]` in its changelog (create the heading if missing).
 - Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt, description or schema, run the [routing evals](evals/README.md). They cost real money and don't run in CI.
-
-Good first issues: [#35](https://github.com/agmxyz/me-pi/issues/35), [#40](https://github.com/agmxyz/me-pi/issues/40).
 
 ## Credits
 
