@@ -11,7 +11,14 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, posix, relative } from "node:path";
-import { branchOf, isCheckoutRef, remoteUrlOf, repoRootOf } from "../../packages/pi-workers/extensions/guard-disk.ts";
+import {
+	branchOf,
+	isCheckoutRef,
+	pushUrlsOf,
+	remoteUrlOf,
+	repoRootOf,
+	urlRewritesOf,
+} from "../../packages/pi-workers/extensions/guard-disk.ts";
 import {
 	argvPolicy,
 	type PolicyEnv,
@@ -83,6 +90,8 @@ const live = (cwd: string, branch: string): PolicyEnv => ({
 	branchOf,
 	repoRootOf,
 	remoteUrlOf,
+	pushUrlsOf,
+	urlRewritesOf,
 	isCheckoutRef,
 });
 interface Result {

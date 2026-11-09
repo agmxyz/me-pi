@@ -106,6 +106,31 @@ export function remoteUrlOf(dir: string, name: string): string | undefined {
 	return git(dir, ["config", "--get", `remote.${name}.url`]) || undefined;
 }
 
+/**
+ * Every URL `git push NAME` sends to in the repo at `dir`, as git resolves them (`remote.NAME.pushurl` over `url`,
+ * `insteadOf`/`pushInsteadOf` rewrites applied); undefined when there is no such remote or the read fails.
+ */
+export function pushUrlsOf(dir: string, name: string): string[] | undefined {
+	if (!/^[\w.-]+$/.test(name)) return undefined;
+	const out = git(dir, ["remote", "get-url", "--push", "--all", "--", name]);
+	const urls = out?.split("\n").filter(Boolean);
+	return urls?.length ? urls : undefined;
+}
+
+/**
+ * The URL prefixes git rewrites in the repo at `dir` (`url.<base>.insteadOf` / `pushInsteadOf` values): a push to a
+ * URL or path starting with one goes to `<base>` instead. Empty when none is set; undefined when the read fails.
+ */
+export function urlRewritesOf(dir: string): string[] | undefined {
+	const r = gitCall(dir, ["config", "--get-regexp", String.raw`^url\..*\.(push)?insteadof$`]);
+	if (r.status === 1) return [];
+	if (r.out === undefined) return undefined;
+	return r.out
+		.split("\n")
+		.map((l) => l.replace(/^\S+\s/, ""))
+		.filter(Boolean);
+}
+
 export type Dirt = "clean" | "dirty" | "unknown";
 
 /**

@@ -129,6 +129,16 @@ const SEEDS: Seed[] = [
 ];
 
 /** Safe seeds for every fixture: the same constructs around them must not ask. */
+/** Pushes whose remote name hides where they go (review r1 F2): the clean fixture's `pushurl` and `rewrite` remotes. */
+const PUSH_REMOTES: [string, Want][] = [
+	["git push --force pushurl feat", "ask"],
+	["git push pushurl main", "ask"],
+	["git push --force rewrite feat", "ask"],
+	["git push rewrite main", "ask"],
+	["git push --force local feat", "allow"],
+	["git push local main", "allow"],
+];
+
 const SAFE_SEEDS: Seed[] = [
 	{
 		id: "rm-temp",
@@ -296,7 +306,12 @@ function variables(s: Seed): [string, string][] {
 	// name); a target of several words can't be held this way.
 	if (s.target && !/\s/.test(s.target))
 		out.push(["target in a variable", join(`T=${s.target};`, s.prog, s.opts, "$T")]);
-	if (s.prog === "git") out.push(["git -C", join("git -C {d}", s.opts, s.target)]);
+	if (s.prog === "git") {
+		out.push(["git -C", join("git -C {d}", s.opts, s.target)]);
+		// git applies every `-C`, in order (review r1 F1).
+		out.push(["git -C . -C dir", join("git -C . -C {d}", s.opts, s.target)]);
+		out.push(["git -C dir -C .", join("git -C {d} -C .", s.opts, s.target)]);
+	}
 	return out;
 }
 
@@ -323,7 +338,7 @@ export function generated(): Row[] {
 		...WRAPPERS.map((w): [string, string] => [`wrapper ${w}`, `${w} ${cmdOf(s)}`]),
 		...RUNNERS.map((r): [string, string] => [`runner ${r}`, `${r} ${cmdOf(s)}`]),
 		...variables(s)
-			.filter(([n]) => n !== "git -C")
+			.filter(([n]) => !n.startsWith("git -C"))
 			.map(([n, t]): [string, string] => [n, t]),
 	];
 	for (const s of SEEDS) {
@@ -334,9 +349,18 @@ export function generated(): Row[] {
 		// Moved: from the clean fixture into the place it is dangerous; the twin moves where it is safe.
 		const moved: [string, string][] = [
 			...MOVED,
-			...variables(s).filter(([n]) => n === "git -C"),
+			...variables(s).filter(([n]) => n.startsWith("git -C")),
 			["cd to temp, then back", "cd /tmp && cd {d} && {c}"],
 		];
+		// The twin of a later `-C`: an earlier dangerous `-C`, then a move back to the safe repo.
+		if (s.prog === "git" && s.cdSafe)
+			add(
+				join(`git -C ${s.cdDanger} -C`, s.cdSafe, s.opts, s.target),
+				"clean",
+				"allow",
+				s,
+				"git -C dir -C safe (twin)",
+			);
 		for (const [n, t] of moved) {
 			add(fill(t, cmdOf(s), s.cdDanger), "clean", "ask", s, n);
 			if (s.cdSafe) add(fill(t, cmdOf(s), s.cdSafe), "dirty", "allow", s, `${n} (twin: moves where it is safe)`);
@@ -344,6 +368,28 @@ export function generated(): Row[] {
 		// A relative seed moved to a temp dir is safe there (except git, which isn't in a repo there: unknown).
 		if (s.prog === "rm" && s.target === "src")
 			for (const [n, t] of MOVED) add(fill(t, cmdOf(s), "/tmp"), "dirty", "allow", s, `${n} (twin: to temp)`);
+	}
+	// Each push-remote row in place and through the wrappers and moves that keep git in the clean repo.
+	for (const [cmd, want] of PUSH_REMOTES) {
+		const seed: Seed = {
+			id: `push-remote ${cmd.split(" ").at(-2)}`,
+			prog: "",
+			opts: "",
+			target: "",
+			dangerIn: [],
+			safeIn: [],
+			cdDanger: "",
+		};
+		for (const [n, t] of [
+			["plain", "{c}"],
+			["function then call", "f() { {c}; }; f"],
+			["bash -c", "bash -c '{c}'"],
+			["eval", "eval '{c}'"],
+			["wrapper env", "env {c}"],
+			["cd back", "cd /tmp && cd @CLEAN@ && {c}"],
+			["git -C", cmd.replace(/^git /, "git -C @CLEAN@ ")],
+		] as const)
+			add(n === "git -C" ? t : fill(t, cmd), "clean", want, seed, want === "allow" ? `${n} (twin: local)` : n);
 	}
 	for (const s of SAFE_SEEDS)
 		for (const [n, cmd] of inPlace(s)) for (const f of s.safeIn) add(cmd, f, "allow", s, `${n} (safe seed)`);

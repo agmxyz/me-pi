@@ -67,8 +67,9 @@ export function fixtures(root: string): Record<Fixture, string> {
 	git(clean, "remote", "add", "local", join(root, "bare.git"));
 	git(clean, "remote", "add", "pushurl", join(root, "bare.git"));
 	git(clean, "config", "remote.pushurl.pushurl", "https://example.invalid/x.git");
-	git(clean, "remote", "add", "rewrite", join(root, "bare.git"));
-	git(clean, "config", "url.https://example.invalid/.pushInsteadOf", join(root, "bare.git"));
+	git(root, "init", "-q", "--bare", join(root, "rewritten.git"));
+	git(clean, "remote", "add", "rewrite", join(root, "rewritten.git"));
+	git(clean, "config", "url.https://example.invalid/.pushInsteadOf", join(root, "rewritten.git"));
 	const hidden = repo("hidden", "feat", false);
 	writeFileSync(join(hidden, "src", "a.txt"), "changed\n");
 	git(hidden, "update-index", "--assume-unchanged", "src/a.txt");

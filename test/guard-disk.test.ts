@@ -8,9 +8,11 @@ import {
 	branchOf,
 	dirtIn,
 	isCheckoutRef,
+	pushUrlsOf,
 	remoteUrlOf,
 	repoRootOf,
 	startBudget,
+	urlRewritesOf,
 } from "../packages/pi-workers/extensions/guard-disk.ts";
 import { isolate } from "./helpers/isolate.ts";
 
@@ -48,6 +50,21 @@ test("reads branch, repo root, and remote URL; undefined outside a repo", (t) =>
 	assert.equal(remoteUrlOf(repo, "a b"), undefined, "a remote name that isn't a plain word is never looked up");
 	git("checkout", "-q", "--detach");
 	assert.equal(branchOf(repo), "HEAD");
+});
+
+test("reads the URLs a push goes to: pushurl and insteadOf rewrites applied", (t) => {
+	const { repo, git } = scratch(t);
+	assert.deepEqual(pushUrlsOf(repo, "origin"), ["git@github.com:me/app.git"]);
+	assert.deepEqual(urlRewritesOf(repo), []);
+	git("remote", "add", "local", "../bare.git");
+	git("config", "remote.local.pushurl", "https://example.invalid/x.git");
+	assert.deepEqual(pushUrlsOf(repo, "local"), ["https://example.invalid/x.git"]);
+	git("remote", "add", "rw", "../other.git");
+	git("config", "url.https://example.invalid/.pushInsteadOf", "../other.git");
+	assert.deepEqual(pushUrlsOf(repo, "rw"), ["https://example.invalid/"]);
+	assert.deepEqual(urlRewritesOf(repo), ["../other.git"]);
+	assert.equal(pushUrlsOf(repo, "nope"), undefined);
+	assert.equal(pushUrlsOf(repo, "a b"), undefined);
 });
 
 test("keeps the caller's spelling of the root through a symlink", (t) => {
