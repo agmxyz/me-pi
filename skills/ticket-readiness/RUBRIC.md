@@ -18,7 +18,7 @@ Cite `file:line` at the review SHA for every claim.
 
    One mark per criterion: split a criterion that mixes them (docs wording H beside a tested behaviour V) into one line each.
 
-   Every check you propose fits the repo's standards files: it asserts only through code the ticket already needs, and adds no seam, driver, export, or option for testing alone.
+   Every check, listed or stronger, fits the repo's standards files: it asserts behaviour `src/` produces, through code the ticket already needs, and cites the line it fits (`fits <file:line>`). A check that would need a new seam, driver, export, or option, or would assert a value a standard rules out, conflicts: keep the listed check and record the gap on the criterion's line as `weak: <cheat>; stronger check conflicts with <file:line>`. A conflict alone leaves the criterion V.
 
    Flag **weak** evidence: the done check green as the only proof; a self-reported measurement; a grep or regex that code could pass without meeting the criterion; an audit that produces prose rather than a test; a test that passes trivially in some environments; a test that drives an internal setter or test-only endpoint instead of the user's path; a visible result checked without its side effect; a dry run trusted by its name rather than by observing what it skips; a criterion with several entry points proven through only one.
 4. **Size.** Estimate changed lines and files. Over about 1,500 lines, several PRs, or several long verification loops is TOO_BIG; propose a split.
@@ -48,7 +48,7 @@ Verdict: <VERDICT> (confidence: <high|medium|low>)
 Valid: <yes|no|partly>: <evidence file:line>
 Context gaps: <none | list>
 Acceptance map:
-- AC1 "<criterion>" → <check> [V|L|H|X] <weak: reason, if any>
+- AC1 "<criterion>" → <check> (fits <file:line>) [V|L|H|X] <weak: reason, if any>
 - ...
 Size: ~<lines> lines, <files> files
 Depends on: <tickets or none>; overlaps: <tickets or none>
