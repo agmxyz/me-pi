@@ -1,8 +1,10 @@
 /**
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
- * With a UI it asks for confirmation; without one (print mode) it blocks.
+ * With a UI it asks for confirmation; without one (print mode) it blocks. History rewrites only block in delegate
+ * workers (see `classify`).
  * `/guard on|off` toggles it for the current session; every session starts on.
- * The Approval policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
+ * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
+ * misses commands it can't read (interpreter code, a non-recursive rm).
  */
 
 import { spawnSync } from "node:child_process";
@@ -30,15 +32,13 @@ const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
 // `git` global options (`-C dir`, `-c k=v`, `--git-dir=...`) before the subcommand.
 const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
-// Rest of the same command (stops at a command separator).
-const ARGS = String.raw`[^;&|\n]*`;
+// Rest of the same command: steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so words
+// after them are still read. Stops at `;`, `&&`, `||`, `|`, `|&`, a lone `&`, and newline.
+const ARGS = String.raw`(?:[<>]&|&>|>\||[^;&|\n])*`;
 
 // Lookaheads, so a command nested in another one's arguments (`git log "$(git push ...)"`) is found too.
 const GIT_COMMAND = new RegExp(`(?=${AT_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
-// `rm`'s arguments: like `ARGS`, but steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so
-// targets after them are still read. Stops at `;`, `&&`, `||`, `|`, `|&`, a lone `&`, and newline.
-const RM_ARGS = String.raw`(?:[<>]&|&>|>\||[^;&|\n])*`;
-const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${RM_ARGS}))`, "g");
+const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${ARGS}))`, "g");
 // A quoted commit message (`-m "..."`, `-am '...'`, `--message=...`) is text, unless it runs a command.
 const MESSAGE_ARG = /(\s(?:-[A-Za-z]*m\s*|--message(?:=|\s+)))("(?:[^"\\]|\\.)*"|'[^']*')/g;
 // `cd` at a command position: a bare push may then target another repository's branch.
@@ -70,6 +70,25 @@ function tmpdirMayChange(command: string): boolean {
 // Push options whose value is a separate word, so it is not mistaken for the remote or a refspec.
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
 export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
+
+/**
+ * git's words, without redirects (`2>&1`, `>/dev/null`, `&> log`, and the file after a bare operator): a redirect is not
+ * a remote or refspec (`git push origin 2>&1` pushes the current branch, #93). A word with a glued redirect
+ * (`origin>log`, `--force&>log`) keeps the part before it. With quotes or escapes in the arguments, a glued `<>&|`
+ * can't be told from a quoted one (`"a>b:main"`), so the whole words are a second reading; callers judge each and
+ * take the riskiest.
+ */
+function gitReadings(args: string): string[][] {
+	const raw = args.split(/\s+/).filter(Boolean);
+	const cut = raw.flatMap((w, i) => {
+		if (REDIRECT.test(w) || (i > 0 && REDIRECT_OPERATOR.test(raw[i - 1]))) return [];
+		const at = w.search(/[<>&|]/);
+		return at > 0 ? [w.slice(0, at)] : [w];
+	});
+	const readings = [wordsOf(cut.join(" "))];
+	if (/["'\\]/.test(args) && raw.some((w) => /[<>&|]/.test(w))) readings.push(wordsOf(args));
+	return readings;
+}
 
 // Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`).
 function wordsOf(args: string): string[] {
@@ -108,19 +127,22 @@ function gitRisk(
 	words: string[],
 	currentBranch: () => string | undefined,
 	elsewhere: boolean,
+	historyRewrites: boolean,
 ): string | undefined {
 	switch (sub) {
 		case "push":
 			return pushRisk(words, currentBranch, elsewhere);
 		case "commit":
-			return words.includes("--amend") ? "history rewrite (commit --amend)" : undefined;
+			return historyRewrites && words.includes("--amend") ? "history rewrite (commit --amend)" : undefined;
 		case "rebase":
-			return ["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w))
+			return !historyRewrites || ["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w))
 				? undefined
 				: "history rewrite (rebase)";
 		case "filter-branch":
+			return historyRewrites ? "history rewrite (filter-branch)" : undefined;
 		case "filter-repo":
-			return `history rewrite (${sub})`;
+			// Always: by default it expires every reflog and prunes, so the old history can't be recovered.
+			return "history rewrite (filter-repo)";
 		case "switch":
 			return hasShort(words, "f", "--force") || words.includes("--discard-changes")
 				? "discard changes (git switch)"
@@ -141,7 +163,8 @@ function gitRisk(
 			return !staged || worktree ? "discard changes (git restore)" : undefined;
 		}
 		case "branch":
-			return hasShort(words, "D") || (hasShort(words, "d", "--delete") && hasShort(words, "f", "--force"))
+			return historyRewrites &&
+				(hasShort(words, "D") || (hasShort(words, "d", "--delete") && hasShort(words, "f", "--force")))
 				? "git branch -D"
 				: undefined;
 		default:
@@ -236,9 +259,15 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 	return { recursive, targets };
 }
 
+/**
+ * `historyRewrites: false` skips `commit --amend`, `rebase`, `filter-branch`, and `branch -D`: the main session runs
+ * them without asking, since the reflog, `refs/original/`, or `git fsck` can recover them. `filter-repo` always counts.
+ * Workers pass true.
+ */
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
+	{ historyRewrites = true }: { historyRewrites?: boolean } = {},
 ): string | undefined {
 	// Unstripped: a dropped message or heredoc body could hide a rebinding.
 	const tmpdirUnsafe = tmpdirMayChange(command);
@@ -249,8 +278,10 @@ export function classify(
 	const branchMayChange = CD.test(command) || gitCommands.some(([, , sub]) => sub === "checkout" || sub === "switch");
 	for (const [, globals, sub, args] of gitCommands) {
 		const elsewhere = branchMayChange || /(?:^|\s)(?:-C|--git-dir|--work-tree)\b/.test(globals);
-		const risk = gitRisk(sub, wordsOf(args), currentBranch, elsewhere);
-		if (risk) return risk;
+		for (const words of gitReadings(args)) {
+			const risk = gitRisk(sub, words, currentBranch, elsewhere, historyRewrites);
+			if (risk) return risk;
+		}
 	}
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
 		const { recursive, targets } = rmArgs(args);
@@ -328,8 +359,10 @@ function workerGitRisk(sub: string, words: string[]): string | undefined {
 export function workerRisk(command: string): string | undefined {
 	command = withoutMessages(command);
 	for (const [, , sub, args] of inFreshTempRepo(command) ? [] : command.matchAll(GIT_COMMAND)) {
-		const risk = workerGitRisk(sub, wordsOf(args));
-		if (risk) return risk;
+		for (const words of gitReadings(args)) {
+			const risk = workerGitRisk(sub, words);
+			if (risk) return risk;
+		}
 	}
 	if (GH_COMMAND.test(command)) return "gh is main-session only";
 	if (INSTALL_SH.test(command)) return "install.sh would change Pi's settings and live links";
@@ -369,16 +402,17 @@ const TREE_WRITES = new Set([
 
 export function gitTreeWrite(command: string): string | undefined {
 	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
-		// `git stash list|show` only read.
-		const words = wordsOf(args);
-		if (sub === "stash" && ["list", "show"].includes(words[0])) continue;
-		// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
-		if (
-			sub === "branch" &&
-			(hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w)))
-		)
-			return sub;
-		if (TREE_WRITES.has(sub)) return sub;
+		for (const words of gitReadings(args)) {
+			// `git stash list|show` only read.
+			if (sub === "stash" && ["list", "show"].includes(words[0])) continue;
+			// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
+			if (
+				sub === "branch" &&
+				(hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w)))
+			)
+				return sub;
+			if (TREE_WRITES.has(sub)) return sub;
+		}
 	}
 	return undefined;
 }
@@ -404,7 +438,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (!enabled || event.toolName !== "bash") return undefined;
 		const command = String((event.input as { command?: unknown }).command ?? "");
-		const risk = classify(command, () => branchIn(ctx.cwd));
+		const risk = classify(command, () => branchIn(ctx.cwd), { historyRewrites: isWorkerProcess() });
 		if (!risk) return undefined;
 		const block = (reason: string) => {
 			if (isWorkerProcess()) {

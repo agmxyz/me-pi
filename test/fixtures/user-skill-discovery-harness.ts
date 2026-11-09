@@ -16,7 +16,14 @@ await resourceLoader.reload();
 
 const { skills, diagnostics } = resourceLoader.getSkills();
 const byName = new Map(skills.map((skill) => [skill.name, skill]));
-const expectedNames = ["implement", "implement-me-pi", "implement-spec", "implement-spec-me-pi", "pi-live-test"];
+const expectedNames = [
+	"implement",
+	"implement-me-pi",
+	"implement-spec",
+	"implement-spec-me-pi",
+	"pi-live-test",
+	"ticket-readiness",
+];
 assert.deepEqual([...byName.keys()].sort(), expectedNames);
 if (expectedCollision === "--renamed-pilot-collision") {
 	assert.equal(diagnostics.length, 1);
@@ -40,6 +47,10 @@ for (const name of ["implement-me-pi", "implement-spec-me-pi", "pi-live-test"]) 
 	assert.equal(skill.filePath, join(resolvedAgentDir, "skills", name, "SKILL.md"));
 	assert.equal(skill.disableModelInvocation, true);
 }
+// Model-invocable: read-only, and "which tickets are ready?" should reach it without a slash command.
+const readiness = byName.get("ticket-readiness");
+assert.equal(readiness.filePath, join(resolvedAgentDir, "skills", "ticket-readiness", "SKILL.md"));
+assert.equal(readiness.disableModelInvocation, false);
 
 for (const name of ["implement", "implement-spec"]) {
 	assert.equal(byName.get(name).filePath, join(process.env.HOME, ".agents", "skills", name, "SKILL.md"));

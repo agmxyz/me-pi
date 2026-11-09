@@ -228,7 +228,7 @@ function runWorkerAttempt(
 		};
 
 		const timer = setTimeout(
-			() => ledger.stop(`timeout after ${timeoutMs / 1000}s`, ledger.parentFact("hard-timeout", "hard-time")),
+			() => ledger.stop(`timeout after ${budget.limitSecs}s`, ledger.parentFact("hard-timeout", "hard-time")),
 			timeoutMs,
 		);
 		// A session shutdown aborts with SESSION_ENDED; /delegate cancel and the turn's abort are a cancel.
@@ -285,6 +285,7 @@ async function runWorker(
 
 	const selected = Object.freeze({ model: run.model, thinking: run.thinking });
 	const budget: AttemptBudget = {
+		limitSecs: secs,
 		hardDeadline,
 		hardCostCapUsd: hardCostCap,
 		toolDeadline,

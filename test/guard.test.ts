@@ -22,6 +22,49 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 		["git push origin", onMain, "push to main/master"],
 		["git push origin HEAD", onMain, "push to main/master"],
 		["git push origin main 2>&1 | tail", onFeature, "push to main/master"],
+		// A redirect is not a refspec: these push the current branch (#93).
+		["git push origin 2>&1", onMain, "push to main/master"],
+		["git push origin 2>&1 | tail -3", onMain, "push to main/master"],
+		["git push origin >/dev/null 2>&1", onMain, "push to main/master"],
+		["git push origin > log", onMain, "push to main/master"],
+		["git push origin 2>> log", onMain, "push to main/master"],
+		["git push origin &>/dev/null", onMain, "push to main/master"],
+		["git push origin &>> log", onMain, "push to main/master"],
+		["git push origin >| log", onMain, "push to main/master"],
+		["git push origin >&2", onMain, "push to main/master"],
+		["git push origin>log", onMain, "push to main/master"],
+		["git push origin 2>&1 feature/x:main", onMain, "push to main/master"],
+		["git push 2>&1 origin", onMain, "push to main/master"],
+		["git push -f origin 2>&1", onFeature, "force push"],
+		["git checkout -- src 2>&1", onFeature, "discard changes (git checkout)"],
+		["git restore src 2>&1", onFeature, "discard changes (git restore)"],
+		["git branch -D old 2>&1", onFeature, "git branch -D"],
+		// A redirect glued to an option or a refspec keeps the part before it.
+		["git push origin main&>/dev/null", onFeature, "push to main/master"],
+		["git push --force&>/dev/null origin x", onFeature, "force push"],
+		["git push -f&>x origin x", onFeature, "force push"],
+		["git reset --hard&>x", onFeature, "git reset --hard"],
+		["git clean -fd&>x", onFeature, "git clean -f"],
+		["git push origin main|&tee log", onFeature, "push to main/master"],
+		// Quoted `<>` can't be told from a redirect: the words are read whole.
+		['git push origin "a>b:main"', onFeature, "push to main/master"],
+		["git push origin 'x<y>:main'", onFeature, "push to main/master"],
+		// A quote elsewhere in the command doesn't hide a glued redirect.
+		['git push origin "x" --force&>log', onFeature, "force push"],
+		['git push -f&>x "origin" x', onFeature, "force push"],
+		['git push "origin" main&>log', onFeature, "push to main/master"],
+		['git reset --hard&>x -- "a"', onFeature, "git reset --hard"],
+		['git clean -fd&>x "p"', onFeature, "git clean -f"],
+		// Each reading is judged on its own: the whole-word reading never hides the current-branch push.
+		['git push "origin"&>x', onMain, "push to main/master"],
+		['git push "origin" 2>&1', onMain, "push to main/master"],
+		// Each command after a redirect is still judged.
+		["git push origin >&2; git push --force", onFeature, "force push"],
+		["git push origin &>/dev/null && git reset --hard", onFeature, "git reset --hard"],
+		["git push origin &>/dev/null && rm -rf ~", onFeature, "recursive rm"],
+		["git push origin < f main", onFeature, "push to main/master"],
+		["git push origin <<< x main", onFeature, "push to main/master"],
+		["rm -rf&>x dist", onFeature, "recursive rm"],
 		["git push --all origin", onFeature, "push to main/master"],
 		["git push --delete origin main", onFeature, "push to main/master"],
 		["git -C /some/path push origin main", onFeature, "push to main/master"],
@@ -233,6 +276,17 @@ test("allows feature pushes, PRs, and routine commands", () => {
 	for (const [command, branch] of [
 		["git push", onFeature],
 		["git push -u origin feature/x", onFeature],
+		// Redirects after a feature push don't make it a main push (#93).
+		["git push origin feature/x 2>&1", onMain],
+		["git push -u origin feature/x >/dev/null 2>&1", onMain],
+		["git push origin 2>&1 | tail -3", onFeature],
+		["git push origin &>/dev/null", onFeature],
+		['git push origin ">" 2>&1', onFeature],
+		// bash runs `git push origin y` here (the redirect ends at `x`): a push of branch y, not of main.
+		['git push origin&>x "y"', onMain],
+		['git commit -m "a>b" 2>&1', onMain],
+		["rm -rf dist 2>&1", onMain],
+		["rm -rf /tmp/x &>/dev/null", onMain],
 		["git push origin HEAD", onFeature],
 		["git push origin main-fix", onFeature],
 		["gh pr create --fill", onMain],
@@ -302,6 +356,11 @@ test("allows feature pushes, PRs, and routine commands", () => {
 test("workerRisk blocks commands that move an implement worker off its branch or reach shared state", () => {
 	for (const command of [
 		"git push origin x",
+		"git push origin 2>&1",
+		"git commit --no-verify&>x -m y",
+		'git commit --no-verify&>x -m "y"',
+		'git commit -n&>x -m "y"',
+		"git stash drop&>x",
 		"git push . HEAD:main",
 		"git -C x worktree add",
 		"git commit -nm x",
@@ -451,6 +510,9 @@ test("gitTreeWrite names checkout-writing git subcommands and passes reads", () 
 		["git branch -f goal/x HEAD~1", "branch"],
 		["git branch --force goal/x main", "branch"],
 		["git branch -m old new", "branch"],
+		["git checkout -- . 2>&1", "checkout"],
+		["git stash drop&>x", "stash"],
+		['git branch -D&>x "a"', "branch"],
 		["git branch -M new", "branch"],
 		["git branch --move old new", "branch"],
 		["git branch -d old", "branch"],
@@ -522,6 +584,51 @@ test("confirms with UI, blocks without UI or on refusal", async () => {
 	assert.equal((await handler(event, { cwd, hasUI: true, ui: { confirm: async () => false } }))?.block, true);
 	assert.equal(await handler({ ...event, input: { command: "git status" } }, { cwd, hasUI: false }), undefined);
 	assert.equal(await handler({ ...event, toolName: "read", input: { path: "x" } }, { cwd, hasUI: false }), undefined);
+});
+
+test("history rewrites: classify skips them with historyRewrites: false, and only that", () => {
+	for (const command of [
+		"git commit --amend --no-edit",
+		"git rebase -i HEAD~3",
+		"git filter-branch --tree-filter x HEAD",
+		"git branch -D old",
+		"git branch --delete --force old",
+	]) {
+		assert.match(classify(command, onFeature) ?? "", /history rewrite|git branch -D/, command);
+		assert.equal(classify(command, onFeature, { historyRewrites: false }), undefined, command);
+	}
+	// Other risks in the same command still count.
+	for (const [command, label] of [
+		["git commit --amend --no-edit && git push -f", "force push"],
+		["git rebase main && git push origin main", "push to main/master"],
+		["git branch -D old; rm -rf ~", "recursive rm"],
+		["git commit --amend -m x && git reset --hard", "git reset --hard"],
+		["git filter-branch --tree-filter x HEAD && git clean -fd", "git clean -f"],
+		// filter-repo expires every reflog and prunes by default: it always asks.
+		["git filter-repo --path x", "history rewrite (filter-repo)"],
+	]) {
+		assert.equal(classify(command, onFeature, { historyRewrites: false }), label, command);
+	}
+});
+
+test("the main session runs history rewrites without asking; a worker still blocks them", async (t) => {
+	const run = process.env.ME_PI_RUN;
+	t.after(() => {
+		if (run === undefined) delete process.env.ME_PI_RUN;
+		else process.env.ME_PI_RUN = run;
+	});
+	const { handler } = setup();
+	const cwd = process.cwd();
+	const event = (command) => ({ type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command } });
+	delete process.env.ME_PI_RUN;
+	assert.equal(await handler(event("git commit --amend --no-edit"), { cwd, hasUI: false }), undefined);
+	assert.equal(await handler(event("git branch -D old"), { cwd, hasUI: false }), undefined);
+	assert.equal((await handler(event("git reset --hard"), { cwd, hasUI: false }))?.block, true);
+	process.env.ME_PI_RUN = "1";
+	const worker = await handler(event("git commit --amend --no-edit"), { cwd, hasUI: false });
+	assert.equal(worker?.block, true);
+	assert.match(worker.reason, /history rewrite \(commit --amend\)/);
+	assert.equal((await handler(event("git rebase -i HEAD~3"), { cwd, hasUI: false }))?.block, true);
 });
 
 test("/guard toggles enforcement for the session", async () => {

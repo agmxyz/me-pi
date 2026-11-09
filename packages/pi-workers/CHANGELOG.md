@@ -4,7 +4,13 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 
 ## [Unreleased]
 
+- `guard` asks again before `git push origin 2>&1` (and `>/dev/null 2>&1`, `&>log`, `>|log`, `>&2`) on main: a redirect was read as the refspec, so the push of the current branch looked like a push to another branch. Redirects are now dropped from every git command's words.
 - The delegate docs say that later worker-pool entries run only when you name them: the coordinator is not told the pool.
+
+## [0.1.4] - 2026-11-09
+
+- `guard` no longer asks before history rewrites in the main session: `git commit --amend`, `rebase`, `filter-branch`, and `branch -D` run, since the reflog, `refs/original/`, or `git fsck` can recover them. `git filter-repo` still asks, because by default it expires every reflog and prunes. Delegate workers still block all of them. Other risks in the same command (a force push, `reset --hard`, a recursive `rm`) still ask.
+- A worker's timeout stop message now shows the role's limit (`timeout after 300s`), including when an infra retry times out. Before, it showed the time left when the attempt started, so it could print less than the limit.
 
 ## [0.1.3] - 2026-11-07
 
