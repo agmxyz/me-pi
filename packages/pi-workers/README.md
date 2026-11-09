@@ -8,7 +8,7 @@ Work with Pi as usual. When a task would flood the session, such as a broad sear
 
 ## Install and try it
 
-Requires Pi 1.5.0 (the version CI tests) on macOS or Linux (CI covers Linux; macOS is tested locally).
+Requires Pi 1.5.0 (the version CI tests) on macOS or Linux (CI covers both).
 
 ```sh
 pi install npm:@agmxyz/pi-workers

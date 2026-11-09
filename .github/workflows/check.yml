@@ -20,8 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS is covered by local runs while the repo is private (10x minutes); add it back when public.
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, macos-latest]
         node: ["22.19"]
     steps:
       # Depth 1 still gives a HEAD for `git diff --check HEAD`.
