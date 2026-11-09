@@ -1,6 +1,10 @@
 name: release
 
-# A release PR bumps packages/pi-workers/package.json; merging it publishes that version.
+# To release @agmxyz/pi-workers, open a release PR that:
+#   - bumps "version" in package.json, packages/pi-workers/package.json, and package-lock.json;
+#   - renames "## [Unreleased]" in packages/pi-workers/CHANGELOG.md to "## [x.y.z] - YYYY-MM-DD".
+# Merging it runs this workflow: check, publish to npm with provenance, then tag
+# pi-workers@x.y.z and create a GitHub release from that CHANGELOG section.
 # Re-running is safe: each step skips what npm or GitHub already has.
 on:
   push:

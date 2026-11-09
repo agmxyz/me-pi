@@ -2,31 +2,36 @@
 
 [![check](https://github.com/agmxyz/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/agmxyz/me-pi/actions/workflows/check.yml)
 
-My [Pi](https://github.com/earendil-works/pi) setup, shared as a reference rather than a product. It changes as my workflow does.
+Home of [`pi-workers`](packages/pi-workers), a package that lets the [Pi](https://github.com/earendil-works/pi) coding agent hand work to separate worker processes, and of my own Pi setup, where I develop it.
 
 ## pi-workers
 
-The part you can install on its own is [`pi-workers`](packages/pi-workers): Pi extensions that send searches, reviews and scoped changes to separate worker processes and bring back their answers, so your main session stays focused on decisions.
+Pi extensions that send searches, reviews and scoped changes to separate worker processes and bring back their answers, so your main session stays focused on decisions.
 
 ```sh
 pi install npm:@agmxyz/pi-workers
 ```
 
-Restart Pi or run `/reload` and work as usual: Pi delegates broad searches, large reviews and multi-file changes on its own, or when you ask it to. What it does, how it works, its limits and safety notes: [packages/pi-workers](packages/pi-workers). Delegation and recovery in depth: [packages/pi-workers/docs/delegate.md](packages/pi-workers/docs/delegate.md).
+Requires Pi 1.5.0 on macOS or Linux. Restart Pi or run `/reload` and work as usual: Pi delegates broad searches, large reviews and multi-file changes on its own, or when you ask it to.
 
-To track `main` instead, install `git:github.com/agmxyz/me-pi`; install only one of the two. The repo moved from `0bmario/me-pi`: if you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first.
+- **`scout`** searches read-only and returns a few sentences with `path:line` evidence.
+- **`general`** is a read-only worker Pi briefs as a reviewer, researcher, plan critic or investigator.
+- **`implement`** edits on your feature branch, runs the check you name, and commits.
 
-## The rest of the setup
+Workers are not sandboxed: they run with your OS permissions, and `implement` edits and commits in your real checkout. A passing check doesn't mean the code is correct; review the change.
 
-Around `pi-workers`, I use:
+- [Package README](packages/pi-workers/README.md): examples, limits, configuration, safety, uninstall
+- [Delegation guide](packages/pi-workers/docs/delegate.md): roles, model pools, recovery
+- [Changelog](packages/pi-workers/CHANGELOG.md): before 1.0.0, a minor bump may change behavior
 
-- **A global policy** ([`GLOBAL_AGENTS.md`](GLOBAL_AGENTS.md)): output style, engineering defaults, which actions need my approval, and how to handle secrets and untrusted content. Sections marked `(coordinator only)` stay out of worker prompts.
-- **Skills** ([`skills/`](skills)): `implement-me-pi` runs one task with a worker and independent review; `implement-spec-me-pi` implements a ticket graph on one branch; `ticket-readiness` checks, at the current code, which tickets an agent could implement, prove, and merge unattended. `evolvability-review` is here too, but `install.sh` doesn't link it. Skills useful only in this repo live in [`.agents/skills/`](.agents/skills): `pi-live-test` live-tests a me-pi change in a real Pi.
-- **[`install.sh`](install.sh)**, which wires these in machine-wide with a few extras.
+## The rest of my setup
 
-You don't need any of it for `pi-workers`; read and copy what's useful. Some skills expect others from my own collection.
+Shared as a reference rather than a product; it changes as my workflow does. You don't need any of it for `pi-workers`; read and copy what's useful.
 
-`./install.sh` is my personal setup, and it runs this checkout's working tree; for delegation only, use `pi install npm:@agmxyz/pi-workers`. It changes what Pi loads across all your sessions: it links the policy and skills, registers this checkout as a package, and installs `pi-web-access`. If you installed `pi-workers` from npm or Git, remove it first (`pi remove npm:@agmxyz/pi-workers` or `pi remove git:github.com/agmxyz/me-pi`), so Pi doesn't load the extensions twice. Review the script and [docs/setup.md](docs/setup.md) for requirements, effects and undo steps before running it, and follow its [After install](docs/setup.md#after-install) steps (login, provider package, verification) afterwards.
+- [`GLOBAL_AGENTS.md`](GLOBAL_AGENTS.md): my global policy. Output style, engineering defaults, which actions need my approval, and how to handle secrets and untrusted content.
+- [`skills/`](skills): `implement-me-pi` runs one task with a worker and independent review; `implement-spec-me-pi` implements a ticket graph on one branch; `ticket-readiness` checks which tickets an agent could implement, prove, and merge unattended; `evolvability-review` reviews a diff for the cost it adds to the next change. Some expect other skills from my own collection.
+- [`.agents/skills/`](.agents/skills): skills useful only in this repo, such as `pi-live-test`.
+- [`install.sh`](install.sh): wires these in machine-wide. It is my personal setup and changes what Pi loads in every session; read [docs/setup.md](docs/setup.md) (requirements, effects, undo) before running it.
 
 ## Contributing
 
@@ -39,21 +44,13 @@ npm run fix                      # apply Biome fixes
 node --test test/guard.test.ts   # one test file
 ```
 
-Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt text, run the manual routing evals ([evals/README.md](evals/README.md)); they spend real money and never run in CI.
-
-Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR.
-
-To release `@agmxyz/pi-workers`, open a PR that bumps `version` in `package.json`, `packages/pi-workers/package.json`, and `package-lock.json`, and renames `## [Unreleased]` in `packages/pi-workers/CHANGELOG.md` to `## [x.y.z] - date`. Merging it runs [`release.yml`](.github/workflows/release.yml): check, publish to npm with provenance, then tag `pi-workers@x.y.z` and create a GitHub release from that changelog section.
+Follow [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). A user-visible change to `packages/pi-workers/` adds a line under `## [Unreleased]` in its [CHANGELOG](packages/pi-workers/CHANGELOG.md). Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt text, run the manual routing evals ([evals/README.md](evals/README.md)); they spend real money and never run in CI. CI runs `npm run check` on every PR.
 
 Good first issues: [#35](https://github.com/agmxyz/me-pi/issues/35), [#40](https://github.com/agmxyz/me-pi/issues/40).
 
 ## Credits
 
-me-pi skills that adapt or build on others' skills (each skill's frontmatter `metadata.credits` holds the same):
-
-- `implement-me-pi` and `implement-spec-me-pi` adapt Matt Pocock's [`implement`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement) and [`implement-spec`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement-spec) (MIT).
-- `ticket-readiness` adapts the evidence rules of Lauren Tan's pstack [`create-verification-skill`](https://github.com/cursor/plugins/tree/6b03002/pstack/skills/create-verification-skill) (MIT) and uses the acceptance-criteria bar of Matt Pocock's [`triage`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/triage) (MIT).
-- `evolvability-review` loads Matt Pocock's [`codebase-design`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/codebase-design) (MIT) for its vocabulary.
+The skills adapt work from Matt Pocock's [skills](https://github.com/mattpocock/skills) and Lauren Tan's [pstack](https://github.com/cursor/plugins) (both MIT); each skill's frontmatter `metadata.credits` has the pinned sources.
 
 ## License
 
