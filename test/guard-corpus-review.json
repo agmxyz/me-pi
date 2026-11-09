@@ -289,6 +289,42 @@
    "cwd": "main",
    "want": "allow",
    "source": "review r2 twin: --head skips the push"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && cd \"$d\" && git init -q -b main w && cd w && git remote add origin ../remote.git && git push origin",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "review r1 F2 (follow-up): a fresh repo's local remote"
+  },
+  {
+   "cmd": "d=$(mktemp -d) && cd \"$d\" && git init -q -b main w && cd w && git remote add origin ../r.git && git config remote.origin.pushurl https://example.invalid/x.git && git push -f origin",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "review r1 F2 (follow-up): a pushurl set in the command"
+  },
+  {
+   "cmd": "git config url.https://example.invalid/.pushInsteadOf ../bare.git && git push -f ../bare.git feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "review r1 F2 (follow-up): a rewrite set in the command"
+  },
+  {
+   "cmd": "git remote set-url --push local https://example.invalid/x && git push -f local feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "review r1 F2 (follow-up): set-url --push in the command"
+  },
+  {
+   "cmd": "git remote set-url local ../bare.git && git push -f local feat",
+   "cwd": "clean",
+   "want": "allow",
+   "source": "review r1 F2 (follow-up): set-url of the fetch URL, no pushurl on disk"
+  },
+  {
+   "cmd": "git remote set-url pushurl ../bare.git && git push -f pushurl feat",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "review r1 F2 (follow-up): set-url of the fetch URL; the pushurl on disk still wins"
   }
  ]
 }

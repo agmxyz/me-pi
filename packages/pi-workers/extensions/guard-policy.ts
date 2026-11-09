@@ -1143,25 +1143,31 @@ function pushIsLocal(remote: string | undefined, addedUrl: string | undefined, d
 	if (!isLocalUrl(remote) && isNetworkUrl(remote)) return false;
 	// A local URL given or added in this command still goes elsewhere if a configured `insteadOf`/`pushInsteadOf` prefix
 	// matches it: each repo the push may run in must be read and have none that does.
+	// Where the repo can't be placed (a fresh `mktemp -d` repo), the session's directory is read instead: it sees the same
+	// global and system config, plus its own repo's (more prefixes only ask more).
 	const unrewritten = (url: string) =>
 		!E.urlRewritesOf ||
-		(!!dirs?.length &&
-			dirs.every((d) => {
-				const prefixes = E.urlRewritesOf!(d);
-				return prefixes !== undefined && !prefixes.some((p) => url.startsWith(p));
-			}));
+		(dirs?.length ? dirs : [E.cwd]).every((d) => {
+			const prefixes = E.urlRewritesOf!(d);
+			return prefixes !== undefined && !prefixes.some((p) => url.startsWith(p));
+		});
+	// A push URL or rewrite set in this command (`git config remote.X.pushurl …`, `url.….insteadOf`, `remote set-url
+	// --push`) isn't on disk yet: such a push may go anywhere.
+	if (/pushurl|insteadof|set-url\s+(?:\S+\s+)*--push|--push\b[^;&|\n]*set-url/i.test(TOP)) return false;
 	if (isLocalUrl(remote)) return unrewritten(remote);
 	// `git remote set-url` changes `url` only: a `pushurl` already on disk still wins, so the remote's push URLs on disk
 	// (when it exists there) must be just its fetch URL.
+	// Without placed dirs, an added URL is trusted only for a repo that surely is fresh (`remoteChangedBefore` marks it
+	// sure only then, and the caller asks for the on-disk URL too otherwise): a fresh repo has no push URL on disk.
 	const noPushUrl = () =>
 		!E.pushUrlsOf ||
-		(!!dirs?.length &&
-			dirs.every((d) => {
-				const fetch = E.remoteUrlOf(d, remote);
-				if (fetch === undefined) return true;
-				const push = E.pushUrlsOf!(d, remote);
-				return push !== undefined && push.length === 1 && push[0] === fetch;
-			}));
+		!dirs?.length ||
+		dirs.every((d) => {
+			const fetch = E.remoteUrlOf(d, remote);
+			if (fetch === undefined) return true;
+			const push = E.pushUrlsOf!(d, remote);
+			return push !== undefined && push.length === 1 && push[0] === fetch;
+		});
 	if (addedUrl !== undefined) return isLocalUrl(addedUrl) && unrewritten(addedUrl) && noPushUrl();
 	if (!dirs?.length) return false;
 	return dirs.every((d) => {
