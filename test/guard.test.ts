@@ -524,6 +524,50 @@ test("confirms with UI, blocks without UI or on refusal", async () => {
 	assert.equal(await handler({ ...event, toolName: "read", input: { path: "x" } }, { cwd, hasUI: false }), undefined);
 });
 
+test("history rewrites: classify skips them with history: false, and only that", () => {
+	for (const command of [
+		"git commit --amend --no-edit",
+		"git rebase -i HEAD~3",
+		"git filter-branch --tree-filter x HEAD",
+		"git filter-repo --path x",
+		"git branch -D old",
+		"git branch --delete --force old",
+	]) {
+		assert.match(classify(command, onFeature) ?? "", /history rewrite|git branch -D/, command);
+		assert.equal(classify(command, onFeature, { history: false }), undefined, command);
+	}
+	// Other risks in the same command still count.
+	for (const [command, label] of [
+		["git commit --amend --no-edit && git push -f", "force push"],
+		["git rebase main && git push origin main", "push to main/master"],
+		["git branch -D old; rm -rf ~", "recursive rm"],
+		["git commit --amend -m x && git reset --hard", "git reset --hard"],
+		["git filter-repo --path x && git clean -fd", "git clean -f"],
+	]) {
+		assert.equal(classify(command, onFeature, { history: false }), label, command);
+	}
+});
+
+test("the main session runs history rewrites without asking; a worker still blocks them", async (t) => {
+	const run = process.env.ME_PI_RUN;
+	t.after(() => {
+		if (run === undefined) delete process.env.ME_PI_RUN;
+		else process.env.ME_PI_RUN = run;
+	});
+	const { handler } = setup();
+	const cwd = process.cwd();
+	const event = (command) => ({ type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command } });
+	delete process.env.ME_PI_RUN;
+	assert.equal(await handler(event("git commit --amend --no-edit"), { cwd, hasUI: false }), undefined);
+	assert.equal(await handler(event("git branch -D old"), { cwd, hasUI: false }), undefined);
+	assert.equal((await handler(event("git reset --hard"), { cwd, hasUI: false }))?.block, true);
+	process.env.ME_PI_RUN = "1";
+	const worker = await handler(event("git commit --amend --no-edit"), { cwd, hasUI: false });
+	assert.equal(worker?.block, true);
+	assert.match(worker.reason, /history rewrite \(commit --amend\)/);
+	assert.equal((await handler(event("git rebase -i HEAD~3"), { cwd, hasUI: false }))?.block, true);
+});
+
 test("/guard toggles enforcement for the session", async () => {
 	const { handler, command } = setup();
 	const notes = [];

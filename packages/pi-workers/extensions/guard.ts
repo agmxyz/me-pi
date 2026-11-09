@@ -1,6 +1,7 @@
 /**
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
- * With a UI it asks for confirmation; without one (print mode) it blocks.
+ * With a UI it asks for confirmation; without one (print mode) it blocks. History rewrites the reflog can undo
+ * (`commit --amend`, `rebase`, `filter-branch`/`filter-repo`, `branch -D`) only block in delegate workers.
  * `/guard on|off` toggles it for the current session; every session starts on.
  * The Approval policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
  */
@@ -236,9 +237,14 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 	return { recursive, targets };
 }
 
+// History rewrites the reflog can undo. The main session runs them without asking; workers still block them.
+const isHistoryRisk = (risk: string): boolean => risk.startsWith("history rewrite") || risk === "git branch -D";
+
+/** `history: false` skips history rewrites (`commit --amend`, `rebase`, `filter-branch`/`filter-repo`, `branch -D`). */
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
+	{ history = true }: { history?: boolean } = {},
 ): string | undefined {
 	// Unstripped: a dropped message or heredoc body could hide a rebinding.
 	const tmpdirUnsafe = tmpdirMayChange(command);
@@ -250,7 +256,7 @@ export function classify(
 	for (const [, globals, sub, args] of gitCommands) {
 		const elsewhere = branchMayChange || /(?:^|\s)(?:-C|--git-dir|--work-tree)\b/.test(globals);
 		const risk = gitRisk(sub, wordsOf(args), currentBranch, elsewhere);
-		if (risk) return risk;
+		if (risk && (history || !isHistoryRisk(risk))) return risk;
 	}
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
 		const { recursive, targets } = rmArgs(args);
@@ -404,7 +410,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (!enabled || event.toolName !== "bash") return undefined;
 		const command = String((event.input as { command?: unknown }).command ?? "");
-		const risk = classify(command, () => branchIn(ctx.cwd));
+		const risk = classify(command, () => branchIn(ctx.cwd), { history: isWorkerProcess() });
 		if (!risk) return undefined;
 		const block = (reason: string) => {
 			if (isWorkerProcess()) {
