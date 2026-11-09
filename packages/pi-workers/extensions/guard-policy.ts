@@ -355,9 +355,16 @@ const textConsumer = (c: SimpleCommand, writes: boolean): boolean => {
 		const flag = c.name === "node" ? /^(?:-e|--eval|-p|--print)$/ : /^-c$/;
 		const k = c.argv.findIndex((w) => w.kind !== "expansion" && flag.test(w.value));
 		const program = k > 0 ? c.argv[k + 1] : undefined;
+		// Options that load no code (not `--require`/`--import`/`--loader`/`-r`, review r2).
 		const plainOptions = c.argv
 			.slice(1, k)
-			.every((w) => w.kind === "literal" && /^--?[\w-]+(?:=[\w-]+)?$/.test(w.value));
+			.every(
+				(w) =>
+					w.kind === "literal" &&
+					/^(?:--input-type=(?:module|commonjs)|--no-warnings|--experimental-strip-types|--no-deprecation|-I|-B|-u|-S|-E|-s|-q)$/.test(
+						w.value,
+					),
+			);
 		return (
 			plainOptions &&
 			program !== undefined &&
@@ -373,15 +380,22 @@ const textConsumer = (c: SimpleCommand, writes: boolean): boolean => {
 		const opts = c.argv.slice(1, k);
 		const prog = k > 0 ? c.argv[k + 1] : undefined;
 		const plain = /^s(.)(?:\\.|(?!\1)[^\n@$])*\1(?:\\.|(?!\1)[^\n@$])*\1[gimsx]*;?$/;
+		// One program only: a later `-e`/`-E`/`-M`/`-x`/`-I` adds code (review r2); `(?{…})` runs code in the pattern.
+		const rest = c.argv.slice(k + 2);
 		return (
 			prog !== undefined &&
 			prog.kind !== "expansion" &&
 			plain.test(prog.value) &&
+			!prog.value.includes("(?") &&
+			rest.every((w) => !w.value.startsWith("-")) &&
 			/^-[pnil]*e$/.test(c.argv[k].value) &&
 			opts.every((w) => w.kind === "literal" && /^-[pnil]+$/.test(w.value)) &&
 			c.argv.slice(k + 2).every((w) => w.kind !== "expansion")
 		);
 	}
+	// `rg --pre CMD` / `--hostname-bin CMD` run a program on every file searched (review r2).
+	if ((c.name === "rg" || c.name === "ag") && c.argv.some((w) => /^--(?:pre|hostname-bin)(?:=|$)/.test(w.value)))
+		return false;
 	return c.name !== undefined && TEXT_CONSUMERS.has(c.name);
 };
 /**
@@ -399,7 +413,8 @@ function sedText(args: Word[]): boolean {
 	for (let i = 0; i < args.length; i++) {
 		const w = args[i];
 		if (w.kind === "expansion") return false;
-		if (files) continue;
+		// GNU sed reads options anywhere (`sed p file -e 'e cmd'`): a later option is checked too (review r2).
+		if (files && !w.value.startsWith("-")) continue;
 		if (w.value === "-e") {
 			const s = args[++i];
 			if (!s || s.kind === "expansion" || !ok(s.value)) return false;
@@ -426,7 +441,7 @@ const HEREDOC_PROGRAM = new Set(["python", "python3", "node"]);
  * policy polices program bodies).
  */
 const RUNS_PROCESS =
-	/child_process|worker_threads|\bvm\b|\bexec\w*|\bspawn\w*|\bfork\b|\bsystem\b|\bpopen\b|subprocess|multiprocessing|\bpty\b|\bctypes\b|\bos\b|\bshutil\b|\beval\b|\bcompile\s*\(|Function\s*\(|\bBun\b|\bDeno\b|\$`|\bzx\b|__import__|importlib|\bgetattr\b|\bglobals\s*\(|\b(?:process|globalThis|global|module|require|Reflect)\s*(?:\[|\.(?:binding|_linkedBinding|dlopen|mainModule|main|cache|constructor|get|apply))|\bconstructor\b|__(?:builtins|subclasses|globals|class|bases|mro|code|loader)__|\bvars\s*\(|\bimport\s+\*|\b(?:require|import)\s*\(\s*[^"'\s]/;
+	/child_process|worker_threads|\bvm\b|\bexec\w*|\bspawn\w*|\bfork\b|\bsystem\b|\bpopen\b|subprocess|multiprocessing|\bpty\b|\bctypes\b|\bos\b|\bshutil\b|\beval\b|\bcompile\s*\(|Function\s*\(|\bBun\b|\bDeno\b|\$`|\bzx\b|__import__|importlib|\bgetattr\b|\bglobals\s*\(|\b(?:process|globalThis|global|module|require|Reflect)\s*(?:\[|\.(?:binding|_linkedBinding|dlopen|mainModule|main|cache|constructor|get|apply))|\bconstructor\b|__(?:builtins|subclasses|globals|class|bases|mro|code|loader|dict)__|\bsys\.modules\b|\bprocess\b|\bglobalThis\b|\bvars\s*\(|\bimport\s+\*|\b(?:require|import)\s*\(\s*[^"'\s]/;
 // The modules a program may load: node's file and text modules, and (`local`) a relative path: a file already on disk,
 // which runs what it runs whether or not this text names rm/git (`node x.mjs` isn't policed either).
 const IMPORT = /\b(?:require|import)\s*\(\s*(["'])(.*?)\1|\bfrom\s+(["'])(.*?)\3/g;
