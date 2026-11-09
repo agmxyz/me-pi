@@ -346,8 +346,54 @@ const textConsumer = (c: SimpleCommand, writes: boolean): boolean => {
 		);
 	}
 	if (c.name === "gh") return ["pr", "issue"].includes(a) && ["create", "comment", "edit", "view"].includes(b);
+	if (c.name === "sed") return sedText(c.argv.slice(1));
+	// `perl -pi -e 's/a/b/g'`: one plain substitution (no `e` flag, no code in the replacement: `@{[…]}`, `${\…}`).
+	if (c.name === "perl") {
+		const k = c.argv.findIndex((w) => w.kind !== "expansion" && /^-[a-zA-Z]*e$/.test(w.value));
+		const opts = c.argv.slice(1, k);
+		const prog = k > 0 ? c.argv[k + 1] : undefined;
+		const plain = /^s(.)(?:\\.|(?!\1)[^\n@$])*\1(?:\\.|(?!\1)[^\n@$])*\1[gimsx]*;?$/;
+		return (
+			prog !== undefined &&
+			prog.kind !== "expansion" &&
+			plain.test(prog.value) &&
+			/^-[pnil]*e$/.test(c.argv[k].value) &&
+			opts.every((w) => w.kind === "literal" && /^-[pnil]+$/.test(w.value)) &&
+			c.argv.slice(k + 2).every((w) => w.kind !== "expansion")
+		);
+	}
 	return c.name !== undefined && TEXT_CONSUMERS.has(c.name);
 };
+/**
+ * `sed` whose every script is substitutions and prints (`s|a|b|g`, `-n '/x/p'`, line ranges): text in, text out. Not
+ * `e` (runs the pattern space), `w`/`W`/`r`/`R` (files), or GNU's `s///e`; a script from `-f` or an expansion isn't
+ * known. Options: `-i[SUFFIX]`, `-n`, `-E`, `-r`, `-e SCRIPT`.
+ */
+function sedText(args: Word[]): boolean {
+	const sub = String.raw`s(.)(?:\\.|(?!\1)[^\n])*\1(?:\\.|(?!\1)[^\n])*\1[gpiI0-9]*`;
+	const addr = String.raw`(?:\d+|\$|/(?:\\.|[^/\n])*/)(?:,(?:\d+|\$|/(?:\\.|[^/\n])*/))?`;
+	const one = new RegExp(`^\\s*(?:${addr})?\\s*(?:${sub}|p|d)\\s*$`);
+	const ok = (script: string) => script.split(/;|\n/).every((x) => x.trim() === "" || one.test(x));
+	let scripts = 0;
+	let files = false;
+	for (let i = 0; i < args.length; i++) {
+		const w = args[i];
+		if (w.kind === "expansion") return false;
+		if (files) continue;
+		if (w.value === "-e") {
+			const s = args[++i];
+			if (!s || s.kind === "expansion" || !ok(s.value)) return false;
+			scripts++;
+		} else if (/^-(?:i.*|[nErsu]+)$|^--(?:in-place(?:=.*)?|quiet|silent|regexp-extended|posix)$/.test(w.value)) continue;
+		else if (w.value.startsWith("-")) return false;
+		else if (scripts === 0) {
+			if (!ok(w.value)) return false;
+			scripts++;
+			files = true;
+		} else files = true;
+	}
+	return scripts > 0;
+}
 /** Commands whose heredoc body is text written to a file or a message (S1), when the command runs no script file. */
 const HEREDOC_TEXT = new Set(["cat", "tee", "git"]);
 /** Interpreters whose program (a heredoc, `node -e`, `python3 -c`) holds rm/git only as text when it can't run one. */
