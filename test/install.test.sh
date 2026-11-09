@@ -38,8 +38,8 @@ for entry in tracked.split(b"\0"):
 for relative in (
     "skills/implement-me-pi/SKILL.md",
     "skills/implement-spec-me-pi/SKILL.md",
-    "skills/pi-live-test/SKILL.md",
-    "skills/pi-live-test/pi-live.sh",
+    ".agents/skills/pi-live-test/SKILL.md",
+    ".agents/skills/pi-live-test/pi-live.sh",
     "skills/ticket-readiness/SKILL.md",
     "skills/ticket-readiness/RUBRIC.md",
 ):
@@ -192,7 +192,6 @@ assert_skill_links() {
   local agent_dir="$1" repo_root="$2"
   assert_link "$agent_dir/skills/implement-me-pi" "$repo_root/skills/implement-me-pi" &&
     assert_link "$agent_dir/skills/implement-spec-me-pi" "$repo_root/skills/implement-spec-me-pi" &&
-    assert_link "$agent_dir/skills/pi-live-test" "$repo_root/skills/pi-live-test" &&
     assert_link "$agent_dir/skills/ticket-readiness" "$repo_root/skills/ticket-readiness"
 }
 SKILL_LOADER_RUN=0
@@ -221,6 +220,9 @@ NODE
 }
 assert_skill_discovery() {
   run_skill_loader "$1" "$2" "" "${@:3}"
+}
+assert_repo_skill_discovery() {
+  run_skill_loader "$1" "$2" "--in-repo" "${@:3}"
 }
 assert_renamed_pilot_collision() {
   run_skill_loader "$1" "$2" "--renamed-pilot-collision" "${@:3}"
@@ -378,6 +380,8 @@ check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLO
 check "both repo skills linked once at user level" assert_skill_links "$PI_AGENT" "$FIXTURE"
 mkdir -p "$TMP/target-project-one" "$TMP/target-project-two"
 check "real Pi discovers repo skills and existing originals from two projects" assert_skill_discovery "$HOME_FRESH" "$PI_AGENT" "$TMP/target-project-one" "$TMP/target-project-two"
+check "real Pi discovers repo-only pi-live-test only inside the checkout" assert_repo_skill_discovery "$HOME_FRESH" "$PI_AGENT" "$FIXTURE"
+check "install links no repo-only skill at user level" test ! -e "$PI_AGENT/skills/pi-live-test" -a ! -L "$PI_AGENT/skills/pi-live-test"
 check "preserved pilot backup remains outside discovered roots" test -d "$PRESERVED_PILOT" -a ! -e "$AGENTS_HOME/skills/implement-spec-me-pi.pilot-bak" -a ! -L "$AGENTS_HOME/skills/implement-spec-me-pi.pilot-bak"
 check "preserved pilot SKILL remains intact" assert_file_text "$PRESERVED_PILOT/SKILL.md" "$PRESERVED_PILOT_SKILL"
 check "preserved pilot reference remains intact" assert_file_text "$PRESERVED_PILOT/references/plan.md" "$PRESERVED_PILOT_REFERENCE"
