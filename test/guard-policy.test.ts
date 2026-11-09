@@ -972,3 +972,20 @@ test("method step 1: an ask from 0.1.3 stays an ask unless every match is proven
 		[["legacy:0.1.3", "recursive rm (guard 0.1.3; not proven safe)"]],
 	);
 });
+
+test("review r3: a wrapper's chdir option moves the wrapped command, like cd", () => {
+	const rows: [string, Level, string][] = [
+		["/tmp/x", "ask", "env -C /w/app rm -rf ."],
+		["/tmp/x", "ask", "env --chdir=/w/app rm -rf .git"],
+		["/tmp/x", "ask", "sudo -D /w/app rm -rf ."],
+		["/tmp/x", "ask-if-dirty", "env -C /w/app rm -rf src"],
+		["/tmp/x", "ask", "env -C /w/lib git push"],
+		["/tmp/x", "allow", "env -C /tmp/y rm -rf z"],
+		["/w/app", "ask", "env -a echo rm -rf ~"],
+		["/w/app", "ask", "script -qc 'rm -rf ~' /dev/null"],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command} -> ${policy(command, fakeEnv(cwd, "feat")).verdict}`);
+	assert.deepEqual(bad, []);
+});

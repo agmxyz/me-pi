@@ -296,6 +296,13 @@ const MOVED: [string, string][] = [
 	["bash -c with cd", "bash -c 'cd {d} && {c}'"],
 	["cd then eval", "cd {d} && eval '{c}'"],
 	["cd in sudo sh -c", "sudo sh -c 'cd {d} && {c}'"],
+	// A wrapper's chdir option moves like `cd` (review r3).
+	["env -C", "env -C {d} {c}"],
+	["env --chdir=", "env --chdir={d} {c}"],
+	["sudo -D", "sudo -D {d} {c}"],
+	["sudo --chdir=", "sudo --chdir={d} {c}"],
+	["tmux new -c", "tmux new -d -c {d} '{c}'"],
+	["env -C then sh -c", "env -C {d} sh -c '{c}'"],
 ];
 
 /** Hiding the command, the option, or the target in a variable. */

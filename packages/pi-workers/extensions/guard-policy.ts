@@ -900,6 +900,8 @@ function cwdAt(cmds: SimpleCommand[], c: SimpleCommand, s: Scope): Cwd {
 		if (c.outOfOrder || !changedBefore(x, c))
 			cwd = cwd === undefined || before === undefined ? undefined : [...new Set([...before, ...cwd])];
 	}
+	// A wrapper's chdir option (`env -C d rm -rf .`): the command runs in d, as after a `cd d` that surely ran.
+	for (const d of c.chdir ?? []) cwd = moveTo(d, cwd, s, c.at);
 	return cwd;
 }
 
@@ -918,22 +920,27 @@ function cdTarget(x: SimpleCommand, cwd: Cwd, s: Scope): Cwd {
 		const arg = x.argv.slice(1).find((w) => !(w.kind !== "expansion" && w.value.startsWith("-")));
 		const opts = x.argv.slice(1).filter((w) => w.kind !== "expansion" && w.value.startsWith("-") && w.value !== "--");
 		if (x.name === "popd" || !arg || opts.length || arg.value === "-") return undefined;
-		const vals = resolveWord(arg, s, x.at);
-		// An absolute target resets an unknown directory (`cd x && …; cd /tmp && rm -rf y`); `$PWD`/`~+` is relative to
-		// the directory so far, never absolute.
-		const absolute = vals?.every(
-			(v) => v.startsWith("/") || (v.startsWith(MARK) && !v.startsWith(ENV) && !v.startsWith(PWD)),
-		);
-		if (!vals || (!cwd && !absolute)) return undefined;
-		const from = cwd ?? [""];
-		const next: string[] = [];
-		for (const raw of vals)
-			for (const base of from) {
-				const v = raw.startsWith(PWD) ? `.${raw.slice(PWD.length)}` : raw;
-				next.push(v.startsWith("/") || v.startsWith(MARK) ? v : base === "" ? v : `${base}/${v}`);
-			}
-		return next;
+		return moveTo(arg, cwd, s, x.at);
 	}
+}
+
+/** The directory after moving to `arg` from `cwd` (a `cd`, or a wrapper's chdir option); undefined if unknown. */
+function moveTo(arg: Word, cwd: Cwd, s: Scope, at: number): Cwd {
+	const vals = resolveWord(arg, s, at);
+	// An absolute target resets an unknown directory (`cd x && …; cd /tmp && rm -rf y`); `$PWD`/`~+` is relative to
+	// the directory so far, never absolute.
+	const absolute = vals?.every(
+		(v) => v.startsWith("/") || (v.startsWith(MARK) && !v.startsWith(ENV) && !v.startsWith(PWD)),
+	);
+	if (!vals || (!cwd && !absolute)) return undefined;
+	const from = cwd ?? [""];
+	const next: string[] = [];
+	for (const raw of vals)
+		for (const base of from) {
+			const v = raw.startsWith(PWD) ? `.${raw.slice(PWD.length)}` : raw;
+			next.push(v.startsWith("/") || v.startsWith(MARK) ? v : base === "" ? v : `${base}/${v}`);
+		}
+	return next;
 }
 
 /**

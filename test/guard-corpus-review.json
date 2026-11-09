@@ -325,6 +325,112 @@
    "cwd": "clean",
    "want": "ask",
    "source": "review r1 F2 (follow-up): set-url of the fetch URL; the pushurl on disk still wins"
+  },
+  {
+   "cmd": "env --chdir=@CLEAN@ rm -rf .git",
+   "cwd": "temp",
+   "want": "ask",
+   "source": "review r3: R3-1 env --chdir (GNU), a regression"
+  },
+  {
+   "cmd": "env -C @CLEAN@ rm -rf .",
+   "cwd": "temp",
+   "want": "ask",
+   "source": "review r3: R3-2 env -C (macOS and GNU) on a repo root"
+  },
+  {
+   "cmd": "env --chdir @CLEAN@ rm -rf .",
+   "cwd": "temp",
+   "want": "ask",
+   "source": "review r3: R3-2"
+  },
+  {
+   "cmd": "sudo -D @CLEAN@ rm -rf .",
+   "cwd": "temp",
+   "want": "ask",
+   "source": "review r3: R3-2 sudo -D"
+  },
+  {
+   "cmd": "sudo --chdir=@CLEAN@ rm -rf .",
+   "cwd": "temp",
+   "want": "ask",
+   "source": "review r3: R3-2 sudo --chdir"
+  },
+  {
+   "cmd": "env -C @DIRTY@ rm -rf src",
+   "cwd": "temp",
+   "want": "ask",
+   "source": "review r3: R3-2 a relative target in a dirty repo"
+  },
+  {
+   "cmd": "env -C @DIRTY@ git reset --hard",
+   "cwd": "temp",
+   "want": "ask",
+   "source": "review r3: R3-2 git in the chdir repo"
+  },
+  {
+   "cmd": "env -C @MAIN@ git push",
+   "cwd": "temp",
+   "want": "ask",
+   "source": "review r3: R3-2 bare push from the chdir repo (main)"
+  },
+  {
+   "cmd": "tmux new -d -c @CLEAN@ 'rm -rf .'",
+   "cwd": "temp",
+   "want": "ask",
+   "source": "review r3: R3-2 tmux new -c"
+  },
+  {
+   "cmd": "env -C @CLEAN@ rm -rf src",
+   "cwd": "temp",
+   "want": "allow",
+   "source": "review r3: R3 twin: clean repo, inside it"
+  },
+  {
+   "cmd": "env -C @CLEAN@ rm -rf dist",
+   "cwd": "temp",
+   "want": "allow",
+   "source": "review r3: R3 twin: build dir"
+  },
+  {
+   "cmd": "env -C @CLEAN@ git reset --hard",
+   "cwd": "temp",
+   "want": "allow",
+   "source": "review r3: R3 twin: clean tree"
+  },
+  {
+   "cmd": "env -C /tmp rm -rf guard-oracle-x",
+   "cwd": "temp",
+   "want": "allow",
+   "source": "review r3: R3 twin: temp"
+  },
+  {
+   "cmd": "env -a echo rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "review r3: old gap: GNU env -a (argv0)",
+   "known": true
+  },
+  {
+   "cmd": "env --argv0=echo rm -rf ~",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "review r3: old gap: GNU env --argv0",
+   "known": true
+  },
+  {
+   "cmd": "env -S 'rm\\_-rf\\_~'",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "review r3: old gap: env -S \\_ separator",
+   "known": true
+  },
+  {
+   "cmd": "script -qc 'rm -rf ~' /dev/null",
+   "cwd": "clean",
+   "want": "ask",
+   "source": "review r3: old gap: util-linux script -c",
+   "known": true
   }
  ]
 }

@@ -47,6 +47,11 @@ export interface SimpleCommand {
 	via: string[];
 	/** More arguments arrive at run time (`xargs`, `find -exec … {}`). */
 	openArgs: boolean;
+	/**
+	 * Directories the wrappers around it moved into first (`env -C d`, `env --chdir=d`, `sudo -D d`, `tmux new -c d`),
+	 * outermost first: each is relative to the one before, like a `cd` that surely ran.
+	 */
+	chdir?: Word[];
 	/** Runs elsewhere or later (`ssh`, `watch` bodies): found additively, never settles anything. */
 	remote: boolean;
 	/** A command string or stdin whose text isn't known (`bash -c "$X"`, `eval "$cmd"`, `… | bash`: `"<stdin>"`). */
@@ -196,6 +201,8 @@ interface Frame {
 	depth: number;
 	/** Inside a `trap` string (or another body that runs out of text order). */
 	outOfOrder?: boolean;
+	/** Directories wrappers moved into before running this (`env -C d`, `sudo -D d`), outermost first. */
+	chdir?: Word[];
 }
 
 /** Parses a bash command string into its simple commands and top-level bindings. */
@@ -495,6 +502,7 @@ function push(
 		...rest,
 		...own,
 		via: f.via,
+		...(f.chdir ? { chdir: f.chdir } : {}),
 		remote: f.remote,
 		at: w.at,
 		span: [w.span[0], w.span[1]],
@@ -553,7 +561,12 @@ function emit(w: Walk, argv: Word[], f: Frame, io: Io): void {
 		);
 		// Guard's own commands (`git rm`, `rm -- git`, `find -name rm`) are judged by their own rules, not as wrappers.
 		if (k > 0 && !NOT_WRAPPERS.has(name) && !GUARDED_NAMES.has(name) && !textSubcommand(name, argv))
-			emit(w, argv.slice(k), { via: [...f.via, name], remote: f.remote, depth: f.depth }, { ...io, openArgs: true });
+			emit(
+				w,
+				argv.slice(k),
+				{ via: [...f.via, name], remote: f.remote, depth: f.depth, chdir: f.chdir },
+				{ ...io, openArgs: true },
+			);
 		return;
 	}
 	const via = [...f.via, name];
@@ -563,6 +576,7 @@ function emit(w: Walk, argv: Word[], f: Frame, io: Io): void {
 			remote: f.remote || !!step.remote,
 			depth: f.depth,
 			outOfOrder: f.outOfOrder || (step.kind === "script" && !!step.outOfOrder),
+			chdir: step.kind !== "stdin" && step.chdir ? [...(f.chdir ?? []), step.chdir] : f.chdir,
 		};
 		if (step.kind === "exec")
 			emit(w, step.argv, inner, {
@@ -946,8 +960,8 @@ function ansiC(s: string): string {
 // Wrappers: commands that run another command from their arguments. Each entry parses options like the real tool.
 
 type Step =
-	| { kind: "exec"; argv: Word[]; openArgs?: boolean; remote?: boolean; placeholder?: string }
-	| { kind: "script"; body: Word[]; remote?: boolean; outOfOrder?: boolean }
+	| { kind: "exec"; argv: Word[]; openArgs?: boolean; remote?: boolean; placeholder?: string; chdir?: Word }
+	| { kind: "script"; body: Word[]; remote?: boolean; outOfOrder?: boolean; chdir?: Word }
 	| { kind: "stdin"; remote?: boolean; unknown?: boolean };
 
 interface OptionSpec {
@@ -1004,8 +1018,16 @@ function options(args: Word[], spec: OptionSpec): { at: number; seen: Map<string
 const execFrom = (
 	args: Word[],
 	at: number,
-	extra: { openArgs?: boolean; remote?: boolean; placeholder?: string } = {},
+	extra: { openArgs?: boolean; remote?: boolean; placeholder?: string; chdir?: Word } = {},
 ): Step[] => (at < args.length ? [{ kind: "exec", argv: args.slice(at), ...extra }] : []);
+/** A chdir option's value (`-C d`, `--chdir=d`); `true` (no value) is none. */
+const dirOpt = (seen: Map<string, Word | true>, ...names: string[]): { chdir?: Word } => {
+	for (const n of names) {
+		const v = seen.get(n);
+		if (v && v !== true) return { chdir: v };
+	}
+	return {};
+};
 // `NAME=value` operands (`env PATH="$PATH" node`): the name decides, the value may expand.
 function skipAssignments(args: Word[], from: number): number {
 	let at = from;
@@ -1608,9 +1630,11 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 		if (seen.has("e") || seen.has("--edit") || seen.has("l") || seen.has("--list")) return [];
 		const start = skipAssignments(args, at);
 		// `sudo -s cmd …` / `sudo -i cmd …` hand the words to a shell's `-c`.
+		// `sudo -D dir` / `--chdir=dir` runs the command in dir (review r3).
+		const chdir = dirOpt(seen, "D", "--chdir");
 		if (seen.has("s") || seen.has("i") || seen.has("--shell") || seen.has("--login"))
-			return start < args.length ? [{ kind: "script", body: args.slice(start) }] : [{ kind: "stdin" }];
-		return execFrom(args, start);
+			return start < args.length ? [{ kind: "script", body: args.slice(start), ...chdir }] : [{ kind: "stdin" }];
+		return execFrom(args, start, chdir);
 	},
 	doas: (args) => {
 		const { at, seen } = options(args, { short: "uC" });
@@ -1623,13 +1647,24 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 	pkexec: (args) => execFrom(args, options(args, { long: ["--user"] }).at),
 	env: (args) => {
 		const { at, seen } = options(args, {
-			short: "uCPS",
-			long: ["--unset", "--chdir", "--split-string", "--default-signal", "--ignore-signal", "--block-signal"],
+			// `-a`/`--argv0 NAME` (GNU 8.30+) takes a value: the command follows it (review r3).
+			short: "uCPSa",
+			long: [
+				"--unset",
+				"--chdir",
+				"--split-string",
+				"--default-signal",
+				"--ignore-signal",
+				"--block-signal",
+				"--argv0",
+			],
 		});
 		const split = seen.get("S") ?? seen.get("--split-string");
 		const start = skipAssignments(args, at);
-		if (split && split !== true) return [{ kind: "script", body: [split, ...args.slice(start)] }];
-		return execFrom(args, start);
+		// `env -C dir` / `--chdir=dir` runs the command in dir (macOS and GNU; review r3).
+		const chdir = dirOpt(seen, "C", "--chdir");
+		if (split && split !== true) return [{ kind: "script", body: [split, ...args.slice(start)], ...chdir }];
+		return execFrom(args, start, chdir);
 	},
 	timeout: (args) => execFrom(args, options(args, { short: "sk", long: ["--signal", "--kill-after"] }).at + 1), // the duration
 	gtimeout: (args) => WRAPPERS.timeout(args),
@@ -1650,7 +1685,13 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 	// `sandbox-exec -f profile cmd`, `taskpolicy -c class cmd`.
 	arch: (args) => execFrom(args, options(args, { long: ["-arch"] }).at),
 	script: (args) => {
-		const { at } = options(args, { short: "FtT" });
+		// util-linux `script -c CMD [file]` / `--command=CMD` runs CMD in a shell (review r3); BSD has no `-c`.
+		const { at, seen } = options(args, {
+			short: "FtTcEIOBm",
+			long: ["--command", "--log-io", "--log-in", "--log-out"],
+		});
+		const cmd = seen.get("c") ?? seen.get("--command");
+		if (cmd && cmd !== true) return [{ kind: "script", body: [cmd] }];
 		return at + 1 < args.length ? execFrom(args, at + 1) : []; // the transcript file, then the command
 	},
 	lockf: (args) => execFrom(args, options(args, { short: "t" }).at + 1), // the lock file
@@ -1676,10 +1717,12 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 		)
 			return [];
 		const rest = args.slice(i + 1);
-		const at = options(rest, { short: "cnstxyFeElpPtTw" }).at;
+		const { at, seen } = options(rest, { short: "cnstxyFeElpPtTw" });
 		const cmd = rest.slice(at);
 		if (!cmd.length) return [];
-		return cmd.length === 1 ? [{ kind: "script", body: cmd }] : execFrom(cmd, 0);
+		// `-c dir`: the start directory.
+		const chdir = dirOpt(seen, "c");
+		return cmd.length === 1 ? [{ kind: "script", body: cmd, ...chdir }] : execFrom(cmd, 0, chdir);
 	},
 	// `screen [-dmS name] cmd …` runs its trailing words; `screen -X stuff '…'` sends keys (text) to a session.
 	screen: (args) => {
