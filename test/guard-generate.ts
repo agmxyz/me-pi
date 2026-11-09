@@ -6,7 +6,7 @@
  * Tokens (filled in by the oracle): `@CLEAN@`, `@DIRTY@`, `@MAIN@` are the fixture repos' absolute paths.
  */
 
-export type Fixture = "clean" | "dirty" | "main" | "sub" | "temp";
+export type Fixture = "clean" | "dirty" | "main" | "sub" | "temp" | "hidden";
 export type Want = "ask" | "allow" | "ask-if-dirty" | "unknown";
 export interface Row {
 	cmd: string;

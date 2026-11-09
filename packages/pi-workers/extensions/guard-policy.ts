@@ -1057,17 +1057,38 @@ function gitDirs(c: SimpleCommand, cmds: SimpleCommand[], globals: string[], s: 
 	const cwd = cwdAt(cmds, c, s);
 	if (!cwd) return undefined;
 	const args = c.argv.slice(1);
-	const cIdx = globals.indexOf("-C");
-	const dashC = cIdx >= 0 ? resolveWord(args[cIdx + 1], s, c.at) : [""];
-	if (!dashC) return undefined;
+	// git applies every `-C` in order, each relative to the one before (`git -C . -C ../x` runs in `../x`).
+	let dirs = cwd;
+	for (const k of dashCs(globals)) {
+		const vals = resolveWord(args[k + 1], s, c.at);
+		if (!vals) return undefined;
+		const next: string[] = [];
+		for (const base of dirs)
+			for (const d of vals)
+				next.push(d === "" ? base : d.startsWith("/") || d.startsWith(MARK) || base === "" ? d : `${base}/${d}`);
+		dirs = next;
+	}
 	const out: string[] = [];
-	for (const base of cwd)
-		for (const d of dashC) {
-			const v = d === "" ? base : d.startsWith("/") || d.startsWith(MARK) || base === "" ? d : `${base}/${d}`;
-			const abs = absOf(v);
-			if (abs === undefined) return undefined;
-			out.push(abs);
-		}
+	for (const v of dirs) {
+		const abs = absOf(v);
+		if (abs === undefined) return undefined;
+		out.push(abs);
+	}
+	return out;
+}
+
+/** Indexes of every `-C` among git's global options (each takes the next word). */
+function dashCs(globals: string[]): number[] {
+	const out: number[] = [];
+	for (let i = 0; i < globals.length; i++) {
+		if (globals[i] === "-C") out.push(i);
+		if (
+			globals[i] === "-C" ||
+			globals[i] === "-c" ||
+			/^--(?:git-dir|work-tree|namespace|super-prefix|exec-path|config-env)$/.test(globals[i])
+		)
+			i++;
+	}
 	return out;
 }
 
@@ -1471,10 +1492,11 @@ function gitWhere(
 	s: Scope,
 ): "session" | "temp" | "switched" | "elsewhere" {
 	const args = c.argv.slice(1);
-	const cIdx = globals.indexOf("-C");
-	if (cIdx >= 0) {
-		const vals = resolveWord(args[cIdx + 1], s, c.at);
-		return vals?.every((v) => v.startsWith(TEMP) && !DOTDOT.test(v)) ? "temp" : "elsewhere";
+	const cs = dashCs(globals);
+	if (cs.length) {
+		// Temp only if the last `-C` is a fresh temp dir and none after it moves out (an absolute or `..` path).
+		const vals = resolveWord(args[cs.at(-1)! + 1], s, c.at);
+		return cs.length === 1 && vals?.every((v) => v.startsWith(TEMP) && !DOTDOT.test(v)) ? "temp" : "elsewhere";
 	}
 	if (movesGit(globals) || c.assignments.some((a) => a === "GIT_DIR" || a === "GIT_WORK_TREE")) return "elsewhere";
 	const cwd = cwdAt(cmds, c, s);
@@ -1692,9 +1714,9 @@ function judgeArgv(calls: ArgvCall[], toDisk: (p: string) => string | undefined)
 					? gitLevel(sub, words, () => made, false)
 					: gitLevel(sub, words, E.branch, branchMoved || moved);
 			let dir = dirOf(c);
-			const cIdx = globals.indexOf("-C");
-			if (cIdx >= 0 && dir !== undefined) {
-				const v = globals[cIdx + 1] ?? "";
+			for (const k of dashCs(globals)) {
+				if (dir === undefined) break;
+				const v = globals[k + 1] ?? "";
 				dir = v.startsWith("/") ? toDisk(v) : posix.normalize(`${dir}/${v}`);
 			}
 			const hidden = c.gitDir !== "" || c.gitWorkTree !== "" || /--(?:git-dir|work-tree)/.test(globals.join(" "));

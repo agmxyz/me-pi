@@ -1,5 +1,6 @@
 /**
- * guard's oracle (method step 2): judges every corpus row (`test/guard-corpus.json`) and every generated row
+ * guard's oracle (method step 2): judges every corpus row (`test/guard-corpus.json`, and the review rounds' rows in
+ * `test/guard-corpus-review.json`) and every generated row
  * (`test/guard-generate.ts`) with the live guard path (`policy` on real fixture repos, plus the dirty check) and with
  * guard 0.1.3's `classify`, and prints the same three numbers every time:
  *
@@ -60,19 +61,33 @@ export function fixtures(root: string): Record<Fixture, string> {
 		return d;
 	};
 	const clean = repo("clean", "feat", false);
+	// Remotes whose fetch URL is local but whose push URL is a network one (`pushurl`, `pushInsteadOf`): a push there is
+	// case 3. `local` pushes to a bare repo for real; `assumed`/`skipped` hide a change from `git status`.
+	git(root, "init", "-q", "--bare", join(root, "bare.git"));
+	git(clean, "remote", "add", "local", join(root, "bare.git"));
+	git(clean, "remote", "add", "pushurl", join(root, "bare.git"));
+	git(clean, "config", "remote.pushurl.pushurl", "https://example.invalid/x.git");
+	git(clean, "remote", "add", "rewrite", join(root, "bare.git"));
+	git(clean, "config", "url.https://example.invalid/.pushInsteadOf", join(root, "bare.git"));
+	const hidden = repo("hidden", "feat", false);
+	writeFileSync(join(hidden, "src", "a.txt"), "changed\n");
+	git(hidden, "update-index", "--assume-unchanged", "src/a.txt");
+	writeFileSync(join(hidden, "src", "sub", "b.txt"), "changed\n");
+	git(hidden, "update-index", "--skip-worktree", "src/sub/b.txt");
 	return {
 		clean,
 		dirty: repo("dirty", "feat", true),
 		main: repo("onmain", "main", false),
 		sub: join(clean, "src"),
+		hidden,
 		temp: mkdtempSync(join(tmpdir(), "guard-oracle-")),
 	};
 }
 
 /** The corpus rows (`test/guard-corpus.json`) and the generated rows. */
 export function allRows(): Row[] {
-	const corpus = JSON.parse(readFileSync(join(here, "guard-corpus.json"), "utf8")) as { rows: Row[] };
-	return [...corpus.rows, ...generated()];
+	const load = (f: string) => (JSON.parse(readFileSync(join(here, f), "utf8")) as { rows: Row[] }).rows;
+	return [...load("guard-corpus.json"), ...load("guard-corpus-review.json"), ...generated()];
 }
 
 /** Judges `rows` in the fixtures: the three numbers and the rows behind them. */
@@ -83,6 +98,7 @@ export function judgeRows(rows: Row[], cwds: Record<Fixture, string>): OracleRes
 			.replaceAll("@CLEAN@", cwds.clean)
 			.replaceAll("@DIRTY@", cwds.dirty)
 			.replaceAll("@MAIN@", cwds.main)
+			.replaceAll("@HIDDEN@", cwds.hidden)
 			.replaceAll("@USER@", user);
 	const out: OracleResult = { rows: rows.length, regressions: [], oldGaps: [], falsePrompts: [], lifts: [] };
 	for (const row of rows) {
