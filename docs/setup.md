@@ -33,6 +33,7 @@ Pi loads this checkout as a local path, so it runs whichever branch and working 
 ```sh
 rm ~/.pi/agent/AGENTS.md                     # only if it links to this checkout's GLOBAL_AGENTS.md
 rm ~/.pi/agent/skills/implement-me-pi ~/.pi/agent/skills/implement-spec-me-pi ~/.pi/agent/skills/ticket-readiness
+rm ~/.pi/agent/skills/pi-live-test           # left by older installs, if present
 pi remove /path/to/me-pi                     # this checkout
 pi remove npm:pi-web-access                  # unless you use it elsewhere
 rm ~/.pi/agent/extensions/interactive-shell.ts ~/.pi/agent/extensions/handoff.ts   # if unedited

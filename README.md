@@ -24,7 +24,7 @@ Workers are **not sandboxed**: they run with your OS permissions, and `implement
 
 ## Setup
 
-You don't need it to use an extension.
+My personal setup; it runs this checkout's working tree. You don't need it to use an extension.
 
 - [`GLOBAL_AGENTS.md`](GLOBAL_AGENTS.md): my global policy for Pi sessions
 - [`skills/`](skills): user-level skills
@@ -48,7 +48,7 @@ node --test test/guard.test.ts   # one test file
 
 ## Credits
 
-The skills adapt Matt Pocock's [skills](https://github.com/mattpocock/skills) and Lauren Tan's [pstack](https://github.com/cursor/plugins), both MIT; pinned sources are in each skill's frontmatter `metadata.credits`.
+The skills adapt or build on Matt Pocock's [skills](https://github.com/mattpocock/skills) and Lauren Tan's [pstack](https://github.com/cursor/plugins), both MIT; pinned sources are in each skill's frontmatter `metadata.credits`.
 
 ## License
 
