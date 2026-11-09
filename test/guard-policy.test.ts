@@ -942,3 +942,33 @@ test("PR #95 round 11: package-tool runners and tmux/screen run commands; checko
 		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
 	assert.deepEqual(bad, []);
 });
+
+test("method step 1: an ask from 0.1.3 stays an ask unless every match is proven safe", () => {
+	const rows: [string, Level, string][] = [
+		// Proven: S1 text, S2 disposable, S3 clean tree (ask-if-dirty), S4 local push, S5 history, S6 resolved branch.
+		["/w/app", "allow", 'echo "rm -rf ~"'],
+		["/w/app", "allow", "printf '%s\\n' 'git push --force origin main'"],
+		["/w/app", "allow", 'herdr agent prompt p "git reset --hard"'],
+		["/w/app", "allow", "grep -n 'rm -rf' notes.md # rm -rf ~"],
+		["/w/app", "allow", "cat > notes.md <<'EOF'\nrm -rf ~\nEOF"],
+		["/w/app", "allow", "rm -rf dist node_modules"],
+		["/w/app", "ask-if-dirty", "git reset --hard"],
+		["/w/app", "allow", "git push --force local feat"],
+		["/w/app", "allow", "git rebase -i HEAD~3"],
+		["/w/app", "allow", "cd /w/app && git push"],
+		["/w/app", "allow", "git checkout -b topic && git push -u origin HEAD"],
+		// Not proven: what 0.1.3 matched sits outside every proof, so 0.1.3's ask stands.
+		["/w/app", "ask", "sudo python3 - <<'EOF'\nrm -rf ~\nEOF"],
+		["/w/app", "ask", "pythonx - <<'EOF'\nrm -rf ~\nEOF"],
+		["/w/app", "ask", "cat > f <<EOF\n$(rm -rf ~)\nEOF"],
+	];
+	const bad = rows
+		.filter(([cwd, want, command]) => policy(command, fakeEnv(cwd, "feat")).verdict !== want)
+		.map(([cwd, want, command]) => `${cwd} ${want}: ${command}`);
+	assert.deepEqual(bad, []);
+	const v = policy("pythonx - <<'EOF'\nrm -rf ~\nEOF", fakeEnv("/w/app", "feat"));
+	assert.deepEqual(
+		v.findings.map((f) => [f.rule, f.detail]),
+		[["legacy:0.1.3", "recursive rm (guard 0.1.3; not proven safe)"]],
+	);
+});

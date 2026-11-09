@@ -86,7 +86,7 @@ test("a heredoc written to a file is data; one fed to a shell is commands", () =
 		written.commands.map((c) => c.name),
 		["cat"],
 	);
-	assert.deepEqual(written.commands[0].heredocs, [{ body: "rm -rf /\n" }]);
+	assert.deepEqual(written.commands[0].heredocs, [{ body: "rm -rf /\n", span: [19, 28], literal: true }]);
 	assert.equal(written.commands[0].redirects.find((x) => x.op === ">")?.target?.value, "f.sh");
 	const run = find("bash <<EOF\nrm -rf /\nEOF", "rm");
 	assert.ok(run);

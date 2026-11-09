@@ -250,10 +250,10 @@ const NOW_ALLOWED: [string, string][] = [
 	["git filter-repo --path x", "filter-repo: a local history rewrite (workers still block it)"],
 	["python3 - <<\\EOF\nrm -rf ~\nEOF", "a quoted heredoc fed to python is Python source, not shell"],
 	["cat > notes.md <<'EOF'\nrm -rf src\nEOF", "a heredoc written to a file that nothing runs is text"],
-	["sudo python3 - <<'EOF'\nrm -rf ~\nEOF", "the heredoc body is Python source"],
-	["ssh h python3 - <<'EOF'\nrm -rf ~\nEOF", "the heredoc body is Python source"],
-	["pythonx - <<'EOF'\nrm -rf ~\nEOF", "a heredoc fed to a program that isn't a shell is its input"],
 ];
+// Rows the policy alone allowed that ask again since 0.1.3's ask needs a proof (S1 covers a heredoc only when read by
+// `cat`/`tee`/`git` or a directly run `python`/`node`): `sudo python3 - <<'EOF'`, `ssh h python3 - <<'EOF'`,
+// `pythonx - <<'EOF'`.
 
 test("the 3-case policy keeps every 0.1.3 row except the ones it deliberately allows", () => {
 	const repo = "/w/repo";

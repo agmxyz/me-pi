@@ -228,17 +228,28 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 	return { recursive, targets };
 }
 
+/**
+ * guard 0.1.3's reason to ask about `command`, or undefined. `context` is the text whose `cd`, checkout/switch, and
+ * TMPDIR rebinding count (default `command`): guard-policy passes the whole command when it judges a partly blanked copy,
+ * so blanking can't hide the context of what is left.
+ */
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
+	context = command,
 ): string | undefined {
 	// Unstripped: a dropped message or heredoc body could hide a rebinding.
-	const tmpdirUnsafe = tmpdirMayChange(command);
+	const tmpdirUnsafe = tmpdirMayChange(context);
+	const same = context === command;
 	command = withoutMessages(command);
 	const gitCommands = inFreshTempRepo(command) ? [] : [...command.matchAll(GIT_COMMAND)];
+	const ctx = same ? command : withoutMessages(context);
+	// Fresh-temp-repo exemption only on the real text: blanking can't create one.
+	if (!same && inFreshTempRepo(command) && !inFreshTempRepo(ctx)) gitCommands.push(...command.matchAll(GIT_COMMAND));
+	const ctxGit = same ? gitCommands : inFreshTempRepo(ctx) ? [] : [...ctx.matchAll(GIT_COMMAND)];
 	// The session's branch is read before the command runs, so it says nothing about the target after
 	// `cd`, `git checkout`/`switch`, or `git -C`/`--git-dir`/`--work-tree`.
-	const branchMayChange = CD.test(command) || gitCommands.some(([, , sub]) => sub === "checkout" || sub === "switch");
+	const branchMayChange = CD.test(ctx) || ctxGit.some(([, , sub]) => sub === "checkout" || sub === "switch");
 	for (const [, globals, sub, args] of gitCommands) {
 		const elsewhere = branchMayChange || /(?:^|\s)(?:-C|--git-dir|--work-tree)\b/.test(globals);
 		const risk = gitRisk(sub, wordsOf(args), currentBranch, elsewhere);

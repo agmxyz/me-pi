@@ -91,7 +91,8 @@ export interface Finding {
 }
 /** A rule 0.1.3 asked on that the main session no longer does; `history` rules stay blocked in workers. */
 export interface Dropped {
-	rule: "history" | "push:local";
+	/** `push:resolved`: a push 0.1.3 called "after changing directory or branch" whose branch the policy resolved. */
+	rule: "history" | "push:local" | "push:resolved";
 	detail: string;
 }
 export interface PolicyVerdict {
@@ -146,7 +147,18 @@ interface LevelRule {
 
 const RANK: Record<Level, number> = { allow: 0, "ask-if-dirty": 1, ask: 2 };
 const worst = (fs: Finding[]): Level => fs.reduce<Level>((a, f) => (RANK[f.level] > RANK[a] ? f.level : a), "allow");
-const worse = (a: LevelRule, b: LevelRule) => (RANK[b.level] > RANK[a.level] ? b : a);
+const worse = (a: LevelRule, b: LevelRule): LevelRule => {
+	if (a.level !== "ask-if-dirty" || b.level !== "ask-if-dirty") return RANK[b.level] > RANK[a.level] ? b : a;
+	// Two case-2 checks (a target in each directory a `cd` may have left): both must be clean. One repo: the union of
+	// their paths; two repos: unknown, so ask.
+	const [x, y] = [a.dirty ?? UNKNOWN_REPO, b.dirty ?? UNKNOWN_REPO];
+	if (x.repo === undefined || x.repo !== y.repo) return { ...a, dirty: UNKNOWN_REPO };
+	const paths = x.paths && y.paths ? [...new Set([...x.paths, ...y.paths])] : undefined;
+	return {
+		...a,
+		dirty: { ...x, paths, untracked: x.untracked || y.untracked, ignored: x.ignored || y.ignored, always: x.always || y.always },
+	};
+};
 const ALLOW: LevelRule = { level: "allow", rule: "rm:temp-or-build" };
 const DOTDOT = /(?:^|\/)\.\.(?:\/|$)/;
 
@@ -296,13 +308,151 @@ export function policy(command: string, env: PolicyEnv): PolicyVerdict {
 	try {
 		const p = parseShell(command);
 		if (!p.ok) parseFailed(command, p.reason, branch, findings, fallbacks, "the command doesn't parse");
-		else judge(command, p.commands, branch, findings, dropped, 0, p.bindings, fallbacks);
+		else {
+			judge(command, p.commands, branch, findings, dropped, 0, p.bindings, fallbacks);
+			// Already an ask: 0.1.3's verdict can't make it stricter.
+			const legacy = worst(findings) === "ask" ? undefined : unproven(command, p, branch);
+			if (legacy)
+				findings.push({ level: "ask", rule: "legacy:0.1.3", detail: `${legacy} (guard 0.1.3; not proven safe)` });
+		}
 		return { verdict: worst(findings), findings, dropped, fallbacks };
 	} finally {
 		E = NO_ENV;
 		TOP = "";
 		rebindMemo.clear();
+		OWNERS.clear();
 	}
+}
+
+// The top-level command each finding or drop of the `policy` call in progress came from (a resolved `bash -c "$c"`
+// script's findings belong to the command that runs it). Findings in a written-then-run heredoc body have none.
+const OWNERS = new Map<Finding | Dropped, SimpleCommand>();
+
+/** Commands whose arguments only print, send, or search text (S1), when the command runs no script file. */
+const TEXT_CONSUMERS = new Set(["echo", "printf", "print", "grep", "egrep", "fgrep", "rg", "ag"]);
+/** `herdr agent prompt` sends text to an agent; `herdr pane run` would run it, so only the listed forms. */
+const textConsumer = (c: SimpleCommand, writes: boolean): boolean => {
+	const [, a, b] = c.argv.map((w) => (w.kind === "literal" ? w.value : ""));
+	if (c.name === "herdr") return a === "agent" && b === "prompt";
+	// `node -e '…'`, `python3 -c '…'`: the program text, when it can't run a command (`interpreterText`).
+	if (c.name !== undefined && HEREDOC_PROGRAM.has(c.name)) {
+		// Only plain options before the program (`--input-type=module`), and no shell-run words around it.
+		const flag = c.name === "node" ? /^(?:-e|--eval|-p|--print)$/ : /^-c$/;
+		const k = c.argv.findIndex((w) => w.kind !== "expansion" && flag.test(w.value));
+		const program = k > 0 ? c.argv[k + 1] : undefined;
+		const plainOptions = c.argv.slice(1, k).every((w) => w.kind === "literal" && /^--?[\w-]+(?:=[\w-]+)?$/.test(w.value));
+		return (
+			plainOptions && program !== undefined && program.kind !== "expansion" && interpreterText(program.value, !writes)
+		);
+	}
+	if (c.name === "gh") return ["pr", "issue"].includes(a) && ["create", "comment", "edit", "view"].includes(b);
+	return c.name !== undefined && TEXT_CONSUMERS.has(c.name);
+};
+/** Commands whose heredoc body is text written to a file or a message (S1), when the command runs no script file. */
+const HEREDOC_TEXT = new Set(["cat", "tee", "git"]);
+/** Interpreters whose program (a heredoc, `node -e`, `python3 -c`) holds rm/git only as text when it can't run one. */
+const HEREDOC_PROGRAM = new Set(["python", "python3", "node"]);
+/**
+ * What lets a JavaScript or Python program run a command, or code the text doesn't show: process and shell APIs,
+ * `eval`/`exec`, a computed member (`m["exec"+"Sync"]`), a non-literal or process-related import. A program with none
+ * of these can't run the rm/git its strings mention (it may still delete through file APIs: neither 0.1.3 nor the
+ * policy polices program bodies).
+ */
+const RUNS_PROCESS =
+	/child_process|worker_threads|\bvm\b|\bexec\w*|\bspawn\w*|\bfork\b|\bsystem\b|\bpopen\b|subprocess|multiprocessing|\bpty\b|\bctypes\b|\bos\b|\bshutil\b|\beval\b|\bcompile\s*\(|Function\s*\(|\bBun\b|\bDeno\b|\$`|\bzx\b|__import__|importlib|\bgetattr\b|\bglobals\s*\(|\b(?:process|globalThis|global|module|require|Reflect)\s*(?:\[|\.(?:binding|_linkedBinding|dlopen|mainModule|main|cache|constructor|get|apply))|\bimport\s+\*|\b(?:require|import)\s*\(\s*[^"'\s]/;
+// The modules a program may load: node's file and text modules, and (`local`) a relative path: a file already on disk,
+// which runs what it runs whether or not this text names rm/git (`node x.mjs` isn't policed either).
+const IMPORT = /\b(?:require|import)\s*\(\s*(["'])(.*?)\1|\bfrom\s+(["'])(.*?)\3/g;
+const SAFE_MODULE = /^(?:node:)?(?:fs|fs\/promises|path|url|util|assert|assert\/strict|json|re|sys|pathlib|textwrap|difflib)$/;
+function interpreterText(program: string, local: boolean): boolean {
+	if (RUNS_PROCESS.test(program)) return false;
+	for (const m of program.matchAll(IMPORT)) {
+		const name = m[2] ?? m[4] ?? "";
+		if (!SAFE_MODULE.test(name) && !(local && /^\.{1,2}\//.test(name))) return false;
+	}
+	return true;
+}
+
+/**
+ * Step 1 of the method: guard 0.1.3's reason to ask about `src`, if the policy can't prove every match safe; undefined
+ * when 0.1.3 doesn't ask or every match is proven. The policy's findings never get weaker for this: it only adds an ask.
+ *
+ * A match is proven by blanking the source it sits in and re-running 0.1.3's `classify`: lifted only if nothing is
+ * left. Blanked: comments; values of plain assignments that run nothing (S1: the policy resolves their uses); and each
+ * top-level command's range whose commands (its own, the ones unwrapped or
+ * re-parsed from it, and any `$(…)` inside it) are each neutral (0.1.3 finds nothing in its words, or a wrapper whose
+ * program is those commands) or proven, and at least one proven:
+ * - S1 text: a text consumer's words, top level and unwrapped, in a command that runs no script file;
+ * - S2 disposable: an `rm`/`find` the policy judged and found nothing in (every recursive target temp, build, mktemp);
+ * - S3 clean tree / new asks: a command with a policy finding (`ask-if-dirty` is checked against `git status`);
+ * - S4 local push and S5 history: a command with a `push:local` or `history` drop (workers still block history);
+ * - S6 resolved branch: a bare push after `cd`/`-C` or `checkout -b` whose branch the policy read (`push:resolved`).
+ * A heredoc body is also blanked when it is text: read only by `cat`/`tee`/`git` (or a program run directly by
+ * `python`/`python3`/`node`, as 0.1.3 already did for an opening one), in a command that runs no script file. Not blanked: neutral commands outside a proven range (`cd` keeps 0.1.3's
+ * "after changing directory" rule), and everything when the offsets aren't exact. 0.1.3 reason → what lifts it:
+ * recursive rm → S1/S2/S3; reset --hard, clean -f, checkout/switch/restore discards, stash drop|clear → S1/S3 (stash
+ * always asks); force push, push to main/master → S1/S4; push after changing directory → S1/S4/S6; history rewrite and
+ * branch -D → S1/S5.
+ */
+function unproven(src: string, p: Extract<ReturnType<typeof parseShell>, { ok: true }>, branch: Branch): string | undefined {
+	const old = classify(src, branch);
+	if (!old || !p.exact) return old;
+	const cmds = p.commands;
+	const owned = new Set(OWNERS.values());
+	const runs = ranFiles(cmds).length > 0;
+	// The command writes a program file (a redirect or `tee` to `.js`/`.ts`/`.py`…): a relative import may load it.
+	const code = (v: string) => /\.(?:[cm]?[jt]sx?|py)$/.test(v);
+	// A redirect's file: `>&1`, `2>&-` move descriptors; an expansion target could be any file.
+	const file = (r: { op: string; target?: Word }) =>
+		/>/.test(r.op) && r.target !== undefined && !/^(?:\d+|-)$/.test(r.target.value);
+	const writes = cmds.some(
+		(c) =>
+			c.redirects.some((r) => file(r) && (r.target!.kind === "expansion" || code(r.target!.value))) ||
+			(c.name === "tee" && c.argv.some((w) => code(w.value))) ||
+			c.name === "cp" ||
+			c.name === "mv" ||
+			c.name === "ln",
+	);
+	const proof = (c: SimpleCommand): boolean => {
+		if (owned.has(c)) return true;
+		if ((c.name === "rm" || c.name === "find") && !c.openArgs && !c.remote) return true;
+		return !runs && c.argvSpans !== undefined && textConsumer(c, writes);
+	};
+	// A wrapper's own words are its program, judged through the commands unwrapped or re-parsed from it (same range).
+	const neutral = (c: SimpleCommand) =>
+		(c.name !== undefined && isWrapper(c.name)) || !classify(c.argv.map((w) => w.raw).join(" "), branch);
+	const blank = new Uint8Array(src.length);
+	const mark = ([a, b]: [number, number], v: number) => blank.fill(v, a, b);
+	for (const s of [...p.comments, ...p.data]) mark(s, 1);
+	const inside = (x: [number, number], s: [number, number]) => x[0] >= s[0] && x[1] <= s[1];
+	const spans = new Map(cmds.map((c) => [`${c.span[0]},${c.span[1]}`, c.span]));
+	for (const s of spans.values()) {
+		const within = cmds.filter((c) => inside(c.span, s));
+		if (within.some(proof) && within.every((c) => proof(c) || neutral(c))) mark(s, 1);
+	}
+	// A heredoc body is text when every command reading it is a plain text reader (not a shell or other wrapper: their
+	// bodies run, and count only through their command's proven range), and nothing in the command runs a script file.
+	const bodies = new Map<string, { span: [number, number]; text: boolean }>();
+	for (const c of cmds)
+		for (const h of c.heredocs) {
+			if (!h.span) continue;
+			// Under an unquoted delimiter a command substitution in the body runs: then its text is never data.
+			const expands = h.literal !== true && /\$\(|`/.test(h.body);
+			const text =
+				!expands &&
+				c.name !== undefined &&
+				((!runs && HEREDOC_TEXT.has(c.name)) ||
+					(HEREDOC_PROGRAM.has(c.name) && c.via.length === 0 && !c.reparsed && interpreterText(h.body, !writes)));
+			const key = `${h.span[0]},${h.span[1]}`;
+			const b = bodies.get(key);
+			bodies.set(key, { span: h.span, text: (b?.text ?? true) && text });
+		}
+	for (const b of bodies.values()) if (b.text) mark(b.span, 1);
+	// By UTF-16 unit, as tree-sitter's offsets are.
+	let left = "";
+	for (let i = 0; i < src.length; i++) left += blank[i] && src[i] !== "\n" ? " " : src[i];
+	(globalThis as { __lastLeft?: string }).__lastLeft = left; // DEBUG-S95
+	return classify(left, branch, src);
 }
 
 /** Decision 2: a text that doesn't parse (or hits a parser limit) takes guard 0.1.3's regex verdict on that text. */
@@ -333,7 +483,17 @@ function judge(
 	fallbacks: PolicyVerdict["fallbacks"],
 ): void {
 	const stable = tmpdirStable(src);
+	// Each finding and drop a top-level command (with any resolved script it runs) adds is owned by it (see `unproven`).
+	let prev: SimpleCommand | undefined;
+	let [f0, d0] = [0, 0];
+	const own = () => {
+		if (depth === 0 && prev)
+			for (const x of [...findings.slice(f0), ...dropped.slice(d0)]) if (!OWNERS.has(x)) OWNERS.set(x, prev);
+		[f0, d0] = [findings.length, dropped.length];
+	};
 	for (const c of cmds) {
+		own();
+		prev = c;
 		// A re-parsed string run by another shell (`sh -c '…'`, `bash <<EOF`) doesn't see this shell's variables;
 		// `trap` and `eval` strings run in this shell and do.
 		const newShell = c.via.some((v) => RUNS_IN_NEW_SHELL.has(v));
@@ -383,6 +543,7 @@ function judge(
 		else if (c.name === "find") findFindings(c, src, add, scope, cwdAt(cmds, c, scope));
 		else if (c.name === "git") gitFindings(c, cmds, branch, add, dropped, scope);
 	}
+	own();
 	// A heredoc written to a file, in a command that also runs any script file (`sh x`, `bash x`, `. x`, `./x`, `make`):
 	// every written body is judged as a program. Files aren't traced through `cp`/`mv`/`ln` or names (fail closed: the
 	// run may be the written file under another name), so the name doesn't have to match.
@@ -1109,6 +1270,7 @@ function gitFindings(
 				if (RANK[x.level] > RANK[best.level]) best = x;
 			}
 			r = best;
+			if (r.level === "allow") dropped.push({ rule: "push:resolved", detail: "git push of the branch read from disk" });
 		}
 	}
 	// Decision 5: case 3 is about network remotes; a push to a local path (given, added in this command, or configured)
@@ -1135,7 +1297,10 @@ function gitFindings(
 		// from a temp repo is not exempt: a clone there still pushes to its real remote.
 		if (r.rule === "push:target-unknown" && where === "switched") {
 			const target = newBranchBefore(cmds, c, s);
-			if (target !== undefined && !PROTECTED_BRANCHES.has(target)) return;
+			if (target !== undefined && !PROTECTED_BRANCHES.has(target)) {
+				dropped.push({ rule: "push:resolved", detail: `git push of the new branch ${target}` });
+				return;
+			}
 		}
 		// `git checkout NAME` (one operand, no `-f`): a plain branch switch keeps local changes, so it is allowed when NAME
 		// is a ref in the repo it runs in. Not a ref, an unknown lookup, or an unplaced repo: NAME is a path (case 2).
@@ -1144,7 +1309,10 @@ function gitFindings(
 			const forced = words.some((w) => /^-[A-Za-z]*f[A-Za-z]*$|^--force$/.test(w));
 			if (!forced && dirs?.length === 1 && E.isCheckoutRef?.(dirs[0], r.refOrPath) === true) return;
 		}
-		const dirty = r.level === "ask-if-dirty" ? discardCheck(sub, words, gitDirs(c, cmds, globals, s)) : undefined;
+		let dirty = r.level === "ask-if-dirty" ? discardCheck(sub, words, gitDirs(c, cmds, globals, s)) : undefined;
+		// A path operand that is an expansion (`git checkout -- $T`): which paths isn't in the text, so the whole tree.
+		if (dirty?.paths && args.slice(globals.length + 1).some((w) => w.kind === "expansion"))
+			dirty = { ...dirty, paths: undefined };
 		add(r.level, r.rule, `git ${sub}: ${r.risk}`, dirty);
 		return;
 	}

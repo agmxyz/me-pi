@@ -27,6 +27,10 @@ export interface Word {
 
 export interface Heredoc {
 	body: string;
+	/** The body's source range in the top-level script; only on top-level commands (see `ParsedShell.exact`). */
+	span?: [number, number];
+	/** The delimiter is quoted (`<<'EOF'`, `<<"EOF"`, `<<\EOF`): bash expands nothing in the body. */
+	literal?: boolean;
 }
 
 export interface Redirect {
@@ -53,6 +57,10 @@ export interface SimpleCommand {
 	assignments: string[];
 	/** Source offset of the top-level command this one came from (a re-parsed string takes its command's offset). */
 	at: number;
+	/** Source range of that top-level command node (`at` to its end; a re-parsed string takes its command's range). */
+	span: [number, number];
+	/** Each argv word's source range, for a top-level command emitted as written (not unwrapped, not re-parsed). */
+	argvSpans?: [number, number][];
 	/** Found by re-parsing a string (`sh -c`, `eval`, `trap`, a heredoc or here-string body): its words aren't the outer
 	 * command's text, so the outer command's variable bindings don't apply to them. */
 	reparsed: boolean;
@@ -100,6 +108,18 @@ export type ParsedShell =
 			bindings: Bindings;
 			/** Whether any parsed text may rebind TMPDIR (see `tmpdirRebinds`). */
 			rebindsTmpdir: boolean;
+			/** Source ranges of the top-level script's comments. */
+			comments: [number, number][];
+			/**
+			 * Source ranges of values in plain `NAME=value` statements (not a prefix, not `export`/`local`) that run nothing
+			 * themselves (no `$(…)`, backquotes, or `<(…)`): the value is data; where it is used, the bindings carry it.
+			 */
+			data: [number, number][];
+			/**
+			 * Whether the top-level offsets (`span`, `argvSpans`, heredoc `span`, `comments`) are offsets into `src`: false when
+			 * it parsed only after `parseTree` moved redirects.
+			 */
+			exact: boolean;
 	  }
 	| ShellFailure;
 
@@ -156,6 +176,12 @@ interface Walk {
 	out: SimpleCommand[];
 	/** Offset of the top-level command being walked; commands found in re-parsed strings take it. */
 	at: number;
+	/** Its source range. */
+	span: [number, number];
+	/** Comments, data values, and offset exactness of the top-level script (set by its parse). */
+	comments?: [number, number][];
+	data?: [number, number][];
+	exact?: boolean;
 	/** The source text being walked (the top-level script or a re-parsed string). */
 	script: string;
 	rebinds: boolean;
@@ -175,10 +201,18 @@ interface Frame {
 /** Parses a bash command string into its simple commands and top-level bindings. */
 export function parseShell(src: string): ParsedShell {
 	if (!parser) return { ok: false, reason: "not-loaded" };
-	const w: Walk = { out: [], at: 0, script: src, rebinds: false, bindings: undefined };
+	const w: Walk = { out: [], at: 0, span: [0, 0], script: src, rebinds: false, bindings: undefined };
 	try {
 		parseScript(w, src, { via: [], remote: false, depth: 0 });
-		return { ok: true, commands: w.out, bindings: w.bindings!, rebindsTmpdir: w.rebinds };
+		return {
+			ok: true,
+			commands: w.out,
+			bindings: w.bindings!,
+			rebindsTmpdir: w.rebinds,
+			comments: w.comments ?? [],
+			data: w.data ?? [],
+			exact: w.exact ?? false,
+		};
 	} catch (error) {
 		if (error instanceof ShellFail) return { ok: false, reason: error.reason };
 		throw error;
@@ -233,11 +267,11 @@ const HEREDOC_THEN_REDIRECTS =
  * heredoc is fd 0), and is used only if that then parses. The offsets of such a retry are of the moved text, which
  * differs from `src` only inside the opener line.
  */
-function parseTree(src: string): Tree | null {
+function parseTree(src: string): { tree: Tree; moved: boolean } | null {
 	const p = parser!;
 	const tree = p.parse(src);
 	if (!tree) return null;
-	if (!tree.rootNode.hasError) return tree;
+	if (!tree.rootNode.hasError) return { tree, moved: false };
 	tree.delete();
 	const moved = src.replace(
 		HEREDOC_THEN_REDIRECTS,
@@ -245,15 +279,29 @@ function parseTree(src: string): Tree | null {
 	);
 	if (moved === src) return null;
 	const retry = p.parse(moved);
-	if (retry && !retry.rootNode.hasError) return retry;
+	if (retry && !retry.rootNode.hasError) return { tree: retry, moved: true };
 	retry?.delete();
 	return null;
 }
 
 function parseScript(w: Walk, src: string, f: Frame): void {
 	if (src.length > LIMITS.maxSource || f.depth > LIMITS.maxDepth) throw new ShellFail("limit");
-	const tree = parseTree(src);
-	if (!tree) throw new ShellFail("syntax");
+	const parsed = parseTree(src);
+	if (!parsed) throw new ShellFail("syntax");
+	const { tree } = parsed;
+	if (w.exact === undefined) {
+		w.exact = !parsed.moved;
+		w.comments = [];
+		w.data = [];
+		const comments = (n: Node): void => {
+			if (n.type === "comment") w.comments!.push([n.startIndex, n.endIndex]);
+			const value = n.type === "variable_assignment" ? n.childForFieldName("value") : null;
+			if (value && n.parent?.type !== "command" && n.parent?.type !== "declaration_command" && !runsCode(value))
+				w.data!.push([value.startIndex, value.endIndex]);
+			for (const c of n.children) comments(c);
+		};
+		comments(tree.rootNode);
+	}
 	const outer = w.script;
 	w.script = src;
 	try {
@@ -265,6 +313,12 @@ function parseScript(w: Walk, src: string, f: Frame): void {
 		w.script = outer;
 		tree.delete();
 	}
+}
+
+/** Whether a node contains a command or process substitution (code that runs when it is expanded). */
+function runsCode(n: Node): boolean {
+	if (n.type === "command_substitution" || n.type === "process_substitution") return true;
+	return n.children.some(runsCode);
 }
 
 const isRedirect = (n: Node) =>
@@ -281,6 +335,20 @@ function walk(w: Walk, node: Node, f: Frame): void {
 		const redirects = node.children.filter((c) => c.id !== body?.id && isRedirect(c));
 		if (body?.type === "command") {
 			simpleCommand(w, body, redirects, f);
+			return;
+		}
+		// `a && cat > f <<EOF`: tree-sitter puts the redirects on the list; bash gives them to its last command.
+		let last = body;
+		while (last?.type === "list") last = last.lastNamedChild;
+		if (body?.type === "list" && last?.type === "command") {
+			const target = last;
+			const inner = (n: Node): void => {
+				if (n.id === target.id) simpleCommand(w, n, redirects, f);
+				else if (n.type === "command") simpleCommand(w, n, [], f);
+				else if (n.type === "list") for (const c of n.children) inner(c);
+				else walk(w, n, f);
+			};
+			inner(body);
 			return;
 		}
 		// Extra words after a redirect of a compound command are a syntax error in bash; tree-sitter accepts them.
@@ -309,11 +377,19 @@ interface Io {
 	placeholder?: string;
 	certain: boolean;
 	after: [number, number][];
+	/** The written command's argv word ranges (top level only; see `SimpleCommand.argvSpans`). */
+	argvSpans?: [number, number][];
 }
 
 /** One `command` node plus the redirects its `redirected_statement` carries. */
 function simpleCommand(w: Walk, node: Node, outerRedirects: Node[], f: Frame): void {
-	if (f.depth === 0) w.at = node.startIndex;
+	const top = (): void => {
+		if (f.depth !== 0) return;
+		w.at = node.startIndex;
+		const ends = [node.endIndex, ...outerRedirects.map((r) => r.endIndex)];
+		w.span = [node.startIndex, Math.max(...ends)];
+	};
+	top();
 	const placed: { at: number; end: number; word: Word }[] = [];
 	const place = (n: Node) => {
 		placed.push({ at: n.startIndex, end: n.endIndex, word: word(n) });
@@ -340,7 +416,13 @@ function simpleCommand(w: Walk, node: Node, outerRedirects: Node[], f: Frame): v
 			redirects.push({ op: "<<<", target: undefined });
 		} else if (r.type === "heredoc_redirect") {
 			const body = r.children.find((c) => c.type === "heredoc_body");
-			heredocs.push({ body: body?.text ?? "" });
+			const start = r.children.find((c) => c.type === "heredoc_start")?.text ?? "";
+			heredocs.push({
+				body: body?.text ?? "",
+				...(f.depth === 0 && body
+					? { span: [body.startIndex, body.endIndex] as [number, number], literal: /["'\\]/.test(start) }
+					: {}),
+			});
 			redirects.push({ op: "<<", target: undefined });
 			const kids = r.children;
 			for (let i = 0; i < kids.length; i++) {
@@ -377,31 +459,49 @@ function simpleCommand(w: Walk, node: Node, outerRedirects: Node[], f: Frame): v
 	placed.sort((a, b) => a.at - b.at);
 	// Nodes with no space between them are one bash word (tree-sitter splits `$"…"` into `$` and a string).
 	const argv: Word[] = [];
+	const argvSpans: [number, number][] = [];
 	let prevEnd = -1;
 	for (const p of placed) {
 		const last = argv.at(-1);
 		// `-r\<newline>f` is one word `-rf`: a line continuation joins, tree-sitter splits.
 		const glued = p.at === prevEnd || /^(?:\\\n)+$/.test(text.slice(prevEnd, p.at));
-		if (last && glued) argv[argv.length - 1] = join(last, p.word);
-		else argv.push(p.word);
+		if (last && glued) {
+			argv[argv.length - 1] = join(last, p.word);
+			argvSpans[argvSpans.length - 1][1] = p.end;
+		} else {
+			argv.push(p.word);
+			argvSpans.push([p.at, p.end]);
+		}
 		prevEnd = p.end;
 	}
 	// Commands nested in words, assignments, redirect targets, and unquoted heredoc bodies run too. A heredoc body is
 	// otherwise data (`cat > f <<'EOF'`); only a shell reading stdin re-parses it (see `emit`).
 	for (const n of nested) walk(w, n, f);
-	if (f.depth === 0) w.at = node.startIndex;
+	top();
 	const flow = f.depth === 0 ? { certain: certain(node), after: dominated(node) } : { certain: false, after: [] };
-	emit(w, argv, f, { redirects, heredocs, herestrings, openArgs: false, assignments, ...flow });
+	emit(w, argv, f, { redirects, heredocs, herestrings, openArgs: false, assignments, argvSpans, ...flow });
 }
 
 function push(
 	w: Walk,
 	f: Frame,
-	c: Omit<SimpleCommand, "via" | "remote" | "at" | "reparsed" | "script" | "outOfOrder">,
+	c: Omit<SimpleCommand, "via" | "remote" | "at" | "span" | "reparsed" | "script" | "outOfOrder">,
 ): void {
 	if (w.out.length >= LIMITS.maxCommands) throw new ShellFail("limit");
 	const outOfOrder = !!(f.outOfOrder || w.outOfOrder);
-	w.out.push({ ...c, via: f.via, remote: f.remote, at: w.at, reparsed: f.depth > 0, script: w.script, outOfOrder });
+	const { argvSpans, ...rest } = c;
+	const own = f.depth === 0 && f.via.length === 0 && argvSpans ? { argvSpans } : {};
+	w.out.push({
+		...rest,
+		...own,
+		via: f.via,
+		remote: f.remote,
+		at: w.at,
+		span: [w.span[0], w.span[1]],
+		reparsed: f.depth > 0,
+		script: w.script,
+		outOfOrder,
+	});
 }
 
 /** Node types whose body may run out of text order (see `SimpleCommand.outOfOrder`). */
@@ -441,6 +541,7 @@ function emit(w: Walk, argv: Word[], f: Frame, io: Io): void {
 		assignments: io.assignments,
 		certain: io.certain,
 		after: io.after,
+		argvSpans: io.argvSpans,
 	});
 	if (name === undefined) return;
 	if (!isWrapper(name)) {
