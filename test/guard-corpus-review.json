@@ -1,5 +1,5 @@
 {
- "note": "guard oracle rows from PR #95's review rounds (each confirmed with real git by the coordinator), with safe twins. Fixtures and tokens as in guard-corpus.json; the clean fixture has remotes `local` (a bare repo), `pushurl` (local url, network pushurl) and `rewrite` (local url rewritten by pushInsteadOf); `hidden` has changes marked assume-unchanged and skip-worktree.",
+ "note": "guard oracle rows from PR #95's review rounds (each confirmed with real git by the coordinator), with safe twins. Fixtures and tokens as in guard-corpus.json; the clean fixture has remotes `local` (a bare repo), `pushurl` (local url, network pushurl) and `rewrite` (local url rewritten by pushInsteadOf); `hidden` has changes marked assume-unchanged and skip-worktree; `subdirty` has a submodule `mod` with a change hidden by diff.ignoreSubmodules=all.",
  "rows": [
   { "cmd": "git -C . -C ../dirty reset --hard", "cwd": "clean", "want": "ask", "source": "review r1 F1: a later -C" },
   { "cmd": "git -C . -C ../dirty checkout -- .", "cwd": "clean", "want": "ask", "source": "review r1 F1" },
@@ -24,6 +24,10 @@
   { "cmd": "git checkout -- src/a.txt", "cwd": "hidden", "want": "ask", "source": "review r1: assume-unchanged path" },
   { "cmd": "git checkout -- src/sub/b.txt", "cwd": "hidden", "want": "ask", "source": "review r1: skip-worktree path" },
   { "cmd": "rm -rf src", "cwd": "hidden", "want": "ask", "source": "review r1: hidden changes under the target" },
-  { "cmd": "git checkout -- src/new-none.txt", "cwd": "hidden", "want": "allow", "source": "review r1 twin: a path with no hidden change" }
+  { "cmd": "git checkout -- src/new-none.txt", "cwd": "hidden", "want": "allow", "source": "review r1 twin: a path with no hidden change" },
+  { "cmd": "git reset --hard --recurse-submodules", "cwd": "subdirty", "want": "ask", "source": "review r1: a submodule change hidden by diff.ignoreSubmodules" },
+  { "cmd": "rm -rf mod", "cwd": "subdirty", "want": "ask", "source": "review r1: a submodule with changes hidden from status" },
+  { "cmd": "git reset --hard", "cwd": "subdirty", "want": "ask", "source": "review r1: 0.1.3 asks on any reset --hard; the hidden submodule change counts" },
+  { "cmd": "rm -rf src", "cwd": "subdirty", "want": "allow", "source": "review r1 twin: no change under the target" }
  ]
 }

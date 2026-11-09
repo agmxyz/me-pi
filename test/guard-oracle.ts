@@ -75,12 +75,20 @@ export function fixtures(root: string): Record<Fixture, string> {
 	git(hidden, "update-index", "--assume-unchanged", "src/a.txt");
 	writeFileSync(join(hidden, "src", "sub", "b.txt"), "changed\n");
 	git(hidden, "update-index", "--skip-worktree", "src/sub/b.txt");
+	// `subdirty`: a submodule with an uncommitted change that `diff.ignoreSubmodules=all` hides from `git status`.
+	const inner = repo("inner", "feat", false);
+	const subdirty = repo("subdirty", "feat", false);
+	git(subdirty, "-c", "protocol.file.allow=always", "submodule", "-q", "add", inner, "mod");
+	git(subdirty, "commit", "-q", "-m", "submodule");
+	writeFileSync(join(subdirty, "mod", "src", "a.txt"), "changed\n");
+	git(subdirty, "config", "diff.ignoreSubmodules", "all");
 	return {
 		clean,
 		dirty: repo("dirty", "feat", true),
 		main: repo("onmain", "main", false),
 		sub: join(clean, "src"),
 		hidden,
+		subdirty,
 		temp: mkdtempSync(join(tmpdir(), "guard-oracle-")),
 	};
 }

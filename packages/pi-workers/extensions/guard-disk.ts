@@ -143,7 +143,14 @@ export function dirtIn(repo: string, paths: string[] | undefined, untracked: boo
 	if (ignored) args.push("--ignored=matching");
 	// `icase`: on a case-insensitive disk (macOS's default) `rm -rf SRC` removes `src`; matching without case only
 	// over-matches (asks more) on a case-sensitive one.
-	const out = git(repo, paths?.length ? [...args, "--", ...paths.map((p) => `:(literal,icase)${p}`)] : args);
+	const spec = paths?.length ? ["--", ...paths.map((p) => `:(literal,icase)${p}`)] : [];
+	// Submodules count whatever `diff.ignoreSubmodules` or `.gitmodules` say: a reset or rm loses their changes too.
+	const out = git(repo, [...args, "--ignore-submodules=none", ...spec]);
 	if (out === undefined) return "unknown";
-	return out.trim() ? "dirty" : "clean";
+	if (out.trim()) return "dirty";
+	// `git status` doesn't show changes to files marked assume-unchanged (`h`) or skip-worktree (`S`): a marked file may
+	// hold changes it hides, so it counts as dirty.
+	const marked = git(repo, ["ls-files", "-v", ...spec]);
+	if (marked === undefined) return "unknown";
+	return /^(?:[a-z]|S) /m.test(marked) ? "dirty" : "clean";
 }

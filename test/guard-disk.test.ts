@@ -67,6 +67,31 @@ test("reads the URLs a push goes to: pushurl and insteadOf rewrites applied", (t
 	assert.equal(pushUrlsOf(repo, "a b"), undefined);
 });
 
+test("counts changes git status hides: assume-unchanged, skip-worktree, ignored submodules", (t) => {
+	const { root, repo, git } = scratch(t);
+	writeFileSync(join(repo, "a.txt"), "changed\n");
+	git("update-index", "--assume-unchanged", "a.txt");
+	assert.equal(dirtIn(repo, undefined, false), "dirty", "assume-unchanged");
+	assert.equal(dirtIn(repo, ["src"], true), "clean", "a path with no marked file");
+	git("update-index", "--no-assume-unchanged", "a.txt");
+	git("checkout", "--", "a.txt");
+	writeFileSync(join(repo, "src", "b.txt"), "changed\n");
+	git("update-index", "--skip-worktree", "src/b.txt");
+	assert.equal(dirtIn(repo, ["src"], true), "dirty", "skip-worktree");
+	git("update-index", "--no-skip-worktree", "src/b.txt");
+	git("checkout", "--", "src/b.txt");
+	const inner = join(root, "inner");
+	execFileSync("git", ["init", "-q", inner]);
+	writeFileSync(join(inner, "x"), "1\n");
+	execFileSync("git", ["-C", inner, "add", "."]);
+	execFileSync("git", ["-C", inner, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "i"]);
+	git("-c", "protocol.file.allow=always", "submodule", "-q", "add", inner, "mod");
+	git("commit", "-q", "-m", "submodule");
+	writeFileSync(join(repo, "mod", "x"), "2\n");
+	git("config", "diff.ignoreSubmodules", "all");
+	assert.equal(dirtIn(repo, undefined, false), "dirty", "a submodule change status hides");
+});
+
 test("keeps the caller's spelling of the root through a symlink", (t) => {
 	const { root, repo } = scratch(t);
 	const link = join(root, "link");
