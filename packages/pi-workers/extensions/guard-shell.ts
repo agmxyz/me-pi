@@ -1656,7 +1656,8 @@ const WRAPPERS: Record<string, (args: Word[]) => Step[]> = {
 	lockf: (args) => execFrom(args, options(args, { short: "t" }).at + 1), // the lock file
 	chroot: (args) => execFrom(args, options(args, { short: "ug", long: ["--userspec", "--groups"] }).at + 1), // the root
 	"sandbox-exec": (args) => execFrom(args, options(args, { short: "fpD" }).at),
-	taskpolicy: (args) => execFrom(args, options(args, { short: "cdgtlbp" }).at),
+	// Value options per taskpolicy(8): `-d -g -c -t -l -p -S -m -j -P`; `-b -B -a -s -x` take none.
+	taskpolicy: (args) => execFrom(args, options(args, { short: "dgctlpSmjP" }).at),
 	// More runners: `busybox rm …`, `fakeroot cmd`, `xcrun cmd`, `strace -f cmd`, `nsenter -t 1 cmd`, `unshare -r cmd`,
 	// `taskset -c 0 cmd`, `chrt -f 10 cmd`, `entr cmd`, `proxychains4 cmd`, `torsocks cmd`. `parallel cmd ::: args`
 	// gets its arguments at run time.
