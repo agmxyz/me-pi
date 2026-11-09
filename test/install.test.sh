@@ -372,6 +372,8 @@ if [ "$INSTALL_RC" -ne 0 ]; then
   exit 1
 fi
 
+check "fresh install prints next steps" grep -Fq 'Next steps (docs/setup.md#after-install)' "$TMP/fresh.out"
+check "fresh install warns without delegate.json" grep -Fq "no $PI_AGENT/delegate.json" "$TMP/fresh.out"
 check "fresh global AGENTS link" assert_link "$PI_AGENT/AGENTS.md" "$FIXTURE/GLOBAL_AGENTS.md"
 check "both repo skills linked once at user level" assert_skill_links "$PI_AGENT" "$FIXTURE"
 mkdir -p "$TMP/target-project-one" "$TMP/target-project-two"
@@ -405,11 +407,14 @@ fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
 printf '%s\n' 'credential sentinel: never overwrite' > "$PI_AGENT/auth.json"
 printf '%s\n' 'external extension sentinel' > "$PI_AGENT/extensions/external-extension.ts"
+printf '%s\n' '{"version": 3}' > "$PI_AGENT/delegate.json"
 mkdir -p "$AGENTS_HOME/skills/external-skill"
 printf '%s\n' 'external skill sentinel' > "$AGENTS_HOME/skills/external-skill/SKILL.md"
 
 expect_installer "repeat install succeeds" 0 "$HOME_FRESH" "$TMP/repeat.out"
 check "repeat preserves machine settings, package identity, and unrelated packages" assert_settings_preserved "$PI_AGENT/settings.json" "$FIXTURE"
+check "repeat with delegate.json omits its warning" assert_file_lacks_text "$TMP/repeat.out" 'delegate.json; workers will use'
+check "repeat preserves delegate.json" assert_file_text "$PI_AGENT/delegate.json" '{"version": 3}'
 check "repeat preserves credential contents" assert_file_text "$PI_AGENT/auth.json" 'credential sentinel: never overwrite'
 check "repeat preserves external extension" assert_file_text "$PI_AGENT/extensions/external-extension.ts" 'external extension sentinel'
 check "repeat preserves external skill" assert_file_text "$AGENTS_HOME/skills/external-skill/SKILL.md" 'external skill sentinel'
@@ -571,7 +576,7 @@ TEST_PATH="$NO_RTK_BIN"
 expect_installer "absent RTK is skipped without failing the install" 0 "$HOME_NO_RTK" "$TMP/no-rtk.out"
 TEST_PATH="$saved_path"
 check "absent RTK reports the skip" grep -Fq "rtk not found; skipped RTK extension setup" "$TMP/no-rtk.out"
-check "absent RTK still prints Done" grep -Fq "Done. Restart pi sessions" "$TMP/no-rtk.out"
+check "absent RTK still prints Done" grep -Fq "Done. Next steps" "$TMP/no-rtk.out"
 check "absent RTK still registers packages" assert_packages_registered "$HOME_NO_RTK/.pi/agent/settings.json" "$FIXTURE"
 check "absent RTK invokes no RTK setup" test ! -s "$RTK_LOG"
 
@@ -595,7 +600,7 @@ TEST_PATH="$RTK_FAIL_BIN:$TEST_PATH"
 expect_installer "failing RTK init warns without failing the install" 0 "$HOME_RTK_FAIL" "$TMP/rtk-fail.out"
 TEST_PATH="$saved_path"
 check "failing RTK init reports its warning" grep -Fq "RTK initialization failed or refused an overwrite" "$TMP/rtk-fail.out"
-check "failing RTK init still prints Done" grep -Fq "Done. Restart pi sessions" "$TMP/rtk-fail.out"
+check "failing RTK init still prints Done" grep -Fq "Done. Next steps" "$TMP/rtk-fail.out"
 check "failing RTK init still registers packages" assert_packages_registered "$HOME_RTK_FAIL/.pi/agent/settings.json" "$FIXTURE"
 check "failing RTK init is invoked once with the Pi agent" test "$(grep -Fxc "init --global --agent pi" "$RTK_LOG")" -eq 1
 
@@ -653,6 +658,7 @@ TEST_PATH="$NO_PI_BIN"
 expect_installer "missing pi refused" 1 "$HOME_NOPI" "$TMP/no-pi.out"
 TEST_PATH="$saved_path"
 check "missing pi explains requirement" grep -Fq 'pi is required' "$TMP/no-pi.out"
+check "missing pi names the installer" grep -Fq 'curl -fsSL https://pi.dev/install.sh | sh' "$TMP/no-pi.out"
 check "missing pi creates no live directories" test ! -e "$HOME_NOPI/.pi"
 check "refusal invokes no package install" cmp -s "$TMP/pi-before-no-pi.log" "$PI_LOG"
 check "no network-capable npm invocation" test ! -e "$NPM_MARKER"

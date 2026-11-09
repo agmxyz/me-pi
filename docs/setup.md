@@ -1,5 +1,7 @@
 # Optional full rig setup
 
+This is the author's personal setup, and it runs this checkout's working tree. For delegation only, install the package instead: `pi install npm:@agmxyz/pi-workers`.
+
 `./install.sh` adopts the author's full me-pi rig across all Pi sessions. A package-only install ([pi-workers](../packages/pi-workers/README.md)) needs none of it: it loads the extensions declared in `package.json`, and `pi.skills: []` intentionally keeps the package's conventional skill source directory out of package discovery.
 
 Run `./install.sh` only from the live checkout's main session, never a worktree, temp clone, or worker. If you previously installed `npm:@agmxyz/pi-workers` or `git:github.com/agmxyz/me-pi`, remove that package with `pi remove` before installing this local checkout, to avoid loading the extensions twice. The script requires `pi` on `PATH` and changes personal Pi resources that apply across sessions and projects:
@@ -14,6 +16,17 @@ Run `./install.sh` only from the live checkout's main session, never a worktree,
 - Runs `rtk init --global --agent pi` if `rtk` is available.
 
 Review `GLOBAL_AGENTS.md` and the install script before choosing this setup. Restart Pi or run `/reload` after a successful install to discover the skills. For model pools, worker operation, and recovery, see the [delegate guide](../packages/pi-workers/docs/delegate.md).
+
+Pi loads this checkout as a local path, so it runs whichever branch and working tree are checked out here; after a `git pull` or branch switch, `/reload` picks up the change.
+
+## After install
+
+`install.sh` does not log in or install provider packages. Then:
+
+1. Run `/login` in Pi for each provider you use.
+2. For the `claude-code` provider (a Claude subscription), run `pi install https://github.com/earendil-works/pi-claude-code`.
+3. Optionally create `~/.pi/agent/delegate.json` to choose worker models; without it, workers use the session's model. See [Configure model pools](../packages/pi-workers/docs/delegate.md#configure-model-pools).
+4. Verify: run `/reload`, then `/delegate status` resolves the pools, `/guard` reports `guard on`, and the skills list shows `implement-me-pi`, `implement-spec-me-pi`, `pi-live-test`, and `ticket-readiness`.
 
 ## Undo
 

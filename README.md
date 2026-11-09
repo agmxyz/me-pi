@@ -26,7 +26,7 @@ Around `pi-workers`, I use:
 
 You don't need any of it for `pi-workers`; read and copy what's useful. Some skills expect others from my own collection.
 
-`./install.sh` changes what Pi loads across all your sessions: it links the policy and skills, registers this checkout as a package, and installs `pi-web-access`. If you installed `pi-workers` from npm or Git, remove it first (`pi remove npm:@agmxyz/pi-workers` or `pi remove git:github.com/agmxyz/me-pi`), so Pi doesn't load the extensions twice. Review the script and [docs/setup.md](docs/setup.md) for requirements, effects and undo steps before running it.
+`./install.sh` is my personal setup, and it runs this checkout's working tree; for delegation only, use `pi install npm:@agmxyz/pi-workers`. It changes what Pi loads across all your sessions: it links the policy and skills, registers this checkout as a package, and installs `pi-web-access`. If you installed `pi-workers` from npm or Git, remove it first (`pi remove npm:@agmxyz/pi-workers` or `pi remove git:github.com/agmxyz/me-pi`), so Pi doesn't load the extensions twice. Review the script and [docs/setup.md](docs/setup.md) for requirements, effects and undo steps before running it, and follow its [After install](docs/setup.md#after-install) steps (login, provider package, verification) afterwards.
 
 ## Contributing
 
