@@ -272,6 +272,74 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 	}
 });
 
+// Each row was a bypass reported in a guard PR's review or fix; a guard change adds each new one here.
+// Closed PRs are named by branch; #95's rows come from its review corpus (test/guard-corpus*.json on its branch).
+test("must-ask regressions: past bypasses still ask", () => {
+	for (const [command, branch, source] of [
+		["python3 - <<'EOF' | sh\nrm -rf ~\nEOF", onFeature, "#83"],
+		["cat > run.sh <<'EOF'\nrm -rf ~\nEOF\nbash run.sh", onFeature, "#83"],
+		["python3 - <<'EOF'\nEOF\nrm -rf ~\nEOF", onFeature, "#83"],
+		[`export TMPDIR=/; rm -rf "\${TMPDIR:?}/Users"`, onFeature, "#87"],
+		[`env TMPDIR=/ rm -rf "\${TMPDIR:?}/Users"`, onFeature, "#87"],
+		[`. ./vars; rm -rf "\${TMPDIR:?}/Users"`, onFeature, "#87"],
+		["rm -rf dist 2>&1 /Users", onFeature, "#92"],
+		["rm -rf /tmp/&>/dev/null", onFeature, "#92"],
+		["rm -rf&>/dev/null /Users", onFeature, "#92"],
+		["git push origin 2>&1", onMain, "#104"],
+		["git push origin main&>/dev/null", onFeature, "#104"],
+		['git push "origin"&>x', onMain, "#104"],
+		["git filter-repo --path x", onFeature, "#102"],
+		[`rm -rf "\${TMPDIR:?}/$n"`, onFeature, "fix/guard-temp-rm"],
+		["rm -rf /tmp/`echo x`", onFeature, "fix/guard-temp-rm"],
+		['d=$(mktemp -d); d=/; rm -rf "$d"', onFeature, "fix/guard-temp-rm"],
+		['false && d=$(mktemp -d); rm -rf "$d"', onFeature, "fix/guard-temp-rm"],
+		['_=$(mktemp -d) && ls / && rm -rf "$_"/Users', onFeature, "fix/guard-temp-rm"],
+		[`d=$(mktemp -d) && sh -c 'rm -rf "$d"/x'`, onFeature, "fix/guard-temp-rm"],
+		["IFS=/; rm -rf $TMPDIR/x", onFeature, "fix/guard-temp-rm"],
+		['rm -rf "$TMPDIR"/x/.[.]/y', onFeature, "fix/guard-temp-rm"],
+		[`env -uTMPDIR bash -c 'rm -rf "$TMPDIR/Users"'`, onFeature, "fix/guard-temp-rm"],
+		['rm -rf dist" "x /etc', onFeature, "fix/guard-command-positions"],
+		["eval 'rm' -rf /", onFeature, "fix/guard-command-positions"],
+		['LC_ALL="C" rm -rf dist "$HOME"', onFeature, "fix/guard-command-positions"],
+		[`bash -c 'rm -rf dist '"$HOME"`, onFeature, "fix/guard-command-positions"],
+		[`rm -rf dist/"Bob's" ~`, onFeature, "fix/guard-command-positions"],
+		["git -C . -C ../dirty reset --hard", onFeature, "#95"],
+		["git -C ../dirty -C ../onmain push", onFeature, "#95"],
+		["git --git-dir=/w/dirty/.git --work-tree=/w/dirty reset --hard", onFeature, "#95"],
+		["GIT_DIR=/w/dirty/.git GIT_WORK_TREE=/w/dirty git reset --hard", onFeature, "#95"],
+		['B=main; git checkout -B "$B" && git push -u origin HEAD', onFeature, "#95"],
+		["git checkout -b topic & git push -u origin HEAD", onFeature, "#95"],
+		["pushd ../onmain && git push", onFeature, "#95"],
+		["f() { git push; }; git checkout main && f", onFeature, "#95"],
+		["git checkout -f origin/main", onFeature, "#95"],
+		["git push origin :main", onFeature, "#95"],
+		["git push --mirror origin", onFeature, "#95"],
+		["git push origin '+refs/heads/*:refs/heads/*'", onFeature, "#95"],
+		["git push --receive-pack='rm -rf ~;:' ../bare.git feat", onFeature, "#95"],
+		["git remote rename origin local && git push -f local main", onFeature, "#95"],
+		["false && git remote set-url origin /tmp/x; git push -f origin main", onFeature, "#95"],
+		["rm -rf ~bob", onFeature, "#95"],
+		["cd ~ && rm -rf ~+/Documents", onFeature, "#95"],
+		["p='sr?'; rm -rf $p", onFeature, "#95"],
+		[`a=(src/*); rm -rf "\${a[@]}"`, onFeature, "#95"],
+		["rm -rf .GIT", onFeature, "#95"],
+		["cd /tmp/x & rm -rf src", onFeature, "#95"],
+		["cd /tmp/nonexist-q || rm -rf src", onFeature, "#95"],
+		["f() { rm -rf Library; }; cd ~ && f", onFeature, "#95"],
+		["bash -s -- x <<'EOF'\nrm -rf ~\nEOF", onFeature, "#95"],
+		["bash /dev/stdin <<'EOF'\nrm -rf ~\nEOF", onFeature, "#95"],
+		["cat > a.sh <<'EOF'\nrm -rf ~\nEOF\ncp a.sh b.sh; sh b.sh", onFeature, "#95"],
+		["echo ~ | xargs -I{} sh -c 'rm -rf {}'", onFeature, "#95"],
+		["git bisect run sh -c 'rm -rf ~'", onFeature, "#95"],
+		["pnpm exec rm -rf ~", onFeature, "#95"],
+		["env --chdir=/w/clean rm -rf .git", onFeature, "#95"],
+		["env --argv0=echo rm -rf ~", onFeature, "#95"],
+		["bash -euxc 'rm -rf ~'", onFeature, "#95"],
+	]) {
+		assert.ok(classify(command, branch), `${source}: ${command}`);
+	}
+});
+
 test("allows feature pushes, PRs, and routine commands", () => {
 	for (const [command, branch] of [
 		["git push", onFeature],
