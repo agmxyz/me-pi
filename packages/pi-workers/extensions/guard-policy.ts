@@ -14,6 +14,8 @@
  * `branch -D` (reflog recovers them), and any push to a local path. Any rm/git that is only text (arguments, messages,
  * heredoc bodies written to files) is not a command. An unknown (an expansion, a dynamic body, a command name built at
  * run time) asks only where it could land in case 1-3. A text that doesn't parse takes guard 0.1.3's regex verdict.
+ * And never weaker than 0.1.3: a command 0.1.3's `classify` asks about keeps that ask unless every part it matched is
+ * proven safe (`unproven`, finding `legacy:0.1.3`).
  *
  * The user's decisions: 1. a bare push after `cd`/`-C` to a literal path reads that directory's branch; 2. a parse
  * failure falls back to 0.1.3's `classify`; 3. TMPDIR is rebound only by what the parser sees rebinding it; 4. every
@@ -156,7 +158,13 @@ const worse = (a: LevelRule, b: LevelRule): LevelRule => {
 	const paths = x.paths && y.paths ? [...new Set([...x.paths, ...y.paths])] : undefined;
 	return {
 		...a,
-		dirty: { ...x, paths, untracked: x.untracked || y.untracked, ignored: x.ignored || y.ignored, always: x.always || y.always },
+		dirty: {
+			...x,
+			paths,
+			untracked: x.untracked || y.untracked,
+			ignored: x.ignored || y.ignored,
+			always: x.always || y.always,
+		},
 	};
 };
 const ALLOW: LevelRule = { level: "allow", rule: "rm:temp-or-build" };
@@ -340,9 +348,14 @@ const textConsumer = (c: SimpleCommand, writes: boolean): boolean => {
 		const flag = c.name === "node" ? /^(?:-e|--eval|-p|--print)$/ : /^-c$/;
 		const k = c.argv.findIndex((w) => w.kind !== "expansion" && flag.test(w.value));
 		const program = k > 0 ? c.argv[k + 1] : undefined;
-		const plainOptions = c.argv.slice(1, k).every((w) => w.kind === "literal" && /^--?[\w-]+(?:=[\w-]+)?$/.test(w.value));
+		const plainOptions = c.argv
+			.slice(1, k)
+			.every((w) => w.kind === "literal" && /^--?[\w-]+(?:=[\w-]+)?$/.test(w.value));
 		return (
-			plainOptions && program !== undefined && program.kind !== "expansion" && interpreterText(program.value, !writes)
+			plainOptions &&
+			program !== undefined &&
+			program.kind !== "expansion" &&
+			interpreterText(program.value, !writes)
 		);
 	}
 	if (c.name === "gh") return ["pr", "issue"].includes(a) && ["create", "comment", "edit", "view"].includes(b);
@@ -384,7 +397,8 @@ function sedText(args: Word[]): boolean {
 			const s = args[++i];
 			if (!s || s.kind === "expansion" || !ok(s.value)) return false;
 			scripts++;
-		} else if (/^-(?:i.*|[nErsu]+)$|^--(?:in-place(?:=.*)?|quiet|silent|regexp-extended|posix)$/.test(w.value)) continue;
+		} else if (/^-(?:i.*|[nErsu]+)$|^--(?:in-place(?:=.*)?|quiet|silent|regexp-extended|posix)$/.test(w.value))
+			continue;
 		else if (w.value.startsWith("-")) return false;
 		else if (scripts === 0) {
 			if (!ok(w.value)) return false;
@@ -409,10 +423,12 @@ const RUNS_PROCESS =
 // The modules a program may load: node's file and text modules, and (`local`) a relative path: a file already on disk,
 // which runs what it runs whether or not this text names rm/git (`node x.mjs` isn't policed either).
 const IMPORT = /\b(?:require|import)\s*\(\s*(["'])(.*?)\1|\bfrom\s+(["'])(.*?)\3/g;
-const SAFE_MODULE = /^(?:node:)?(?:fs|fs\/promises|path|url|util|assert|assert\/strict|json|re|sys|pathlib|textwrap|difflib)$/;
+const SAFE_MODULE =
+	/^(?:node:)?(?:fs|fs\/promises|path|url|util|assert|assert\/strict|json|re|sys|pathlib|textwrap|difflib)$/;
 // A plain string literal (no prefix letter, so no Python f-string; a template only without `${`): its contents are
 // text, so a word in it (`"use eval here"`) doesn't count as code. Imports are still read from the whole program.
-const STRING_LITERAL = /(?<![\w$])[rRbB]{0,2}(?:'''[\s\S]*?'''|"""[\s\S]*?""")|(?<![\w$])(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\$]|\\.|\$(?!\{))*`)/g;
+const STRING_LITERAL =
+	/(?<![\w$])[rRbB]{0,2}(?:'''[\s\S]*?'''|"""[\s\S]*?""")|(?<![\w$])(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\$]|\\.|\$(?!\{))*`)/g;
 // Python's `import x` / `from x import y`: the module must be a safe one too.
 const PY_IMPORT = /^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w., \t]+))/gm;
 function interpreterText(program: string, local: boolean): boolean {
@@ -451,9 +467,12 @@ function interpreterText(program: string, local: boolean): boolean {
  * always asks); force push, push to main/master → S1/S4; push after changing directory → S1/S4/S6; history rewrite and
  * branch -D → S1/S5.
  */
-function unproven(src: string, p: Extract<ReturnType<typeof parseShell>, { ok: true }>, branch: Branch): string | undefined {
+function unproven(
+	src: string,
+	p: Extract<ReturnType<typeof parseShell>, { ok: true }>,
+	branch: Branch,
+): string | undefined {
 	const old = classify(src, branch);
-	(globalThis as { __spans?: string[] }).__spans = []; // DEBUG-S95
 	if (!old || !p.exact) return old;
 	const cmds = p.commands;
 	const owned = new Set(OWNERS.values());
@@ -487,9 +506,6 @@ function unproven(src: string, p: Extract<ReturnType<typeof parseShell>, { ok: t
 	for (const s of spans.values()) {
 		const within = cmds.filter((c) => inside(c.span, s));
 		if (within.some(proof) && within.every((c) => proof(c) || neutral(c))) mark(s, 1);
-		((globalThis as { __spans?: string[] }).__spans ??= []).push( // DEBUG-S95
-			`${s} ${within.map((c) => `${c.name}:${proof(c) ? "P" : neutral(c) ? "n" : "X"}`).join(",")}`, // DEBUG-S95
-		); // DEBUG-S95
 	}
 	// A heredoc body is text when every command reading it is a plain text reader (not a shell or other wrapper: their
 	// bodies run, and count only through their command's proven range), and nothing in the command runs a script file.
@@ -514,7 +530,6 @@ function unproven(src: string, p: Extract<ReturnType<typeof parseShell>, { ok: t
 	// By UTF-16 unit, as tree-sitter's offsets are.
 	let left = "";
 	for (let i = 0; i < src.length; i++) left += blank[i] && src[i] !== "\n" ? " " : src[i];
-	(globalThis as { __lastLeft?: string }).__lastLeft = left; // DEBUG-S95
 	return classify(left, branch, src);
 }
 
@@ -1333,7 +1348,8 @@ function gitFindings(
 				if (RANK[x.level] > RANK[best.level]) best = x;
 			}
 			r = best;
-			if (r.level === "allow") dropped.push({ rule: "push:resolved", detail: "git push of the branch read from disk" });
+			if (r.level === "allow")
+				dropped.push({ rule: "push:resolved", detail: "git push of the branch read from disk" });
 		}
 	}
 	// Decision 5: case 3 is about network remotes; a push to a local path (given, added in this command, or configured)

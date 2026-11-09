@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
     "guard-truth": "node test/guard-truth/run.ts",
-    "guard-sessions": "node test/guard-truth/sessions.ts"
+    "guard-sessions": "node test/guard-truth/sessions.ts",
+		"guard-oracle": "node test/guard-oracle.ts"
   },
   "pi": {
     "extensions": [

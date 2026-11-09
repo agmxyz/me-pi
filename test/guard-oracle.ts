@@ -18,8 +18,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classify } from "../packages/pi-workers/extensions/guard-regex.ts";
 import { guardRisk } from "../packages/pi-workers/extensions/guard.ts";
+import { classify } from "../packages/pi-workers/extensions/guard-regex.ts";
 import { initShell } from "../packages/pi-workers/extensions/guard-shell.ts";
 import { type Fixture, generated, type Row } from "./guard-generate.ts";
 
