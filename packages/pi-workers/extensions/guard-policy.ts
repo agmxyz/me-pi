@@ -1119,7 +1119,8 @@ function pushRemote(words: string[]): string | undefined {
  */
 function pushIsLocal(remote: string | undefined, addedUrl: string | undefined, dirs: string[] | undefined): boolean {
 	if (remote === undefined) return false;
-	if (isNetworkUrl(remote) || remote.includes(MARK) || /[$`"']/.test(remote)) return false;
+	if (remote.includes(MARK) || /[$`"']/.test(remote)) return false;
+	if (!isLocalUrl(remote) && isNetworkUrl(remote)) return false;
 	// A local URL given or added in this command still goes elsewhere if a configured `insteadOf`/`pushInsteadOf` prefix
 	// matches it: each repo the push may run in must be read and have none that does.
 	const unrewritten = (url: string) =>
