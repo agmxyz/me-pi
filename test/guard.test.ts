@@ -273,7 +273,7 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 });
 
 // Each row was a bypass reported in a guard PR's review or fix; a guard change adds each new one here.
-// Closed PRs are named by branch; #95's rows come from its review corpus (test/guard-corpus*.json on its branch).
+// #95's rows come from its review corpus (test/guard-corpus*.json on its branch) and review rounds.
 test("must-ask regressions: past bypasses still ask", () => {
 	for (const [command, branch, source] of [
 		["python3 - <<'EOF' | sh\nrm -rf ~\nEOF", onFeature, "#83"],
@@ -289,20 +289,20 @@ test("must-ask regressions: past bypasses still ask", () => {
 		["git push origin main&>/dev/null", onFeature, "#104"],
 		['git push "origin"&>x', onMain, "#104"],
 		["git filter-repo --path x", onFeature, "#102"],
-		[`rm -rf "\${TMPDIR:?}/$n"`, onFeature, "fix/guard-temp-rm"],
-		["rm -rf /tmp/`echo x`", onFeature, "fix/guard-temp-rm"],
-		['d=$(mktemp -d); d=/; rm -rf "$d"', onFeature, "fix/guard-temp-rm"],
-		['false && d=$(mktemp -d); rm -rf "$d"', onFeature, "fix/guard-temp-rm"],
-		['_=$(mktemp -d) && ls / && rm -rf "$_"/Users', onFeature, "fix/guard-temp-rm"],
-		[`d=$(mktemp -d) && sh -c 'rm -rf "$d"/x'`, onFeature, "fix/guard-temp-rm"],
-		["IFS=/; rm -rf $TMPDIR/x", onFeature, "fix/guard-temp-rm"],
-		['rm -rf "$TMPDIR"/x/.[.]/y', onFeature, "fix/guard-temp-rm"],
-		[`env -uTMPDIR bash -c 'rm -rf "$TMPDIR/Users"'`, onFeature, "fix/guard-temp-rm"],
-		['rm -rf dist" "x /etc', onFeature, "fix/guard-command-positions"],
-		["eval 'rm' -rf /", onFeature, "fix/guard-command-positions"],
-		['LC_ALL="C" rm -rf dist "$HOME"', onFeature, "fix/guard-command-positions"],
-		[`bash -c 'rm -rf dist '"$HOME"`, onFeature, "fix/guard-command-positions"],
-		[`rm -rf dist/"Bob's" ~`, onFeature, "fix/guard-command-positions"],
+		[`rm -rf "\${TMPDIR:?}/$n"`, onFeature, "#75"],
+		["rm -rf /tmp/`echo x`", onFeature, "#75"],
+		['d=$(mktemp -d); d=/; rm -rf "$d"', onFeature, "#75"],
+		['false && d=$(mktemp -d); rm -rf "$d"', onFeature, "#75"],
+		['_=$(mktemp -d) && ls / && rm -rf "$_"/Users', onFeature, "#75"],
+		[`d=$(mktemp -d) && sh -c 'rm -rf "$d"/x'`, onFeature, "#75"],
+		["IFS=/; rm -rf $TMPDIR/x", onFeature, "#75"],
+		['rm -rf "$TMPDIR"/x/.[.]/y', onFeature, "#75"],
+		[`env -uTMPDIR bash -c 'rm -rf "$TMPDIR/Users"'`, onFeature, "#75"],
+		['rm -rf dist" "x /etc', onFeature, "#76"],
+		["eval 'rm' -rf /", onFeature, "#76"],
+		['LC_ALL="C" rm -rf dist "$HOME"', onFeature, "#76"],
+		[`bash -c 'rm -rf dist '"$HOME"`, onFeature, "#76"],
+		[`rm -rf dist/"Bob's" ~`, onFeature, "#76"],
 		["git -C . -C ../dirty reset --hard", onFeature, "#95"],
 		["git -C ../dirty -C ../onmain push", onFeature, "#95"],
 		["git --git-dir=/w/dirty/.git --work-tree=/w/dirty reset --hard", onFeature, "#95"],

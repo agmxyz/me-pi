@@ -472,6 +472,12 @@ test("past the wrap-up budget, an output worker can still write into its output 
 	const writer = setup(t, { env: { ME_PI_RUN: "1", ME_PI_OUTPUT_DIR: out, ME_PI_BUDGET: budget } }).handlers.tool_call;
 	for (let i = 0; i < 3; i++) assert.equal(await writer(inside, { cwd }), undefined);
 	assert.equal((await writer(inside, { cwd })).terminate, true);
+
+	// An implement worker's output directory is its checkout, so its writes stay blocked past the budget.
+	const implementer = setup(t, {
+		env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement", ME_PI_OUTPUT_DIR: out, ME_PI_BUDGET: budget },
+	}).handlers.tool_call;
+	assert.match((await implementer(inside, { cwd })).reason, /budget reached/);
 });
 
 test("output: each worker gets write and a fresh 0700 directory; the result lists files, not contents", async (t) => {
