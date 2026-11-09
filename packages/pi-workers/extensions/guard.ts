@@ -32,15 +32,13 @@ const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
 // `git` global options (`-C dir`, `-c k=v`, `--git-dir=...`) before the subcommand.
 const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
-// Rest of the same command (stops at a command separator).
-const ARGS = String.raw`[^;&|\n]*`;
+// Rest of the same command: steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so words
+// after them are still read. Stops at `;`, `&&`, `||`, `|`, `|&`, a lone `&`, and newline.
+const ARGS = String.raw`(?:[<>]&|&>|>\||[^;&|\n])*`;
 
 // Lookaheads, so a command nested in another one's arguments (`git log "$(git push ...)"`) is found too.
 const GIT_COMMAND = new RegExp(`(?=${AT_COMMAND}git(${GIT_GLOBALS})\\s+([\\w-]+)(${ARGS}))`, "g");
-// `rm`'s arguments: like `ARGS`, but steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so
-// targets after them are still read. Stops at `;`, `&&`, `||`, `|`, `|&`, a lone `&`, and newline.
-const RM_ARGS = String.raw`(?:[<>]&|&>|>\||[^;&|\n])*`;
-const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${RM_ARGS}))`, "g");
+const RM_COMMAND = new RegExp(`(?=${AT_COMMAND}rm(?![\\w-])(${ARGS}))`, "g");
 // A quoted commit message (`-m "..."`, `-am '...'`, `--message=...`) is text, unless it runs a command.
 const MESSAGE_ARG = /(\s(?:-[A-Za-z]*m\s*|--message(?:=|\s+)))("(?:[^"\\]|\\.)*"|'[^']*')/g;
 // `cd` at a command position: a bare push may then target another repository's branch.
@@ -74,6 +72,21 @@ const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--
 export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
 
 // Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`).
+/**
+ * git's words, without redirects (`2>&1`, `>/dev/null`, `&> log`, and the file after a bare operator): a redirect is not
+ * a remote or refspec (`git push origin 2>&1` pushes the current branch, #93). A word with a glued redirect
+ * (`origin>log`) keeps the part before it.
+ */
+function gitWords(args: string): string[] {
+	const raw = args.split(/\s+/).filter(Boolean);
+	const kept = raw.flatMap((w, i) => {
+		if (REDIRECT.test(w) || (i > 0 && REDIRECT_OPERATOR.test(raw[i - 1]))) return [];
+		const cut = w.search(/[<>]/);
+		return cut > 0 ? [w.slice(0, cut)] : [w];
+	});
+	return wordsOf(kept.join(" "));
+}
+
 function wordsOf(args: string): string[] {
 	return args
 		.split(/\s+/)
@@ -261,7 +274,7 @@ export function classify(
 	const branchMayChange = CD.test(command) || gitCommands.some(([, , sub]) => sub === "checkout" || sub === "switch");
 	for (const [, globals, sub, args] of gitCommands) {
 		const elsewhere = branchMayChange || /(?:^|\s)(?:-C|--git-dir|--work-tree)\b/.test(globals);
-		const risk = gitRisk(sub, wordsOf(args), currentBranch, elsewhere, historyRewrites);
+		const risk = gitRisk(sub, gitWords(args), currentBranch, elsewhere, historyRewrites);
 		if (risk) return risk;
 	}
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
@@ -340,7 +353,7 @@ function workerGitRisk(sub: string, words: string[]): string | undefined {
 export function workerRisk(command: string): string | undefined {
 	command = withoutMessages(command);
 	for (const [, , sub, args] of inFreshTempRepo(command) ? [] : command.matchAll(GIT_COMMAND)) {
-		const risk = workerGitRisk(sub, wordsOf(args));
+		const risk = workerGitRisk(sub, gitWords(args));
 		if (risk) return risk;
 	}
 	if (GH_COMMAND.test(command)) return "gh is main-session only";
@@ -382,7 +395,7 @@ const TREE_WRITES = new Set([
 export function gitTreeWrite(command: string): string | undefined {
 	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
 		// `git stash list|show` only read.
-		const words = wordsOf(args);
+		const words = gitWords(args);
 		if (sub === "stash" && ["list", "show"].includes(words[0])) continue;
 		// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
 		if (
