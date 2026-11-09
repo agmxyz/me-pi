@@ -45,7 +45,7 @@ test("scopeWorkerPrompt keeps exactly the sections each worker kind may use from
 	const implement = { contextFiles: [{ content: POLICY }] };
 	scopeWorkerPrompt(implement, { implement: true });
 	assert.match(implement.contextFiles[0].content, /Protected actions require my explicit approval/);
-	assert.match(implement.contextFiles[0].content, /- Local: `git reset --hard`/);
+	assert.match(implement.contextFiles[0].content, /- A denied action stays denied/);
 	assert.doesNotMatch(implement.contextFiles[0].content, /Creating tickets|force-pushing/);
 });
 
