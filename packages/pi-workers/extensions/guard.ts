@@ -75,15 +75,19 @@ export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"
 /**
  * git's words, without redirects (`2>&1`, `>/dev/null`, `&> log`, and the file after a bare operator): a redirect is not
  * a remote or refspec (`git push origin 2>&1` pushes the current branch, #93). A word with a glued redirect
- * (`origin>log`) keeps the part before it.
+ * (`origin>log`, `--force&>log`) keeps the part before it. With quotes or escapes in the arguments, a glued `<>&|`
+ * can't be told from a quoted one (`"a>b:main"`), so the words are read as they are.
  */
 function gitWords(args: string): string[] {
+	const quoted = /["'\\]/.test(args);
 	const raw = args.split(/\s+/).filter(Boolean);
-	const kept = raw.flatMap((w, i) => {
-		if (REDIRECT.test(w) || (i > 0 && REDIRECT_OPERATOR.test(raw[i - 1]))) return [];
-		const cut = w.search(/[<>]/);
-		return cut > 0 ? [w.slice(0, cut)] : [w];
-	});
+	const kept: string[] = [];
+	for (const [i, w] of raw.entries()) {
+		if (REDIRECT.test(w) || (i > 0 && REDIRECT_OPERATOR.test(raw[i - 1]))) continue;
+		const cut = w.search(/[<>&|]/);
+		if (cut >= 0 && quoted) return wordsOf(args);
+		kept.push(cut > 0 ? w.slice(0, cut) : w);
+	}
 	return wordsOf(kept.join(" "));
 }
 
