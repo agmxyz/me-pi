@@ -91,6 +91,8 @@ export function addUsage(total: Record<string, any>, usage: Record<string, any> 
 }
 
 export interface AttemptBudget {
+	/** The role's configured time limit, named in the timeout message; retries keep `hardDeadline`, so time left shrinks. */
+	limitSecs: number;
 	hardDeadline: number;
 	hardCostCapUsd: number;
 	toolDeadline: number;
