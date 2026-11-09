@@ -447,6 +447,33 @@ test("workers write only inside their own output directory", async (t) => {
 	assert.ok((await noOutput({ toolName: "write", input: { path: join(out, "a.md") } }, { cwd })).block);
 });
 
+test("past the wrap-up budget, an output worker can still write into its output directory, within the allowance", async (t) => {
+	const out = mkdtempSync(join(TEST_HOME, "out-"));
+	const cwd = mkdtempSync(join(TEST_HOME, "cwd-"));
+	const budget = JSON.stringify({ tools: 0, deadline: Date.now() + 60_000, cost: 1 });
+	const hook = setup(t, { env: { ME_PI_RUN: "1", ME_PI_OUTPUT_DIR: out, ME_PI_BUDGET: budget } }).handlers.tool_call;
+	const inside = { toolName: "write", input: { path: join(out, "a.md") } };
+	assert.equal(await hook(inside, { cwd }), undefined);
+	const outside = await hook({ toolName: "write", input: { path: join(cwd, "x.md") } }, { cwd });
+	assert.match(outside.reason, /budget reached/);
+	assert.equal(outside.terminate, false);
+	for (const [toolName, input] of [
+		["read", { path: join(out, "a.md") }],
+		["bash", { command: "ls" }],
+	]) {
+		const blocked = await hook({ toolName, input }, { cwd });
+		assert.match(blocked.reason, /budget reached/, toolName);
+	}
+	// Allowed writes spend the same allowance: once it is gone, an in-directory write also terminates.
+	const last = await hook(inside, { cwd });
+	assert.match(last.reason, /budget reached/);
+	assert.equal(last.terminate, true);
+
+	const writer = setup(t, { env: { ME_PI_RUN: "1", ME_PI_OUTPUT_DIR: out, ME_PI_BUDGET: budget } }).handlers.tool_call;
+	for (let i = 0; i < 3; i++) assert.equal(await writer(inside, { cwd }), undefined);
+	assert.equal((await writer(inside, { cwd })).terminate, true);
+});
+
 test("output: each worker gets write and a fresh 0700 directory; the result lists files, not contents", async (t) => {
 	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "write-draft" } });
 	const res = await run(tool, { task: "draft", output: true, runs: [{ model: HAIKU }, { model: OPUS }] });
