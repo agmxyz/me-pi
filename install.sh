@@ -6,7 +6,9 @@ REPO="$(cd "$(dirname "$0")" && pwd -P)"
 PI_AGENT="$HOME/.pi/agent"
 
 if ! command -v pi >/dev/null 2>&1; then
-  echo "✗ pi is required to register this rig and its packages" >&2
+  echo "✗ pi is required to register this rig and its packages, but it is not on PATH." >&2
+  echo "  Install it with: curl -fsSL https://pi.dev/install.sh | sh" >&2
+  echo "  It installs to ~/.local/bin; open a new shell (or add that directory to PATH) and re-run ./install.sh." >&2
   exit 1
 fi
 
@@ -32,7 +34,7 @@ elif [ -e "$SKILLS_DESTINATION" ] && [ ! -d "$SKILLS_DESTINATION" ]; then
   exit 1
 fi
 
-for skill in implement-me-pi implement-spec-me-pi pi-live-test ticket-readiness; do
+for skill in implement-me-pi implement-spec-me-pi ticket-readiness; do
   source="$SKILLS_SOURCE/$skill"
   destination="$SKILLS_DESTINATION/$skill"
   global_name="$GLOBAL_SKILLS_DESTINATION/$skill"
@@ -106,7 +108,6 @@ mkdir -p "$PI_AGENT/extensions" "$SKILLS_DESTINATION"
 link_policy
 install_skill_pointer implement-me-pi
 install_skill_pointer implement-spec-me-pi
-install_skill_pointer pi-live-test
 install_skill_pointer ticket-readiness
 
 # Register the root Pi package first. The old extensions-directory source has a
@@ -131,4 +132,10 @@ else
 fi
 
 echo
-echo "Done. Restart pi sessions to load the updated rig."
+echo "Done. Next steps (docs/setup.md#after-install):"
+echo "  1. Restart pi sessions or run /reload to load the updated rig."
+echo "  2. /login to your providers; for the claude-code provider: pi install https://github.com/earendil-works/pi-claude-code"
+echo "  3. Verify: /delegate status, /guard, and the me-pi skills in the skills list."
+if [ ! -e "$PI_AGENT/delegate.json" ]; then
+  echo "⚠ no $PI_AGENT/delegate.json; workers will use your session's model (see packages/pi-workers/docs/delegate.md#configure-model-pools)"
+fi

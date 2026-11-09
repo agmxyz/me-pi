@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-const SCRIPT = new URL("../skills/pi-live-test/pi-live.sh", import.meta.url).pathname;
+const SCRIPT = new URL("../.agents/skills/pi-live-test/pi-live.sh", import.meta.url).pathname;
 
 /** Runs pi-live.sh with stub `herdr` and `tmux` on PATH; each stub logs its argv and runs `body`. */
 function piLive(

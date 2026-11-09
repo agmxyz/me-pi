@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS is covered by local runs while the repo is private (10x minutes); add it back when public.
+        # Linux only by choice: macOS is covered by local runs of the same check.
         os: [ubuntu-latest]
         node: ["22.19"]
     steps:

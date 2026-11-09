@@ -4,7 +4,9 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 
-const [projectDir, expectedCollision] = process.argv.slice(2);
+const [projectDir, mode] = process.argv.slice(2);
+// --in-repo: projectDir is the me-pi checkout, whose .agents/skills holds the repo-only pi-live-test.
+const inRepo = mode === "--in-repo";
 const agentDir = process.env.PI_CODING_AGENT_DIR;
 if (!projectDir || !agentDir) throw new Error("Pass a target project and isolated PI_CODING_AGENT_DIR");
 
@@ -21,11 +23,11 @@ const expectedNames = [
 	"implement-me-pi",
 	"implement-spec",
 	"implement-spec-me-pi",
-	"pi-live-test",
+	...(inRepo ? ["pi-live-test"] : []),
 	"ticket-readiness",
 ];
 assert.deepEqual([...byName.keys()].sort(), expectedNames);
-if (expectedCollision === "--renamed-pilot-collision") {
+if (mode === "--renamed-pilot-collision") {
 	assert.equal(diagnostics.length, 1);
 	assert.equal(diagnostics[0].type, "collision");
 	assert.equal(diagnostics[0].collision.resourceType, "skill");
@@ -42,7 +44,7 @@ if (expectedCollision === "--renamed-pilot-collision") {
 	assert.deepEqual(diagnostics, []);
 }
 
-for (const name of ["implement-me-pi", "implement-spec-me-pi", "pi-live-test"]) {
+for (const name of ["implement-me-pi", "implement-spec-me-pi"]) {
 	const skill = byName.get(name);
 	assert.equal(skill.filePath, join(resolvedAgentDir, "skills", name, "SKILL.md"));
 	assert.equal(skill.disableModelInvocation, true);
@@ -56,5 +58,11 @@ for (const name of ["implement", "implement-spec"]) {
 	assert.equal(byName.get(name).filePath, join(process.env.HOME, ".agents", "skills", name, "SKILL.md"));
 }
 
-assert.equal(existsSync(join(cwd, ".agents", "skills")), false);
+if (inRepo) {
+	const liveTest = byName.get("pi-live-test");
+	assert.equal(liveTest.filePath, join(cwd, ".agents", "skills", "pi-live-test", "SKILL.md"));
+	assert.equal(liveTest.disableModelInvocation, true);
+} else {
+	assert.equal(existsSync(join(cwd, ".agents", "skills")), false);
+}
 assert.equal(existsSync(join(cwd, ".pi", "skills")), false);

@@ -2,31 +2,34 @@
 
 [![check](https://github.com/agmxyz/me-pi/actions/workflows/check.yml/badge.svg)](https://github.com/agmxyz/me-pi/actions/workflows/check.yml)
 
-My [Pi](https://github.com/earendil-works/pi) setup, shared as a reference rather than a product. It changes as my workflow does.
+My [Pi](https://github.com/earendil-works/pi) setup, shared as a reference rather than a product. It changes as my workflow does. It contains extensions you can install on their own.
 
-## pi-workers
+## Extensions
 
-The part you can install on its own is [`pi-workers`](packages/pi-workers): Pi extensions that send searches, reviews and scoped changes to separate worker processes and bring back their answers, so your main session stays focused on decisions.
+### pi-workers
+
+[![npm](https://img.shields.io/npm/v/@agmxyz/pi-workers)](https://www.npmjs.com/package/@agmxyz/pi-workers)
+
+[`@agmxyz/pi-workers`](packages/pi-workers/README.md) hands searches, reviews and code changes to separate workers, so your main session stays focused.
 
 ```sh
 pi install npm:@agmxyz/pi-workers
 ```
 
-Restart Pi or run `/reload` and work as usual: Pi delegates broad searches, large reviews and multi-file changes on its own, or when you ask it to. What it does, how it works, its limits and safety notes: [packages/pi-workers](packages/pi-workers). Delegation and recovery in depth: [packages/pi-workers/docs/delegate.md](packages/pi-workers/docs/delegate.md).
+Restart Pi or run `/reload`.
 
-To track `main` instead, install `git:github.com/agmxyz/me-pi`; install only one of the two. The repo moved from `0bmario/me-pi`: if you installed from that URL, run `pi remove git:github.com/0bmario/me-pi` first.
+Workers are **not sandboxed**: they run with your OS permissions, and `implement` edits and commits in your real checkout. A passing check doesn't mean the code is correct; review the change.
 
-## The rest of the setup
+[Package README](packages/pi-workers/README.md) · [Delegation guide](packages/pi-workers/docs/delegate.md) · [Changelog](packages/pi-workers/CHANGELOG.md)
 
-Around `pi-workers`, I use:
+## Setup
 
-- **A global policy** ([`GLOBAL_AGENTS.md`](GLOBAL_AGENTS.md)): output style, engineering defaults, which actions need my approval, and how to handle secrets and untrusted content. Sections marked `(coordinator only)` stay out of worker prompts.
-- **Skills** ([`skills/`](skills)): `implement-me-pi` runs one task with a worker and independent review; `implement-spec-me-pi` implements a ticket graph on one branch; `pi-live-test` live-tests a me-pi change in a real Pi; `ticket-readiness` checks, at the current code, which tickets an agent could implement, prove, and merge unattended. `evolvability-review` is here too, but `install.sh` doesn't link it.
-- **[`install.sh`](install.sh)**, which wires these in machine-wide with a few extras.
+My personal setup; it runs this checkout's working tree. You don't need it to use an extension.
 
-You don't need any of it for `pi-workers`; read and copy what's useful. Some skills expect others from my own collection.
-
-`./install.sh` changes what Pi loads across all your sessions: it links the policy and skills, registers this checkout as a package, and installs `pi-web-access`. If you installed `pi-workers` from npm or Git, remove it first (`pi remove npm:@agmxyz/pi-workers` or `pi remove git:github.com/agmxyz/me-pi`), so Pi doesn't load the extensions twice. Review the script and [docs/setup.md](docs/setup.md) for requirements, effects and undo steps before running it.
+- [`GLOBAL_AGENTS.md`](GLOBAL_AGENTS.md): my global policy for Pi sessions
+- [`skills/`](skills): user-level skills
+- [`.agents/skills/`](.agents/skills): skills only for this repo
+- [`install.sh`](install.sh): installs the setup machine-wide; read [docs/setup.md](docs/setup.md) first
 
 ## Contributing
 
@@ -39,21 +42,13 @@ npm run fix                      # apply Biome fixes
 node --test test/guard.test.ts   # one test file
 ```
 
-Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt text, run the manual routing evals ([evals/README.md](evals/README.md)); they spend real money and never run in CI.
-
-Read [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md). CI runs `npm run check` on every PR.
-
-To release `@agmxyz/pi-workers`, open a PR that bumps `version` in `package.json`, `packages/pi-workers/package.json`, and `package-lock.json`, and renames `## [Unreleased]` in `packages/pi-workers/CHANGELOG.md` to `## [x.y.z] - date`. Merging it runs [`release.yml`](.github/workflows/release.yml): check, publish to npm with provenance, then tag `pi-workers@x.y.z` and create a GitHub release from that changelog section.
-
-Good first issues: [#35](https://github.com/agmxyz/me-pi/issues/35), [#40](https://github.com/agmxyz/me-pi/issues/40).
+- Follow [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md).
+- A user-visible change to an extension package adds a line under `## [Unreleased]` in its changelog (create the heading if missing).
+- Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt, description or schema, run the [routing evals](evals/README.md). They cost real money and don't run in CI.
 
 ## Credits
 
-me-pi skills that adapt or build on others' skills (each skill's frontmatter `metadata.credits` holds the same):
-
-- `implement-me-pi` and `implement-spec-me-pi` adapt Matt Pocock's [`implement`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement) and [`implement-spec`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement-spec) (MIT).
-- `ticket-readiness` adapts the evidence rules of Lauren Tan's pstack [`create-verification-skill`](https://github.com/cursor/plugins/tree/6b03002/pstack/skills/create-verification-skill) (MIT) and uses the acceptance-criteria bar of Matt Pocock's [`triage`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/triage) (MIT).
-- `evolvability-review` loads Matt Pocock's [`codebase-design`](https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/codebase-design) (MIT) for its vocabulary.
+The skills adapt or build on Matt Pocock's [skills](https://github.com/mattpocock/skills) and Lauren Tan's [pstack](https://github.com/cursor/plugins), both MIT; pinned sources are in each skill's frontmatter `metadata.credits`.
 
 ## License
 

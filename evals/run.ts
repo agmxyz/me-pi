@@ -23,7 +23,7 @@ import { type Assertion, check, parseSession, type Verdict } from "./score.ts";
 
 const execFile = promisify(execFileCb);
 const HERE = dirname(new URL(import.meta.url).pathname);
-const PI_LIVE = join(HERE, "..", "skills", "pi-live-test", "pi-live.sh");
+const PI_LIVE = join(HERE, "..", ".agents", "skills", "pi-live-test", "pi-live.sh");
 
 interface Scenario {
 	id: string;
