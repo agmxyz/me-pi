@@ -62,11 +62,13 @@ Each READY verdict rests on its `Valid:` claim (the problem is present and every
 
 ## 6. Weakest-evidence pass
 
-Write the READY blocks and the LIVE_CHECK code-can-ship blocks to `ready.md`. Dispatch one read-only worker (a different model from step 3's when the user has one available, since a second model misses different things) with the repo, SHA, the check command and standards files from step 1, `RUBRIC.md`, and `ready.md`, and this brief: for every V criterion of every ticket in it, describe code that would pass the listed check without meeting the criterion, or state that none exists; for each cheat found, name the stronger check that would catch it, or state that none exists; a stronger check follows the repo's standards, since the implementer is bound by both. It catches what the step 3 worker accepts: a grep that a cast elsewhere also passes, a regex that accepts a fabricated digest, a green check as the only proof.
+Write the READY blocks and the LIVE_CHECK code-can-ship blocks to `ready.md`. Dispatch one read-only worker (a different model from step 3's when the user has one available, since a second model misses different things) with the repo, SHA, the check command and standards files from step 1, `RUBRIC.md`, and `ready.md`, and this brief: for every V criterion of every ticket in it, describe code that would pass the listed check without meeting the criterion, or state that none exists; for each cheat found, name the stronger check that would catch it, or state that none exists; every check, listed or stronger, follows RUBRIC check 3's standards rule (`fits <file:line>`, or `conflicts with <file:line>` with the listed check kept). The pass catches what the step 3 worker accepts: a grep that a cast elsewhere also passes, a regex that accepts a fabricated digest, a green check as the only proof.
 
-A criterion with a cheat and a stronger check keeps its verdict, and the stronger check replaces the listed one in the block: the implementer proves the criterion with it. A criterion with a cheat and no stronger check is X, which makes the ticket AMBIGUOUS under the rubric.
+Before writing the marks into the blocks, read each cited standards line yourself at the review SHA. A cited line that does not support its check, or a check that adds code shape the ticket does not need, is a failed claim: send that criterion back to the worker with the line, as in step 5, rather than writing a check of your own.
 
-**Ready:** every V criterion in `ready.md` is marked `holds`, `cheat → <stronger check>`, or has moved the ticket to AMBIGUOUS.
+A criterion with a cheat and a stronger check keeps its verdict, and the stronger check replaces the listed one in the block: the implementer proves the criterion with it. A criterion whose stronger check conflicts with a standard keeps the listed check with its `weak:` note, and its verdict. A criterion with a cheat and no stronger check at all is X, which makes the ticket AMBIGUOUS under the rubric.
+
+**Ready:** every V criterion in `ready.md` is marked `holds (fits <file:line>, confirmed)`, `cheat → <stronger check> (fits <file:line>, confirmed)`, `weak: <cheat>; stronger check conflicts with <file:line>`, or has moved the ticket to AMBIGUOUS.
 
 ## 7. Order the queue and report
 
