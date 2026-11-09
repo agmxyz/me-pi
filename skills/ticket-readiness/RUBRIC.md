@@ -18,6 +18,8 @@ Cite `file:line` at the review SHA for every claim.
 
    One mark per criterion: split a criterion that mixes them (docs wording H beside a tested behaviour V) into one line each.
 
+   Every check you propose fits the repo's standards files: it asserts only through code the ticket already needs, and adds no seam, driver, export, or option for testing alone.
+
    Flag **weak** evidence: the done check green as the only proof; a self-reported measurement; a grep or regex that code could pass without meeting the criterion; an audit that produces prose rather than a test; a test that passes trivially in some environments; a test that drives an internal setter or test-only endpoint instead of the user's path; a visible result checked without its side effect; a dry run trusted by its name rather than by observing what it skips; a criterion with several entry points proven through only one.
 4. **Size.** Estimate changed lines and files. Over about 1,500 lines, several PRs, or several long verification loops is TOO_BIG; propose a split.
 5. **Dependencies and overlaps.** From the index: which tickets must land first (hard) or should (soft); which overlap in files or scope.
