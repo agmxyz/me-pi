@@ -71,26 +71,26 @@ function tmpdirMayChange(command: string): boolean {
 const PUSH_VALUE_OPTIONS = new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]);
 export const PROTECTED_BRANCHES: ReadonlySet<string> = new Set(["main", "master"]);
 
-// Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`).
 /**
  * git's words, without redirects (`2>&1`, `>/dev/null`, `&> log`, and the file after a bare operator): a redirect is not
  * a remote or refspec (`git push origin 2>&1` pushes the current branch, #93). A word with a glued redirect
  * (`origin>log`, `--force&>log`) keeps the part before it. With quotes or escapes in the arguments, a glued `<>&|`
- * can't be told from a quoted one (`"a>b:main"`), so the words are read as they are.
+ * can't be told from a quoted one (`"a>b:main"`), so the whole words are a second reading; callers judge each and
+ * take the riskiest.
  */
-function gitWords(args: string): string[] {
-	const quoted = /["'\\]/.test(args);
+function gitReadings(args: string): string[][] {
 	const raw = args.split(/\s+/).filter(Boolean);
-	const kept: string[] = [];
-	for (const [i, w] of raw.entries()) {
-		if (REDIRECT.test(w) || (i > 0 && REDIRECT_OPERATOR.test(raw[i - 1]))) continue;
-		const cut = w.search(/[<>&|]/);
-		if (cut >= 0 && quoted) return wordsOf(args);
-		kept.push(cut > 0 ? w.slice(0, cut) : w);
-	}
-	return wordsOf(kept.join(" "));
+	const cut = raw.flatMap((w, i) => {
+		if (REDIRECT.test(w) || (i > 0 && REDIRECT_OPERATOR.test(raw[i - 1]))) return [];
+		const at = w.search(/[<>&|]/);
+		return at > 0 ? [w.slice(0, at)] : [w];
+	});
+	const readings = [wordsOf(cut.join(" "))];
+	if (/["'\\]/.test(args) && raw.some((w) => /[<>&|]/.test(w))) readings.push(wordsOf(args));
+	return readings;
 }
 
+// Arguments as words, without quotes, parentheses, and backticks (`"main"`, `main)`).
 function wordsOf(args: string): string[] {
 	return args
 		.split(/\s+/)
@@ -278,8 +278,10 @@ export function classify(
 	const branchMayChange = CD.test(command) || gitCommands.some(([, , sub]) => sub === "checkout" || sub === "switch");
 	for (const [, globals, sub, args] of gitCommands) {
 		const elsewhere = branchMayChange || /(?:^|\s)(?:-C|--git-dir|--work-tree)\b/.test(globals);
-		const risk = gitRisk(sub, gitWords(args), currentBranch, elsewhere, historyRewrites);
-		if (risk) return risk;
+		for (const words of gitReadings(args)) {
+			const risk = gitRisk(sub, words, currentBranch, elsewhere, historyRewrites);
+			if (risk) return risk;
+		}
 	}
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
 		const { recursive, targets } = rmArgs(args);
@@ -357,8 +359,10 @@ function workerGitRisk(sub: string, words: string[]): string | undefined {
 export function workerRisk(command: string): string | undefined {
 	command = withoutMessages(command);
 	for (const [, , sub, args] of inFreshTempRepo(command) ? [] : command.matchAll(GIT_COMMAND)) {
-		const risk = workerGitRisk(sub, gitWords(args));
-		if (risk) return risk;
+		for (const words of gitReadings(args)) {
+			const risk = workerGitRisk(sub, words);
+			if (risk) return risk;
+		}
 	}
 	if (GH_COMMAND.test(command)) return "gh is main-session only";
 	if (INSTALL_SH.test(command)) return "install.sh would change Pi's settings and live links";
@@ -398,16 +402,17 @@ const TREE_WRITES = new Set([
 
 export function gitTreeWrite(command: string): string | undefined {
 	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
-		// `git stash list|show` only read.
-		const words = gitWords(args);
-		if (sub === "stash" && ["list", "show"].includes(words[0])) continue;
-		// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
-		if (
-			sub === "branch" &&
-			(hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w)))
-		)
-			return sub;
-		if (TREE_WRITES.has(sub)) return sub;
+		for (const words of gitReadings(args)) {
+			// `git stash list|show` only read.
+			if (sub === "stash" && ["list", "show"].includes(words[0])) continue;
+			// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
+			if (
+				sub === "branch" &&
+				(hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w)))
+			)
+				return sub;
+			if (TREE_WRITES.has(sub)) return sub;
+		}
 	}
 	return undefined;
 }

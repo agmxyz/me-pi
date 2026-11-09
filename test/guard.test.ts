@@ -49,6 +49,15 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 		// Quoted `<>` can't be told from a redirect: the words are read whole.
 		['git push origin "a>b:main"', onFeature, "push to main/master"],
 		["git push origin 'x<y>:main'", onFeature, "push to main/master"],
+		// A quote elsewhere in the command doesn't hide a glued redirect.
+		['git push origin "x" --force&>log', onFeature, "force push"],
+		['git push -f&>x "origin" x', onFeature, "force push"],
+		['git push "origin" main&>log', onFeature, "push to main/master"],
+		['git reset --hard&>x -- "a"', onFeature, "git reset --hard"],
+		['git clean -fd&>x "p"', onFeature, "git clean -f"],
+		// Each reading is judged on its own: the whole-word reading never hides the current-branch push.
+		['git push "origin"&>x', onMain, "push to main/master"],
+		['git push "origin" 2>&1', onMain, "push to main/master"],
 		// Each command after a redirect is still judged.
 		["git push origin >&2; git push --force", onFeature, "force push"],
 		["git push origin &>/dev/null && git reset --hard", onFeature, "git reset --hard"],
@@ -273,6 +282,8 @@ test("allows feature pushes, PRs, and routine commands", () => {
 		["git push origin 2>&1 | tail -3", onFeature],
 		["git push origin &>/dev/null", onFeature],
 		['git push origin ">" 2>&1', onFeature],
+		// bash runs `git push origin y` here (the redirect ends at `x`): a push of branch y, not of main.
+		['git push origin&>x "y"', onMain],
 		['git commit -m "a>b" 2>&1', onMain],
 		["rm -rf dist 2>&1", onMain],
 		["rm -rf /tmp/x &>/dev/null", onMain],
@@ -347,6 +358,8 @@ test("workerRisk blocks commands that move an implement worker off its branch or
 		"git push origin x",
 		"git push origin 2>&1",
 		"git commit --no-verify&>x -m y",
+		'git commit --no-verify&>x -m "y"',
+		'git commit -n&>x -m "y"',
 		"git stash drop&>x",
 		"git push . HEAD:main",
 		"git -C x worktree add",
@@ -499,6 +512,7 @@ test("gitTreeWrite names checkout-writing git subcommands and passes reads", () 
 		["git branch -m old new", "branch"],
 		["git checkout -- . 2>&1", "checkout"],
 		["git stash drop&>x", "stash"],
+		['git branch -D&>x "a"', "branch"],
 		["git branch -M new", "branch"],
 		["git branch --move old new", "branch"],
 		["git branch -d old", "branch"],
