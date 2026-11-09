@@ -372,7 +372,12 @@ const textConsumer = (c: SimpleCommand, writes: boolean): boolean => {
 			interpreterText(program.value, !writes)
 		);
 	}
-	if (c.name === "gh") return ["pr", "issue"].includes(a) && ["create", "comment", "edit", "view"].includes(b);
+	// `gh pr create` may push the current branch first (to main, on main) unless `--head` names it (review r2).
+	if (c.name === "gh") {
+		const head = c.argv.some((w) => /^(?:-H|--head)(?:=|$)/.test(w.value));
+		if (a === "pr" && b === "create") return head;
+		return ["pr", "issue"].includes(a) && ["comment", "edit", "view"].includes(b);
+	}
 	if (c.name === "sed") return sedText(c.argv.slice(1));
 	// `perl -pi -e 's/a/b/g'`: one plain substitution (no `e` flag, no code in the replacement: `@{[…]}`, `${\…}`).
 	if (c.name === "perl") {

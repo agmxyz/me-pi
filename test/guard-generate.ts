@@ -203,6 +203,13 @@ const IN_PLACE: [string, string][] = [
 	["sed to sh", "echo x | sed 's/x/{c}/' | sh"],
 	["perl e flag", "echo x | perl -pe 's/x/{c}/e'"],
 	["perl system", "perl -e 'system(\"{c}\")'"],
+	// Programs that run what a text proof would read (review r2): rg's preprocessor, perl code blocks or a second -e,
+	// a sed option after a file, node code-loading options.
+	["rg --pre", "rg --pre 'sh -c \"{c}\"' x ."],
+	["perl code block", "echo x | perl -pe 's/(?{system(\"{c}\")})//'"],
+	["perl second -e", "echo x | perl -pe 's/a/b/' -e 'system(\"{c}\")'"],
+	["sed option after a file", "sed p f -e '1e {c}'"],
+	["node --require", "node --require=./g.js -e '1 /* {c} */'"],
 	["python runs it", "true; python3 - <<'EOF'\nimport os\nos.system('{c}')\nEOF"],
 	["printf to sh", "printf '%s\\n' '{c}' | sh"],
 	["echo to bash", "echo '{c}' | bash"],
@@ -324,7 +331,9 @@ export function generated(): Row[] {
 	// Interpreter programs (and sed/perl `e`) that run or print the command: neither guard polices program bodies (an old
 	// gap, listed).
 	const known = (construct: string) =>
-		/^(?:python|node) (?:prints|runs)|^sed (?:e |writes)|^perl (?:e flag|system)/.test(construct);
+		/^(?:python|node) (?:prints|runs)|^sed (?:e |writes|option after)|^perl |^rg --pre|^node --require/.test(
+			construct,
+		);
 	const add = (cmd: string, cwd: Fixture, want: Want, seed: Seed, construct: string) =>
 		rows.push({
 			cmd,

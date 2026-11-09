@@ -276,6 +276,19 @@
    "cwd": "clean",
    "want": "allow",
    "source": "review r2 twin: node plain option"
+  },
+  {
+   "cmd": "gh pr create --fill",
+   "cwd": "main",
+   "want": "ask",
+   "source": "review r2: gh pr create may push main first",
+   "known": true
+  },
+  {
+   "cmd": "gh pr create --head feat --title x --body 'never rm -rf ~'",
+   "cwd": "main",
+   "want": "allow",
+   "source": "review r2 twin: --head skips the push"
   }
  ]
 }
