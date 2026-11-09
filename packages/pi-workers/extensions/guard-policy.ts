@@ -359,13 +359,24 @@ const HEREDOC_PROGRAM = new Set(["python", "python3", "node"]);
  * policy polices program bodies).
  */
 const RUNS_PROCESS =
-	/child_process|worker_threads|\bvm\b|\bexec\w*|\bspawn\w*|\bfork\b|\bsystem\b|\bpopen\b|subprocess|multiprocessing|\bpty\b|\bctypes\b|\bos\b|\bshutil\b|\beval\b|\bcompile\s*\(|Function\s*\(|\bBun\b|\bDeno\b|\$`|\bzx\b|__import__|importlib|\bgetattr\b|\bglobals\s*\(|\b(?:process|globalThis|global|module|require|Reflect)\s*(?:\[|\.(?:binding|_linkedBinding|dlopen|mainModule|main|cache|constructor|get|apply))|\bimport\s+\*|\b(?:require|import)\s*\(\s*[^"'\s]/;
+	/child_process|worker_threads|\bvm\b|\bexec\w*|\bspawn\w*|\bfork\b|\bsystem\b|\bpopen\b|subprocess|multiprocessing|\bpty\b|\bctypes\b|\bos\b|\bshutil\b|\beval\b|\bcompile\s*\(|Function\s*\(|\bBun\b|\bDeno\b|\$`|\bzx\b|__import__|importlib|\bgetattr\b|\bglobals\s*\(|\b(?:process|globalThis|global|module|require|Reflect)\s*(?:\[|\.(?:binding|_linkedBinding|dlopen|mainModule|main|cache|constructor|get|apply))|\bconstructor\b|__(?:builtins|subclasses|globals|class|bases|mro|code|loader)__|\bvars\s*\(|\bimport\s+\*|\b(?:require|import)\s*\(\s*[^"'\s]/;
 // The modules a program may load: node's file and text modules, and (`local`) a relative path: a file already on disk,
 // which runs what it runs whether or not this text names rm/git (`node x.mjs` isn't policed either).
 const IMPORT = /\b(?:require|import)\s*\(\s*(["'])(.*?)\1|\bfrom\s+(["'])(.*?)\3/g;
 const SAFE_MODULE = /^(?:node:)?(?:fs|fs\/promises|path|url|util|assert|assert\/strict|json|re|sys|pathlib|textwrap|difflib)$/;
+// A plain string literal (no prefix letter, so no Python f-string; a template only without `${`): its contents are
+// text, so a word in it (`"use eval here"`) doesn't count as code. Imports are still read from the whole program.
+const STRING_LITERAL = /(?<![\w$])[rRbB]{0,2}(?:'''[\s\S]*?'''|"""[\s\S]*?""")|(?<![\w$])(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\$]|\\.|\$(?!\{))*`)/g;
+// Python's `import x` / `from x import y`: the module must be a safe one too.
+const PY_IMPORT = /^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w., \t]+))/gm;
 function interpreterText(program: string, local: boolean): boolean {
-	if (RUNS_PROCESS.test(program)) return false;
+	if (RUNS_PROCESS.test(program.replace(STRING_LITERAL, '""'))) return false;
+	for (const m of program.matchAll(PY_IMPORT)) {
+		// `import a, b as c`: each comma part's first word is a module (`as c` names it).
+		const names = m[1] !== undefined ? [m[1]] : (m[2] ?? "").split(",").map((x) => x.trim().split(/\s+/)[0]);
+		if (names.some((n) => n && !SAFE_MODULE.test(n.split(".")[0]))) return false;
+	}
+	if (/\bimport[ \t]+["']/.test(program)) return false;
 	for (const m of program.matchAll(IMPORT)) {
 		const name = m[2] ?? m[4] ?? "";
 		if (!SAFE_MODULE.test(name) && !(local && /^\.{1,2}\//.test(name))) return false;
@@ -396,6 +407,7 @@ function interpreterText(program: string, local: boolean): boolean {
  */
 function unproven(src: string, p: Extract<ReturnType<typeof parseShell>, { ok: true }>, branch: Branch): string | undefined {
 	const old = classify(src, branch);
+	(globalThis as { __spans?: string[] }).__spans = []; // DEBUG-S95
 	if (!old || !p.exact) return old;
 	const cmds = p.commands;
 	const owned = new Set(OWNERS.values());
@@ -429,6 +441,9 @@ function unproven(src: string, p: Extract<ReturnType<typeof parseShell>, { ok: t
 	for (const s of spans.values()) {
 		const within = cmds.filter((c) => inside(c.span, s));
 		if (within.some(proof) && within.every((c) => proof(c) || neutral(c))) mark(s, 1);
+		((globalThis as { __spans?: string[] }).__spans ??= []).push( // DEBUG-S95
+			`${s} ${within.map((c) => `${c.name}:${proof(c) ? "P" : neutral(c) ? "n" : "X"}`).join(",")}`, // DEBUG-S95
+		); // DEBUG-S95
 	}
 	// A heredoc body is text when every command reading it is a plain text reader (not a shell or other wrapper: their
 	// bodies run, and count only through their command's proven range), and nothing in the command runs a script file.
@@ -438,10 +453,12 @@ function unproven(src: string, p: Extract<ReturnType<typeof parseShell>, { ok: t
 			if (!h.span) continue;
 			// Under an unquoted delimiter a command substitution in the body runs: then its text is never data.
 			const expands = h.literal !== true && /\$\(|`/.test(h.body);
+			// Not when the command runs a script file: the program may print rm/git into it (`python3 - <<EOF > a.sh; bash a.sh`).
 			const text =
 				!expands &&
+				!runs &&
 				c.name !== undefined &&
-				((!runs && HEREDOC_TEXT.has(c.name)) ||
+				(HEREDOC_TEXT.has(c.name) ||
 					(HEREDOC_PROGRAM.has(c.name) && c.via.length === 0 && !c.reparsed && interpreterText(h.body, !writes)));
 			const key = `${h.span[0]},${h.span[1]}`;
 			const b = bodies.get(key);

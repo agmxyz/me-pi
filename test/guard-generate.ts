@@ -172,6 +172,13 @@ const IN_PLACE: [string, string][] = [
 	["process substitution", "cat <({c})"],
 	["source process substitution", "source <(echo '{c}')"],
 	["written script run", "cat > g.sh <<'EOF'\n{c}\nEOF\nbash g.sh"],
+	// A program that prints the command into a script, then the script runs (the program text alone is data).
+	["python prints a script", "true; python3 - <<'EOF' > g.sh\nprint('{c}')\nEOF\nbash g.sh"],
+	["node prints a script", "node -e 'console.log(`{c}`)' > g.sh; bash g.sh"],
+	["node prints to sh", "node -p '`{c}`' | sh"],
+	["python -c prints to bash", "python3 -c 'print(\"{c}\")' | bash"],
+	["node runs it", "node -e 'require(\"child_process\").execSync(`{c}`)'"],
+	["python runs it", "true; python3 - <<'EOF'\nimport os\nos.system('{c}')\nEOF"],
 	["printf to sh", "printf '%s\\n' '{c}' | sh"],
 	["echo to bash", "echo '{c}' | bash"],
 	["xargs", "echo | xargs {c}"],
@@ -283,8 +290,16 @@ const fill = (template: string, c: string, d = "") => template.replaceAll("{c}",
 /** Every generated row. */
 export function generated(): Row[] {
 	const rows: Row[] = [];
+	// Interpreter programs that run or print the command: neither guard polices program bodies (an old gap, listed).
+	const known = (construct: string) => /^(?:python|node) (?:prints|runs)/.test(construct);
 	const add = (cmd: string, cwd: Fixture, want: Want, seed: Seed, construct: string) =>
-		rows.push({ cmd, cwd, want, source: `generate: ${seed.id} / ${construct}` });
+		rows.push({
+			cmd,
+			cwd,
+			want,
+			source: `generate: ${seed.id} / ${construct}`,
+			...(want === "ask" && known(construct) ? { known: true } : {}),
+		});
 	const inPlace = (s: Seed): [string, string][] => [
 		...IN_PLACE.map(([n, t]): [string, string] => [n, fill(t, cmdOf(s))]),
 		...WRAPPERS.map((w): [string, string] => [`wrapper ${w}`, `${w} ${cmdOf(s)}`]),
