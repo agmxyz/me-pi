@@ -524,17 +524,16 @@ test("confirms with UI, blocks without UI or on refusal", async () => {
 	assert.equal(await handler({ ...event, toolName: "read", input: { path: "x" } }, { cwd, hasUI: false }), undefined);
 });
 
-test("history rewrites: classify skips them with history: false, and only that", () => {
+test("history rewrites: classify skips them with historyRewrites: false, and only that", () => {
 	for (const command of [
 		"git commit --amend --no-edit",
 		"git rebase -i HEAD~3",
 		"git filter-branch --tree-filter x HEAD",
-		"git filter-repo --path x",
 		"git branch -D old",
 		"git branch --delete --force old",
 	]) {
 		assert.match(classify(command, onFeature) ?? "", /history rewrite|git branch -D/, command);
-		assert.equal(classify(command, onFeature, { history: false }), undefined, command);
+		assert.equal(classify(command, onFeature, { historyRewrites: false }), undefined, command);
 	}
 	// Other risks in the same command still count.
 	for (const [command, label] of [
@@ -542,9 +541,11 @@ test("history rewrites: classify skips them with history: false, and only that",
 		["git rebase main && git push origin main", "push to main/master"],
 		["git branch -D old; rm -rf ~", "recursive rm"],
 		["git commit --amend -m x && git reset --hard", "git reset --hard"],
-		["git filter-repo --path x && git clean -fd", "git clean -f"],
+		["git filter-branch --tree-filter x HEAD && git clean -fd", "git clean -f"],
+		// filter-repo expires every reflog and prunes by default: it always asks.
+		["git filter-repo --path x", "history rewrite (filter-repo)"],
 	]) {
-		assert.equal(classify(command, onFeature, { history: false }), label, command);
+		assert.equal(classify(command, onFeature, { historyRewrites: false }), label, command);
 	}
 });
 
