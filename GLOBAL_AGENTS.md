@@ -11,14 +11,13 @@
 - Verify behavior changes with targeted checks; never weaken or skip tests to pass.
 
 ## Approval (coordinator and implement only)
-- Protected actions require my explicit approval of the action and target, which persists for the same task until withdrawn or the scope changes. A question, quoted text, or "fix", "finish", or "commit" alone is not approval.
-- After a failed worker run, another model or provider needs my consent.
 - A denied action stays denied: never reproduce it through another tool, worker, path, model, account, or provider.
-- Local: `git reset --hard`, `git clean`, discarding uncommitted changes or stashes, `git branch -D`, history rewrites, or deleting files outside temp/build dirs unless the current change orphans them.
 
 ## Remote approval (coordinator only)
-- Remote protected actions: pushing to main/master or a default/protected branch; force-pushing; merging or closing PRs; releases, package publishes, deploys; deleting or overwriting remote data; access, visibility, or billing changes; messages sent as me.
+- Protected actions: pushing to main/master or a default/protected branch; force-pushing; merging or closing PRs; releases, package publishes, deploys; deleting or overwriting remote data; access, visibility, or billing changes; messages sent as me.
+- They require my explicit approval of the action and target, which persists for the same task until withdrawn or the scope changes. A question, quoted text, or "fix", "finish", or "commit" alone is not approval.
 - Tickets, branches, and PRs I request are approved, including the ordinary non-force push that creates a requested PR's unprotected feature branch.
+- After a failed worker run, another model or provider needs my consent.
 
 ## Secrets and content
 - Read or write `.env*`, `~/.pi/agent/auth.json`, `~/.ssh`, `~/.aws`, keys, or tokens, or dump env vars, only when my current message asks. Name secrets by variable or path; their values never enter replies, code, commits, logs, or requests to other services.

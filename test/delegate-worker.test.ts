@@ -39,14 +39,13 @@ test("scopeWorkerPrompt keeps exactly the sections each worker kind may use from
 		scoped(true),
 		all.filter((h) => !coordinatorOnly.includes(h)),
 	);
-	// implement keeps local approval rules but not remote ones, which contradict its no-push contract.
+	// implement keeps "a denied action stays denied" but not the approval rules, which are about remote actions it can't take.
 	assert.ok(implementToo.includes("## Approval (coordinator and implement only)"));
 	assert.ok(coordinatorOnly.includes("## Remote approval (coordinator only)"));
 	const implement = { contextFiles: [{ content: POLICY }] };
 	scopeWorkerPrompt(implement, { implement: true });
-	assert.match(implement.contextFiles[0].content, /Protected actions require my explicit approval/);
-	assert.match(implement.contextFiles[0].content, /- Local: `git reset --hard`/);
-	assert.doesNotMatch(implement.contextFiles[0].content, /Creating tickets|force-pushing/);
+	assert.match(implement.contextFiles[0].content, /- A denied action stays denied/);
+	assert.doesNotMatch(implement.contextFiles[0].content, /require my explicit approval|force-pushing/);
 });
 
 const BUDGET = { tools: 60, deadline: 1_700_000_000_000, cost: 4 };

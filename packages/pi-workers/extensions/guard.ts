@@ -1,8 +1,10 @@
 /**
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
- * With a UI it asks for confirmation; without one (print mode) it blocks.
+ * With a UI it asks for confirmation; without one (print mode) it blocks. History rewrites only block in delegate
+ * workers (see `classify`).
  * `/guard on|off` toggles it for the current session; every session starts on.
- * The Approval policy in GLOBAL_AGENTS.md stays the primary rule; this is a pattern match, not a parser.
+ * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
+ * misses commands it can't read (interpreter code, a non-recursive rm).
  */
 
 import { spawnSync } from "node:child_process";
@@ -108,19 +110,22 @@ function gitRisk(
 	words: string[],
 	currentBranch: () => string | undefined,
 	elsewhere: boolean,
+	historyRewrites: boolean,
 ): string | undefined {
 	switch (sub) {
 		case "push":
 			return pushRisk(words, currentBranch, elsewhere);
 		case "commit":
-			return words.includes("--amend") ? "history rewrite (commit --amend)" : undefined;
+			return historyRewrites && words.includes("--amend") ? "history rewrite (commit --amend)" : undefined;
 		case "rebase":
-			return ["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w))
+			return !historyRewrites || ["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w))
 				? undefined
 				: "history rewrite (rebase)";
 		case "filter-branch":
+			return historyRewrites ? "history rewrite (filter-branch)" : undefined;
 		case "filter-repo":
-			return `history rewrite (${sub})`;
+			// Always: by default it expires every reflog and prunes, so the old history can't be recovered.
+			return "history rewrite (filter-repo)";
 		case "switch":
 			return hasShort(words, "f", "--force") || words.includes("--discard-changes")
 				? "discard changes (git switch)"
@@ -141,7 +146,8 @@ function gitRisk(
 			return !staged || worktree ? "discard changes (git restore)" : undefined;
 		}
 		case "branch":
-			return hasShort(words, "D") || (hasShort(words, "d", "--delete") && hasShort(words, "f", "--force"))
+			return historyRewrites &&
+				(hasShort(words, "D") || (hasShort(words, "d", "--delete") && hasShort(words, "f", "--force")))
 				? "git branch -D"
 				: undefined;
 		default:
@@ -236,9 +242,15 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 	return { recursive, targets };
 }
 
+/**
+ * `historyRewrites: false` skips `commit --amend`, `rebase`, `filter-branch`, and `branch -D`: the main session runs
+ * them without asking, since the reflog, `refs/original/`, or `git fsck` can recover them. `filter-repo` always counts.
+ * Workers pass true.
+ */
 export function classify(
 	command: string,
 	currentBranch: () => string | undefined = () => undefined,
+	{ historyRewrites = true }: { historyRewrites?: boolean } = {},
 ): string | undefined {
 	// Unstripped: a dropped message or heredoc body could hide a rebinding.
 	const tmpdirUnsafe = tmpdirMayChange(command);
@@ -249,7 +261,7 @@ export function classify(
 	const branchMayChange = CD.test(command) || gitCommands.some(([, , sub]) => sub === "checkout" || sub === "switch");
 	for (const [, globals, sub, args] of gitCommands) {
 		const elsewhere = branchMayChange || /(?:^|\s)(?:-C|--git-dir|--work-tree)\b/.test(globals);
-		const risk = gitRisk(sub, wordsOf(args), currentBranch, elsewhere);
+		const risk = gitRisk(sub, wordsOf(args), currentBranch, elsewhere, historyRewrites);
 		if (risk) return risk;
 	}
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
@@ -404,7 +416,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (!enabled || event.toolName !== "bash") return undefined;
 		const command = String((event.input as { command?: unknown }).command ?? "");
-		const risk = classify(command, () => branchIn(ctx.cwd));
+		const risk = classify(command, () => branchIn(ctx.cwd), { historyRewrites: isWorkerProcess() });
 		if (!risk) return undefined;
 		const block = (reason: string) => {
 			if (isWorkerProcess()) {
