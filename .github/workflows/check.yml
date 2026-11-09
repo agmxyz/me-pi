@@ -20,7 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Linux only by choice: macOS is covered by local runs of the same check.
+        os: [ubuntu-latest]
         node: ["22.19"]
     steps:
       # Depth 1 still gives a HEAD for `git diff --check HEAD`.
