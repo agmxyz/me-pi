@@ -1145,10 +1145,14 @@ function pushIsLocal(remote: string | undefined, addedUrl: string | undefined, d
 	// matches it: each repo the push may run in must be read and have none that does.
 	// Where the repo can't be placed (a fresh `mktemp -d` repo), the session's directory is read instead: it sees the same
 	// global and system config, plus its own repo's (more prefixes only ask more).
+	// A dir in no repo on disk (one this command creates, or bash-truth's gone sandbox) has no repo config of its own:
+	// global and system config are read from the session's dir. A failed read asks.
+	const rewrites = (d: string) =>
+		E.urlRewritesOf!(d) ?? (E.repoRootOf(d) === null ? E.urlRewritesOf!(E.cwd) : undefined);
 	const unrewritten = (url: string) =>
 		!E.urlRewritesOf ||
 		(dirs?.length ? dirs : [E.cwd]).every((d) => {
-			const prefixes = E.urlRewritesOf!(d);
+			const prefixes = rewrites(d);
 			return prefixes !== undefined && !prefixes.some((p) => url.startsWith(p));
 		});
 	// A push URL or rewrite set in this command (`git config remote.X.pushurl …`, `url.….insteadOf`, `remote set-url
