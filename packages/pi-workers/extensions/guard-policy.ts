@@ -1167,7 +1167,7 @@ function pushIsLocal(remote: string | undefined, addedUrl: string | undefined, d
 	return dirs.every((d) => {
 		if (E.pushUrlsOf) {
 			const urls = E.pushUrlsOf(d, remote);
-			return urls !== undefined && urls.every(isLocalUrl);
+			return urls?.every(isLocalUrl) === true;
 		}
 		const u = E.remoteUrlOf(d, remote);
 		return u !== undefined && isLocalUrl(u);
