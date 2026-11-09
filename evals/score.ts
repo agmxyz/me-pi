@@ -56,6 +56,8 @@ export interface DelegateMatch {
 	background?: boolean;
 	rebuttal?: boolean;
 	minRuns?: number;
+	/** Whether any run names a model or a thinking level. */
+	named?: boolean;
 }
 
 /** One expectation; exactly one key besides `id`. Counts are `n` or `[min, max]`. */
@@ -79,6 +81,11 @@ export interface Verdict {
 
 const accepted = (c: Call) => c.name === "delegate" && c.result !== undefined && !c.result.isError;
 const roleOf = (c: Call) => c.args.role ?? "general";
+const namedRuns = (c: Call): string[] =>
+	(c.args.runs ?? [])
+		.filter((r: any) => r?.model !== undefined || r?.thinking !== undefined)
+		.map((r: any) => [r.model, r.thinking].filter(Boolean).join(":"));
+const described = (c: Call) => [roleOf(c), ...namedRuns(c)].join(" ");
 const edits = (c: Call) =>
 	c.name === "edit" ||
 	c.name === "write" ||
@@ -90,6 +97,7 @@ function matches(c: Call, m: DelegateMatch): boolean {
 	if (m.role !== undefined && roleOf(c) !== m.role) return false;
 	for (const flag of ["web", "background", "rebuttal"] as const)
 		if (m[flag] !== undefined && !!c.args[flag] !== m[flag]) return false;
+	if (m.named !== undefined && namedRuns(c).length > 0 !== m.named) return false;
 	return m.minRuns === undefined || (c.args.runs?.length ?? 0) >= m.minRuns;
 }
 
@@ -110,7 +118,7 @@ export function check(t: Transcript, a: Assertion): Verdict {
 		const pending = t.calls.some((c) => c.name === "delegate" && !c.result);
 		const ok = hits.length >= min && hits.length <= max;
 		if (!ok && pending) return { id: a.id, result: "unknown", evidence: "a delegate call never returned" };
-		return verdict(a.id, ok, `${hits.length} matching (${min}–${max}): ${hits.map(roleOf).join(", ") || "none"}`);
+		return verdict(a.id, ok, `${hits.length} matching (${min}–${max}): ${hits.map(described).join(", ") || "none"}`);
 	}
 	if ("noTool" in a) {
 		const n = t.calls.filter((c) => c.name === a.noTool).length;

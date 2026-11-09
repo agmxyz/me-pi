@@ -87,6 +87,19 @@ test("delegate counts only accepted calls, defaulting the role to general", () =
 	assert.equal(run(log, { id: "none", delegate: { role: "implement" }, count: 0 }).result, "pass");
 });
 
+test("named matches calls whose runs set a model or thinking, and the evidence lists them", () => {
+	const log = session(
+		["user", "q"],
+		["call", "delegate", { task: "x" }, "ok"],
+		["call", "delegate", { task: "y", runs: [{}] }, "ok"],
+		["call", "delegate", { task: "z", runs: [{ model: "p/b" }, { thinking: "medium" }] }, "ok"],
+	);
+	const named = run(log, { id: "n", delegate: { named: true }, count: 1 });
+	assert.equal(named.result, "pass");
+	assert.match(named.evidence, /general p\/b medium/);
+	assert.equal(run(log, { id: "u", delegate: { named: false }, count: 2 }).result, "pass");
+});
+
 test("a delegate call that never returned makes a failing count unknown, not a fail", () => {
 	const log = session(["user", "q"], ["call", "delegate", { task: "x", background: true }]);
 	assert.equal(run(log, { id: "bg", delegate: { background: true }, count: 1 }).result, "unknown");
