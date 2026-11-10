@@ -151,7 +151,10 @@ export function gitTripwires(before: GitSnapshot, after: GitSnapshot, branch: st
 			(ref) => ref.startsWith(HEADS) && !PROTECTED_BRANCHES.has(ref.slice(HEADS.length)),
 		),
 	);
+	// `branch.<name>.<key>=`: a key has no dot, so branch `a` does not cover branch `a.b`.
 	const theirConfig = [...theirs].map((ref) => `branch.${ref.slice(HEADS.length)}.`);
+	const isTheirs = (line: string) =>
+		theirConfig.some((prefix) => line.startsWith(prefix, 1) && /^[^.=]+=/.test(line.slice(1 + prefix.length)));
 	for (const [ref, sha] of before.refs) {
 		if (ref === branch || theirs.has(ref)) continue;
 		const now = after.refs.get(ref);
@@ -165,7 +168,7 @@ export function gitTripwires(before: GitSnapshot, after: GitSnapshot, branch: st
 	const diff = [
 		...missingFrom(before.config, after.config, "-").filter((l) => !TRACKING.test(l) || !changedKeys.has(keyOf(l))),
 		...added.filter((l) => !TRACKING.test(l)),
-	].filter((l) => !theirConfig.some((prefix) => l.startsWith(prefix, 1)));
+	].filter((l) => !isTheirs(l));
 	if (diff.length) reasons.push(`local git config changed: ${diff.join(", ")}`);
 	if (before.hooks !== after.hooks) reasons.push("files under the git common dir's hooks/ or info/ changed");
 	return reasons;
@@ -407,29 +410,36 @@ async function writerIn(dir: string): Promise<Writer | undefined> {
 /**
  * Why this process must not write in the checkout holding `dir`: another process's implement job has its lock.
  * Undefined when the lock is free, dead, or this process's own (its `delegate` instance blocks for its own jobs),
- * and when `dir` is in no checkout.
+ * and when `dir` is in no checkout. With no `dir` (the write's place is not known), every checkout of the repo at
+ * `cwd` counts.
  */
-export async function writerElsewhere(dir: string): Promise<string | undefined> {
-	const writer = await writerIn(dir);
-	if (!writer?.holder) return writer && unreadableLock(writer);
-	if (writer.holder.pid === process.pid) return undefined;
-	return `implement job ${writer.holder.id} (pid ${writer.holder.pid}) of another session is writing in ${writer.repoRoot}; wait for its handback, or ${WORKTREE_HINT}.`;
+export async function writerElsewhere(dir: string | undefined, cwd: string): Promise<string | undefined> {
+	for (const candidate of dir === undefined ? await worktreesOf(cwd) : [dir]) {
+		const writer = await writerIn(candidate);
+		if (!writer) continue;
+		if (!writer.holder) return unreadableLock(writer);
+		if (writer.holder.pid === process.pid) continue;
+		return `implement job ${writer.holder.id} (pid ${writer.holder.pid}) of another session is writing in ${writer.repoRoot}; wait for its handback, or ${WORKTREE_HINT}.`;
+	}
+	return undefined;
+}
+
+// The checkouts of the repo at `cwd`, the main one first; none outside a repository.
+async function worktreesOf(cwd: string): Promise<string[]> {
+	const list = await git(cwd, ["worktree", "list", "--porcelain"]);
+	return list.out
+		.split("\n")
+		.filter((line) => line.startsWith("worktree "))
+		.map((line) => line.slice("worktree ".length));
 }
 
 /**
- * Why a `git worktree remove` must wait: a job of any session is writing in one of `targets`, which git would remove
- * from under it when its tree is clean. With no `targets` (paths the command does not show), any worktree of the
- * repo at `cwd` counts.
+ * Why a `git worktree remove` or `move` must wait: a job of any session is writing in one of `targets`, which git
+ * would take from under it when its tree is clean. With no `targets` (paths the command does not show), any linked
+ * worktree of the repo at `cwd` counts; git never removes the main one.
  */
 export async function worktreeRemovalBlocked(targets: string[] | undefined, cwd: string): Promise<string | undefined> {
-	let dirs = targets;
-	if (!dirs) {
-		const list = await git(cwd, ["worktree", "list", "--porcelain"]);
-		dirs = list.out
-			.split("\n")
-			.filter((line) => line.startsWith("worktree "))
-			.map((line) => line.slice("worktree ".length));
-	}
+	const dirs = targets ?? (await worktreesOf(cwd)).slice(1);
 	for (const dir of dirs) {
 		const writer = await writerIn(dir);
 		// A path inside a checkout is not a worktree: git refuses it.

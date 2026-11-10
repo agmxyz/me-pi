@@ -193,6 +193,8 @@ test("a worktree exempts only its own branch: main, tags, the stash, other branc
 	git("branch", "nowhere");
 	git("tag", "v1");
 	git("config", "branch.nowhere.remote", "origin");
+	git("branch", "goal/b.x");
+	git("config", "branch.goal/b.x.remote", "origin");
 	const m = sibling(repo, git, "m", "main", false);
 	const b = sibling(repo, git, "b", "goal/b");
 	const tip = commit(b.wt, b.path, "b.txt");
@@ -207,6 +209,11 @@ test("a worktree exempts only its own branch: main, tags, the stash, other branc
 	assert.match(
 		(await tripwires(repo, () => git("config", "--unset", "branch.nowhere.remote")))[0],
 		/^local git config changed: -branch\.nowhere\.remote=origin$/,
+	);
+	assert.match(
+		(await tripwires(repo, () => git("config", "--unset", "branch.goal/b.x.remote")))[0],
+		/^local git config changed: -branch\.goal\/b\.x\.remote=origin$/,
+		"goal/b checked out elsewhere does not cover goal/b.x",
 	);
 	assert.match((await tripwires(repo, () => git("config", "remote.origin.url", "x")))[0], /\+remote\.origin\.url=x/);
 	assert.equal(git("rev-parse", "nowhere"), tip);

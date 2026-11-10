@@ -693,6 +693,7 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(all, /Until an implement worker hands back, it is the checkout's only writer/);
 	assert.match(all, /do not edit, commit, or switch branches in that checkout/);
 	assert.match(all, /branch in place by default/);
+	assert.match(all, /move of main\/master in any worktree trips every running job in the repo/);
 	assert.match(
 		all,
 		/another session's job is writing here, .*`git worktree add <path> -b <branch>` outside the checkout/,

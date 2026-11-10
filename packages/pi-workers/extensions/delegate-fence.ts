@@ -177,6 +177,12 @@ export function commandDir(command: string, cwd: string): string | undefined {
 	return realTarget(absolute) ?? absolute;
 }
 
+/** Whether a command changes directory after its start, so `commandDir` does not say where its later parts run. */
+export function commandWanders(command: string): boolean {
+	const changes = command.match(/(?:^|[;&|(){}\n])\s*(?:cd|pushd|popd)\b/g)?.length ?? 0;
+	return changes > (/^\s*(?:cd|pushd)\s/.test(command) ? 1 : 0);
+}
+
 export const within = (root: string, target: string) => {
 	const rel = relative(realpathOr(root), target);
 	return rel === "" || !notStrictlyInside(rel);

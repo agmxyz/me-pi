@@ -616,17 +616,19 @@ const TREE_WRITES = new Set([
 ]);
 
 /**
- * The worktree paths a command's `git worktree remove` calls name, as written. "unknown" when one is quoted, escaped,
- * or expanded, so its path cannot be read from the text.
+ * The worktree paths a command's `git worktree remove` and `git worktree move` calls take away, as written.
+ * "unknown" when one is quoted, escaped, or expanded, so its path cannot be read from the text.
  */
 export function gitWorktreeRemovals(command: string): string[] | "unknown" {
 	const targets = new Set<string>();
 	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
 		if (sub !== "worktree") continue;
 		for (const words of gitReadings(args)) {
-			if (words[0] !== "remove") continue;
+			if (words[0] !== "remove" && words[0] !== "move") continue;
 			if (/["'\\$\x60]/.test(args)) return "unknown";
-			for (const word of words.slice(1)) if (!word.startsWith("-")) targets.add(word);
+			const paths = words.slice(1).filter((word) => !word.startsWith("-"));
+			// `move <worktree> <new-path>`: only the first is taken away.
+			for (const path of words[0] === "move" ? paths.slice(0, 1) : paths) targets.add(path);
 		}
 	}
 	return [...targets];

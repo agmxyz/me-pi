@@ -35,7 +35,15 @@ import {
 	validateOneOffModel,
 } from "./delegate-config.ts";
 import { isWorkerProcess } from "./delegate-env.ts";
-import { commandDir, expandHome, realpathOr, realTarget, UNICODE_SPACES, within } from "./delegate-fence.ts";
+import {
+	commandDir,
+	commandWanders,
+	expandHome,
+	realpathOr,
+	realTarget,
+	UNICODE_SPACES,
+	within,
+} from "./delegate-fence.ts";
 import {
 	type Checkout,
 	type Facts,
@@ -510,7 +518,7 @@ export const PROMPT_GUIDELINES = [
 	"An implement ✓ means the extension saw `check` pass on the delivered commit: do not re-run it. Read a small diff yourself; that is its review. Past ~50 changed lines, on security or data risk, a breaking public-contract change, or when asked, give one `general` reviewer the diff file with `answer` set to severity-ranked findings; send fixes to `implement`, or make small ones inline. A skill's own review replaces this.",
 	"Workers see only the brief, not this chat or loaded skill bodies: give scope, deliverable, context, acceptance evidence, and any skill to load with `Skill`. When a skill applies, you keep its user decisions and orchestration; a handback completes only its step.",
 	"For several models on one question, make one call, one `runs` entry each, plus `rebuttal: true` to cross-check; report agreements, disagreements with evidence, and your verdict.",
-	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that checkout. New work is a branch in place by default; when the user asks for a worktree, or another session's job is writing here, run `git worktree add <path> -b <branch>` outside the checkout and give the user that path to start Pi in. Surface failed handbacks; on a tripwire, stop and tell the user. Pushes, PRs, merges, and branch deletion are main-session only, with user authorization.",
+	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that checkout. New work is a branch in place by default; when the user asks for a worktree, or another session's job is writing here, run `git worktree add <path> -b <branch>` outside the checkout and give the user that path to start Pi in. A stash, tag move, or move of main/master in any worktree trips every running job in the repo. Surface failed handbacks; on a tripwire, stop and tell the user. Pushes, PRs, merges, and branch deletion are main-session only, with user authorization.",
 	"Set `background: true` for work that takes minutes while you keep going with the user; tell them the job id; do not wait, poll, or repeat the call.",
 ];
 
@@ -669,14 +677,22 @@ export default function (pi: ExtensionAPI) {
 	// by the checkout's lock.
 	pi.on("tool_call", async (event, ctx) => {
 		const input = (event.input ?? {}) as { path?: unknown; command?: unknown };
+		const command = event.toolName === "bash" ? String(input.command ?? "") : "";
+		// A later `cd` runs part of the command where its text does not show.
+		const wanders = commandWanders(command);
 		// The directory a write lands in: an edit's nearest existing directory, or where a git tree write runs.
+		let writes = false;
 		let lands: string | undefined;
 		if ((event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string") {
-			lands = resolve(ctx.cwd, input.path.replace(UNICODE_SPACES, " ").replace(/^@/, ""));
+			const absolute = resolve(ctx.cwd, input.path.replace(UNICODE_SPACES, " ").replace(/^@/, ""));
+			writes = true;
+			lands = realTarget(absolute) ?? absolute;
 			do lands = dirname(lands);
 			while (!existsSync(lands) && dirname(lands) !== lands);
-		} else if (event.toolName === "bash" && gitTreeWrite(String(input.command ?? "")) !== undefined)
-			lands = commandDir(String(input.command ?? ""), ctx.cwd) ?? ctx.cwd;
+		} else if (gitTreeWrite(command) !== undefined) {
+			writes = true;
+			lands = wanders ? undefined : (commandDir(command, ctx.cwd) ?? ctx.cwd);
+		}
 		for (const [root, id] of writing) {
 			let hit = false;
 			if ((event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string") {
@@ -698,12 +714,15 @@ export default function (pi: ExtensionAPI) {
 					reason: `implement job ${id} is writing in ${root}; wait for its handback${id.startsWith("bg") ? ` or /delegate cancel ${id}` : ""}.`,
 				};
 		}
-		let reason = lands === undefined ? undefined : await writerElsewhere(lands);
-		const removals = event.toolName === "bash" ? gitWorktreeRemovals(String(input.command ?? "")) : [];
+		let reason = writes ? await writerElsewhere(lands, ctx.cwd) : undefined;
+		const removals = gitWorktreeRemovals(command);
 		if (!reason && removals.length) {
-			const base = commandDir(String(input.command ?? ""), ctx.cwd) ?? ctx.cwd;
-			const targets = removals === "unknown" ? undefined : removals.map((path) => resolve(base, expandHome(path)));
-			reason = await worktreeRemovalBlocked(targets, base);
+			const base = commandDir(command, ctx.cwd) ?? ctx.cwd;
+			const shown = removals !== "unknown" && !wanders;
+			reason = await worktreeRemovalBlocked(
+				shown ? removals.map((path) => resolve(base, expandHome(path))) : undefined,
+				ctx.cwd,
+			);
 		}
 		return reason ? { block: true, reason } : undefined;
 	});

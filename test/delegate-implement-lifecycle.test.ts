@@ -563,6 +563,10 @@ test("another session's implement lock blocks this session's writes in that chec
 	const inWt = await call("edit", { path: "sub/a.txt" }, wt);
 	assert.match(inWt?.reason ?? "", new RegExp(`^implement job im4 .* is writing in ${wt};`));
 	assert.equal((await bash(`cd ${wt} && git commit -m x`))?.block, true);
+	assert.equal((await bash(`git status && cd ${wt} && git commit -m x`))?.block, true, "a later cd: any checkout");
+	assert.equal(await bash(`git status && cd ${wt} && git log`), undefined);
+	symlinkSync(join(wt, "sub"), join(outside, "into-wt"));
+	assert.equal((await call("write", { path: join(outside, "into-wt", "new.txt") }))?.block, true, "through a symlink");
 	rmSync(wtLock);
 
 	writeFileSync(lock, `${process.pid} im5\n`);
@@ -588,7 +592,9 @@ test("a worktree with a live implement lock cannot be removed, by any session; a
 	const forms = [
 		`git worktree remove ${wt}`,
 		`git worktree remove ${wt}/`,
-		"git worktree remove ../" + `${real.split("/").pop()}.worktrees/y`,
+		`git worktree remove ../${real.split("/").pop()}.worktrees/y`,
+		`git worktree move ${wt} ${wt}-moved`,
+		`git fetch && cd ${real}.worktrees && git worktree remove y`,
 		`git worktree remove --force ${wt}`,
 		`git worktree remove -f ${wt}`,
 		`git worktree remove ${wt} --force`,
@@ -614,6 +620,11 @@ test("a worktree with a live implement lock cannot be removed, by any session; a
 	assert.equal(await bash(`git worktree remove ${real}.worktrees/missing`), undefined, "no such worktree");
 	assert.equal(await bash(`git worktree remove ${wt}/sub`), undefined, "a path inside one: git refuses it");
 	assert.equal((await bash('git worktree remove "$WT"'))?.block, true, "an unreadable target: any live lock");
+	rmSync(wtLock);
+	writeFileSync(join(real, ".git", "me-pi-implement.lock"), `${process.pid} im9\n`);
+	assert.equal(await bash('git worktree remove "$WT"'), undefined, "the main checkout is never removed");
+	rmSync(join(real, ".git", "me-pi-implement.lock"));
+	writeFileSync(wtLock, "garbage\n");
 	assert.equal(await bash('git worktree remove "$WT"', mkdtempSync(join(TEST_HOME, "norepo-"))), undefined);
 	assert.equal(await bash(`git worktree add ${real}.worktrees/z -b goal/z`), undefined);
 	assert.equal(await bash("git worktree list"), undefined);

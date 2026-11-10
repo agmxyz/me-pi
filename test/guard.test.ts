@@ -757,7 +757,7 @@ test("an implement worker's git in a fresh mktemp repo passes; leaving it or poi
 	assert.ok(classify(fresh[2], onMain), "the main session's guard never exempts temp repos");
 });
 
-test("gitWorktreeRemovals lists the worktrees a command removes", () => {
+test("gitWorktreeRemovals lists the worktrees a command removes or moves", () => {
 	for (const [command, targets] of [
 		["git worktree remove ../wt", ["../wt"]],
 		["git worktree remove -f ../wt", ["../wt"]],
@@ -769,6 +769,8 @@ test("gitWorktreeRemovals lists the worktrees a command removes", () => {
 		["git worktree remove a && git worktree remove b", ["a", "b"]],
 		["git status; git worktree remove a 2>&1", ["a"]],
 		["git worktree remove", []],
+		["git worktree move ../wt ../new", ["../wt"]],
+		["git worktree move --force ../wt ../new", ["../wt"]],
 		["git worktree add ../wt -b x", []],
 		["git worktree list", []],
 		["git worktree prune", []],
