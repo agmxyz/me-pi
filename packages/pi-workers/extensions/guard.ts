@@ -637,15 +637,20 @@ function branchIn(cwd: string): string | undefined {
 	return res.status === 0 ? res.stdout.trim() : undefined;
 }
 
+/** The arguments of `/guard`. */
+const MODES = ["on", "off"];
+
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 
 	pi.registerCommand("guard", {
-		description: "Dangerous-bash guard: /guard on | off (current session; default on)",
+		description: `Dangerous-bash guard: /guard ${MODES.join(" | ")} (current session; default on)`,
+		getArgumentCompletions: (prefix) =>
+			MODES.filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {
 			const arg = args.trim();
-			if (arg === "on" || arg === "off") enabled = arg === "on";
-			else if (arg) return ctx.ui.notify("usage: /guard [on|off]", "warning");
+			if (MODES.includes(arg)) enabled = arg === "on";
+			else if (arg) return ctx.ui.notify(`usage: /guard [${MODES.join("|")}]`, "warning");
 			ctx.ui.notify(`guard ${enabled ? "on" : "off"}`, "info");
 		},
 	});

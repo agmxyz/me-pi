@@ -5,6 +5,7 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 ## [Unreleased]
 
 - `guard` asks in every session before git options and env that run a command: `git -c` with a key off a short safe list (`user.*`, `color.*`, `pull.rebase`, …), `--config-env`, `git config` writes of such keys, `submodule foreach`, `clone -c/--template`, `--exec-path`, `--upload-pack` (and `clone -u`), `push --receive-pack/--exec`, `archive --exec`, `grep -O`, `difftool -x`, an editor override on any git command, and `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_EXTERNAL_DIFF`, `GIT_CONFIG_*`, `GIT_TEMPLATE_DIR`, `LESSOPEN`, or a `GIT_PAGER`/`PAGER` other than `cat`. Safe `-c` and `git config` keys, `GIT_PAGER=cat`, and `git config` reads and `--unset` stay quiet; these checks also apply in an implement worker's fresh temp repo (#115).
+- `/guard` completes its `on` and `off` arguments.
 
 ## [0.1.6] - 2026-11-10
 

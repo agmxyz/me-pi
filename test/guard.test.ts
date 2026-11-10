@@ -939,3 +939,12 @@ test("/guard toggles enforcement for the session", async () => {
 	await command.handler("maybe", ctx);
 	assert.equal(notes.pop(), "usage: /guard [on|off]");
 });
+
+test("/guard completes on and off", () => {
+	const { command } = setup();
+	assert.deepEqual(command.getArgumentCompletions(""), [
+		{ value: "on", label: "on" },
+		{ value: "off", label: "off" },
+	]);
+	assert.deepEqual(command.getArgumentCompletions("of"), [{ value: "off", label: "off" }]);
+});
