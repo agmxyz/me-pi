@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import {
 	bgCtx,
 	CHECK,
@@ -280,6 +281,11 @@ test("implement: a second job in the same repo is refused; the main session's wr
 	assert.equal((await bash("cd sub && git add -A", repo))?.block, true);
 	assert.equal((await bash(`git -C ${repo}/sub commit -m x`, outside))?.block, true);
 	assert.equal((await bash("git -C .. commit -m x", join(repo, "sub")))?.block, true);
+	// A read elsewhere does not move the write; a place the text does not show counts as here.
+	assert.equal((await bash(`git -C ${outside} status && git commit -m x`, repo))?.block, true);
+	assert.equal((await bash(`git status && cd ${outside} && git commit -m x`, repo))?.block, true);
+	assert.equal((await bash(`cd ${repo}\ngit commit -m x`, outside))?.block, true);
+	assert.equal(await bash(`git -C ${repo} status && git commit -m x`, outside), undefined);
 	// A dangling symlink cannot be resolved: blocked only under the root.
 	symlinkSync(join(TEST_HOME, "missing-target"), join(outside, "dangling"));
 	symlinkSync(join(TEST_HOME, "missing-target"), join(repo, "dangling"));
@@ -549,6 +555,23 @@ test("another session's implement lock blocks this session's writes in that chec
 	// Where these run is not in their text, so every checkout of the repo counts.
 	for (const command of [`git -C ${wt} status && git commit -m x`, 'cd "$WT" && git commit -m x'])
 		assert.equal((await bash(command))?.block, true, command);
+	// Shapes that reach the occupied checkout from a free one.
+	for (const command of [
+		`cd ${real}\ngit commit -m x`,
+		`cd ${real} || true; git commit -m x`,
+		`bash -c "cd ${real} && git commit -m x"`,
+		`git --git-dir=${real}/.git --work-tree=${real} commit -m x`,
+		`git -c color.ui=never -C ${real} commit -m x`,
+		`git -C ${wt} status && /usr/bin/git -C ${real} commit -m x`,
+	])
+		assert.equal((await bash(command, wt))?.block, true, command);
+	assert.equal((await bash(`git -C ${wt} status && env X=1 git commit -m x`))?.block, true, "the write runs here");
+	assert.equal(
+		await bash(`git -C ${real} status && git commit -m x`, wt),
+		undefined,
+		"the write runs in the free one",
+	);
+	assert.equal((await call("write", { path: pathToFileURL(join(real, "sub", "u.txt")).href }, wt))?.block, true);
 	for (const command of ["git switch -c goal/z", "git commit -m x", "git stash", `git -C ${real} add -A`])
 		assert.equal((await bash(command, command.includes("-C") ? outside : repo))?.block, true, command);
 	assert.equal((await bash("git add -A", join(repo, "sub")))?.block, true, "from a subdirectory");
@@ -585,6 +608,36 @@ test("another session's implement lock blocks this session's writes in that chec
 	);
 });
 
+test("when git cannot say whether a job is writing, writes and worktree removals are blocked", async (t) => {
+	const { GIT_LIMITS } = await import("../packages/pi-workers/extensions/delegate-implement.ts");
+	const hook = setup(t).handlers.tool_call;
+	const { repo, real, git } = implementRepo();
+	const wt = `${real}.worktrees/y`;
+	git("worktree", "add", "-q", "-b", "goal/y", wt);
+	const outside = mkdtempSync(join(TEST_HOME, "outside-"));
+	const call = (toolName, input, cwd = repo) => hook({ toolName, input }, { cwd });
+	const commands = ["git commit -m x", 'cd "$WT" && git commit -m x', `git worktree remove ${wt}`];
+	assert.equal(await call("edit", { path: "sub/a.txt" }), undefined);
+	assert.equal(await call("edit", { path: "x.txt" }, outside), undefined, "git answers: not a checkout");
+	for (const command of commands) assert.equal(await call("bash", { command }), undefined, command);
+
+	// Every git call hangs until the timeout kills it.
+	const bin = mkdtempSync(join(TEST_HOME, "hung-git-"));
+	writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+	const saved = { timeoutMs: GIT_LIMITS.timeoutMs, path: process.env.PATH };
+	t.after(() => {
+		GIT_LIMITS.timeoutMs = saved.timeoutMs;
+		process.env.PATH = saved.path;
+	});
+	GIT_LIMITS.timeoutMs = 100;
+	process.env.PATH = `${bin}:${saved.path}`;
+	const blocked = await call("edit", { path: "sub/a.txt" });
+	assert.equal(blocked?.block, true);
+	assert.match(blocked.reason, /^could not check for an implement job in .*: git rev-parse timed out after 100 ms$/);
+	for (const command of commands) assert.equal((await call("bash", { command }))?.block, true, command);
+	assert.equal(await call("bash", { command: "git status" }), undefined, "a read is not checked");
+});
+
 test("a worktree with a live implement lock cannot be removed, by any session; a free or dead one can", async (t) => {
 	const hook = setup(t).handlers.tool_call;
 	const { repo, real, git } = implementRepo();
@@ -604,6 +657,9 @@ test("a worktree with a live implement lock cannot be removed, by any session; a
 		`git -C ${real} worktree remove ${wt}`,
 		`cd ${real}.worktrees && git worktree remove y`,
 		`git status && git worktree remove ${wt}`,
+		`cd ${real}.worktrees\ngit worktree remove y`,
+		`echo ${wt} | xargs git worktree remove`,
+		`git worktree remove ${wt}*`,
 	];
 	for (const command of forms) assert.equal(await bash(command), undefined, `free: ${command}`);
 

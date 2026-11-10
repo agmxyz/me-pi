@@ -7,10 +7,10 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
 import { ENV_CHECK, ENV_DENY_DIR, ENV_OUTPUT_DIR, ENV_PARENT, ENV_ROLE } from "./delegate-env.ts";
@@ -102,7 +102,7 @@ export async function snapshotGit(repoRoot: string): Promise<GitSnapshot> {
 		// Exit 1 with no output: no local entries.
 		gitOrThrow(repoRoot, ["config", "--local", "--list"], [1]),
 		gitOrThrow(repoRoot, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"]),
-		gitOrThrow(repoRoot, ["worktree", "list", "--porcelain"]),
+		worktreesOf(repoRoot),
 	]);
 	const refs = new Map(
 		refsOut
@@ -113,12 +113,9 @@ export async function snapshotGit(repoRoot: string): Promise<GitSnapshot> {
 	const [toplevel, common] = dirs.trim().split("\n");
 	// Paths are compared resolved: git lists real paths, and the checkout may be reached through a symlink.
 	const own = realpathOr(toplevel);
-	const elsewhere = new Set<string>();
-	let other = false;
-	for (const line of worktrees.split("\n")) {
-		if (line.startsWith("worktree ")) other = realpathOr(line.slice("worktree ".length)) !== own;
-		else if (other && line.startsWith("branch ")) elsewhere.add(line.slice("branch ".length));
-	}
+	const elsewhere = new Set(
+		worktrees.flatMap(({ path, branch }) => (branch !== undefined && realpathOr(path) !== own ? [branch] : [])),
+	);
 	const hash = createHash("sha256");
 	for (const sub of ["hooks", "info"]) {
 		const files = (await filesIn(join(common, sub))).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
@@ -358,7 +355,7 @@ async function takeLock(lockPath: string, id: string, repoRoot: string, toolCall
 		if (!holder || isAlive(holder.pid))
 			throw new ImplementLockRefusal(
 				holder
-					? `implement job ${holder.id} (pid ${holder.pid}) is already writing in ${repoRoot}; wait for its handback, or ${WORKTREE_HINT}`
+					? `${jobOf(holder)} is already writing in ${repoRoot}; wait for its handback, or ${WORKTREE_HINT}`
 					: unreadableLock({ repoRoot, lockPath }),
 				id,
 				toolCallId,
@@ -391,15 +388,34 @@ async function releaseLock(lockPath: string, id: string): Promise<void> {
 	if (content.trim().split(" ")[1] === id) await rm(lockPath, { force: true });
 }
 
-type Writer = { repoRoot: string; lockPath: string; holder?: { pid: number; id: string } };
+type Writer = { repoRoot: string; lockPath: string; holder?: ReturnType<typeof lockHolder> };
 const unreadableLock = (writer: Writer) =>
 	`${writer.lockPath} is unreadable; another implement job may be starting in ${writer.repoRoot}. Remove it only if none runs.`;
+const jobOf = (holder: NonNullable<Writer["holder"]>) => `implement job ${holder.id} (pid ${holder.pid})`;
 
-// The held lock of the checkout containing `dir`: its live holder, or none when unreadable. Undefined when free or dead.
+// git's output for a directory in a checkout; undefined when git exits with an error: `dir` is in no checkout (outside
+// a repository, or inside a git dir). Throws when git gave no answer (it timed out or could not start): whether a job
+// writes there is then unknown, which callers report as a block.
+async function gitInCheckout(dir: string, args: string[]): Promise<string | undefined> {
+	const res = await git(dir, args);
+	if (res.ok) return res.out;
+	if (res.code !== undefined) return undefined;
+	throw new Error(`could not check for an implement job in ${dir}: ${res.err || `git ${args[0]} did not run`}`);
+}
+
+// `path` when it is a directory, else its nearest existing parent directory.
+function existingDir(path: string): string {
+	let dir = path;
+	while (!statSync(dir, { throwIfNoEntry: false })?.isDirectory() && dirname(dir) !== dir) dir = dirname(dir);
+	return dir;
+}
+
+// The held lock of the checkout containing `dir`: its live holder, or none when unreadable. Undefined when free or
+// dead, and when `dir` is in no checkout. Throws when git cannot say.
 async function writerIn(dir: string): Promise<Writer | undefined> {
-	const dirs = await git(dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir"]);
-	if (!dirs.ok) return undefined;
-	const [repoRoot, gitDir] = dirs.out.trim().split("\n");
+	const dirs = await gitInCheckout(dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir"]);
+	if (dirs === undefined) return undefined;
+	const [repoRoot, gitDir] = dirs.trim().split("\n");
 	const lockPath = join(gitDir, LOCK_NAME);
 	const content = await readFile(lockPath, "utf8").catch(() => undefined);
 	if (content === undefined) return undefined;
@@ -407,46 +423,59 @@ async function writerIn(dir: string): Promise<Writer | undefined> {
 	return holder && !isAlive(holder.pid) ? undefined : { repoRoot, lockPath, holder };
 }
 
+// The checkouts of the repo at `cwd` with the branch each has checked out, the main one first; none outside a
+// repository. Throws when git cannot say.
+async function worktreesOf(cwd: string): Promise<{ path: string; branch?: string }[]> {
+	const list = (await gitInCheckout(cwd, ["worktree", "list", "--porcelain"])) ?? "";
+	const worktrees: { path: string; branch?: string }[] = [];
+	for (const line of list.split("\n")) {
+		if (line.startsWith("worktree ")) worktrees.push({ path: line.slice("worktree ".length) });
+		else if (line.startsWith("branch ")) worktrees[worktrees.length - 1].branch = line.slice("branch ".length);
+	}
+	return worktrees;
+}
+
 /**
- * Why this process must not write in the checkout holding `dir`: another process's implement job has its lock.
- * Undefined when the lock is free, dead, or this process's own (its `delegate` instance blocks for its own jobs),
- * and when `dir` is in no checkout. With no `dir` (the write's place is not known), every checkout of the repo at
- * `cwd` counts.
+ * Why this process must not write at `targets` (files or directories): another process's implement job has the lock
+ * of a checkout holding one, or git could not say. Undefined when each lock is free, dead, or this process's own
+ * (its `delegate` instance blocks for its own jobs), and for a target in no checkout. With no `targets` (the write's
+ * place is not known), every checkout of the repo at `cwd` counts.
  */
-export async function writerElsewhere(dir: string | undefined, cwd: string): Promise<string | undefined> {
-	for (const candidate of dir === undefined ? await worktreesOf(cwd) : [dir]) {
-		const writer = await writerIn(candidate);
-		if (!writer) continue;
-		if (!writer.holder) return unreadableLock(writer);
-		if (writer.holder.pid === process.pid) continue;
-		return `implement job ${writer.holder.id} (pid ${writer.holder.pid}) of another session is writing in ${writer.repoRoot}; wait for its handback, or ${WORKTREE_HINT}.`;
+export async function writerElsewhere(targets: string[] | undefined, cwd: string): Promise<string | undefined> {
+	try {
+		const dirs = targets?.map(existingDir) ?? (await worktreesOf(cwd)).map((worktree) => worktree.path);
+		for (const dir of dirs) {
+			const writer = await writerIn(dir);
+			if (!writer) continue;
+			if (!writer.holder) return unreadableLock(writer);
+			if (writer.holder.pid === process.pid) continue;
+			return `${jobOf(writer.holder)} of another session is writing in ${writer.repoRoot}; wait for its handback, or ${WORKTREE_HINT}.`;
+		}
+	} catch (err) {
+		return (err as Error).message;
 	}
 	return undefined;
 }
 
-// The checkouts of the repo at `cwd`, the main one first; none outside a repository.
-async function worktreesOf(cwd: string): Promise<string[]> {
-	const list = await git(cwd, ["worktree", "list", "--porcelain"]);
-	return list.out
-		.split("\n")
-		.filter((line) => line.startsWith("worktree "))
-		.map((line) => line.slice("worktree ".length));
-}
-
 /**
  * Why a `git worktree remove` or `move` must wait: a job of any session is writing in one of `targets`, which git
- * would take from under it when its tree is clean. With no `targets` (paths the command does not show), any linked
- * worktree of the repo at `cwd` counts; git never removes the main one.
+ * would take from under it when its tree is clean, or git could not say. With no `targets` (paths the command does
+ * not show), any linked worktree of the repo at `cwd` counts; git never removes the main one.
  */
 export async function worktreeRemovalBlocked(targets: string[] | undefined, cwd: string): Promise<string | undefined> {
-	const dirs = targets ?? (await worktreesOf(cwd)).slice(1);
-	for (const dir of dirs) {
-		const writer = await writerIn(dir);
-		// A path inside a checkout is not a worktree: git refuses it.
-		if (!writer || realpathOr(dir) !== realpathOr(writer.repoRoot)) continue;
-		return writer.holder
-			? `implement job ${writer.holder.id} (pid ${writer.holder.pid}) is writing in ${writer.repoRoot}; removing the worktree would take it from under the job. Wait for its handback.`
-			: unreadableLock(writer);
+	try {
+		const dirs = targets ?? (await worktreesOf(cwd)).slice(1).map((worktree) => worktree.path);
+		for (const dir of dirs) {
+			// A missing path, or one inside a checkout, is not a worktree: git refuses it.
+			if (!existsSync(dir)) continue;
+			const writer = await writerIn(dir);
+			if (!writer || realpathOr(dir) !== realpathOr(writer.repoRoot)) continue;
+			return writer.holder
+				? `${jobOf(writer.holder)} is writing in ${writer.repoRoot}; removing the worktree would take it from under the job. Wait for its handback.`
+				: unreadableLock(writer);
+		}
+	} catch (err) {
+		return (err as Error).message;
 	}
 	return undefined;
 }

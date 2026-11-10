@@ -615,40 +615,92 @@ const TREE_WRITES = new Set([
 	"symbolic-ref",
 ]);
 
+// A directory-changing word anywhere, even as an argument (`builtin cd`, `sh -c 'cd …'`), and the one form whose
+// target is read: opening the command.
+const DIR_CHANGE = /(?<![\w./-])(?:cd|chdir|pushd|popd)(?![\w.-])/g;
+const DIR_WORD = String.raw`("[^"]*"|'[^']*'|[^\s;&|]+)`;
+const LEADING_CD = new RegExp(String.raw`^\s*(?:cd|pushd)\s+${DIR_WORD}\s*(?:&&|;)`);
+const GIT_C = new RegExp(String.raw`(?:^|\s)-C\s+${DIR_WORD}`, "g");
+
+// A directory word as the shell passes it on. Undefined when the shell rewrites it: an expansion, glob, escape,
+// nested quote, `~user`, `-`, or an option.
+function plainDir(word: string): string | undefined {
+	const dir = word.replace(/^(["'])(.*)\1$/, "$2");
+	return /[$\x60\\*?[\]{}"']/.test(dir) || /^(?:-|~[^/])/.test(dir) ? undefined : dir;
+}
+
 /**
- * The worktree paths a command's `git worktree remove` and `git worktree move` calls take away, as written.
- * "unknown" when one is quoted, escaped, or expanded, so its path cannot be read from the text.
+ * Where a command's git calls run, read from its text: per call, the directories to resolve in turn from the cwd (an
+ * opening `cd <dir> &&|;`, then the call's `-C <dir>`). The reader returns undefined when the text does not show it:
+ * any other directory change (a later or nested `cd`, one not followed by `&&` or `;`), a rewritten directory word,
+ * a repeated `-C`, or a repository named by `--git-dir`, `--work-tree`, `GIT_DIR`, or `GIT_WORK_TREE`.
  */
-export function gitWorktreeRemovals(command: string): string[] | "unknown" {
-	const targets = new Set<string>();
-	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
+function gitPlaces(command: string): (globals: string) => string[] | undefined {
+	const lead = command.match(LEADING_CD);
+	const start = lead ? plainDir(lead[1]) : undefined;
+	const lost =
+		(command.match(DIR_CHANGE)?.length ?? 0) > (lead ? 1 : 0) ||
+		(lead !== null && start === undefined) ||
+		/\bGIT_(?:DIR|WORK_TREE)\b/.test(command);
+	return (globals) => {
+		if (lost || /--(?:git-dir|work-tree)\b/.test(globals)) return undefined;
+		const targets = [...globals.matchAll(GIT_C)].map((m) => plainDir(m[1]));
+		if (targets.length > 1 || targets.includes(undefined)) return undefined;
+		return [start, targets[0]].filter((dir) => dir !== undefined);
+	};
+}
+
+/**
+ * The worktrees a command's `git worktree remove` and `git worktree move` calls take away: per worktree, the
+ * directories to resolve in turn from the cwd, its path last. "unknown" when the text does not show one: no path
+ * word (`xargs` may supply it), a quoted, escaped, expanded, or globbed path, or a call whose place `gitPlaces`
+ * cannot read.
+ */
+export function gitWorktreeRemovals(command: string): string[][] | "unknown" {
+	command = withoutMessages(command);
+	const place = gitPlaces(command);
+	const targets: string[][] = [];
+	for (const [, globals, sub, args] of command.matchAll(GIT_COMMAND)) {
 		if (sub !== "worktree") continue;
 		for (const words of gitReadings(args)) {
 			if (words[0] !== "remove" && words[0] !== "move") continue;
-			if (/["'\\$\x60]/.test(args)) return "unknown";
+			const at = place(globals);
 			const paths = words.slice(1).filter((word) => !word.startsWith("-"));
+			if (!at || !paths.length || /["'\\$\x60*?[\]{}]/.test(args)) return "unknown";
 			// `move <worktree> <new-path>`: only the first is taken away.
-			for (const path of words[0] === "move" ? paths.slice(0, 1) : paths) targets.add(path);
+			for (const path of words[0] === "move" ? paths.slice(0, 1) : paths) targets.push([...at, path]);
 		}
 	}
-	return [...targets];
+	return targets;
 }
 
-export function gitTreeWrite(command: string): string | undefined {
-	for (const [, , sub, args] of withoutMessages(command).matchAll(GIT_COMMAND)) {
-		for (const words of gitReadings(args)) {
-			// `git stash list|show` only read.
-			if (sub === "stash" && ["list", "show"].includes(words[0])) continue;
-			// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
-			if (
-				sub === "branch" &&
-				(hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w)))
-			)
-				return sub;
-			if (TREE_WRITES.has(sub)) return sub;
-		}
+// Whether a git call changes the index, the working tree, HEAD, or a branch.
+function treeWrite(sub: string, args: string): boolean {
+	return gitReadings(args).some((words) => {
+		// `git stash list|show` only read.
+		if (sub === "stash" && ["list", "show"].includes(words[0])) return false;
+		// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
+		if (sub === "branch")
+			return hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w));
+		return TREE_WRITES.has(sub);
+	});
+}
+
+/**
+ * Where a command's git tree writes run: per write, the directories to resolve in turn from the cwd (none: the cwd
+ * itself). Undefined when it has no tree write; "unknown" when the text does not show where one runs (`gitPlaces`).
+ */
+export function gitWriteDirs(command: string): string[][] | "unknown" | undefined {
+	command = withoutMessages(command);
+	const place = gitPlaces(command);
+	const dirs: string[][] = [];
+	for (const [, globals, sub, args] of command.matchAll(GIT_COMMAND)) {
+		if (!treeWrite(sub, args)) continue;
+		const at = place(globals);
+		if (!at) return "unknown";
+		dirs.push(at);
 	}
-	return undefined;
+	return dirs.length ? dirs : undefined;
 }
 
 function branchIn(cwd: string): string | undefined {

@@ -35,15 +35,7 @@ import {
 	validateOneOffModel,
 } from "./delegate-config.ts";
 import { isWorkerProcess } from "./delegate-env.ts";
-import {
-	commandDir,
-	commandWanders,
-	expandHome,
-	realpathOr,
-	realTarget,
-	UNICODE_SPACES,
-	within,
-} from "./delegate-fence.ts";
+import { expandHome, realTarget, toolPath, within } from "./delegate-fence.ts";
 import {
 	type Checkout,
 	type Facts,
@@ -81,7 +73,7 @@ import {
 	registerWorker,
 	workerLaunch,
 } from "./delegate-worker.ts";
-import { gitTreeWrite, gitWorktreeRemovals } from "./guard.ts";
+import { gitWorktreeRemovals, gitWriteDirs } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
 export const LIMITS = {
@@ -678,52 +670,34 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		const input = (event.input ?? {}) as { path?: unknown; command?: unknown };
 		const command = event.toolName === "bash" ? String(input.command ?? "") : "";
-		// A later `cd` runs part of the command where its text does not show.
-		const wanders = commandWanders(command);
-		// The directory a write lands in: an edit's nearest existing directory, or where a git tree write runs.
-		let writes = false;
-		let lands: string | undefined;
+		const at = (dirs: string[]) => resolve(ctx.cwd, ...dirs.map(expandHome));
+		// Where this call writes: an edit's file, or the directory of each git tree write. "unknown" when a command's
+		// text does not show it; undefined when it writes nothing.
+		let targets: string[] | "unknown" | undefined;
 		if ((event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string") {
-			const absolute = resolve(ctx.cwd, input.path.replace(UNICODE_SPACES, " ").replace(/^@/, ""));
-			writes = true;
-			lands = realTarget(absolute) ?? absolute;
-			do lands = dirname(lands);
-			while (!existsSync(lands) && dirname(lands) !== lands);
-		} else if (gitTreeWrite(command) !== undefined) {
-			writes = true;
-			lands = wanders ? undefined : (commandDir(command, ctx.cwd) ?? ctx.cwd);
+			const absolute = toolPath(input.path, ctx.cwd);
+			// Unresolvable (a dangling symlink): judged by its resolved parent directory.
+			const parent = realTarget(dirname(absolute));
+			targets = [realTarget(absolute) ?? (parent ? join(parent, basename(absolute)) : absolute)];
+		} else {
+			const dirs = gitWriteDirs(command);
+			targets = typeof dirs === "object" ? dirs.map((chain) => realTarget(at(chain)) ?? at(chain)) : dirs;
 		}
-		for (const [root, id] of writing) {
-			let hit = false;
-			if ((event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string") {
-				const absolute = resolve(ctx.cwd, input.path.replace(UNICODE_SPACES, " ").replace(/^@/, ""));
-				const target = realTarget(absolute);
-				// Unresolvable (a dangling symlink): judged by its resolved parent directory.
-				const parent = realTarget(dirname(absolute));
-				hit = within(root, target ?? (parent ? join(parent, basename(absolute)) : absolute));
-			} else if (event.toolName === "bash") {
-				const command = String(input.command ?? "");
-				const dir = commandDir(command, ctx.cwd);
-				const here =
-					dir !== undefined ? within(root, dir) : within(root, realpathOr(ctx.cwd)) || command.includes(root);
-				hit = here && gitTreeWrite(command) !== undefined;
-			}
-			if (hit)
+		if (!targets) {
+			const removals = gitWorktreeRemovals(command);
+			const reason = removals.length
+				? await worktreeRemovalBlocked(removals === "unknown" ? undefined : removals.map(at), ctx.cwd)
+				: undefined;
+			return reason ? { block: true, reason } : undefined;
+		}
+		// A write whose place is unknown may be in any checkout: this session's job blocks it.
+		for (const [root, id] of writing)
+			if (targets === "unknown" || targets.some((target) => within(root, target)))
 				return {
 					block: true,
 					reason: `implement job ${id} is writing in ${root}; wait for its handback${id.startsWith("bg") ? ` or /delegate cancel ${id}` : ""}.`,
 				};
-		}
-		let reason = writes ? await writerElsewhere(lands, ctx.cwd) : undefined;
-		const removals = gitWorktreeRemovals(command);
-		if (!reason && removals.length) {
-			const base = commandDir(command, ctx.cwd) ?? ctx.cwd;
-			const shown = removals !== "unknown" && !wanders;
-			reason = await worktreeRemovalBlocked(
-				shown ? removals.map((path) => resolve(base, expandHome(path))) : undefined,
-				ctx.cwd,
-			);
-		}
+		const reason = await writerElsewhere(targets === "unknown" ? undefined : targets, ctx.cwd);
 		return reason ? { block: true, reason } : undefined;
 	});
 

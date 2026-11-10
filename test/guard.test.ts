@@ -5,8 +5,8 @@ const {
 	default: registerGuard,
 	classify,
 	workerRisk,
-	gitTreeWrite,
 	gitWorktreeRemovals,
+	gitWriteDirs,
 	PROTECTED_BRANCHES,
 } = await import("../packages/pi-workers/extensions/guard.ts");
 
@@ -759,18 +759,24 @@ test("an implement worker's git in a fresh mktemp repo passes; leaving it or poi
 
 test("gitWorktreeRemovals lists the worktrees a command removes or moves", () => {
 	for (const [command, targets] of [
-		["git worktree remove ../wt", ["../wt"]],
-		["git worktree remove -f ../wt", ["../wt"]],
-		["git worktree remove ../wt --force", ["../wt"]],
+		["git worktree remove ../wt", [["../wt"]]],
+		["git worktree remove -f ../wt", [["../wt"]]],
+		["git worktree remove ../wt --force", [["../wt"]]],
 		["git worktree remove --force '/tmp/a b'", "unknown"],
 		['git worktree remove "$WT"', "unknown"],
 		["git worktree remove $(pwd)/wt", "unknown"],
-		["git -C /repo worktree remove wt", ["wt"]],
-		["git worktree remove a && git worktree remove b", ["a", "b"]],
-		["git status; git worktree remove a 2>&1", ["a"]],
-		["git worktree remove", []],
-		["git worktree move ../wt ../new", ["../wt"]],
-		["git worktree move --force ../wt ../new", ["../wt"]],
+		["git worktree remove ../wts/y*", "unknown"],
+		["git -C /repo worktree remove wt", [["/repo", "wt"]]],
+		["cd ../wts && git worktree remove y", [["../wts", "y"]]],
+		["cd ../wts\ngit worktree remove y", "unknown"],
+		["git fetch && cd ../wts && git worktree remove y", "unknown"],
+		["git worktree remove a && git worktree remove b", [["a"], ["b"]]],
+		["git status; git worktree remove a 2>&1", [["a"]]],
+		// No path in the text: `xargs` or a later line may supply one.
+		["git worktree remove", "unknown"],
+		["echo ../wts/y | xargs git worktree remove", "unknown"],
+		["git worktree move ../wt ../new", [["../wt"]]],
+		["git worktree move --force ../wt ../new", [["../wt"]]],
 		["git worktree add ../wt -b x", []],
 		["git worktree list", []],
 		["git worktree prune", []],
@@ -780,8 +786,56 @@ test("gitWorktreeRemovals lists the worktrees a command removes or moves", () =>
 		assert.deepEqual(gitWorktreeRemovals(command), targets, command);
 });
 
-test("gitTreeWrite names checkout-writing git subcommands and passes reads", () => {
-	for (const [command, sub] of [
+test("gitWriteDirs counts a directory change in any position", () => {
+	for (const command of ["builtin cd /l; git add .", "command cd /l && git commit", "eval 'cd /l'; git commit -m x"])
+		assert.equal(gitWriteDirs(command), "unknown", command);
+	assert.deepEqual(gitWriteDirs("git add src/cd.ts abcd"), [[]]);
+});
+
+test("gitWriteDirs says where a command's git tree writes run, or that its text does not show it", () => {
+	for (const [command, dirs] of [
+		["git commit -m x", [[]]],
+		["git add -A && git commit -m x", [[], []]],
+		["git -C a commit", [["a"]]],
+		["git -C 'a b' commit", [["a b"]]],
+		["cd a && git add -A", [["a"]]],
+		["pushd a; git add -A", [["a"]]],
+		["cd a && git -C b commit -m x", [["a", "b"]]],
+		// Only the writes count: a read elsewhere does not move them.
+		["git -C /free status && git commit -m x", [[]]],
+		["git commit -m x; git -C /free status", [[]]],
+		["git -C /free status && /usr/bin/git commit -m x", [[]]],
+		["git -C /free status && env X=1 git commit -m x", [[]]],
+		["git -c color.ui=never -C /locked commit -m x", [["/locked"]]],
+		["git -C ~/repo commit", [["~/repo"]]],
+		// The text does not show where these run.
+		["git status && cd ../wt && git commit -m x", "unknown"],
+		["cd a && cd b && git add -A", "unknown"],
+		["(cd ../wt && git commit -m x)", "unknown"],
+		["cd a && git add -A && popd", "unknown"],
+		["cd /locked\ngit commit -m x", "unknown"],
+		["cd /locked || true; git commit -m x", "unknown"],
+		['bash -c "cd /locked && git commit -m x"', "unknown"],
+		["git --git-dir=/locked/.git --work-tree=/locked commit -m x", "unknown"],
+		["GIT_DIR=/locked/.git git commit -m x", "unknown"],
+		['cd "$WT" && git commit -m x', "unknown"],
+		["cd $(pwd)/wt && git add -A", "unknown"],
+		["git -C `pwd` commit -m x", "unknown"],
+		["git -C a -C b commit", "unknown"],
+		["git -C wt* commit", "unknown"],
+		// No tree write.
+		["git status", undefined],
+		["cd ../wt && git log", undefined],
+		["git status\ncd ../wt", undefined],
+		['git commit -m "cd x && git add"', [[]]],
+		["abcd x", undefined],
+		["", undefined],
+	] as const)
+		assert.deepEqual(gitWriteDirs(command), dirs, command);
+});
+
+test("gitWriteDirs finds checkout-writing git subcommands and passes reads", () => {
+	for (const [command] of [
 		["git add -A", "add"],
 		["git rm a.ts", "rm"],
 		["git mv a b", "mv"],
@@ -825,7 +879,7 @@ test("gitTreeWrite names checkout-writing git subcommands and passes reads", () 
 		["git -c user.name='a b' commit -m x", "commit"],
 		['git log --format="$(git reset --hard)"', "reset"],
 	]) {
-		assert.equal(gitTreeWrite(command), sub, command);
+		assert.notEqual(gitWriteDirs(command), undefined, command);
 	}
 	for (const command of [
 		"git log --oneline",
@@ -849,7 +903,7 @@ test("gitTreeWrite names checkout-writing git subcommands and passes reads", () 
 		'echo "git add -A"',
 		"npm run check --prefix extensions",
 	]) {
-		assert.equal(gitTreeWrite(command), undefined, `expected allowed: ${command}`);
+		assert.equal(gitWriteDirs(command), undefined, `expected allowed: ${command}`);
 	}
 });
 

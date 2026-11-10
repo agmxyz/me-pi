@@ -1,5 +1,6 @@
 import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { HOME } from "./delegate-config.ts";
 
 /** A path through its symlinks (macOS /tmp is /private/tmp), or as given when it does not exist. */
@@ -14,6 +15,17 @@ export function realpathOr(path: string): string {
 /** `~` and `~/…` under HOME; every other form (`~user/…`, `a/~/b`) as given. */
 export function expandHome(path: string): string {
 	return path === "~" || path.startsWith("~/") ? join(HOME, path.slice(1)) : path;
+}
+
+/** The absolute path Pi's `edit` and `write` tools give a `path` argument: `@`, `~`, `~/…`, and `file://` forms too. */
+export function toolPath(path: string, cwd: string): string {
+	const given = path.replace(UNICODE_SPACES, " ").replace(/^@/, "");
+	if (/^file:\/\//.test(given)) {
+		try {
+			return fileURLToPath(given);
+		} catch {} // Malformed: the tool reports it.
+	}
+	return resolve(cwd, expandHome(given));
 }
 
 // --- Secret paths (enforced inside workers) -------------------------------------------------------
@@ -165,31 +177,6 @@ function relativeHint(path: string, target: string, outDir: string, given: strin
 	const suggested = join(outDir, given);
 	const hint = notStrictlyInside(relative(outDir, suggested)) ? "" : `; write to ${suggested} instead`;
 	return `${path} resolves to ${target}, outside ${outDir}${hint}`;
-}
-
-// `git -C <dir>` or a leading `cd <dir> &&|;`: where a command runs, if it says.
-const TARGET_DIR = /\bgit\s+-C\s+("[^"]*"|'[^']*'|\S+)|^\s*(?:cd|pushd)\s+("[^"]*"|'[^']*'|\S+)\s*(?:&&|;)/;
-export function commandDir(command: string, cwd: string): string | undefined {
-	const m = command.match(TARGET_DIR);
-	const dir = (m?.[1] ?? m?.[2])?.replace(/^["']|["']$/g, "");
-	if (dir === undefined) return undefined;
-	const absolute = resolve(cwd, expandHome(dir));
-	return realTarget(absolute) ?? absolute;
-}
-
-/**
- * Whether `commandDir` does not say where all of a command runs: it changes directory after its start, only some of
- * its git calls carry `-C`, or the shell expands a directory.
- */
-export function commandWanders(command: string): boolean {
-	const leading = /^\s*(?:cd|pushd)\s/.test(command) ? 1 : 0;
-	const changes = command.match(/(?:^|[;&|(){}\n])\s*(?:cd|pushd|popd)\b/g)?.length ?? 0;
-	if (changes > leading) return true;
-	if (/(?:\b(?:cd|pushd)|\bgit\s+-C)\s+\S*[$`]/.test(command)) return true;
-	const targets = [...command.matchAll(/\bgit\s+-C\s+(\S+)/g)].map((m) => m[1]);
-	if (!targets.length) return false;
-	const gits = command.match(/(?:^|[;&|(){}\n])\s*git\b/g)?.length ?? 0;
-	return leading > 0 || new Set(targets).size > 1 || gits > targets.length;
 }
 
 export const within = (root: string, target: string) => {
