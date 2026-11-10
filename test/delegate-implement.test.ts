@@ -299,7 +299,10 @@ test("sibling worktrees take their own locks and finish clean while both commit;
 	for (const dir of [repo, y.path]) {
 		const refused = await prepare(dir, "im82", CHECK).catch((err) => err);
 		assert.match(refused.message, /^implement job im8[01] \(pid \d+\) is already writing in /);
-		assert.match(refused.message, /wait for its handback, or .*`git worktree add <path> -b <branch>`/);
+		assert.match(
+			refused.message,
+			/wait for its handback, or if the user wants unrelated work now, offer .*`git worktree add \.\.\/<repo>\.worktrees\/<slug> -b goal\/<slug>`/,
+		);
 	}
 	commit(git, repo, "a-feature.txt");
 	commit(y.wt, y.path, "y-feature.txt");

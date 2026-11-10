@@ -42,7 +42,7 @@ const SETTINGS_RESOURCES = ["packages", "extensions", "skills", "prompts", "them
 const LOCK_NAME = "me-pi-implement.lock";
 // The way out when a checkout is taken: a second checkout of the same repo, which has its own lock.
 const WORKTREE_HINT =
-	"start unrelated work in a sibling worktree (`git worktree add <path> -b <branch>`, then a Pi session there)";
+	"if the user wants unrelated work now, offer a sibling worktree (`git worktree add ../<repo>.worktrees/<slug> -b goal/<slug>`, then a Pi session there)";
 // A commit older than the job start minus this is not the worker's: the branch was fast-forwarded to existing work.
 const CLOCK_SKEW_MS = 60_000;
 

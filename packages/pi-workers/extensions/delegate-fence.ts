@@ -177,10 +177,19 @@ export function commandDir(command: string, cwd: string): string | undefined {
 	return realTarget(absolute) ?? absolute;
 }
 
-/** Whether a command changes directory after its start, so `commandDir` does not say where its later parts run. */
+/**
+ * Whether `commandDir` does not say where all of a command runs: it changes directory after its start, only some of
+ * its git calls carry `-C`, or the shell expands a directory.
+ */
 export function commandWanders(command: string): boolean {
+	const leading = /^\s*(?:cd|pushd)\s/.test(command) ? 1 : 0;
 	const changes = command.match(/(?:^|[;&|(){}\n])\s*(?:cd|pushd|popd)\b/g)?.length ?? 0;
-	return changes > (/^\s*(?:cd|pushd)\s/.test(command) ? 1 : 0);
+	if (changes > leading) return true;
+	if (/(?:\b(?:cd|pushd)|\bgit\s+-C)\s+\S*[$`]/.test(command)) return true;
+	const targets = [...command.matchAll(/\bgit\s+-C\s+(\S+)/g)].map((m) => m[1]);
+	if (!targets.length) return false;
+	const gits = command.match(/(?:^|[;&|(){}\n])\s*git\b/g)?.length ?? 0;
+	return leading > 0 || new Set(targets).size > 1 || gits > targets.length;
 }
 
 export const within = (root: string, target: string) => {

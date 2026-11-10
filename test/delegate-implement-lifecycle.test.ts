@@ -543,9 +543,12 @@ test("another session's implement lock blocks this session's writes in that chec
 	assert.equal(blocked?.block, true);
 	assert.equal(
 		blocked.reason,
-		`implement job im3 (pid ${other.pid}) of another session is writing in ${real}; wait for its handback, or start unrelated work in a sibling worktree (\`git worktree add <path> -b <branch>\`, then a Pi session there).`,
+		`implement job im3 (pid ${other.pid}) of another session is writing in ${real}; wait for its handback, or if the user wants unrelated work now, offer a sibling worktree (\`git worktree add ../<repo>.worktrees/<slug> -b goal/<slug>\`, then a Pi session there).`,
 	);
 	assert.equal((await call("write", { path: join(repo, "new", "deep", "x.txt") }, outside))?.block, true);
+	// Where these run is not in their text, so every checkout of the repo counts.
+	for (const command of [`git -C ${wt} status && git commit -m x`, 'cd "$WT" && git commit -m x'])
+		assert.equal((await bash(command))?.block, true, command);
 	for (const command of ["git switch -c goal/z", "git commit -m x", "git stash", `git -C ${real} add -A`])
 		assert.equal((await bash(command, command.includes("-C") ? outside : repo))?.block, true, command);
 	assert.equal((await bash("git add -A", join(repo, "sub")))?.block, true, "from a subdirectory");

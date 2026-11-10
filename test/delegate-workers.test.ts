@@ -696,7 +696,7 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(all, /move of main\/master in any worktree trips every running job in the repo/);
 	assert.match(
 		all,
-		/another session's job is writing here, .*`git worktree add <path> -b <branch>` outside the checkout/,
+		/another session's job is writing here, .*`git worktree add \.\.\/<repo>\.worktrees\/<name> -b <branch>` and give/,
 	);
 	assert.match(all, /Surface failed handbacks/);
 	assert.match(all, /on a tripwire, stop and tell the user/);
