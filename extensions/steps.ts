@@ -1,9 +1,10 @@
 // Steps: a minimal live checklist below the editor.
-// The model sets upcoming steps with the `plan` tool; Pi's tool events add the current action for free.
+// The model sets upcoming steps with the `plan` tool; the current step shows how long it has run.
+// Pi's tool blocks already show what is running, so without a plan this prompt shows nothing.
 // Off in delegate workers and non-TUI modes: no tool, no prompt text, no tokens.
 // `/steps off` turns it off the same way for every session; the choice lives in <agent dir>/steps.json.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -37,38 +38,22 @@ function writeEnabled(enabled: boolean) {
 	writeFileSync(settingsPath(), `${JSON.stringify({ enabled })}\n`);
 }
 
-function describe(tool: string, args: any): string {
-	const file = (p: unknown) => (typeof p === "string" ? basename(p) : "");
-	switch (tool) {
-		case "read":
-			return `Reading ${file(args?.path)}`;
-		case "edit":
-		case "write":
-			return `Editing ${file(args?.path)}`;
-		case "bash":
-			return `Running ${String(args?.command ?? "")
-				.trim()
-				.split(/\s+/)
-				.slice(0, 3)
-				.join(" ")}`;
-		case "delegate":
-			return args?.background ? "Starting background job" : "Delegating";
-		case "plan":
-			return "";
-		default:
-			return tool;
-	}
-}
+const elapsed = (ms: number) => {
+	const seconds = Math.floor(ms / 1000);
+	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+};
 
 export default function (pi: ExtensionAPI) {
 	if (isWorkerProcess()) return;
 
 	let plan: Plan = { steps: [], done: 0 };
-	let activity = "";
 	let running = false;
-	// The plan shows in full only once the model calls `plan` in the current prompt; a plan from an earlier
-	// prompt may be stale or unrelated, so until then only the activity line shows.
+	// The plan shows while running only once the model calls `plan` in the current prompt; a plan from an
+	// earlier prompt may be stale or unrelated, so until then nothing shows.
 	let fresh = false;
+	// When the current step started, for its timer; reset when the step changes or a prompt picks the plan up.
+	let stepStartedAt = Date.now();
+	let tick: NodeJS.Timeout | undefined;
 	// `/steps off` hides the widget and drops the `plan` tool from the model in every session.
 	let enabled = true;
 	let ui: ExtensionContext["ui"] | undefined;
@@ -76,28 +61,36 @@ export default function (pi: ExtensionAPI) {
 	const render = () => {
 		if (!ui) return;
 		const { steps, done } = plan;
-		if (!enabled || (!steps.length && !activity)) return ui.setWidget(WIDGET, undefined);
+		const live = running && fresh;
+		clearInterval(tick);
+		tick = undefined;
+		if (!enabled || !steps.length || (running && !fresh)) return ui.setWidget(WIDGET, undefined);
 		ui.setWidget(
 			WIDGET,
-			(_tui, theme) => ({
-				invalidate() {},
-				render(width: number): string[] {
-					const line = (s: string) => truncateToWidth(s, width, theme.fg("dim", "…"));
-					if (!running && steps.length) {
-						if (done >= steps.length) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
-						return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${steps[done]}`))];
-					}
-					if (!steps.length || !fresh) return [line(theme.fg("dim", activity))];
-					return steps.map((step, i) => {
-						if (i < done) return line(theme.fg("dim", `✓ ${step}`));
-						if (i === done && running) {
-							const detail = activity ? theme.fg("dim", ` · ${activity}`) : "";
-							return line(`${theme.fg("accent", "●")} ${step}${detail}`);
+			(tui, theme) => {
+				if (live) {
+					tick = setInterval(() => tui.requestRender(), 1000);
+					tick.unref();
+				}
+				return {
+					invalidate() {},
+					render(width: number): string[] {
+						const line = (s: string) => truncateToWidth(s, width, theme.fg("dim", "…"));
+						if (!running) {
+							if (done >= steps.length) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
+							return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${steps[done]}`))];
 						}
-						return line(theme.fg("dim", `○ ${step}`));
-					});
-				},
-			}),
+						return steps.map((step, i) => {
+							if (i < done) return line(theme.fg("dim", `✓ ${step}`));
+							if (i === done) {
+								const timer = theme.fg("dim", ` · ${elapsed(Date.now() - stepStartedAt)}`);
+								return line(`${theme.fg("accent", "●")} ${step}${timer}`);
+							}
+							return line(theme.fg("dim", `○ ${step}`));
+						});
+					},
+				};
+			},
 			{ placement: "belowEditor" },
 		);
 	};
@@ -136,10 +129,13 @@ export default function (pi: ExtensionAPI) {
 				done: Type.Optional(Type.Number()),
 			}),
 			async execute(_id, params) {
+				const before = plan.done;
+				const pickedUp = !fresh;
 				fresh = true;
 				if (params.steps) plan = { steps: params.steps, done: 0 };
 				if (params.done !== undefined)
 					plan = { ...plan, done: Math.max(0, Math.min(params.done, plan.steps.length)) };
+				if (pickedUp || params.steps || plan.done !== before) stepStartedAt = Date.now();
 				render();
 				return { content: [{ type: "text", text: "ok" }], details: plan };
 			},
@@ -195,25 +191,7 @@ export default function (pi: ExtensionAPI) {
 		// A finished plan from the previous prompt clears; an unfinished one carries on.
 		if (plan.steps.length && plan.done >= plan.steps.length) plan = { steps: [], done: 0 };
 		running = true;
-		inFlight.clear();
-		activity = "Thinking…";
 		render();
-	});
-	// Tools run in parallel (plan beside bash), so the activity is the latest tool still running, not the last event.
-	const inFlight = new Map<string, string>();
-	const showInFlight = () => {
-		activity = [...inFlight.values()].at(-1) ?? "Thinking…";
-		render();
-	};
-	pi.on("tool_execution_start", (event) => {
-		const text = describe(event.toolName, event.args);
-		if (!text) return;
-		inFlight.set(event.toolCallId, text);
-		showInFlight();
-	});
-	pi.on("tool_execution_end", (event) => {
-		inFlight.delete(event.toolCallId);
-		showInFlight();
 	});
 	pi.on("agent_end", (event) => {
 		// The model never ticks the last step (the reply completes it), so a run that ends normally with only
@@ -223,7 +201,6 @@ export default function (pi: ExtensionAPI) {
 		if (fresh && steps.length && done >= steps.length - 1 && last?.role === "assistant" && last.stopReason === "stop")
 			plan = { ...plan, done: steps.length };
 		running = false;
-		activity = "";
 		render();
 	});
 }
