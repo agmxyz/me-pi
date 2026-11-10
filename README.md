@@ -22,6 +22,21 @@ Workers are **not sandboxed**: they run with your OS permissions, and `implement
 
 [Package README](packages/pi-workers/README.md) · [Delegation guide](packages/pi-workers/docs/delegate.md) · [Changelog](packages/pi-workers/CHANGELOG.md)
 
+### Small extensions
+
+| Extension | What it does | Filter entry |
+|---|---|---|
+| [`steps`](extensions/steps.ts) | Live checklist below the editor, set by the model through a `plan` tool. `/steps off` turns it off for new sessions and this one (others on `/reload`); `/steps on` turns it back on. | `"extensions/steps.ts"` |
+| [`minimal-footer`](extensions/minimal-footer.ts) | One-line footer: `folder (branch)  ctx%/window` left, `model • thinking` right; extension statuses on a second line. | `"extensions/minimal-footer.ts"` |
+
+To install one or both, add this repo to `packages` in `~/.pi/agent/settings.json` with the filter entries you want, then run `/reload`:
+
+```json
+{ "packages": [{ "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/steps.ts", "extensions/minimal-footer.ts"] }] }
+```
+
+Without a filter, `pi install git:github.com/agmxyz/me-pi` loads both plus the pi-workers extensions.
+
 ## Setup
 
 My personal setup; it runs this checkout's working tree. You don't need it to use an extension.

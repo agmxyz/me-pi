@@ -9,9 +9,11 @@ import { fileURLToPath } from "node:url";
 const root = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const workers = JSON.parse(readFileSync(new URL("../packages/pi-workers/package.json", import.meta.url), "utf8"));
 const workerExtensions = ["extensions/delegate.ts", "extensions/guard.ts", "extensions/skill.ts"];
+// Rig-only extensions: the root package loads them; pi-workers does not publish them.
+const rigExtensions = ["extensions/steps.ts", "extensions/minimal-footer.ts"];
 const compatibility = JSON.parse(readFileSync(new URL("../extensions/package.json", import.meta.url), "utf8"));
 
-test("the root manifest is the private setup and loads the pi-workers extensions", () => {
+test("the root manifest is the private setup and loads the pi-workers and rig extensions", () => {
 	assert.equal(root.name, "me-pi");
 	assert.equal(root.private, true);
 	assert.ok(root.description);
@@ -21,12 +23,14 @@ test("the root manifest is the private setup and loads the pi-workers extensions
 	assert.deepEqual(root.keywords, ["pi-package"]);
 	assert.equal(root.devDependencies["@earendil-works/pi-coding-agent"], "1.5.0");
 	assert.deepEqual(root.pi, {
-		extensions: workerExtensions,
+		extensions: [...workerExtensions, ...rigExtensions],
 		skills: [],
 		changelogPath: "packages/pi-workers/CHANGELOG.md",
 	});
 	assert.ok(existsSync(new URL(`../${root.pi.changelogPath}`, import.meta.url)));
-	for (const entrypoint of root.pi.extensions) {
+	for (const entrypoint of rigExtensions)
+		assert.ok(existsSync(new URL(`../${entrypoint}`, import.meta.url)), `${entrypoint} exists`);
+	for (const entrypoint of workerExtensions) {
 		assert.equal(
 			readFileSync(new URL(`../${entrypoint}`, import.meta.url), "utf8")
 				.split("\n")
