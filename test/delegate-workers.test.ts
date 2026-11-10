@@ -691,7 +691,12 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	// The `check` schema owns the one-unchained-command rule (asserted in delegate-worker-guards.test.ts).
 	assert.doesNotMatch(all, /unchained/);
 	assert.match(all, /Until an implement worker hands back, it is the checkout's only writer/);
-	assert.match(all, /do not edit, commit, or switch branches in that repo/);
+	assert.match(all, /do not edit, commit, or switch branches in that checkout/);
+	assert.match(all, /branch in place by default/);
+	assert.match(
+		all,
+		/another session's job is writing here, .*`git worktree add <path> -b <branch>` outside the checkout/,
+	);
 	assert.match(all, /Surface failed handbacks/);
 	assert.match(all, /on a tripwire, stop and tell the user/);
 	assert.match(PROMPT_SNIPPET, /Run read-only workers/);

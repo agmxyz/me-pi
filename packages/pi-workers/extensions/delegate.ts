@@ -46,6 +46,7 @@ import {
 	type Outcome,
 	prepare as prepareImplement,
 	runImplementJob,
+	writerElsewhere,
 } from "./delegate-implement.ts";
 import { killGroup, startWorkerProcess } from "./delegate-process.ts";
 import { failureClassLine } from "./delegate-provenance.ts";
@@ -508,7 +509,7 @@ export const PROMPT_GUIDELINES = [
 	"An implement ✓ means the extension saw `check` pass on the delivered commit: do not re-run it. Read a small diff yourself; that is its review. Past ~50 changed lines, on security or data risk, a breaking public-contract change, or when asked, give one `general` reviewer the diff file with `answer` set to severity-ranked findings; send fixes to `implement`, or make small ones inline. A skill's own review replaces this.",
 	"Workers see only the brief, not this chat or loaded skill bodies: give scope, deliverable, context, acceptance evidence, and any skill to load with `Skill`. When a skill applies, you keep its user decisions and orchestration; a handback completes only its step.",
 	"For several models on one question, make one call, one `runs` entry each, plus `rebuttal: true` to cross-check; report agreements, disagreements with evidence, and your verdict.",
-	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that repo. Surface failed handbacks; on a tripwire, stop and tell the user. Pushes, PRs, merges, and branch deletion are main-session only, with user authorization.",
+	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that checkout. New work is a branch in place by default; when the user asks for a worktree, or another session's job is writing here, run `git worktree add <path> -b <branch>` outside the checkout and give the user that path to start Pi in. Surface failed handbacks; on a tripwire, stop and tell the user. Pushes, PRs, merges, and branch deletion are main-session only, with user authorization.",
 	"Set `background: true` for work that takes minutes while you keep going with the user; tell them the job id; do not wait, poll, or repeat the call.",
 ];
 
@@ -663,10 +664,18 @@ export default function (pi: ExtensionAPI) {
 		await Promise.allSettled([...running]);
 	});
 	// While an implement worker writes in a checkout, the main session's edits and git tree writes there would end up
-	// in the worker's commits or move its branch.
+	// in the worker's commits or move its branch. `writing` has this session's jobs; another session's job is known
+	// by the checkout's lock.
 	pi.on("tool_call", async (event, ctx) => {
-		if (!writing.size) return undefined;
 		const input = (event.input ?? {}) as { path?: unknown; command?: unknown };
+		// The directory a write lands in: an edit's nearest existing directory, or where a git tree write runs.
+		let lands: string | undefined;
+		if ((event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string") {
+			lands = resolve(ctx.cwd, input.path.replace(UNICODE_SPACES, " ").replace(/^@/, ""));
+			do lands = dirname(lands);
+			while (!existsSync(lands) && dirname(lands) !== lands);
+		} else if (event.toolName === "bash" && gitTreeWrite(String(input.command ?? "")) !== undefined)
+			lands = commandDir(String(input.command ?? ""), ctx.cwd) ?? ctx.cwd;
 		for (const [root, id] of writing) {
 			let hit = false;
 			if ((event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string") {
@@ -688,14 +697,15 @@ export default function (pi: ExtensionAPI) {
 					reason: `implement job ${id} is writing in ${root}; wait for its handback${id.startsWith("bg") ? ` or /delegate cancel ${id}` : ""}.`,
 				};
 		}
-		return undefined;
+		const reason = lands === undefined ? undefined : await writerElsewhere(lands);
+		return reason ? { block: true, reason } : undefined;
 	});
 
 	pi.registerTool({
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers; only implement modifies the checkout. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per repo).",
+			"Run Pi workers; only implement modifies the checkout. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per checkout).",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),

@@ -157,6 +157,74 @@ test("hooks/info symlinks and executable bits are part of the hash", async () =>
 	);
 });
 
+// A sibling worktree of `repo` on `branch` (created unless it exists), with a git bound to it.
+function sibling(repo, git, name, branch, create = true) {
+	const path = `${repo}.worktrees/${name}`;
+	git("worktree", "add", "-q", ...(create ? ["-b", branch, path] : [path, branch]));
+	const wt = (...args) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" }).trim();
+	return { path, wt };
+}
+
+test("a branch checked out in another worktree may move, and be deleted with its tracking config", async () => {
+	const { repo, git } = fixture();
+	git("switch", "-q", "-c", "job");
+	const b = sibling(repo, git, "b", "goal/b");
+	assert.deepEqual(await tripwires(repo, () => commit(b.wt, b.path, "b.txt")), [], "checked out at both ends");
+	git("config", "branch.goal/b.remote", "origin");
+	git("config", "branch.goal/b.merge", "refs/heads/goal/b");
+	const removed = await tripwires(repo, () => {
+		commit(b.wt, b.path, "b2.txt");
+		git("worktree", "remove", b.path);
+		git("branch", "-q", "-D", "goal/b");
+	});
+	assert.deepEqual(removed, [], "checked out at the start, gone with its branch and config at the end");
+	git("branch", "late");
+	const late = await tripwires(repo, () => {
+		const l = sibling(repo, git, "late", "late", false);
+		commit(l.wt, l.path, "late.txt");
+	});
+	assert.deepEqual(late, [], "checked out only at the end");
+});
+
+test("a worktree exempts only its own branch: main, tags, the stash, other branches and other config still flag", async () => {
+	const { repo, git } = fixture();
+	const base = git("rev-parse", "HEAD");
+	git("switch", "-q", "-c", "job");
+	git("branch", "nowhere");
+	git("tag", "v1");
+	git("config", "branch.nowhere.remote", "origin");
+	const m = sibling(repo, git, "m", "main", false);
+	const b = sibling(repo, git, "b", "goal/b");
+	const tip = commit(b.wt, b.path, "b.txt");
+	const main = await tripwires(repo, () => commit(m.wt, m.path, "m.txt"));
+	assert.equal(main.length, 1);
+	assert.match(main[0], /^refs\/heads\/main moved during the job/);
+	assert.match(
+		(await tripwires(repo, () => git("update-ref", "refs/heads/nowhere", tip)))[0],
+		/^refs\/heads\/nowhere moved/,
+	);
+	assert.match((await tripwires(repo, () => git("tag", "-f", "v1", tip)))[0], /^refs\/tags\/v1 moved/);
+	assert.match(
+		(await tripwires(repo, () => git("config", "--unset", "branch.nowhere.remote")))[0],
+		/^local git config changed: -branch\.nowhere\.remote=origin$/,
+	);
+	assert.match((await tripwires(repo, () => git("config", "remote.origin.url", "x")))[0], /\+remote\.origin\.url=x/);
+	assert.equal(git("rev-parse", "nowhere"), tip);
+	assert.notEqual(base, tip);
+});
+
+test("the job's own checkout is not another worktree, even reached through a symlink", async () => {
+	const { repo, git } = fixture();
+	git("switch", "-q", "-c", "side");
+	const first = git("rev-parse", "HEAD");
+	commit(git, repo, "b.txt");
+	const linked = join(mkdtempSync(join(TEST_HOME, "link-")), "repo");
+	symlinkSync(repo, linked);
+	const moved = await tripwires(linked, () => git("update-ref", "refs/heads/side", first));
+	assert.equal(moved.length, 1);
+	assert.match(moved[0], /^refs\/heads\/side moved during the job/);
+});
+
 test("a snapshot outside a repository throws so the caller can report the tripwire unavailable", async () => {
 	await assert.rejects(snapshotGit(mkdtempSync(join(TEST_HOME, "norepo-"))), /^Error: git .* failed in /);
 });
@@ -208,6 +276,33 @@ test("prepare refuses before taking the lock and leaves nothing behind", async (
 	writeFileSync(lockOf(repo), `${process.pid} im7\n`);
 	await assert.rejects(prepare(repo, "im90", CHECK), /implement job im7 \(pid \d+\) is already writing in /);
 	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im7\n`, "a live lock is kept");
+});
+
+test("sibling worktrees take their own locks and finish clean while both commit; one checkout still takes one job", async () => {
+	const { repo, git } = goalFixture();
+	const y = sibling(repo, git, "y", "goal/y");
+	const a = await prepare(repo, "im80", CHECK);
+	const b = await prepare(y.path, "im81", CHECK);
+	const gitDir = realpathSync(join(repo, ".git"));
+	assert.equal(a.lockPath, join(gitDir, "me-pi-implement.lock"));
+	assert.equal(b.lockPath, join(gitDir, "worktrees", "y", "me-pi-implement.lock"));
+	assert.equal(b.commonDir, gitDir, "the worker stays fenced out of the shared git dir");
+	assert.equal(readFileSync(b.lockPath, "utf8"), `${process.pid} im81\n`);
+	assert.equal(y.wt("status", "--porcelain"), "", "the lock does not dirty the worktree");
+	for (const dir of [repo, y.path]) {
+		const refused = await prepare(dir, "im82", CHECK).catch((err) => err);
+		assert.match(refused.message, /^implement job im8[01] \(pid \d+\) is already writing in /);
+		assert.match(refused.message, /wait for its handback, or .*`git worktree add <path> -b <branch>`/);
+	}
+	commit(git, repo, "a-feature.txt");
+	commit(y.wt, y.path, "y-feature.txt");
+	for (const job of [a, b]) {
+		passed(job);
+		const facts = await finish(job, ok(job));
+		assert.equal(facts.failed, false, formatHandback(facts));
+		assert.deepEqual(facts.delivered, { check: "pass", commit: "normal", wip: false, integrity: "clear" });
+		assert.ok(!existsSync(job.lockPath));
+	}
 });
 
 test("an empty or unparseable lock counts as live", async () => {

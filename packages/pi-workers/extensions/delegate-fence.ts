@@ -129,7 +129,7 @@ export const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 /**
  * Why a worker's write/edit call is blocked, or undefined when its path is inside `outDir` and not inside `denyDir`
- * (implement: the git common dir). `~` and `file:` paths are refused rather than expanded, so this check cannot
+ * (implement: the git common dir) or `outDir`'s own `.git`. `~` and `file:` paths are refused rather than expanded, so this check cannot
  * resolve them differently from Pi.
  */
 export function writeBlockedIn(
@@ -150,6 +150,8 @@ export function writeBlockedIn(
 	const inside = relative(realpathOr(outDir), target);
 	if (notStrictlyInside(inside))
 		return isAbsolute(given) ? `${path} is outside ${outDir}` : relativeHint(path, target, outDir, given);
+	// A linked worktree's `.git` is a file outside the git directory that points into it.
+	if (denyDir && inside === ".git") return `${path} is the checkout's link to the git directory`;
 	const denied = denyDir && relative(realpathOr(denyDir), target);
 	if (denied !== undefined && (denied === "" || !notStrictlyInside(denied)))
 		return `${path} is inside the git directory ${denyDir}`;

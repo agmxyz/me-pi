@@ -7,6 +7,9 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 - `guard` asks in every session before git options and env that run a command: `git -c` with a key off a short safe list (`user.*`, `color.*`, `pull.rebase`, …), `--config-env`, `git config` writes of such keys, `submodule foreach`, `clone -c/--template`, `--exec-path`, `--upload-pack` (and `clone -u`), `push --receive-pack/--exec`, `archive --exec`, `grep -O`, `difftool -x`, an editor override on any git command, and `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_EXTERNAL_DIFF`, `GIT_CONFIG_*`, `GIT_TEMPLATE_DIR`, `LESSOPEN`, or a `GIT_PAGER`/`PAGER` other than `cat`. Safe `-c` and `git config` keys, `GIT_PAGER=cat`, and `git config` reads and `--unset` stay quiet; these checks also apply in an implement worker's fresh temp repo (#115).
 - `/guard` completes its `on` and `off` arguments.
 - The `delegate bg: N running, $X spent` footer line is gone. It counted only background jobs, so it showed the wrong total while foreground workers ran. The activity widget shows running jobs, each result ends with its cost, and `/delegate status` lists recent calls with a total.
+- Two features can run at once in one repo: `implement` locks one checkout instead of the whole repo, so a session in a Git worktree runs its own job while another writes in the main checkout. A job no longer trips when a branch checked out in another worktree moves or is deleted; `main`, `master`, tags, the stash, and other config still trip it.
+- While another Pi session's `implement` job writes in a checkout, this session's `edit`, `write`, and Git tree writes there are blocked, with a pointer to `git worktree add`. Before, only the session that started the job was blocked.
+- `implement` workers in a linked worktree can no longer write its `.git` file.
 
 ## [0.1.6] - 2026-11-10
 
