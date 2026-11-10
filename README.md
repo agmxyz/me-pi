@@ -24,8 +24,6 @@ Workers are **not sandboxed**: they run with your OS permissions, and `implement
 
 ### Small extensions
 
-Two TUI extensions from my setup. They aren't on npm; install them from this repo.
-
 | Extension | What it does | Filter entry |
 |---|---|---|
 | [`steps`](extensions/steps.ts) | Live checklist below the editor, set by the model through a `plan` tool. `/steps off` turns it off in every session; `/steps on` turns it back on. | `"extensions/steps.ts"` |
