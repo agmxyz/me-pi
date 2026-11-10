@@ -22,17 +22,19 @@ Workers are **not sandboxed**: they run with your OS permissions, and `implement
 
 [Package README](packages/pi-workers/README.md) · [Delegation guide](packages/pi-workers/docs/delegate.md) · [Changelog](packages/pi-workers/CHANGELOG.md)
 
-### steps and minimal-footer
+### Small extensions
 
-Two small TUI extensions from my setup, not published on npm:
+Two TUI extensions from my setup. They aren't on npm; install them from this repo.
 
-- [`extensions/steps.ts`](extensions/steps.ts): a live checklist below the editor. The model sets it with a `plan` tool; the current step shows what is running now. A plan from an earlier prompt stays hidden until the model picks it up again. `/steps off` hides it and removes the `plan` tool in every session (saved in `~/.pi/agent/steps.json`; open sessions follow on `/reload`); `/steps on` brings both back.
-- [`extensions/minimal-footer.ts`](extensions/minimal-footer.ts): a one-line footer, `folder (branch)  ctx%/window` left and `model • thinking` right, with extension statuses on a second line.
+| Extension | What it does | Filter entry |
+|---|---|---|
+| [`steps`](extensions/steps.ts) | Live checklist below the editor, set by the model through a `plan` tool. `/steps off` turns it off in every session; `/steps on` turns it back on. | `"extensions/steps.ts"` |
+| [`minimal-footer`](extensions/minimal-footer.ts) | One-line footer: `folder (branch)  ctx%/window` left, `model • thinking` right; extension statuses on a second line. | `"extensions/minimal-footer.ts"` |
 
-Install one from this repo with a package filter in `~/.pi/agent/settings.json`:
+To install one or both, add this repo to `packages` in `~/.pi/agent/settings.json` with the filter entries you want, then run `/reload`:
 
 ```json
-{ "packages": [{ "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/steps.ts"] }] }
+{ "packages": [{ "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/steps.ts", "extensions/minimal-footer.ts"] }] }
 ```
 
 Without a filter, `pi install git:github.com/agmxyz/me-pi` loads both plus the pi-workers extensions.
