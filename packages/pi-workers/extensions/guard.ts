@@ -642,6 +642,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("guard", {
 		description: "Dangerous-bash guard: /guard on | off (current session; default on)",
+		getArgumentCompletions: (prefix) =>
+			["on", "off"].filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {
 			const arg = args.trim();
 			if (arg === "on" || arg === "off") enabled = arg === "on";
