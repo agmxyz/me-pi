@@ -2,6 +2,10 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
+## [Unreleased]
+
+- `guard` asks in every session before git options and env that run a command: `git -c` with a key off a short safe list (`user.*`, `color.*`, `pull.rebase`, …), `--config-env`, `git config` writes of such keys, `submodule foreach`, `--upload-pack` (and `clone -u`), `push --receive-pack/--exec`, `archive --exec`, `grep -O`, `difftool -x`, an editor override on any git command, and `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_EXTERNAL_DIFF`, `GIT_CONFIG_*`, or a `GIT_PAGER`/`PAGER` other than `cat`. Safe `-c` and `git config` keys, `GIT_PAGER=cat`, and `git config` reads and `--unset` stay quiet (#115).
+
 ## [0.1.6] - 2026-11-10
 
 - The delegate activity widget is leaner: no `Delegate activity` heading, and rows show the model without its provider. Rows drop the role; foreground rows also drop the `fg` call id, while background rows keep their `bg` job id for `/delegate cancel`. Thinking level, elapsed time, and last tool stay.
