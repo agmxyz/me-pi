@@ -383,12 +383,21 @@ export function registerWorker(pi: ExtensionAPI): void {
 		const nextCall = ++calls;
 		const spent = budget && budgetSpent(budget, nextCall, cost);
 		if (spent) {
+			// An output worker's final write into its own directory still goes through, within the same allowance.
+			// Implement workers are excluded: their output directory is the whole checkout.
+			const outputWrite =
+				!implement &&
+				event.toolName === "write" &&
+				!secretPathIn(event.toolName, event.input, ctx.cwd) &&
+				!writeBlockedIn(event.toolName, event.input, ctx.cwd, outputDir, denyDir);
+			const exhausted = ++overBudget > MAX_BLOCKED_OVER_BUDGET;
+			if (outputWrite && !exhausted) return undefined;
 			const resource = budget ? (budgetResource(budget, nextCall, cost) ?? "tool-time") : "tool-time";
 			return recordBlock(
 				`Blocked: budget reached (${spent}). Stop using tools; give your final answer now, and list what is unverified.`,
 				"wrap-up-limit",
 				resource,
-				++overBudget > MAX_BLOCKED_OVER_BUDGET,
+				exhausted,
 			);
 		}
 		if (event.toolName === "bash" && implement) {
