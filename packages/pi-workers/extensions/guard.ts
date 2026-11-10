@@ -2,7 +2,8 @@
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
  * With a UI it asks for confirmation; without one (print mode) it blocks. Plain history rewrites only block in
  * delegate workers; ones that run a command (`rebase -x`, an editor override, a `filter-branch` command filter or
- * `--setup`) ask in every session (see `classify`).
+ * `--setup`) ask in every session (see `classify`). So do git options and env that run a command (`-c alias.x=…`,
+ * `--upload-pack`, `submodule foreach`, `GIT_SSH_COMMAND`, `GIT_PAGER`, `git config core.pager …`).
  * `/guard on|off` toggles it for the current session; every session starts on.
  * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
  * misses commands it can't read (interpreter code, a non-recursive rm).
@@ -32,8 +33,8 @@ const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 // `NAME=value` or `NAME+=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as
 // `grep 'git push'` from matching.
 const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*\+?=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
-// `git` global options (`-C dir`, `-c k=v`, `-c k='a b'`, `--git-dir=...`) before the subcommand.
-const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:[^\s"']|"[^"]*"|'[^']*')+|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
+// `git` global options (`-C dir`, `-c k=v`, `-c k='a b'`, `--git-dir=...`, `--exec-path dir`) before the subcommand.
+const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:[^\s"']|"[^"]*"|'[^']*')+|--(?:git-dir|work-tree|namespace|super-prefix|exec-path)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
 // Rest of the same command: steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so words
 // after them are still read. Stops at `;`, `&&`, `||`, `|`, `|&`, a lone `&`, and newline.
 const ARGS = String.raw`(?:[<>]&|&>|>\||[^;&|\n])*`;
@@ -132,6 +133,197 @@ const COMMAND_FILTER = /^--(?:(?:tree|index|msg|env|commit|parent|tag-name)-filt
 // `rebase --exec` or a unique prefix git accepts (`--ex`, `--exe`); `-x cmd`, glued `-xcmd`, or a short cluster
 // holding x (`-ix`). A cluster where x is another option's glued value matches too, so it fails closed (asks).
 const REBASE_EXEC = /^(?:--ex(?:ec?)?(?:=|$)|-[A-Za-z]*x)/;
+// Options that resume or stop a rebase in progress.
+const REBASE_RESUME = ["--abort", "--continue", "--skip", "--quit"];
+// Env that makes git run a command, anywhere in the command (`X=… git`, `env X=…`, `export X=…`); `GIT_CONFIG_*` can set
+// any config key, `GIT_TEMPLATE_DIR` installs hooks, and `LESSOPEN`/`LESSCLOSE` run through the default `less` pager.
+// `GIT_CONFIG_NOSYSTEM` doesn't match.
+const EXEC_ENV =
+	/(?<![\w-])(GIT_SSH(?:_COMMAND)?|(?:GIT|SSH)_ASKPASS|GIT_EXTERNAL_DIFF|GIT_PROXY_COMMAND|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|LESS(?:OPEN|CLOSE)|GIT_CONFIG(?:_COUNT|_(?:KEY|VALUE)_\d+|_PARAMETERS|_GLOBAL|_SYSTEM)?)\+?=/;
+// An editor variable assignment (`GIT_EDITOR=…`), case-sensitive, so a `core.editor` key or `editor=` text doesn't match;
+// `-c core.editor=…` and `git config core.editor …` are config writes.
+const EDITOR_ENV = /(?<![\w.-])(?:GIT_SEQUENCE_EDITOR|GIT_EDITOR|VISUAL|EDITOR)\+?=/;
+// A pager set to anything but `cat` or empty (`GIT_PAGER=cat`, `PAGER=''` stay quiet); `+=` appends to an unknown value.
+const PAGER_ENV = /(?<![\w-])((?:GIT_)?PAGER)(?:\+=|=(?!(?:cat|'cat'|"cat"|''|"")?(?:[\s;&|)\x60]|$)))/;
+// `--config-env` reads any config value from the environment.
+const CONFIG_ENV = /(?<![\w-])--config-env(?![\w-])/;
+// Config keys that never run a command, for `git -c` and `git config` writes; `*` is one section or subkey segment.
+const SAFE_CONFIG_KEYS = [
+	"user.*",
+	"color.*",
+	"advice.*",
+	"init.defaultBranch",
+	"core.quotePath",
+	"core.autocrlf",
+	"commit.gpgSign",
+	"tag.gpgSign",
+	"protocol.version",
+	"push.default",
+	"push.autoSetupRemote",
+	"pull.rebase",
+	"pull.ff",
+	"safe.directory",
+];
+const SAFE_CONFIG_KEY = new RegExp(
+	`^(?:${SAFE_CONFIG_KEYS.map((k) => k.replaceAll(".", "\\.").replaceAll("*", "[^.]+")).join("|")})$`,
+	"i",
+);
+// A pager key: it runs its value, except `cat` or empty.
+const PAGER_KEY = /^(?:core\.pager|pager\.[^.]+)$/i;
+// A `-c key=value` global option (`-c user.name='a b'`, `-c 'k=v'`).
+const CONFIG_OPTION = /(?:^|\s)-c\s+((?:[^\s"']|"[^"]*"|'[^']*')+)/g;
+// A `git clone` config option: `-c k=v`, glued or in a short cluster (`-ck=v`, `-qc k=v`), or `--config` or a prefix of it,
+// with `=` or a space (`--config=k=v`, `--conf k=v`). A cluster where c is another option's glued value fails closed.
+const CLONE_CONFIG_OPTION =
+	/(?:^|\s)(?:-[abd-zA-Z]*c\s*|--c(?:o(?:n(?:f(?:i(?:g)?)?)?)?)?(?:=|\s+))((?:[^\s"']|"[^"]*"|'[^']*')+)/g;
+// `--exec-path` with a value runs git's commands from there; alone, it prints the path.
+const EXEC_PATH = /(?:^|\s)--exec-path(?:=|\s+[^\s;&|])/;
+// `git config` options that take the next word as their value.
+const CONFIG_VALUE_OPTIONS = new Set(["-f", "--file", "--blob", "--type", "--default", "--comment", "--value"]);
+// `git config` forms that only read.
+const CONFIG_READS = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope"]);
+// `git config` forms that read, remove, or edit by hand; `CONFIG_READS` lists the other reads.
+const CONFIG_NO_SET = new Set([
+	"--unset",
+	"--unset-all",
+	"--remove-section",
+	"--get-color",
+	"--get-colorbool",
+	"--get-urlmatch",
+	"-e",
+	"--edit",
+]);
+const CONFIG_NO_SET_SUBCOMMANDS = new Set(["get", "list", "unset", "remove-section", "edit"]);
+
+// Whether setting `key` to `value` may make git run a command: any key off the safe list, except a pager set to `cat`
+// or empty.
+function configMayRun(key: string, value: string): boolean {
+	if (SAFE_CONFIG_KEY.test(key)) return false;
+	return !(PAGER_KEY.test(key) && (value === "cat" || value === ""));
+}
+
+// Config options (`CONFIG_OPTION` or `CLONE_CONFIG_OPTION` matches) in `text`; a key without `=` is set to true.
+function configOptionRisk(text: string, options: RegExp): string | undefined {
+	for (const [, option] of text.matchAll(options)) {
+		const [key, ...value] = option.replace(/["']/g, "").split("=");
+		if (configMayRun(key, value.length ? value.join("=") : "true")) return `git runs a command (-c ${key})`;
+	}
+	return undefined;
+}
+
+// Global options that run a command: `-c` off the safe keys, or `--exec-path` with a value.
+function globalsRisk(globals: string): string | undefined {
+	return EXEC_PATH.test(globals) ? "git runs a command (--exec-path)" : configOptionRisk(globals, CONFIG_OPTION);
+}
+
+// Whether `git config` reads, removes, or edits by hand: a subcommand (`get`, `unset`) or a flag before the key (`--get`,
+// `--unset`). After the key, a word is part of the value (`alias.x '!cmd -l'`).
+function configLeavesValues(words: string[]): boolean {
+	if (CONFIG_NO_SET_SUBCOMMANDS.has(words[0])) return true;
+	for (let i = 0; i < words.length; i++) {
+		const w = words[i];
+		if (CONFIG_READS.has(w) || CONFIG_NO_SET.has(w)) return true;
+		if (CONFIG_VALUE_OPTIONS.has(w)) i++;
+		else if (!w.startsWith("-")) return false;
+	}
+	return false;
+}
+
+// `git config [set] [opts] <key> <value>...`: reads, removals, and `<key>` alone are quiet. Value words are rejoined with
+// single spaces, so only a plain `cat` counts as `cat`.
+function configWriteRisk(words: string[]): string | undefined {
+	if (configLeavesValues(words)) return undefined;
+	// Renaming a section can move any keys into place.
+	if (words[0] === "rename-section" || words.includes("--rename-section"))
+		return "git runs a command (git config rename-section)";
+	let key: string | undefined;
+	const value: string[] = [];
+	const rest = words[0] === "set" ? words.slice(1) : words;
+	for (let i = 0; i < rest.length; i++) {
+		const w = rest[i];
+		if (key !== undefined) value.push(w);
+		else if (CONFIG_VALUE_OPTIONS.has(w)) i++;
+		else if (!w.startsWith("-")) key = w;
+	}
+	if (key === undefined || !value.length) return undefined;
+	return configMayRun(key, value.join(" ")) ? `git runs a command (git config ${key})` : undefined;
+}
+
+// A long option or a prefix git accepts for it (`--u` for `--upload-pack`), with or without `=value`. Any prefix of at
+// least one letter counts; one git finds ambiguous fails closed.
+function hasLong(words: string[], name: string): boolean {
+	return words.some((w) => {
+		const option = w.split("=")[0];
+		return option.length >= 3 && name.startsWith(option);
+	});
+}
+
+// Subcommand options that run a user-supplied command. A short cluster holding the letter (`-nO`) matches, even where it
+// is another option's glued value, so it fails closed.
+function gitRunsCommand(sub: string, words: string[]): string | undefined {
+	const label = (what: string) => `git runs a command (${what})`;
+	switch (sub) {
+		case "submodule":
+			return words.includes("foreach") ? label("submodule foreach") : undefined;
+		case "clone":
+		case "fetch":
+		case "pull":
+		case "ls-remote":
+		case "fetch-pack":
+			// `-u` is `--upload-pack` only on clone (`fetch -u` is `--update-head-ok`).
+			if (sub === "clone" && words.some((w) => /^-[A-Za-z]*u/.test(w))) return label("clone -u");
+			// A template directory's hooks run during the clone.
+			if (sub === "clone" && hasLong(words, "--template")) return label("clone --template");
+			if (sub === "fetch-pack" && hasLong(words, "--exec")) return label("--exec");
+			return hasLong(words, "--upload-pack") ? label("--upload-pack") : undefined;
+		case "push":
+		case "send-pack":
+			if (hasLong(words, "--receive-pack")) return label("--receive-pack");
+			return hasLong(words, "--exec") ? label("--exec") : undefined;
+		case "archive":
+			return hasLong(words, "--exec") ? label("archive --exec") : undefined;
+		case "grep":
+			return words.some((w) => /^-[A-Za-z]*O/.test(w)) || hasLong(words, "--open-files-in-pager")
+				? label("grep --open-files-in-pager")
+				: undefined;
+		case "difftool":
+			return words.some((w) => /^-[A-Za-z]*x/.test(w)) || hasLong(words, "--extcmd")
+				? label("difftool --extcmd")
+				: undefined;
+		case "config":
+			return configWriteRisk(words);
+		default:
+			return undefined;
+	}
+}
+
+// Command-wide env and options that make any git command run a command.
+function envRunsCommand(command: string): string | undefined {
+	const env = EXEC_ENV.exec(command) ?? PAGER_ENV.exec(command);
+	if (env) return `git runs a command (${env[1]})`;
+	if (CONFIG_ENV.test(command)) return "git runs a command (--config-env)";
+	return EDITOR_ENV.test(command) ? "git runs a command (editor override)" : undefined;
+}
+
+// Rewrites that run a command: `rebase -x`, a `filter-branch` command filter or `--setup`, or an editor override on
+// `rebase` or `commit --amend`.
+function rewriteRunsCommand(sub: string, words: string[], editorOverride: boolean): string | undefined {
+	switch (sub) {
+		case "commit":
+			return editorOverride && words.includes("--amend") ? "history rewrite (editor override)" : undefined;
+		case "rebase":
+			// A resumed rebase still opens the editor, so an override asks before the resume check.
+			if (editorOverride) return "history rewrite (editor override)";
+			if (REBASE_RESUME.some((w) => words.includes(w))) return undefined;
+			return words.some((w) => REBASE_EXEC.test(w)) ? "history rewrite (rebase --exec)" : undefined;
+		case "filter-branch":
+			return words.some((w) => COMMAND_FILTER.test(w))
+				? "history rewrite (filter-branch command filter)"
+				: undefined;
+		default:
+			return undefined;
+	}
+}
 
 function gitRisk(
 	sub: string,
@@ -139,24 +331,17 @@ function gitRisk(
 	currentBranch: () => string | undefined,
 	elsewhere: boolean,
 	historyRewrites: boolean,
-	editorOverride: boolean,
 ): string | undefined {
-	// Rewrites that run a command ask in every mode; `historyRewrites` adds the plain rewrite.
+	// `rewriteRunsCommand` covers rewrites that run a command; `historyRewrites` adds the plain rewrite.
 	switch (sub) {
 		case "push":
 			return pushRisk(words, currentBranch, elsewhere);
 		case "commit":
-			if (!words.includes("--amend")) return undefined;
-			if (editorOverride) return "history rewrite (editor override)";
-			return historyRewrites ? "history rewrite (commit --amend)" : undefined;
+			return historyRewrites && words.includes("--amend") ? "history rewrite (commit --amend)" : undefined;
 		case "rebase":
-			// A resumed rebase still opens the editor, so an override asks before the resume early-return.
-			if (editorOverride) return "history rewrite (editor override)";
-			if (["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w))) return undefined;
-			if (words.some((w) => REBASE_EXEC.test(w))) return "history rewrite (rebase --exec)";
+			if (REBASE_RESUME.some((w) => words.includes(w))) return undefined;
 			return historyRewrites ? "history rewrite (rebase)" : undefined;
 		case "filter-branch":
-			if (words.some((w) => COMMAND_FILTER.test(w))) return "history rewrite (filter-branch command filter)";
 			return historyRewrites ? "history rewrite (filter-branch)" : undefined;
 		case "filter-repo":
 			// Always: by default it expires every reflog and prunes, so the old history can't be recovered.
@@ -234,7 +419,8 @@ const LEAVES_TEMP =
 
 /**
  * Whether every git command in `command` runs in the fresh temp repo it opens with; reassigning the variable or a path
- * that could leave it keeps the git rules. Only implement workers get this: their git remote protocols are cut.
+ * that could leave it keeps the git rules. Only implement workers get this: their git remote protocols are cut. Git
+ * options and env that run a command still ask there (see `classify`), since cutting remotes doesn't stop them.
  */
 function inFreshTempRepo(command: string): boolean {
 	if (!isImplementWorker()) return false;
@@ -281,7 +467,9 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
  * `historyRewrites: false` skips `commit --amend`, `rebase`, `filter-branch`, and `branch -D`: the main session runs
  * them without asking, since the reflog, `refs/original/`, or `git fsck` can recover them. Rewrites that run a command
  * (`rebase -x`, a `filter-branch` command filter or `--setup`, or an editor override on `rebase`/`commit --amend`)
- * count in both modes, and `filter-repo` always does. Workers pass true.
+ * count in both modes, and `filter-repo` always does. Git options and env that run a command (`-c` off the safe keys,
+ * `--upload-pack`, `GIT_SSH_COMMAND`, a pager other than `cat`, an editor override, `git config` writes) ask in both
+ * modes too. Workers pass true.
  */
 export function classify(
 	command: string,
@@ -291,17 +479,26 @@ export function classify(
 	// Unstripped: a dropped message or heredoc body could hide a rebinding.
 	const tmpdirUnsafe = tmpdirMayChange(command);
 	command = withoutMessages(command);
-	const gitCommands = inFreshTempRepo(command) ? [] : [...command.matchAll(GIT_COMMAND)];
+	const gitCommands = [...command.matchAll(GIT_COMMAND)];
+	// In a fresh temp repo, only the checks for git running a command apply.
+	const freshTemp = inFreshTempRepo(command);
 	// The session's branch is read before the command runs, so it says nothing about the target after
 	// `cd`, `git checkout`/`switch`, or `git -C`/`--git-dir`/`--work-tree`.
 	const branchMayChange = CD.test(command) || gitCommands.some(([, , sub]) => sub === "checkout" || sub === "switch");
 	const editorOverride = EDITOR_OVERRIDE.test(command);
+	const envRisk = gitCommands.length ? envRunsCommand(command) : undefined;
 	for (const [, globals, sub, args] of gitCommands) {
 		const elsewhere = branchMayChange || /(?:^|\s)(?:-C|--git-dir|--work-tree)\b/.test(globals);
 		for (const words of gitReadings(args)) {
-			const risk = gitRisk(sub, words, currentBranch, elsewhere, historyRewrites, editorOverride);
+			const risk =
+				rewriteRunsCommand(sub, words, editorOverride) ??
+				(freshTemp ? undefined : gitRisk(sub, words, currentBranch, elsewhere, historyRewrites)) ??
+				gitRunsCommand(sub, words);
 			if (risk) return risk;
 		}
+		const cloneConfig = sub === "clone" ? configOptionRisk(args, CLONE_CONFIG_OPTION) : undefined;
+		const risk = globalsRisk(globals) ?? cloneConfig ?? envRisk;
+		if (risk) return risk;
 	}
 	for (const [, args] of command.matchAll(RM_COMMAND)) {
 		const { recursive, targets } = rmArgs(args);
@@ -326,8 +523,6 @@ const INSTALL_SYNTAX_CHECK = String.raw`(?:ba|z)?sh\s+-n\s+(?:[\w.~-]*\/)*instal
 const INSTALL_SH = new RegExp(
 	`${AT_COMMAND}(?!${INSTALL_SYNTAX_CHECK})(?:(?:(?:ba|z)?sh|source|\\.)\\s+(?:${SHELL_OPTION}\\s+)*(?:[\\w.~-]*\\/)*)?install\\.sh(?![\\w.-])`,
 );
-// `git config` forms that only read.
-const CONFIG_READS = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope"]);
 // Options that keep `git config <key>` a read: scopes and value types (`--type X` is dropped first).
 const CONFIG_READ_OPTIONS = new Set(["--local", "--global", "--system", "--worktree", "--bool", "--int", "--path"]);
 

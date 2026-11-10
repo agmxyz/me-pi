@@ -414,6 +414,71 @@ test("must-ask regressions: past bypasses still ask", () => {
 		["git filter-branch --setup 'rm -rf ~' HEAD", onFeature, "#114"],
 		["GIT_EDITOR='rm -rf ~;:' git rebase --continue", onFeature, "#114"],
 		["GIT_SEQUENCE_EDITOR+='rm -rf ~;:' git rebase -i HEAD~1", onFeature, "#114"],
+		["git submodule foreach 'rm -rf ~'", onFeature, "#115"],
+		["git -c alias.x='!rm -rf ~' x", onFeature, "#115"],
+		["git -c alias.p='push -f' p", onFeature, "#115"],
+		["git -c core.fsmonitor='rm -rf ~' status", onFeature, "#115"],
+		["git -c core.sshCommand='rm -rf ~' fetch", onFeature, "#115"],
+		["git -c core.hooksPath=/tmp/h commit -m x", onFeature, "#115"],
+		["git --config-env=core.pager=X log", onFeature, "#115"],
+		["git fetch --upload-pack='rm -rf ~' origin", onFeature, "#115"],
+		["git ls-remote --upload 'rm -rf ~' origin", onFeature, "#115"],
+		["git clone -u 'rm -rf ~' repo d", onFeature, "#115"],
+		["git clone --upl='rm -rf ~' repo d", onFeature, "#115"],
+		["git push --receive-pack='rm -rf ~' origin x", onFeature, "#115"],
+		["git push --exec='rm -rf ~' origin x", onFeature, "#115"],
+		["git push --exe 'rm -rf ~' origin x", onFeature, "#115"],
+		["git archive --exec='rm -rf ~' --remote=x HEAD", onFeature, "#115"],
+		["git archive --exe 'rm -rf ~' --remote=x HEAD", onFeature, "#115"],
+		["git grep -O'rm -rf ~' x", onFeature, "#115"],
+		["git grep -nO 'rm -rf ~' x", onFeature, "#115"],
+		["git grep --open-files-in-pager='rm -rf ~' x", onFeature, "#115"],
+		["git grep --open 'rm -rf ~' x", onFeature, "#115"],
+		["git difftool -x 'rm -rf ~'", onFeature, "#115"],
+		["git difftool -yx 'rm -rf ~'", onFeature, "#115"],
+		["git difftool --extcmd='rm -rf ~'", onFeature, "#115"],
+		["git difftool --ext 'rm -rf ~'", onFeature, "#115"],
+		["GIT_SSH_COMMAND='rm -rf ~' git fetch", onFeature, "#115"],
+		["env GIT_SSH='rm -rf ~' git fetch", onFeature, "#115"],
+		["export GIT_ASKPASS='rm -rf ~'; git fetch", onFeature, "#115"],
+		["SSH_ASKPASS='rm -rf ~' git fetch", onFeature, "#115"],
+		["GIT_PROXY_COMMAND='rm -rf ~' git fetch", onFeature, "#115"],
+		["GIT_EXEC_PATH=/tmp/x git status", onFeature, "#115"],
+		["GIT_CONFIG_GLOBAL=/tmp/x git status", onFeature, "#115"],
+		["GIT_SSH_COMMAND+='rm -rf ~' git fetch", onFeature, "#115"],
+		["GIT_EXTERNAL_DIFF='rm -rf ~' git diff", onFeature, "#115"],
+		["GIT_PAGER='rm -rf ~' git log", onFeature, "#115"],
+		["PAGER='rm -rf ~' git log", onFeature, "#115"],
+		["GIT_PAGER=catx git log", onFeature, "#115"],
+		["git -c core.pager='rm -rf ~' log", onFeature, "#115"],
+		["git -c pager.log='rm -rf ~' log", onFeature, "#115"],
+		["GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0='rm -rf ~' git log", onFeature, "#115"],
+		[`GIT_CONFIG_PARAMETERS="'core.pager'='rm -rf ~'" git log`, onFeature, "#115"],
+		["GIT_EDITOR='rm -rf ~;:' git commit", onFeature, "#115"],
+		["GIT_EDITOR='rm -rf ~;:' git pull --rebase=interactive", onFeature, "#115"],
+		["EDITOR='rm -rf ~;:' git tag -a v1", onFeature, "#115"],
+		["git config core.pager 'rm -rf ~'", onFeature, "#115"],
+		["git config set alias.x '!rm -rf ~'", onFeature, "#115"],
+		["git config --global core.hooksPath /tmp/h", onFeature, "#115"],
+		["git config --add core.sshCommand 'rm -rf ~'", onFeature, "#115"],
+		["git config --file .git/config core.fsmonitor 'rm -rf ~'", onFeature, "#115"],
+		["git config --replace-all core.pager 'rm -rf ~'", onFeature, "#115"],
+		["git config --rename-section x core", onFeature, "#115"],
+		["git config alias.x '!rm -rf ~ -l'", onFeature, "#115"],
+		["git config core.pager 'rm -rf ~ -e'", onFeature, "#115"],
+		["git config core.hooksPath /tmp/h", onFeature, "#115"],
+		["git clone -c core.hooksPath=/tmp/h repo d", onFeature, "#115"],
+		["git clone --config=core.fsmonitor='rm -rf ~' repo d", onFeature, "#115"],
+		["git clone --template=/tmp/t repo d", onFeature, "#115"],
+		["GIT_TEMPLATE_DIR=/tmp/t git clone r d", onFeature, "#115"],
+		["git --exec-path=/tmp/x status", onFeature, "#115"],
+		["git archive --e='rm -rf ~' --remote=x HEAD", onFeature, "#115"],
+		["git clone --u='rm -rf ~' r d", onFeature, "#115"],
+		["git pull --upload-pack='rm -rf ~' origin", onFeature, "#115"],
+		["LESSOPEN='|rm -rf ~ %s' git log", onFeature, "#115"],
+		["GIT_CONFIG=/tmp/c git log", onFeature, "#115"],
+		["GIT_CONFIG_SYSTEM=/tmp/c git log", onFeature, "#115"],
+		["VISUAL='rm -rf ~;:' git commit", onFeature, "#115"],
 	]) {
 		for (const historyRewrites of [false, true])
 			assert.ok(
@@ -427,6 +492,55 @@ test("a git -c value with quotes is read in linear time", () => {
 	const started = performance.now();
 	classify(`git -c ${"a".repeat(5000)}"`, onFeature, { historyRewrites: false });
 	assert.ok(performance.now() - started < 1000, "GIT_GLOBALS backtracks");
+});
+
+// Git options and env that run a command ask in both modes; routine forms of the same commands stay quiet (#115).
+test("git options and env that don't run a command stay quiet in both modes", () => {
+	for (const command of [
+		"git fetch",
+		"git fetch origin",
+		"git fetch --prune",
+		"git fetch -u origin",
+		"git log",
+		"git --no-pager log",
+		"GIT_PAGER=cat git log",
+		"PAGER=cat git diff",
+		"GIT_PAGER= git log",
+		"PAGER='' git log",
+		"git -c user.name=x commit -m y",
+		"git -c user.name='a b' commit -m x",
+		"git -c color.ui=never diff",
+		"git -c core.pager=cat log",
+		"git -c init.defaultBranch=main init",
+		"git config user.name x",
+		"git config --get core.pager",
+		"git config core.pager",
+		"git config --list",
+		"git config --unset user.name",
+		"git submodule update --init",
+		"git grep foo",
+		"git grep -n -o foo",
+		"git clone -q origin.git work",
+		"git archive --format=tar HEAD",
+		"GIT_CONFIG_NOSYSTEM=1 git log",
+		"GIT_SSH_COMMAND='ssh -i k' ssh host",
+		"git config --get core.editor",
+		"git config --unset core.editor",
+		"git grep editor=",
+		"git --exec-path",
+		"git clone -c user.name=x repo d",
+		"git config user.email 'a -l b'",
+		"git push -o ci.skip origin feature/x",
+	]) {
+		for (const historyRewrites of [false, true])
+			assert.equal(classify(command, onFeature, { historyRewrites }), undefined, `expected allowed: ${command}`);
+	}
+});
+
+test("git options and env that run a command are read in linear time", () => {
+	const started = performance.now();
+	classify(`GIT_PAGER=${"c".repeat(5000)} git -c ${"'a'".repeat(3000)} config ${"--x ".repeat(3000)}`, onFeature);
+	assert.ok(performance.now() - started < 1000, "#115 patterns backtrack");
 });
 
 test("allows feature pushes, PRs, and routine commands", () => {
@@ -632,6 +746,12 @@ test("an implement worker's git in a fresh mktemp repo passes; leaving it or poi
 		'V=$(mktemp -d ./t.XXXX) && cd "$V" && git config user.name x',
 	])
 		assert.ok(workerRisk(command), command);
+	// Cutting remotes doesn't stop git running a local command, so those checks still apply.
+	for (const command of [
+		`D=$(mktemp -d) && cd "$D" && git init -q && git -c alias.x='!touch p' x`,
+		`D=$(mktemp -d) && cd "$D" && GIT_SSH_COMMAND='touch p' git fetch`,
+	])
+		assert.ok(classify(command, onMain), command);
 	delete process.env.ME_PI_ROLE;
 	assert.ok(classify(fresh[2], onMain), "the main session's guard never exempts temp repos");
 });
