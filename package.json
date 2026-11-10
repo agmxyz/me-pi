@@ -2,7 +2,7 @@
   "name": "me-pi",
   "version": "0.1.6",
   "private": true,
-  "description": "My Pi setup: global policy, skills and the pi-workers extensions",
+  "description": "My Pi setup: global policy, skills, the pi-workers extensions, and the steps and minimal-footer extensions",
   "license": "MIT",
   "repository": "https://github.com/agmxyz/me-pi",
   "keywords": [
@@ -20,7 +20,9 @@
     "extensions": [
       "extensions/delegate.ts",
       "extensions/guard.ts",
-      "extensions/skill.ts"
+      "extensions/skill.ts",
+      "extensions/steps.ts",
+      "extensions/minimal-footer.ts"
     ],
     "skills": [],
     "changelogPath": "packages/pi-workers/CHANGELOG.md"
