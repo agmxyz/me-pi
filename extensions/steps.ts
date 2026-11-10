@@ -134,7 +134,7 @@ export default function (pi: ExtensionAPI) {
 			label: "Plan",
 			description: "Live checklist for the user. `steps` sets the list; `done` is the count of finished steps.",
 			promptGuidelines: [
-				"For tasks with 3+ steps, call plan only in parallel with another tool call, never alone: set steps (each under 40 characters) with the first action, then update done whenever you start a new step. Never tick the last step; the reply completes it. When you stop with steps left, set done to the steps finished in that last tool call.",
+				"For tasks with 3+ steps, call plan only in parallel with another tool call, never alone: set steps (each under 40 characters) with the first action, then update done whenever you start a new step. In your last tool call before the final reply, set done to the number of steps when the work is finished, or to the steps finished when you stop with steps left.",
 				"An earlier prompt's plan stays hidden until you call plan again: set new steps for new work, or update done to resume it. Skip plan for prompts unrelated to it.",
 				"When the work stops matching the plan (a step dropped, changed, or added), call plan with the corrected steps and done; never leave a step the user would read as false.",
 			],
@@ -211,13 +211,8 @@ export default function (pi: ExtensionAPI) {
 		running = true;
 		render();
 	});
-	pi.on("agent_end", (event) => {
-		// The model never ticks the last step (the reply completes it), so a run that ends normally with only
-		// that step left completes the plan. More steps left means the plan is paused, e.g. on a background job.
-		const last = event.messages.findLast((m) => m.role === "assistant");
-		const { steps, done } = plan;
-		if (fresh && steps.length && done >= steps.length - 1 && last?.role === "assistant" && last.stopReason === "stop")
-			plan = { ...plan, done: steps.length };
+	// Only the model says a plan is finished: a run that ends with steps left shows as paused, whatever stopped it.
+	pi.on("agent_end", () => {
 		running = false;
 		render();
 	});

@@ -143,15 +143,19 @@ test("an earlier prompt's plan stays hidden during and after a prompt that doesn
 	assert.equal(s.show(), "✓ A\n✓ B\n✓ C\n✓ D\n● E · 0s");
 });
 
-test("a normal end completes the plan only when the last step is left", async () => {
+test("only the model finishes a plan: a normal end before the last step shows it paused", async () => {
 	const s = setup();
 	s.prompt();
 	await s.plan({ steps: ["A", "B", "C"] });
 	await s.plan({ done: 2 });
 	s.end();
+	assert.equal(s.show(), "◐ 2/3 · next: C", "stopping to ask before the last step is not finishing it");
+	s.prompt();
+	await s.plan({ done: 3 });
+	s.end();
 	assert.equal(s.show(), "✓ 3/3 steps");
 	s.prompt();
-	assert.equal(s.show(), "(hidden)");
+	assert.equal(s.show(), "(hidden)", "a finished plan clears at the next prompt");
 });
 
 test("an aborted run keeps the real count", async () => {
