@@ -302,9 +302,7 @@ test("background: returns a job id at once, then delivers the answer as a messag
 	assert.equal(message.display, true);
 	assert.match(message.content, /^Background delegate job bg1:\n\n/);
 	assert.ok(message.details.view, "details keep the run view");
-	assert.match(statuses[0][1], /^delegate bg: 1 running, \$0\.0000 spent$/);
-	assert.match(statuses.at(-1)[1], /^delegate bg: 0 running, \$0\.0\d+ spent$/);
-	assert.ok(!statuses.at(-1)[1].endsWith("$0.0000 spent"), "the job's cost is counted");
+	assert.deepEqual(statuses, [], "no footer status line: the activity widget shows running jobs");
 });
 
 test("background: the turn's abort does not stop a job; /delegate cancel does, without starting a turn", async (t) => {
@@ -393,18 +391,6 @@ test("leaving the session with background jobs running asks first, No by default
 	await handlers.session_shutdown({ reason: "resume" });
 	await new Promise((r) => setTimeout(r, 100));
 	assert.equal(messages.length, 0, "the confirmed switch still ends the jobs");
-});
-
-test("background spend survives /reload", async (t) => {
-	const first = setup(t);
-	await run(first.tool, { role: "scout", task: "x", background: true }, undefined, undefined, bgCtx().ctx);
-	await waitFor(() => first.messages.length === 1, "the first answer");
-	const reloaded = setup(t, { keepHistory: true });
-	const { ctx, statuses } = bgCtx();
-	await run(reloaded.tool, { role: "scout", task: "y", background: true }, undefined, undefined, ctx);
-	assert.match(statuses[0][1], /^delegate bg: 1 running, \$0\.0\d+ spent$/);
-	assert.ok(!statuses[0][1].endsWith("$0.0000 spent"), "the first job's spend is kept");
-	await waitFor(() => reloaded.messages.length === 1, "the second answer");
 });
 
 test("background job ids do not repeat after /reload", async (t) => {

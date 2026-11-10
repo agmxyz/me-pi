@@ -32,7 +32,7 @@ test("the footer re-renders on a branch change and unsubscribes when disposed", 
 			};
 		},
 		getGitBranch: () => "main",
-		getExtensionStatuses: () => new Map([["delegate", "delegate bg: 1 running"]]),
+		getExtensionStatuses: () => new Map([["other", "other: 1 job"]]),
 	};
 	start(
 		{},
@@ -52,7 +52,7 @@ test("the footer re-renders on a branch change and unsubscribes when disposed", 
 	);
 	const [line, statuses] = footer.render(120);
 	assert.match(line, /^me-pi \(main\) {2}12\.5%\/1\.0M \(auto\) +claude-opus-5-5 • medium$/);
-	assert.equal(statuses, "delegate bg: 1 running");
+	assert.equal(statuses, "other: 1 job");
 	branchListener?.();
 	assert.equal(renders, 1);
 	footer.dispose();

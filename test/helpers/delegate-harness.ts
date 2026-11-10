@@ -749,7 +749,6 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 	// The call history survives reloads on globalThis; each test starts empty unless it simulates a reload.
 	if (!keepHistory) {
 		globalThis[Symbol.for("me-pi.delegate.history")] = [];
-		globalThis[Symbol.for("me-pi.delegate.background-spend")] = { cost: 0 };
 		globalThis[Symbol.for("me-pi.delegate.job-count")] = 0;
 	}
 	registerExtension(pi);
@@ -826,7 +825,7 @@ const POLICY = [
 	"- never read keys",
 ].join("\n");
 
-// A tool context that records the status line.
+// A tool context that records status-line writes (delegate sets none).
 const bgCtx = () => {
 	const statuses = [];
 	return { ctx: { ...CTX, ui: { setStatus: (key, value) => statuses.push([key, value]) } }, statuses };
