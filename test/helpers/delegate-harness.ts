@@ -675,6 +675,9 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 		ME_PI_SKILLS: undefined,
 		ME_PI_DELEGATE_JOB_ID: undefined,
 		ME_PI_DELEGATE_ATTEMPT: undefined,
+		// The coordinator's opt-in status (an eval-style session sets them): off unless a test asks.
+		ME_PI_STATUS_LOG: undefined,
+		ME_PI_SPEND_BUDGET_USD: undefined,
 		ME_PI_TEST_ROOT: REPO_ROOT,
 		FAKE_PI_EVENT_MARKER: undefined,
 		FAKE_PI_TOOL_EVENTS: undefined,

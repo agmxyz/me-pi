@@ -89,6 +89,10 @@ export interface WorkerAttempt {
 	approve?: boolean;
 }
 
+// The coordinator's opt-in supervisor status (see `coordinatorStatus` in delegate.ts): a worker, and the commands it
+// runs, must not log to it or count against it.
+const COORDINATOR_ONLY_ENV = ["ME_PI_STATUS_LOG", "ME_PI_SPEND_BUDGET_USD"];
+
 /** The pi arguments and environment the coordinator spawns a worker with; `base` is the coordinator's env. */
 export function workerLaunch(
 	job: Job,
@@ -112,6 +116,7 @@ export function workerLaunch(
 		[ENV_ATTEMPT]: String(attemptIndex),
 		[ENV_BUDGET]: JSON.stringify(budget),
 	};
+	for (const name of COORDINATOR_ONLY_ENV) delete env[name];
 	// implement overrides the role and output directory and adds its fences.
 	return { args, env: implement ? workerEnv(env, implement.job) : env };
 }

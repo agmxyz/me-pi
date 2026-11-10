@@ -90,6 +90,29 @@ test("workerLaunch builds a scout's read-only args and protocol env", () => {
 	assert.deepEqual(read.identity, { jobId: "job-1", attempt: 2 });
 });
 
+test("workerLaunch keeps the coordinator's supervisor status variables from every worker", () => {
+	const base = { ...BASE, ME_PI_STATUS_LOG: "/tmp/status.log", ME_PI_SPEND_BUDGET_USD: "3" };
+	const attempt = { run: { thinking: "low" }, outDir: undefined, attemptIndex: 1, budget: BUDGET };
+	const checkout = { repoRoot: "/repo", commonDir: "/repo/.git", check: { command: "npm test" }, ghConfigDir: "/tmp/gh" };
+	const implementJob: Job = {
+		...ROLES.implement,
+		role: "implement",
+		output: false,
+		jobId: "job-i",
+		implement: { job: checkout as unknown as Checkout, trusted: false, pids: new Set(), artifacts: undefined as never },
+	};
+	for (const job of [
+		{ ...ROLES.scout, role: "scout", output: false, jobId: "job-s" } as Job,
+		{ ...ROLES.general, role: "general", output: true, jobId: "job-g" } as Job,
+		implementJob,
+	]) {
+		const { env } = workerLaunch(job, attempt, base);
+		assert.equal(env.ME_PI_STATUS_LOG, undefined, job.role);
+		assert.equal(env.ME_PI_SPEND_BUDGET_USD, undefined, job.role);
+		assert.equal(env.PATH, "/bin", job.role);
+	}
+});
+
 test("workerLaunch gives implement its tools, trust flag, and fenced env", () => {
 	const checkout = {
 		repoRoot: "/repo",
