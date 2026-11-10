@@ -15,7 +15,12 @@ const { default: registerFooter } = await import("../extensions/minimal-footer.t
 
 test("the footer re-renders on a branch change and unsubscribes when disposed", () => {
 	let start: any;
-	registerFooter({ on: (_event: string, handler: any) => (start = handler), getThinkingLevel: () => "medium" } as any);
+	registerFooter({
+		on: (_event: string, handler: any) => {
+			start = handler;
+		},
+		getThinkingLevel: () => "medium",
+	} as any);
 	let footer: any;
 	let branchListener: (() => void) | undefined;
 	let renders = 0;
