@@ -585,15 +585,13 @@ export default function (pi: ExtensionAPI) {
 	let activityTui: { requestRender: () => void } | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
 	const activityRows = (): ActivityWidgetRow[] =>
-		[...active.entries()].flatMap(([id, call]) =>
+		[...active.values()].flatMap((call) =>
 			(call.workers ?? [])
 				.filter((worker) => worker.active)
 				.map((worker) => ({
-					id,
-					displayId: call.job ?? call.displayId,
+					job: call.job,
 					worker: worker.index,
 					workerCount: call.workers?.length ?? 0,
-					role: call.role,
 					model: worker.model,
 					thinking: worker.thinking,
 					startedAt: worker.startedAt,

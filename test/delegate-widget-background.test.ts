@@ -62,9 +62,9 @@ test(
 			() => {
 				const panel = ui.widget().join("\n");
 				return (
-					panel.includes("bg1 scout anthropic/claude-haiku-5-5 @off") &&
-					panel.includes("bg2 general anthropic/claude-opus-5-5 @max") &&
-					panel.includes("fg1 general openai-codex/gpt-6-luna @low") &&
+					panel.includes("bg1 claude-haiku-5-5 @off") &&
+					panel.includes("bg2 claude-opus-5-5 @max") &&
+					panel.split("\n").some((line) => /^\S+ gpt-6-luna @low/u.test(line)) &&
 					panel.includes("read") &&
 					panel.includes("grep")
 				);
@@ -78,7 +78,7 @@ test(
 			live,
 			/PRIVATE_(?:TASK_ONE|TASK_TWO|TASK_THREE|ARGUMENT|COMMAND|OUTPUT|REASONING|STDERR)|activity answer|stderr/i,
 		);
-		assert.equal(ui.widget().length, 4, "one heading and three active worker rows");
+		assert.equal(ui.widget().length, 3, "three active worker rows, no heading");
 		assert.deepEqual([...intervals.values()], [1000], "one TUI-only elapsed timer for the active panel");
 		const timer = [...intervals.keys()][0];
 		const rendersBeforeTick = ui.requests.length;
@@ -121,15 +121,15 @@ test("each worker keeps one persona across progress, widget rerenders, and the r
 		updates.some((u) => u.details.view.stage === "Rebuttal"),
 		"the rebuttal round reported progress",
 	);
-	const rows = ui.snapshots.flat().filter((line) => line.includes("#"));
+	const rows = ui.snapshots.flat().filter((line) => /claude-(haiku|opus)/.test(line));
 	assert.ok(
 		rows.some((line) => line.includes(" R2 ")),
 		"the widget showed the rebuttal round",
 	);
 	for (const line of rows) {
-		if (line.includes("#1 "))
-			assert.match(line, /^🧑🏻‍🍳 fg1#1 general( R2)? anthropic\/claude-haiku-5-5 @\w+ .*· time to cook$/u);
-		else assert.match(line, /^🧑🏿‍🌾 fg1#2 general( R2)? anthropic\/claude-opus-5-5 @\w+ .*· doing honest work$/u);
+		if (line.includes("claude-haiku-5-5"))
+			assert.match(line, /^🧑🏻‍🍳 claude-haiku-5-5( R2)? @\w+ .*· time to cook$/u);
+		else assert.match(line, /^🧑🏿‍🌾 claude-opus-5-5( R2)? @\w+ .*· doing honest work$/u);
 	}
 	assert.deepEqual(
 		result.details.view.runs.map((r) => r.persona),
@@ -149,7 +149,7 @@ test("a scout worker is an elf in progress and the widget", async (t) => {
 	assert.match(live.content[0].text, /^🧝🏽 \S+ @\w+ turn \d+ .*· what do your elf-eyes see\?$/mu);
 	const rows = ui.snapshots.flat().filter((line) => line.startsWith("🧝"));
 	assert.ok(rows.length, "the widget showed the scout");
-	for (const line of rows) assert.match(line, /^🧝🏽 fg1 scout .* @\w+ .*· what do your elf-eyes see\?$/u);
+	for (const line of rows) assert.match(line, /^🧝🏽 \S+ @\w+ .*· what do your elf-eyes see\?$/u);
 });
 
 test("the elapsed timer stops between rebuttal rounds and restarts for active rows", async (t) => {
@@ -178,7 +178,7 @@ test("the elapsed timer stops between rebuttal rounds and restarts for active ro
 	assert.deepEqual(intervals.cleared, intervals.started);
 });
 
-test("concurrent foreground calls receive distinct compact widget labels", async (t) => {
+test("concurrent foreground calls each get a widget row without call ids", async (t) => {
 	const { tool } = setup(t, {
 		env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "300" },
 	});
@@ -198,10 +198,8 @@ test("concurrent foreground calls receive distinct compact widget labels", async
 		ui.ctx,
 	);
 	await waitFor(
-		() =>
-			ui.widget().some((line) => line.includes("fg1 general")) &&
-			ui.widget().some((line) => line.includes("fg2 general")),
-		"both foreground labels",
+		() => ui.widget().length === 2 && ui.widget().every((line) => !/call_|fc_|\bfg\d/.test(line)),
+		"both foreground rows, unlabelled",
 	);
 	assert.equal((await first).isError, false);
 	assert.equal((await second).isError, false);
@@ -257,7 +255,7 @@ test("the TUI widget cleans up on cancellation and session replacement", async (
 	const ui = tuiCtx();
 	const { tool, handlers, commands, messages } = main;
 	await run(tool, { role: "scout", task: "cancel me", background: true }, undefined, undefined, ui.ctx);
-	await waitFor(() => ui.widget().some((line) => line.includes("bg1 scout")), "background widget row");
+	await waitFor(() => ui.widget().some((line) => line.includes(" bg1 ")), "background widget row");
 	assert.equal(intervals.size, 1);
 	await commands.delegate.handler("cancel bg1", commandCtx().ctx);
 	await waitFor(() => messages.length === 1, "cancelled report");
@@ -265,7 +263,7 @@ test("the TUI widget cleans up on cancellation and session replacement", async (
 	assert.equal(intervals.size, 0, "cancellation clears the elapsed timer");
 
 	await run(tool, { role: "scout", task: "session replacement", background: true }, undefined, undefined, ui.ctx);
-	await waitFor(() => ui.widget().some((line) => line.includes("bg2 scout")), "second background widget row");
+	await waitFor(() => ui.widget().some((line) => line.includes(" bg2 ")), "second background widget row");
 	assert.equal(intervals.size, 1);
 	await handlers.session_shutdown({ reason: "new" });
 	assert.deepEqual(ui.widget(), [], "session replacement removes the widget");
