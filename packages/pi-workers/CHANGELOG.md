@@ -2,7 +2,7 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
-## [Unreleased]
+## [0.1.6] - 2026-11-10
 
 - The delegate activity widget is leaner: no `Delegate activity` heading, and rows show the model without its provider. Rows drop the role; foreground rows also drop the `fg` call id, while background rows keep their `bg` job id for `/delegate cancel`. Thinking level, elapsed time, and last tool stay.
 - A read-only worker with `output: true` can still write into its own output directory after its wrap-up budget runs out, so it no longer loses its final file. Each such write uses the same over-budget allowance as a blocked call, and every other tool stays blocked.
