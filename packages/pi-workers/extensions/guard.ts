@@ -1,8 +1,8 @@
 /**
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
  * With a UI it asks for confirmation; without one (print mode) it blocks. Plain history rewrites only block in
- * delegate workers; ones that run a command (`rebase -x`, an editor override, a `filter-branch` command filter) also
- * ask in the main session (see `classify`).
+ * delegate workers; ones that run a command (`rebase -x`, an editor override, a `filter-branch` command filter or
+ * `--setup`) ask in every session (see `classify`).
  * `/guard on|off` toggles it for the current session; every session starts on.
  * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
  * misses commands it can't read (interpreter code, a non-recursive rm).
@@ -141,26 +141,23 @@ function gitRisk(
 	historyRewrites: boolean,
 	editorOverride: boolean,
 ): string | undefined {
+	// Rewrites that run a command ask in every mode; `historyRewrites` adds the plain rewrite.
 	switch (sub) {
 		case "push":
 			return pushRisk(words, currentBranch, elsewhere);
 		case "commit":
 			if (!words.includes("--amend")) return undefined;
-			if (historyRewrites) return "history rewrite (commit --amend)";
-			return editorOverride ? "history rewrite (editor override)" : undefined;
-		case "rebase": {
-			const resumed = ["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w));
-			if (historyRewrites) return resumed ? undefined : "history rewrite (rebase)";
+			if (editorOverride) return "history rewrite (editor override)";
+			return historyRewrites ? "history rewrite (commit --amend)" : undefined;
+		case "rebase":
 			// A resumed rebase still opens the editor, so an override asks before the resume early-return.
 			if (editorOverride) return "history rewrite (editor override)";
-			if (resumed) return undefined;
-			return words.some((w) => REBASE_EXEC.test(w)) ? "history rewrite (rebase --exec)" : undefined;
-		}
+			if (["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w))) return undefined;
+			if (words.some((w) => REBASE_EXEC.test(w))) return "history rewrite (rebase --exec)";
+			return historyRewrites ? "history rewrite (rebase)" : undefined;
 		case "filter-branch":
-			if (historyRewrites) return "history rewrite (filter-branch)";
-			return words.some((w) => COMMAND_FILTER.test(w))
-				? "history rewrite (filter-branch command filter)"
-				: undefined;
+			if (words.some((w) => COMMAND_FILTER.test(w))) return "history rewrite (filter-branch command filter)";
+			return historyRewrites ? "history rewrite (filter-branch)" : undefined;
 		case "filter-repo":
 			// Always: by default it expires every reflog and prunes, so the old history can't be recovered.
 			return "history rewrite (filter-repo)";
@@ -283,8 +280,8 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 /**
  * `historyRewrites: false` skips `commit --amend`, `rebase`, `filter-branch`, and `branch -D`: the main session runs
  * them without asking, since the reflog, `refs/original/`, or `git fsck` can recover them. Rewrites that run a command
- * (`rebase -x`, a `filter-branch` command filter, or an editor override on `rebase`/`commit --amend`) still count, and
- * `filter-repo` always does. Workers pass true.
+ * (`rebase -x`, a `filter-branch` command filter or `--setup`, or an editor override on `rebase`/`commit --amend`)
+ * count in both modes, and `filter-repo` always does. Workers pass true.
  */
 export function classify(
 	command: string,

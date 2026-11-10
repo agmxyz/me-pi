@@ -273,8 +273,8 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 });
 
 // Each row was a bypass reported in a guard PR's review or fix; a guard change adds each new one here.
-// #95's rows come from that draft PR's review corpus and review rounds. Rows are checked as the main session
-// (`historyRewrites: false`), the weaker mode.
+// #95's rows come from that draft PR's review corpus and review rounds. Rows are checked in both modes
+// (`historyRewrites: false` and `true`).
 test("must-ask regressions: past bypasses still ask", () => {
 	for (const [command, branch, source] of [
 		["python3 - <<'EOF' | sh\nrm -rf ~\nEOF", onFeature, "#83"],
@@ -415,7 +415,11 @@ test("must-ask regressions: past bypasses still ask", () => {
 		["GIT_EDITOR='rm -rf ~;:' git rebase --continue", onFeature, "#114"],
 		["GIT_SEQUENCE_EDITOR+='rm -rf ~;:' git rebase -i HEAD~1", onFeature, "#114"],
 	]) {
-		assert.ok(classify(command, branch, { historyRewrites: false }), `${source}: ${command}`);
+		for (const historyRewrites of [false, true])
+			assert.ok(
+				classify(command, branch, { historyRewrites }),
+				`${source}: ${command} (historyRewrites: ${historyRewrites})`,
+			);
 	}
 });
 
@@ -674,6 +678,7 @@ test("gitTreeWrite names checkout-writing git subcommands and passes reads", () 
 		["git -C /repo commit -m x", "commit"],
 		["rtk git add .", "add"],
 		["git status && git commit -m x", "commit"],
+		["git -c user.name='a b' commit -m x", "commit"],
 		['git log --format="$(git reset --hard)"', "reset"],
 	]) {
 		assert.equal(gitTreeWrite(command), sub, command);
@@ -790,6 +795,8 @@ test("the main session runs history rewrites without asking; a worker still bloc
 	assert.equal(worker?.block, true);
 	assert.match(worker.reason, /history rewrite \(commit --amend\)/);
 	assert.equal((await handler(event("git rebase -i HEAD~3"), { cwd, hasUI: false }))?.block, true);
+	const resumed = await handler(event("GIT_EDITOR='rm -rf ~;:' git rebase --continue"), { cwd, hasUI: false });
+	assert.equal(resumed?.block, true);
 });
 
 test("/guard toggles enforcement for the session", async () => {
