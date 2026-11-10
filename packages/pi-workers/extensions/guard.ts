@@ -640,14 +640,15 @@ function branchIn(cwd: string): string | undefined {
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 
+	const ARGS = ["on", "off"];
 	pi.registerCommand("guard", {
-		description: "Dangerous-bash guard: /guard on | off (current session; default on)",
+		description: `Dangerous-bash guard: /guard ${ARGS.join(" | ")} (current session; default on)`,
 		getArgumentCompletions: (prefix) =>
-			["on", "off"].filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
+			ARGS.filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {
 			const arg = args.trim();
-			if (arg === "on" || arg === "off") enabled = arg === "on";
-			else if (arg) return ctx.ui.notify("usage: /guard [on|off]", "warning");
+			if (ARGS.includes(arg)) enabled = arg === "on";
+			else if (arg) return ctx.ui.notify(`usage: /guard [${ARGS.join("|")}]`, "warning");
 			ctx.ui.notify(`guard ${enabled ? "on" : "off"}`, "info");
 		},
 	});
