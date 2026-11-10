@@ -149,7 +149,8 @@ test("a scout worker is an elf in progress and the widget", async (t) => {
 	assert.match(live.content[0].text, /^🧝🏽 \S+ @\w+ turn \d+ .*· what do your elf-eyes see\?$/mu);
 	const rows = ui.snapshots.flat().filter((line) => line.startsWith("🧝"));
 	assert.ok(rows.length, "the widget showed the scout");
-	for (const line of rows) assert.ok(line.startsWith("🧝🏽 ") && line.endsWith("what do your elf-eyes see?"), line);
+	// Emoji, then the model alone: no role or provider prefix.
+	for (const line of rows) assert.match(line, /^🧝🏽 [^\s/]+ @\w+ .*· what do your elf-eyes see\?$/u);
 });
 
 test("the elapsed timer stops between rebuttal rounds and restarts for active rows", async (t) => {

@@ -808,6 +808,7 @@ export default function (pi: ExtensionAPI) {
 			let co: Checkout | undefined;
 			if (role === "implement") {
 				// Holds the worker slot while prepare runs, so parallel calls cannot pass the cap together.
+				// No `job` yet: a background implement gets its bg id only after prepare, so its widget row has no id.
 				const slot = callKey;
 				const preparingAt = Date.now();
 				active.set(slot, {

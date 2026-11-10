@@ -59,10 +59,7 @@ export interface DelegateView {
 
 /** Safe, prompt-independent details for one active worker in the main-session widget. */
 export interface ActivityWidgetRow {
-	/**
-	 * Background job id (bg3), the handle /delegate cancel takes. Foreground rows show none, and so does a
-	 * background implement while it prepares: its bg id is assigned only after prepare.
-	 */
+	/** Background job id (bg3), the handle /delegate cancel takes; absent when no cancellable job exists yet. */
 	job?: string;
 	worker: number;
 	workerCount: number;
