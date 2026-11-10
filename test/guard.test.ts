@@ -464,6 +464,21 @@ test("must-ask regressions: past bypasses still ask", () => {
 		["git config --file .git/config core.fsmonitor 'rm -rf ~'", onFeature, "#115"],
 		["git config --replace-all core.pager 'rm -rf ~'", onFeature, "#115"],
 		["git config --rename-section x core", onFeature, "#115"],
+		["git config alias.x '!rm -rf ~ -l'", onFeature, "#115"],
+		["git config core.pager 'rm -rf ~ -e'", onFeature, "#115"],
+		["git config core.hooksPath /tmp/h", onFeature, "#115"],
+		["git clone -c core.hooksPath=/tmp/h repo d", onFeature, "#115"],
+		["git clone --config=core.fsmonitor='rm -rf ~' repo d", onFeature, "#115"],
+		["git clone --template=/tmp/t repo d", onFeature, "#115"],
+		["GIT_TEMPLATE_DIR=/tmp/t git clone r d", onFeature, "#115"],
+		["git --exec-path=/tmp/x status", onFeature, "#115"],
+		["git archive --e='rm -rf ~' --remote=x HEAD", onFeature, "#115"],
+		["git clone --u='rm -rf ~' r d", onFeature, "#115"],
+		["git pull --upload-pack='rm -rf ~' origin", onFeature, "#115"],
+		["LESSOPEN='|rm -rf ~ %s' git log", onFeature, "#115"],
+		["GIT_CONFIG=/tmp/c git log", onFeature, "#115"],
+		["GIT_CONFIG_SYSTEM=/tmp/c git log", onFeature, "#115"],
+		["VISUAL='rm -rf ~;:' git commit", onFeature, "#115"],
 	]) {
 		for (const historyRewrites of [false, true])
 			assert.ok(
@@ -509,11 +524,17 @@ test("git options and env that don't run a command stay quiet in both modes", ()
 		"git archive --format=tar HEAD",
 		"GIT_CONFIG_NOSYSTEM=1 git log",
 		"GIT_SSH_COMMAND='ssh -i k' ssh host",
+		"git config --get core.editor",
+		"git config --unset core.editor",
+		"git grep editor=",
+		"git --exec-path",
+		"git clone -c user.name=x repo d",
+		"git config user.email 'a -l b'",
+		"git push -o ci.skip origin feature/x",
 	]) {
 		for (const historyRewrites of [false, true])
 			assert.equal(classify(command, onFeature, { historyRewrites }), undefined, `expected allowed: ${command}`);
 	}
-	assert.equal(classify("git push -o ci.skip origin feature/x", onFeature, { historyRewrites: false }), undefined);
 });
 
 test("git options and env that run a command are read in linear time", () => {
@@ -725,6 +746,12 @@ test("an implement worker's git in a fresh mktemp repo passes; leaving it or poi
 		'V=$(mktemp -d ./t.XXXX) && cd "$V" && git config user.name x',
 	])
 		assert.ok(workerRisk(command), command);
+	// Cutting remotes doesn't stop git running a local command, so those checks still apply.
+	for (const command of [
+		`D=$(mktemp -d) && cd "$D" && git init -q && git -c alias.x='!touch p' x`,
+		`D=$(mktemp -d) && cd "$D" && GIT_SSH_COMMAND='touch p' git fetch`,
+	])
+		assert.ok(classify(command, onMain), command);
 	delete process.env.ME_PI_ROLE;
 	assert.ok(classify(fresh[2], onMain), "the main session's guard never exempts temp repos");
 });
