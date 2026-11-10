@@ -26,7 +26,7 @@ Workers are **not sandboxed**: they run with your OS permissions, and `implement
 
 | Extension | What it does | Filter entry |
 |---|---|---|
-| [`steps`](extensions/steps.ts) | Live checklist below the editor, set by the model through a `plan` tool. `/steps off` turns it off in every session; `/steps on` turns it back on. | `"extensions/steps.ts"` |
+| [`steps`](extensions/steps.ts) | Live checklist below the editor, set by the model through a `plan` tool. `/steps off` turns it off for new sessions and this one (others on `/reload`); `/steps on` turns it back on. | `"extensions/steps.ts"` |
 | [`minimal-footer`](extensions/minimal-footer.ts) | One-line footer: `folder (branch)  ctx%/window` left, `model • thinking` right; extension statuses on a second line. | `"extensions/minimal-footer.ts"` |
 
 To install one or both, add this repo to `packages` in `~/.pi/agent/settings.json` with the filter entries you want, then run `/reload`:

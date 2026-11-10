@@ -12,6 +12,8 @@ import { isWorkerProcess } from "../packages/pi-workers/extensions/delegate-env.
 
 type Plan = { steps: string[]; done: number };
 const WIDGET = "steps";
+// A session entry (not sent to the model) that records a plan completed by a normal end, for restore().
+const COMPLETED = "steps-completed";
 
 const settingsPath = () => join(getAgentDir(), "steps.json");
 
@@ -54,6 +56,10 @@ export default function (pi: ExtensionAPI) {
 	// When the current step started, for its timer; reset when the step changes or a prompt picks the plan up.
 	let stepStartedAt = Date.now();
 	let tick: NodeJS.Timeout | undefined;
+	const stopTick = () => {
+		clearInterval(tick);
+		tick = undefined;
+	};
 	// `/steps off` hides the widget and drops the `plan` tool from the model in every session.
 	let enabled = true;
 	let ui: ExtensionContext["ui"] | undefined;
@@ -62,8 +68,7 @@ export default function (pi: ExtensionAPI) {
 		if (!ui) return;
 		const { steps, done } = plan;
 		const live = running && fresh;
-		clearInterval(tick);
-		tick = undefined;
+		stopTick();
 		if (!enabled || !steps.length || (running && !fresh)) return ui.setWidget(WIDGET, undefined);
 		ui.setWidget(
 			WIDGET,
@@ -73,6 +78,7 @@ export default function (pi: ExtensionAPI) {
 					tick.unref();
 				}
 				return {
+					dispose: stopTick,
 					invalidate() {},
 					render(width: number): string[] {
 						const line = (s: string) => truncateToWidth(s, width, theme.fg("dim", "…"));
@@ -95,13 +101,17 @@ export default function (pi: ExtensionAPI) {
 		);
 	};
 
-	// Rebuild from the active branch so resume, /fork and /tree show the right plan.
+	// Rebuild from the active branch so resume, /fork and /tree show the right plan: the latest `plan` result,
+	// or the completion agent_end recorded after it.
 	const restore = (ctx: ExtensionContext) => {
 		plan = { steps: [], done: 0 };
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "plan") {
 				const details = entry.message.details as Plan | undefined;
 				if (details?.steps) plan = details;
+			} else if (entry.type === "custom" && entry.customType === COMPLETED) {
+				const data = entry.data as Plan | undefined;
+				if (data?.steps) plan = data;
 			}
 		}
 	};
@@ -126,7 +136,7 @@ export default function (pi: ExtensionAPI) {
 			],
 			parameters: Type.Object({
 				steps: Type.Optional(Type.Array(Type.String())),
-				done: Type.Optional(Type.Number()),
+				done: Type.Optional(Type.Integer({ minimum: 0 })),
 			}),
 			async execute(_id, params) {
 				const before = plan.done;
@@ -177,6 +187,11 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.on("session_shutdown", () => {
+		stopTick();
+		ui = undefined;
+	});
+
 	pi.on("session_tree", (_event, ctx) => {
 		restore(ctx);
 		render();
@@ -198,8 +213,11 @@ export default function (pi: ExtensionAPI) {
 		// that step left completes the plan. More steps left means the plan is paused, e.g. on a background job.
 		const last = event.messages.findLast((m) => m.role === "assistant");
 		const { steps, done } = plan;
-		if (fresh && steps.length && done >= steps.length - 1 && last?.role === "assistant" && last.stopReason === "stop")
+		const completes = steps.length && done < steps.length && done >= steps.length - 1;
+		if (fresh && completes && last?.role === "assistant" && last.stopReason === "stop") {
 			plan = { ...plan, done: steps.length };
+			pi.appendEntry(COMPLETED, plan);
+		}
 		running = false;
 		render();
 	});
