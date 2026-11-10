@@ -51,9 +51,10 @@ export const GIT_LIMITS = { timeoutMs: 30_000 };
 
 type GitResult = { ok: boolean; code?: number; out: string; err: string };
 
-async function git(repoRoot: string, args: string[]): Promise<GitResult> {
+async function git(repoRoot: string, args: string[], env?: NodeJS.ProcessEnv): Promise<GitResult> {
 	try {
 		const { stdout, stderr } = await run("git", ["-C", repoRoot, ...args], {
+			env,
 			encoding: "utf8",
 			maxBuffer: 64 * 1024 * 1024,
 			timeout: GIT_LIMITS.timeoutMs,
@@ -102,7 +103,7 @@ export async function snapshotGit(repoRoot: string): Promise<GitSnapshot> {
 		// Exit 1 with no output: no local entries.
 		gitOrThrow(repoRoot, ["config", "--local", "--list"], [1]),
 		gitOrThrow(repoRoot, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"]),
-		worktreesOf(repoRoot),
+		gitOrThrow(repoRoot, ["worktree", "list", "--porcelain"]),
 	]);
 	const refs = new Map(
 		refsOut
@@ -114,7 +115,9 @@ export async function snapshotGit(repoRoot: string): Promise<GitSnapshot> {
 	// Paths are compared resolved: git lists real paths, and the checkout may be reached through a symlink.
 	const own = realpathOr(toplevel);
 	const elsewhere = new Set(
-		worktrees.flatMap(({ path, branch }) => (branch !== undefined && realpathOr(path) !== own ? [branch] : [])),
+		parseWorktrees(worktrees).flatMap(({ path, branch }) =>
+			branch !== undefined && realpathOr(path) !== own ? [branch] : [],
+		),
 	);
 	const hash = createHash("sha256");
 	for (const sub of ["hooks", "info"]) {
@@ -393,14 +396,15 @@ const unreadableLock = (writer: Writer) =>
 	`${writer.lockPath} is unreadable; another implement job may be starting in ${writer.repoRoot}. Remove it only if none runs.`;
 const jobOf = (holder: NonNullable<Writer["holder"]>) => `implement job ${holder.id} (pid ${holder.pid})`;
 
-// git's output for a directory in a checkout; undefined when git exits with an error: `dir` is in no checkout (outside
-// a repository, or inside a git dir). Throws when git gave no answer (it timed out or could not start): whether a job
-// writes there is then unknown, which callers report as a block.
+// git's output for a directory in a checkout; undefined when git says `dir` is in none (outside a repository, or
+// inside a git dir). Throws on any other failure (a timeout, a repository git refuses to read): whether a job writes
+// there is then unknown, which callers report as a block.
 async function gitInCheckout(dir: string, args: string[]): Promise<string | undefined> {
-	const res = await git(dir, args);
+	// LC_ALL=C: the two messages are matched in English.
+	const res = await git(dir, args, { ...process.env, LC_ALL: "C" });
 	if (res.ok) return res.out;
-	if (res.code !== undefined) return undefined;
-	throw new Error(`could not check for an implement job in ${dir}: ${res.err || `git ${args[0]} did not run`}`);
+	if (/not a git repository|must be run in a work tree/.test(res.err)) return undefined;
+	throw new Error(`could not check for an implement job in ${dir}: ${res.err || `git ${args[0]} failed`}`);
 }
 
 // `path` when it is a directory, else its nearest existing parent directory.
@@ -417,16 +421,17 @@ async function writerIn(dir: string): Promise<Writer | undefined> {
 	if (dirs === undefined) return undefined;
 	const [repoRoot, gitDir] = dirs.trim().split("\n");
 	const lockPath = join(gitDir, LOCK_NAME);
-	const content = await readFile(lockPath, "utf8").catch(() => undefined);
+	const content = await readFile(lockPath, "utf8").catch((err) => {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw new Error(`could not read ${lockPath}: ${(err as Error).message}`);
+	});
 	if (content === undefined) return undefined;
 	const holder = lockHolder(content);
 	return holder && !isAlive(holder.pid) ? undefined : { repoRoot, lockPath, holder };
 }
 
-// The checkouts of the repo at `cwd` with the branch each has checked out, the main one first; none outside a
-// repository. Throws when git cannot say.
-async function worktreesOf(cwd: string): Promise<{ path: string; branch?: string }[]> {
-	const list = (await gitInCheckout(cwd, ["worktree", "list", "--porcelain"])) ?? "";
+// `git worktree list --porcelain` as checkouts with the branch each has checked out, the main one first.
+function parseWorktrees(list: string): { path: string; branch?: string }[] {
 	const worktrees: { path: string; branch?: string }[] = [];
 	for (const line of list.split("\n")) {
 		if (line.startsWith("worktree ")) worktrees.push({ path: line.slice("worktree ".length) });
@@ -434,6 +439,10 @@ async function worktreesOf(cwd: string): Promise<{ path: string; branch?: string
 	}
 	return worktrees;
 }
+
+// The checkouts of the repo at `cwd`; none outside a repository. Throws when git cannot say.
+const worktreesOf = async (cwd: string) =>
+	parseWorktrees((await gitInCheckout(cwd, ["worktree", "list", "--porcelain"])) ?? "");
 
 /**
  * Why this process must not write at `targets` (files or directories): another process's implement job has the lock

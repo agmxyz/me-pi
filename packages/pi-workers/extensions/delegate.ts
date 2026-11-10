@@ -683,13 +683,12 @@ export default function (pi: ExtensionAPI) {
 			const dirs = gitWriteDirs(command);
 			targets = typeof dirs === "object" ? dirs.map((chain) => realTarget(at(chain)) ?? at(chain)) : dirs;
 		}
-		if (!targets) {
-			const removals = gitWorktreeRemovals(command);
-			const reason = removals.length
-				? await worktreeRemovalBlocked(removals === "unknown" ? undefined : removals.map(at), ctx.cwd)
-				: undefined;
-			return reason ? { block: true, reason } : undefined;
-		}
+		const removals = gitWorktreeRemovals(command);
+		const removal = removals.length
+			? await worktreeRemovalBlocked(removals === "unknown" ? undefined : removals.map(at), ctx.cwd)
+			: undefined;
+		if (removal) return { block: true, reason: removal };
+		if (!targets) return undefined;
 		// A write whose place is unknown may be in any checkout: this session's job blocks it.
 		for (const [root, id] of writing)
 			if (targets === "unknown" || targets.some((target) => within(root, target)))

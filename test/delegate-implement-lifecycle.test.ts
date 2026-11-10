@@ -634,6 +634,8 @@ test("when git cannot say whether a job is writing, writes and worktree removals
 	const blocked = await call("edit", { path: "sub/a.txt" });
 	assert.equal(blocked?.block, true);
 	assert.match(blocked.reason, /^could not check for an implement job in .*: git rev-parse timed out after 100 ms$/);
+	const refused = await call("edit", { path: "x.txt" }, outside);
+	assert.equal(refused?.block, true, "no answer is not `no checkout`");
 	for (const command of commands) assert.equal((await call("bash", { command }))?.block, true, command);
 	assert.equal(await call("bash", { command: "git status" }), undefined, "a read is not checked");
 });
@@ -679,6 +681,7 @@ test("a worktree with a live implement lock cannot be removed, by any session; a
 	assert.equal(await bash(`git worktree remove ${real}.worktrees/missing`), undefined, "no such worktree");
 	assert.equal(await bash(`git worktree remove ${wt}/sub`), undefined, "a path inside one: git refuses it");
 	assert.equal((await bash('git worktree remove "$WT"'))?.block, true, "an unreadable target: any live lock");
+	assert.equal((await bash(`git merge goal/y && git worktree remove ${wt}`))?.block, true, "after a tree write");
 	rmSync(wtLock);
 	writeFileSync(join(real, ".git", "me-pi-implement.lock"), `${process.pid} im9\n`);
 	assert.equal(await bash('git worktree remove "$WT"'), undefined, "the main checkout is never removed");
