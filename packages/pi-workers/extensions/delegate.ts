@@ -133,7 +133,6 @@ function initialActivity(
 // --- Worker process -------------------------------------------------------------------------------
 
 const HISTORY_KEY = Symbol.for("me-pi.delegate.history");
-const SPEND_KEY = Symbol.for("me-pi.delegate.background-spend");
 // Background job ids (bg<n>) count here, across /reload, so ids never repeat within one Pi process.
 const JOB_COUNT_KEY = Symbol.for("me-pi.delegate.job-count");
 // The abort reason of a session shutdown (/reload, /new, /resume, /fork, handoff, exit).
@@ -627,16 +626,10 @@ export default function (pi: ExtensionAPI) {
 		}
 		activityTui?.requestRender();
 	};
-	// Background jobs by id, with what they spent; Pi's session usage never includes it.
+	// Background jobs by id, for /delegate cancel and session shutdown.
 	const jobs = new Map<string, AbortController>();
 	// implement: repo root -> the job writing in it (bg3, or im3 in the foreground), for the main-session block.
 	const writing = new Map<string, string>();
-	let statusUi: { setStatus?: (key: string, text: string | undefined) => void } | undefined;
-	const showStatus = () =>
-		statusUi?.setStatus?.(
-			"delegate",
-			jobs.size || spend.cost ? `delegate bg: ${jobs.size} running, $${spend.cost.toFixed(4)} spent` : undefined,
-		);
 	const cancel = (id: string) => {
 		const job = jobs.get(id);
 		if (!job) return `No running background job ${id}.`;
@@ -647,9 +640,6 @@ export default function (pi: ExtensionAPI) {
 	const shared = globalThis as any;
 	shared[HISTORY_KEY] ??= [];
 	const history: CallRecord[] = shared[HISTORY_KEY];
-	// Background spend for this Pi process, also kept across /reload so the status line never undercounts.
-	shared[SPEND_KEY] ??= { cost: 0 };
-	const spend: { cost: number } = shared[SPEND_KEY];
 	registerDelegateCommand(pi, { configPath, loadModelSet: () => loadModelSet(), history, active, cancel });
 	// Pi offers no hook before /reload or exit, so those still end background jobs unasked.
 	const confirmEndingJobs = async (ctx: any) => {
@@ -1142,7 +1132,6 @@ export default function (pi: ExtensionAPI) {
 			const id = `bg${shared[JOB_COUNT_KEY]}`;
 			const controller = new AbortController();
 			jobs.set(id, controller);
-			statusUi = ctx?.ui;
 			const deliver = (text: string, details: unknown, isError: boolean) => {
 				// After shutdown the session that asked is gone; its answer has nowhere to go.
 				if (ended.aborted) return;
@@ -1159,15 +1148,12 @@ export default function (pi: ExtensionAPI) {
 			};
 			tracked(start(callKey, AbortSignal.any([controller.signal, ended]), undefined, id, id))
 				.then((result: any) => {
-					spend.cost += costOf(result.usage ?? {});
 					deliver(result.content.map((c: any) => c.text).join("\n"), result.details, Boolean(result.isError));
 				})
 				.catch((err: any) => deliver(`✗ ${err?.message ?? err}`, {}, true))
 				.finally(() => {
 					jobs.delete(id);
-					showStatus();
 				});
-			showStatus();
 			return {
 				content: [
 					{
