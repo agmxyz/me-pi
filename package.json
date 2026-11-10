@@ -20,7 +20,9 @@
     "extensions": [
       "extensions/delegate.ts",
       "extensions/guard.ts",
-      "extensions/skill.ts"
+      "extensions/skill.ts",
+      "extensions/steps.ts",
+      "extensions/minimal-footer.ts"
     ],
     "skills": [],
     "changelogPath": "packages/pi-workers/CHANGELOG.md"

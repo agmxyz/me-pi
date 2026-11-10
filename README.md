@@ -22,6 +22,21 @@ Workers are **not sandboxed**: they run with your OS permissions, and `implement
 
 [Package README](packages/pi-workers/README.md) · [Delegation guide](packages/pi-workers/docs/delegate.md) · [Changelog](packages/pi-workers/CHANGELOG.md)
 
+### steps and minimal-footer
+
+Two small TUI extensions from my setup, not published on npm:
+
+- [`extensions/steps.ts`](extensions/steps.ts): a live checklist below the editor. The model sets it with a `plan` tool; the current step shows what is running now. A plan from an earlier prompt stays hidden until the model picks it up again.
+- [`extensions/minimal-footer.ts`](extensions/minimal-footer.ts): a one-line footer, `folder (branch)  ctx%/window` left and `model • thinking` right, with extension statuses on a second line.
+
+Install one from this repo with a package filter in `~/.pi/agent/settings.json`:
+
+```json
+{ "packages": [{ "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/steps.ts"] }] }
+```
+
+Without a filter, `pi install git:github.com/agmxyz/me-pi` loads both plus the pi-workers extensions.
+
 ## Setup
 
 My personal setup; it runs this checkout's working tree. You don't need it to use an extension.
