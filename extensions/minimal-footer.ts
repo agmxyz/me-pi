@@ -4,6 +4,8 @@ import { basename } from "node:path";
 import { type ExtensionAPI, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
+// Same token format and 70/90% colour thresholds as Pi's built-in footer
+// (dist/modes/interactive/components/footer.js, not exported); copied, so they can drift from Pi.
 function formatTokens(count: number): string {
 	if (count < 1000) return `${count}`;
 	if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;

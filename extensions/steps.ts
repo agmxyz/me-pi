@@ -1,21 +1,29 @@
 // Steps: a minimal live checklist below the editor.
 // The model sets upcoming steps with the `plan` tool; the current step shows how long it has run.
 // Pi's tool blocks already show what is running, so without a plan this prompt shows nothing.
-// Off in delegate workers and non-TUI modes: no tool, no prompt text, no tokens.
+// Off outside the TUI, including delegate workers (JSON mode): no tool, no prompt text, no tokens.
 // `/steps off` turns it off the same way for every session; the choice lives in <agent dir>/steps.json.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { isWorkerProcess } from "../packages/pi-workers/extensions/delegate-env.ts";
 
 type Plan = { steps: string[]; done: number };
 const WIDGET = "steps";
+const TOOL = "plan";
 // A session entry (not sent to the model) that records a plan completed by a normal end, for restore().
 const COMPLETED = "steps-completed";
 
 const settingsPath = () => join(getAgentDir(), "steps.json");
+
+/** A plan read back from session history, or undefined when the entry is not one; done is clamped to the steps. */
+function parsePlan(value: unknown): Plan | undefined {
+	const { steps, done } = (value ?? {}) as Partial<Plan>;
+	if (!Array.isArray(steps) || !steps.every((step) => typeof step === "string")) return undefined;
+	const count = Number.isInteger(done) ? (done as number) : 0;
+	return { steps, done: Math.max(0, Math.min(count, steps.length)) };
+}
 
 /** The saved on/off choice: on when no choice was saved; an unreadable file is reported and treated as on. */
 function readEnabled(): { enabled: boolean; error?: string } {
@@ -46,8 +54,6 @@ const elapsed = (ms: number) => {
 };
 
 export default function (pi: ExtensionAPI) {
-	if (isWorkerProcess()) return;
-
 	let plan: Plan = { steps: [], done: 0 };
 	let running = false;
 	// The plan shows while running only once the model calls `plan` in the current prompt; a plan from an
@@ -106,13 +112,13 @@ export default function (pi: ExtensionAPI) {
 	const restore = (ctx: ExtensionContext) => {
 		plan = { steps: [], done: 0 };
 		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "plan") {
-				const details = entry.message.details as Plan | undefined;
-				if (details?.steps) plan = details;
-			} else if (entry.type === "custom" && entry.customType === COMPLETED) {
-				const data = entry.data as Plan | undefined;
-				if (data?.steps) plan = data;
-			}
+			const saved =
+				entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === TOOL
+					? parsePlan(entry.message.details)
+					: entry.type === "custom" && entry.customType === COMPLETED
+						? parsePlan(entry.data)
+						: undefined;
+			if (saved) plan = saved;
 		}
 	};
 
@@ -125,7 +131,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(`steps: could not read the on/off setting, so steps stay on (${saved.error})`, "warning");
 		restore(ctx);
 		pi.registerTool({
-			name: "plan",
+			name: TOOL,
 			defaultActive: enabled,
 			label: "Plan",
 			description: "Live checklist for the user. `steps` sets the list; `done` is the count of finished steps.",
@@ -178,8 +184,8 @@ export default function (pi: ExtensionAPI) {
 				}
 				// The plan tool exists only in TUI sessions (registered on session_start).
 				if (ui) {
-					const others = pi.getActiveTools().filter((name) => name !== "plan");
-					pi.setActiveTools(enabled ? [...others, "plan"] : others);
+					const others = pi.getActiveTools().filter((name) => name !== TOOL);
+					pi.setActiveTools(enabled ? [...others, TOOL] : others);
 				}
 				render();
 			} else if (arg) return ctx.ui.notify("usage: /steps [on|off]", "warning");

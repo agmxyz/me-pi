@@ -5,18 +5,13 @@ import { join } from "node:path";
 import test, { mock } from "node:test";
 
 // The on/off choice is saved under the agent dir: keep HOME, TMPDIR and the agent dir in a temp dir,
-// never the real ~/.pi. Clear the worker flag so the suite also passes inside a delegate worker.
+// never the real ~/.pi.
 const ROOT = mkdtempSync(join(tmpdir(), "steps-test-"));
 const AGENT_DIR = join(ROOT, "agent");
 process.env.HOME = ROOT;
 process.env.TMPDIR = ROOT;
 process.env.PI_CODING_AGENT_DIR = AGENT_DIR;
-const workerFlag = process.env.ME_PI_RUN;
-delete process.env.ME_PI_RUN;
 process.on("exit", () => rmSync(ROOT, { recursive: true, force: true }));
-test.after(() => {
-	if (workerFlag !== undefined) process.env.ME_PI_RUN = workerFlag;
-});
 const SETTINGS = join(AGENT_DIR, "steps.json");
 
 const { default: registerSteps } = await import("../extensions/steps.ts");
@@ -200,26 +195,13 @@ test("an unreadable setting is reported and steps stay on", () => {
 	assert.match(s.notes[0], /^warning: steps: could not read the on\/off setting, so steps stay on \(.*steps\.json/);
 });
 
-test("a delegate worker registers nothing", () => {
-	process.env.ME_PI_RUN = "1";
-	try {
-		const calls: string[] = [];
-		registerSteps({
-			on: () => calls.push("on"),
-			registerTool: () => calls.push("tool"),
-			registerCommand: () => calls.push("command"),
-		} as any);
-		assert.deepEqual(calls, []);
-	} finally {
-		delete process.env.ME_PI_RUN;
+test("outside the TUI, as in a delegate worker's JSON mode, there is no plan tool and no widget", () => {
+	for (const mode of ["json", "print"]) {
+		const s = setup({ mode });
+		assert.equal(s.tool(), undefined);
+		s.prompt();
+		assert.equal(s.show(), "(hidden)");
 	}
-});
-
-test("outside the TUI there is no plan tool and no widget", () => {
-	const s = setup({ mode: "print" });
-	assert.equal(s.tool(), undefined);
-	s.prompt();
-	assert.equal(s.show(), "(hidden)");
 });
 
 test("the step timer stops when the widget goes away or the session ends", async (t) => {
@@ -260,6 +242,22 @@ test("a plan completed by a normal end stays complete after resume", async () =>
 	assert.equal(resumed.show(), "(hidden)");
 	resumed.fire("session_tree");
 	assert.equal(resumed.show(), "✓ 2/2 steps");
+});
+
+test("restore ignores entries that are not plans and clamps done", () => {
+	const result = (details: any) => ({ type: "message", message: { role: "toolResult", toolName: "plan", details } });
+	const s = setup({
+		branch: [
+			result({ steps: ["A", "B", "C"], done: 1 }),
+			result({ steps: "not a list" }),
+			{ type: "custom", customType: "steps-completed", data: { done: 9 } },
+		],
+	});
+	s.fire("session_tree");
+	assert.equal(s.show(), "◐ 1/3 · next: B");
+	const t = setup({ branch: [result({ steps: ["A", "B"], done: 7 }), result({ steps: ["X", "Y"] })] });
+	t.fire("session_tree");
+	assert.equal(t.show(), "◐ 0/2 · next: X");
 });
 
 test("done is a whole number of steps", () => {
