@@ -7,6 +7,9 @@ const { default: registerSteps } = await import("../extensions/steps.ts");
 function setup() {
 	let tool: any;
 	let widget: any;
+	let active = ["read", "bash"];
+	const notes: string[] = [];
+	const commands: Record<string, any> = {};
 	const handlers: Record<string, ((event: any, ctx: any) => void)[]> = {};
 	registerSteps({
 		on: (event: string, handler: any) => {
@@ -15,12 +18,21 @@ function setup() {
 		},
 		registerTool: (definition: any) => {
 			tool = definition;
+			active = [...active, definition.name];
+		},
+		registerCommand: (name: string, options: any) => {
+			commands[name] = options;
+		},
+		getActiveTools: () => active,
+		setActiveTools: (names: string[]) => {
+			active = names;
 		},
 	} as any);
 	const ui = {
 		setWidget: (_key: string, factory: any) => {
 			widget = factory?.(null, { fg: (_color: string, text: string) => text });
 		},
+		notify: (text: string) => notes.push(text),
 	};
 	const ctx = { mode: "tui", ui, sessionManager: { getBranch: () => [] } };
 	const fire = (event: string, payload: any = {}) => {
@@ -38,6 +50,9 @@ function setup() {
 			fire("tool_execution_start", { toolCallId: id, toolName, args }),
 		toolEnd: (id: string) => fire("tool_execution_end", { toolCallId: id }),
 		end: (stopReason = "stop") => fire("agent_end", { messages: [{ role: "assistant", stopReason }] }),
+		command: (args: string) => commands.steps.handler(args, ctx),
+		active: () => active,
+		notes,
 	};
 }
 
@@ -105,4 +120,21 @@ test("an aborted run keeps the real count", async () => {
 	await s.plan({ done: 2 });
 	s.end("aborted");
 	assert.equal(s.show(), "◐ 2/3 · next: Z");
+});
+
+test("/steps off hides the widget and drops the plan tool; /steps on restores both", async () => {
+	const s = setup();
+	s.prompt();
+	await s.plan({ steps: ["A", "B", "C"] });
+	await s.command("off");
+	assert.equal(s.show(), "(hidden)");
+	assert.deepEqual(s.active(), ["read", "bash"]);
+	s.toolStart("b", "bash", { command: "ls" });
+	assert.equal(s.show(), "(hidden)");
+	await s.command("on");
+	assert.deepEqual(s.active(), ["read", "bash", "plan"]);
+	assert.equal(s.show(), "● A · Running ls\n○ B\n○ C");
+	await s.command("");
+	await s.command("maybe");
+	assert.deepEqual(s.notes, ["steps off", "steps on", "steps on", "usage: /steps [on|off]"]);
 });

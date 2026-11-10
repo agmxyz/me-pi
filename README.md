@@ -26,7 +26,7 @@ Workers are **not sandboxed**: they run with your OS permissions, and `implement
 
 Two small TUI extensions from my setup, not published on npm:
 
-- [`extensions/steps.ts`](extensions/steps.ts): a live checklist below the editor. The model sets it with a `plan` tool; the current step shows what is running now. A plan from an earlier prompt stays hidden until the model picks it up again.
+- [`extensions/steps.ts`](extensions/steps.ts): a live checklist below the editor. The model sets it with a `plan` tool; the current step shows what is running now. A plan from an earlier prompt stays hidden until the model picks it up again. `/steps off` hides it and removes the `plan` tool for the session; `/steps on` brings both back.
 - [`extensions/minimal-footer.ts`](extensions/minimal-footer.ts): a one-line footer, `folder (branch)  ctx%/window` left and `model • thinking` right, with extension statuses on a second line.
 
 Install one from this repo with a package filter in `~/.pi/agent/settings.json`:

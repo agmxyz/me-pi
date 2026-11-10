@@ -42,12 +42,14 @@ export default function (pi: ExtensionAPI) {
 	// The plan shows in full only once the model calls `plan` in the current prompt; a plan from an earlier
 	// prompt may be stale or unrelated, so until then only the activity line shows.
 	let fresh = false;
+	// `/steps off` hides the widget and drops the `plan` tool from the model for this session.
+	let enabled = true;
 	let ui: ExtensionContext["ui"] | undefined;
 
 	const render = () => {
 		if (!ui) return;
 		const { steps, done } = plan;
-		if (!steps.length && !activity) return ui.setWidget(WIDGET, undefined);
+		if (!enabled || (!steps.length && !activity)) return ui.setWidget(WIDGET, undefined);
 		ui.setWidget(
 			WIDGET,
 			(_tui, theme) => ({
@@ -87,6 +89,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		ui = ctx.ui;
+		enabled = true;
 		restore(ctx);
 		pi.registerTool({
 			name: "plan",
@@ -120,6 +123,25 @@ export default function (pi: ExtensionAPI) {
 				return new Text("", 0, 0);
 			},
 		});
+	});
+
+	pi.registerCommand("steps", {
+		description: "Steps checklist: /steps on | off (current session; default on)",
+		getArgumentCompletions: (prefix) =>
+			["on", "off"].filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
+		handler: async (args, ctx) => {
+			const arg = args.trim();
+			if (arg === "on" || arg === "off") {
+				enabled = arg === "on";
+				// The plan tool exists only in TUI sessions (registered on session_start).
+				if (ui) {
+					const others = pi.getActiveTools().filter((name) => name !== "plan");
+					pi.setActiveTools(enabled ? [...others, "plan"] : others);
+				}
+				render();
+			} else if (arg) return ctx.ui.notify("usage: /steps [on|off]", "warning");
+			ctx.ui.notify(`steps ${enabled ? "on" : "off"}`, "info");
+		},
 	});
 
 	pi.on("session_tree", (_event, ctx) => {
