@@ -78,10 +78,9 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 	};
 	const startedAt = Date.now() - 2500;
 	const rows = Array.from({ length: 6 }, (_, index) => ({
-		id: "bg1",
+		job: "bg1",
 		worker: index + 1,
 		workerCount: 6,
-		role: index === 0 ? "scout" : "general",
 		model: "anthropic/claude-haiku-5-5",
 		thinking: "low",
 		startedAt,
@@ -91,20 +90,17 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 	}));
 	const component = activityWidget(() => rows, widgetTheme);
 	const lines = draw(component, 200);
-	assert.equal(lines.length, 6, "heading, at most four workers, and overflow count");
-	assert.match(
-		lines[1],
-		/^🧝🏻 bg1#1 scout R2 anthropic\/claude-haiku-5-5 @low 2s · read · what do your elf-eyes see\?$/,
-	);
-	assert.match(lines[4], /^🧑🏽‍🍳 bg1#4 general anthropic\/claude-haiku-5-5 @low 2s · grep · time to cook$/);
+	assert.equal(lines.length, 5, "at most four workers and an overflow count, no heading");
+	assert.match(lines[0], /^🧝🏻 bg1#1 claude-haiku-5-5 R2 @low 2s · read · what do your elf-eyes see\?$/);
+	assert.ok(lines[3].startsWith("🧑🏽‍🍳 bg1#4 claude-haiku-5-5 "), "every background worker keeps its job id");
 	const withoutElapsed = (line) => line.replace(/@low \d+s/, "@low <elapsed>");
 	assert.deepEqual(
 		draw(component, 200).map(withoutElapsed),
 		lines.map(withoutElapsed),
 		"a rerender keeps each worker's persona",
 	);
-	assert.equal(lines[5], "… 2 more workers");
-	assert.ok(colors.includes("warning") && colors.includes("accent") && colors.includes("muted"));
+	assert.equal(lines[4], "… 2 more workers");
+	assert.ok(colors.includes("warning") && colors.includes("accent"));
 	assert.ok(colors.includes("dim") && colors.includes("toolTitle"));
 	for (const width of [1, 2, 8, 14, 20, 40]) assertFits(component, width);
 	assert.deepEqual(activityWidget(() => [], widgetTheme).render(80), []);
@@ -113,7 +109,7 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 		() => [
 			{
 				...rows[0],
-				id: "call\u001b[31m\nsecond",
+				job: "bg\u001b[31m\nsecond",
 				model: "provider/model\u001b[2J",
 				lastTool: "read\n",
 			},
@@ -121,20 +117,16 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 		widgetTheme,
 	);
 	const hostileText = draw(hostile, 200).join("\n");
-	assert.match(hostileText, /call second/);
+	assert.match(hostileText, /bg second/);
 	assert.doesNotMatch(hostileText, /\u001b/);
 });
 
-test("long native foreground IDs use compact labels so role, model, and thinking fit at 90 columns", () => {
-	const nativeCallId = "call_01JAZ9M4X2F1D8B3C5E7|fc_01JAZ9M4X2F1D8B3C5E7";
+test("a foreground row shows only the model, without a call id, role, or provider", () => {
 	const component = activityWidget(
 		() => [
 			{
-				id: nativeCallId,
-				displayId: "fg1",
 				worker: 1,
 				workerCount: 1,
-				role: "general",
 				model: "openai-codex/gpt-6-luna",
 				thinking: "low",
 				startedAt: Date.now(),
@@ -144,9 +136,9 @@ test("long native foreground IDs use compact labels so role, model, and thinking
 		],
 		theme,
 	);
-	const [row] = draw(component, 90).slice(1);
-	assert.match(row, /🧑🏾‍🌾 fg1 general openai-codex\/gpt-6-luna @low/);
-	assert.doesNotMatch(row, /call_|fc_/);
+	const [row] = draw(component, 90);
+	assert.match(row, /gpt-6-luna @low/);
+	assert.doesNotMatch(row, /\/|\bfg\d|general|call_|fc_/, "no provider, call id, or role");
 	assertFits(component, 90);
 });
 

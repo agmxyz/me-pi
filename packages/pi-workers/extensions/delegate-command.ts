@@ -32,7 +32,6 @@ export interface ActiveCall {
 	models: string[];
 	start: number;
 	job?: string;
-	displayId?: string;
 	workers?: ActiveWorker[];
 	stage?: "Workers" | "Rebuttal";
 }

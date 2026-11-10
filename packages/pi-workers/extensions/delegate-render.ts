@@ -59,12 +59,10 @@ export interface DelegateView {
 
 /** Safe, prompt-independent details for one active worker in the main-session widget. */
 export interface ActivityWidgetRow {
-	/** Collision-safe internal call identity; never displayed when a compact label is available. */
-	id: string;
-	displayId?: string;
+	/** Background job id (bg3), the handle /delegate cancel takes; absent when no cancellable job exists yet. */
+	job?: string;
 	worker: number;
 	workerCount: number;
-	role: string;
 	model: string;
 	thinking: string;
 	startedAt: number;
@@ -88,21 +86,19 @@ export function activityWidget(rows: () => readonly ActivityWidgetRow[], theme: 
 			if (!current.length) return [];
 			const fg: Fg = theme.fg.bind(theme);
 			const shown = current.slice(0, 4).map((row) => {
-				const id = stripWidgetControls(row.displayId ?? row.id);
-				const model = stripWidgetControls(row.model);
-				const role = stripWidgetControls(row.role);
+				const job = row.job ? stripWidgetControls(row.job) : "";
+				const model = stripWidgetControls(shortModel(row.model));
 				const thinking = stripWidgetControls(row.thinking);
 				const tool = row.lastTool ? stripWidgetControls(row.lastTool) : "";
-				const workerId = row.workerCount > 1 ? `${id}#${row.worker}` : id;
+				const label = job ? `${fg("accent", row.workerCount > 1 ? `${job}#${row.worker}` : job)} ` : "";
 				const elapsed = Math.max(0, Math.floor((Date.now() - row.startedAt) / 1000));
 				const stage = row.stage === "Rebuttal" ? fg("warning", " R2") : "";
 				const phrase = row.persona.phrase ? ` · ${fg("dim", row.persona.phrase)}` : "";
 				const tail = `${fg("dim", `@${thinking} ${elapsed}s`)}${tool ? ` · ${fg("toolTitle", tool)}` : ""}${phrase}`;
-				return `${fg("warning", row.persona.emoji)} ${fg("accent", workerId)} ${fg("muted", role)}${stage} ${fg("accent", model)} ${tail}`;
+				return `${fg("warning", row.persona.emoji)} ${label}${fg("accent", model)}${stage} ${tail}`;
 			});
 			const overflow = current.length - shown.length;
 			const lines = [
-				fg("toolTitle", "Delegate activity"),
 				...shown,
 				...(overflow > 0 ? [fg("dim", `… ${overflow} more worker${overflow === 1 ? "" : "s"}`)] : []),
 			];
