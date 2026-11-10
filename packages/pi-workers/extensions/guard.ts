@@ -1,7 +1,8 @@
 /**
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
- * With a UI it asks for confirmation; without one (print mode) it blocks. History rewrites only block in delegate
- * workers (see `classify`).
+ * With a UI it asks for confirmation; without one (print mode) it blocks. Plain history rewrites only block in
+ * delegate workers; ones that run a command (`rebase -x`, an editor override, a `filter-branch` command filter or
+ * `--setup`) ask in every session (see `classify`).
  * `/guard on|off` toggles it for the current session; every session starts on.
  * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
  * misses commands it can't read (interpreter code, a non-recursive rm).
@@ -28,10 +29,11 @@ const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 // A command position: start of line/command, after `;`, `&`, `|`, `(`, `{`, `` ` ``, `$(`, a shell keyword
 // (`then`, `do`, `else`), a wrapper with its options (`env -i`, `xargs -0`, `sudo`, `nohup`, `time`, `exec`,
 // `rtk [proxy]`, `command`), `eval`, `find -exec`, or a shell's `-c` (`bash -lc`, `zsh -c`), plus optional
-// `NAME=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as `grep 'git push'` from matching.
-const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
-// `git` global options (`-C dir`, `-c k=v`, `--git-dir=...`) before the subcommand.
-const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
+// `NAME=value` or `NAME+=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as
+// `grep 'git push'` from matching.
+const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*\+?=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
+// `git` global options (`-C dir`, `-c k=v`, `-c k='a b'`, `--git-dir=...`) before the subcommand.
+const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:[^\s"']|"[^"]*"|'[^']*')+|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
 // Rest of the same command: steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so words
 // after them are still read. Stops at `;`, `&&`, `||`, `|`, `|&`, a lone `&`, and newline.
 const ARGS = String.raw`(?:[<>]&|&>|>\||[^;&|\n])*`;
@@ -122,23 +124,39 @@ function pushRisk(words: string[], currentBranch: () => string | undefined, else
 	return protectedTarget ? "push to main/master" : undefined;
 }
 
+// Anywhere in the command, since `GIT_COMMAND` doesn't capture env prefixes: an editor variable assignment
+// (`X=… git`, `env X=…`, `export X=…`) or a `core.editor`/`sequence.editor` config (`-c`, `--config-env`).
+const EDITOR_OVERRIDE = /(?<![\w-])(?:GIT_SEQUENCE_EDITOR|GIT_EDITOR|VISUAL|EDITOR)\+?=|(?:core|sequence)\.editor/i;
+// `filter-branch` options that run a command (the filters and `--setup`); `--subdirectory-filter` doesn't.
+const COMMAND_FILTER = /^--(?:(?:tree|index|msg|env|commit|parent|tag-name)-filter|setup)(?:=|$)/;
+// `rebase --exec` or a unique prefix git accepts (`--ex`, `--exe`); `-x cmd`, glued `-xcmd`, or a short cluster
+// holding x (`-ix`). A cluster where x is another option's glued value matches too, so it fails closed (asks).
+const REBASE_EXEC = /^(?:--ex(?:ec?)?(?:=|$)|-[A-Za-z]*x)/;
+
 function gitRisk(
 	sub: string,
 	words: string[],
 	currentBranch: () => string | undefined,
 	elsewhere: boolean,
 	historyRewrites: boolean,
+	editorOverride: boolean,
 ): string | undefined {
+	// Rewrites that run a command ask in every mode; `historyRewrites` adds the plain rewrite.
 	switch (sub) {
 		case "push":
 			return pushRisk(words, currentBranch, elsewhere);
 		case "commit":
-			return historyRewrites && words.includes("--amend") ? "history rewrite (commit --amend)" : undefined;
+			if (!words.includes("--amend")) return undefined;
+			if (editorOverride) return "history rewrite (editor override)";
+			return historyRewrites ? "history rewrite (commit --amend)" : undefined;
 		case "rebase":
-			return !historyRewrites || ["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w))
-				? undefined
-				: "history rewrite (rebase)";
+			// A resumed rebase still opens the editor, so an override asks before the resume early-return.
+			if (editorOverride) return "history rewrite (editor override)";
+			if (["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w))) return undefined;
+			if (words.some((w) => REBASE_EXEC.test(w))) return "history rewrite (rebase --exec)";
+			return historyRewrites ? "history rewrite (rebase)" : undefined;
 		case "filter-branch":
+			if (words.some((w) => COMMAND_FILTER.test(w))) return "history rewrite (filter-branch command filter)";
 			return historyRewrites ? "history rewrite (filter-branch)" : undefined;
 		case "filter-repo":
 			// Always: by default it expires every reflog and prunes, so the old history can't be recovered.
@@ -261,8 +279,9 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 
 /**
  * `historyRewrites: false` skips `commit --amend`, `rebase`, `filter-branch`, and `branch -D`: the main session runs
- * them without asking, since the reflog, `refs/original/`, or `git fsck` can recover them. `filter-repo` always counts.
- * Workers pass true.
+ * them without asking, since the reflog, `refs/original/`, or `git fsck` can recover them. Rewrites that run a command
+ * (`rebase -x`, a `filter-branch` command filter or `--setup`, or an editor override on `rebase`/`commit --amend`)
+ * count in both modes, and `filter-repo` always does. Workers pass true.
  */
 export function classify(
 	command: string,
@@ -276,10 +295,11 @@ export function classify(
 	// The session's branch is read before the command runs, so it says nothing about the target after
 	// `cd`, `git checkout`/`switch`, or `git -C`/`--git-dir`/`--work-tree`.
 	const branchMayChange = CD.test(command) || gitCommands.some(([, , sub]) => sub === "checkout" || sub === "switch");
+	const editorOverride = EDITOR_OVERRIDE.test(command);
 	for (const [, globals, sub, args] of gitCommands) {
 		const elsewhere = branchMayChange || /(?:^|\s)(?:-C|--git-dir|--work-tree)\b/.test(globals);
 		for (const words of gitReadings(args)) {
-			const risk = gitRisk(sub, words, currentBranch, elsewhere, historyRewrites);
+			const risk = gitRisk(sub, words, currentBranch, elsewhere, historyRewrites, editorOverride);
 			if (risk) return risk;
 		}
 	}

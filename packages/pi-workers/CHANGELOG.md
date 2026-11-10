@@ -5,6 +5,7 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 ## [Unreleased]
 
 - A read-only worker with `output: true` can still write into its own output directory after its wrap-up budget runs out, so it no longer loses its final file. Each such write uses the same over-budget allowance as a blocked call, and every other tool stays blocked.
+- `guard` asks again in the main session before history rewrites that run a command (`git rebase -x/--exec`, an editor override such as `GIT_SEQUENCE_EDITOR`, `filter-branch --tree-filter` and other command filters); plain rewrites still run without asking (#114). Delegate workers now block these too when they resume a rebase (`GIT_EDITOR=… git rebase --continue`).
 
 ## [0.1.5] - 2026-11-09
 
