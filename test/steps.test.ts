@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+
+// The on/off choice is saved under the agent dir: keep it in a temp dir, never the real ~/.pi.
+const AGENT_DIR = mkdtempSync(join(tmpdir(), "steps-test-"));
+process.env.PI_CODING_AGENT_DIR = AGENT_DIR;
+process.on("exit", () => rmSync(AGENT_DIR, { recursive: true, force: true }));
+const SETTINGS = join(AGENT_DIR, "steps.json");
 
 const { default: registerSteps } = await import("../extensions/steps.ts");
 
@@ -18,7 +27,7 @@ function setup() {
 		},
 		registerTool: (definition: any) => {
 			tool = definition;
-			active = [...active, definition.name];
+			if (definition.defaultActive !== false) active = [...active, definition.name];
 		},
 		registerCommand: (name: string, options: any) => {
 			commands[name] = options;
@@ -32,7 +41,7 @@ function setup() {
 		setWidget: (_key: string, factory: any) => {
 			widget = factory?.(null, { fg: (_color: string, text: string) => text });
 		},
-		notify: (text: string) => notes.push(text),
+		notify: (text: string, level: string) => notes.push(`${level}: ${text}`),
 	};
 	const ctx = { mode: "tui", ui, sessionManager: { getBranch: () => [] } };
 	const fire = (event: string, payload: any = {}) => {
@@ -55,6 +64,8 @@ function setup() {
 		notes,
 	};
 }
+
+test.beforeEach(() => rmSync(SETTINGS, { force: true }));
 
 test("a running plan shows every step with the current one marked", async () => {
 	const s = setup();
@@ -134,7 +145,26 @@ test("/steps off hides the widget and drops the plan tool; /steps on restores bo
 	await s.command("on");
 	assert.deepEqual(s.active(), ["read", "bash", "plan"]);
 	assert.equal(s.show(), "● A · Running ls\n○ B\n○ C");
-	await s.command("");
 	await s.command("maybe");
-	assert.deepEqual(s.notes, ["steps off", "steps on", "steps on", "usage: /steps [on|off]"]);
+	assert.equal(s.notes.at(-1), "warning: usage: /steps [on|off]");
+});
+
+test("/steps off applies to every later session until /steps on", async () => {
+	await setup().command("off");
+	assert.deepEqual(JSON.parse(readFileSync(SETTINGS, "utf8")), { enabled: false });
+	const next = setup();
+	assert.deepEqual(next.active(), ["read", "bash"]);
+	next.prompt();
+	assert.equal(next.show(), "(hidden)");
+	await next.command("");
+	assert.equal(next.notes.at(-1), "info: steps off (open sessions pick it up on /reload)");
+	await next.command("on");
+	assert.deepEqual(setup().active(), ["read", "bash", "plan"]);
+});
+
+test("an unreadable setting is reported and steps stay on", () => {
+	writeFileSync(SETTINGS, "{not json");
+	const s = setup();
+	assert.deepEqual(s.active(), ["read", "bash", "plan"]);
+	assert.match(s.notes[0], /^warning: steps: could not read the on\/off setting, so steps stay on \(.*steps\.json/);
 });

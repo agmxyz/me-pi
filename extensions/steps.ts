@@ -1,14 +1,41 @@
 // Steps: a minimal live checklist below the editor.
 // The model sets upcoming steps with the `plan` tool; Pi's tool events add the current action for free.
 // Off in delegate workers and non-TUI modes: no tool, no prompt text, no tokens.
-import { basename } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+// `/steps off` turns it off the same way for every session; the choice lives in <agent dir>/steps.json.
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { isWorkerProcess } from "../packages/pi-workers/extensions/delegate-env.ts";
 
 type Plan = { steps: string[]; done: number };
 const WIDGET = "steps";
+
+const settingsPath = () => join(getAgentDir(), "steps.json");
+
+/** The saved on/off choice: on when no choice was saved; an unreadable file is reported and treated as on. */
+function readEnabled(): { enabled: boolean; error?: string } {
+	let text: string;
+	try {
+		text = readFileSync(settingsPath(), "utf8");
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { enabled: true };
+		return { enabled: true, error: (err as Error).message };
+	}
+	try {
+		const { enabled } = JSON.parse(text);
+		if (typeof enabled === "boolean") return { enabled };
+		return { enabled: true, error: `${settingsPath()}: "enabled" is not true or false` };
+	} catch (err) {
+		return { enabled: true, error: `${settingsPath()}: ${(err as Error).message}` };
+	}
+}
+
+function writeEnabled(enabled: boolean) {
+	mkdirSync(getAgentDir(), { recursive: true });
+	writeFileSync(settingsPath(), `${JSON.stringify({ enabled })}\n`);
+}
 
 function describe(tool: string, args: any): string {
 	const file = (p: unknown) => (typeof p === "string" ? basename(p) : "");
@@ -42,7 +69,7 @@ export default function (pi: ExtensionAPI) {
 	// The plan shows in full only once the model calls `plan` in the current prompt; a plan from an earlier
 	// prompt may be stale or unrelated, so until then only the activity line shows.
 	let fresh = false;
-	// `/steps off` hides the widget and drops the `plan` tool from the model for this session.
+	// `/steps off` hides the widget and drops the `plan` tool from the model in every session.
 	let enabled = true;
 	let ui: ExtensionContext["ui"] | undefined;
 
@@ -89,15 +116,20 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		ui = ctx.ui;
-		enabled = true;
+		const saved = readEnabled();
+		enabled = saved.enabled;
+		if (saved.error)
+			ctx.ui.notify(`steps: could not read the on/off setting, so steps stay on (${saved.error})`, "warning");
 		restore(ctx);
 		pi.registerTool({
 			name: "plan",
+			defaultActive: enabled,
 			label: "Plan",
 			description: "Live checklist for the user. `steps` sets the list; `done` is the count of finished steps.",
 			promptGuidelines: [
 				"For tasks with 3+ steps, call plan only in parallel with another tool call, never alone: set steps (each under 40 characters) with the first action, then update done whenever you start a new step. Never tick the last step; the reply completes it.",
 				"An earlier prompt's plan stays hidden until you call plan again: set new steps for new work, or update done to resume it. Skip plan for prompts unrelated to it.",
+				"When the work stops matching the plan (a step dropped, changed, or added), call plan with the corrected steps and done; never leave a step the user would read as false.",
 			],
 			parameters: Type.Object({
 				steps: Type.Optional(Type.Array(Type.String())),
@@ -126,13 +158,18 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("steps", {
-		description: "Steps checklist: /steps on | off (current session; default on)",
+		description: "Steps checklist: /steps on | off (all sessions; default on)",
 		getArgumentCompletions: (prefix) =>
 			["on", "off"].filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {
 			const arg = args.trim();
 			if (arg === "on" || arg === "off") {
 				enabled = arg === "on";
+				try {
+					writeEnabled(enabled);
+				} catch (err) {
+					ctx.ui.notify(`steps: not saved, so only this session is ${arg} (${(err as Error).message})`, "error");
+				}
 				// The plan tool exists only in TUI sessions (registered on session_start).
 				if (ui) {
 					const others = pi.getActiveTools().filter((name) => name !== "plan");
@@ -140,7 +177,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				render();
 			} else if (arg) return ctx.ui.notify("usage: /steps [on|off]", "warning");
-			ctx.ui.notify(`steps ${enabled ? "on" : "off"}`, "info");
+			ctx.ui.notify(`steps ${enabled ? "on" : "off"} (open sessions pick it up on /reload)`, "info");
 		},
 	});
 
