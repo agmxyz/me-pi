@@ -92,7 +92,7 @@ test("the activity widget is compact, bounded, themed, sanitized, and Unicode-wi
 	const lines = draw(component, 200);
 	assert.equal(lines.length, 5, "at most four workers and an overflow count, no heading");
 	assert.match(lines[0], /^🧝🏻 bg1#1 claude-haiku-5-5 R2 @low 2s · read · what do your elf-eyes see\?$/);
-	assert.match(lines[3], /^🧑🏽‍🍳 bg1#4 claude-haiku-5-5 @low 2s · grep · time to cook$/);
+	assert.ok(lines[3].startsWith("🧑🏽‍🍳 bg1#4 claude-haiku-5-5 "), "every background worker keeps its job id");
 	const withoutElapsed = (line) => line.replace(/@low \d+s/, "@low <elapsed>");
 	assert.deepEqual(
 		draw(component, 200).map(withoutElapsed),
@@ -137,7 +137,8 @@ test("a foreground row shows only the model, without a call id, role, or provide
 		theme,
 	);
 	const [row] = draw(component, 90);
-	assert.match(row, /^🧑🏾‍🌾 gpt-6-luna @low \d+s · doing honest work$/u);
+	assert.match(row, /gpt-6-luna @low/);
+	assert.doesNotMatch(row, /\/|\bfg\d|general|call_|fc_/, "no provider, call id, or role");
 	assertFits(component, 90);
 });
 

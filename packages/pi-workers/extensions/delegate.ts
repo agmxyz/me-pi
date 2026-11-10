@@ -578,8 +578,6 @@ export default function (pi: ExtensionAPI) {
 	// For /delegate status: calls running now, and the last HISTORY_SIZE finished calls.
 	const active = new Map<string, ActiveCall>();
 	let activeCallCount = 0;
-	let foregroundCount = 0;
-	let preparationCount = 0;
 	const ACTIVITY_WIDGET_KEY = "delegate-activity";
 	let activityUi: Pick<ExtensionContext["ui"], "setWidget"> | undefined;
 	let activityTui: { requestRender: () => void } | undefined;
@@ -804,8 +802,6 @@ export default function (pi: ExtensionAPI) {
 				);
 			const callKey = `delegate-call-${++activeCallCount}`;
 			const implementId = role === "implement" ? nextImplementId() : undefined;
-			const foregroundId = background ? undefined : `fg${++foregroundCount}`;
-			const preparationId = role === "implement" && background ? `prep${++preparationCount}` : foregroundId;
 			// The session this call belongs to; a shutdown during prepare must not leave a job behind.
 			const ended = shutdown.signal;
 			// implement: the lock and snapshots exist before the call starts, so the start message can state the base.
@@ -818,7 +814,6 @@ export default function (pi: ExtensionAPI) {
 					role,
 					models,
 					start: preparingAt,
-					displayId: preparationId,
 					workers: initialActivity(resolved, personas, session, preparingAt),
 					stage: "Workers",
 				});
@@ -886,7 +881,6 @@ export default function (pi: ExtensionAPI) {
 				key: string,
 				signal: AbortSignal,
 				onUpdate: ((u: any) => void) | undefined,
-				displayId?: string,
 				jobId?: string,
 				end?: (outcome: Outcome) => Promise<Facts>,
 			) => {
@@ -895,7 +889,6 @@ export default function (pi: ExtensionAPI) {
 					role,
 					models,
 					start,
-					displayId,
 					job: jobId,
 					workers: initialActivity(resolved, personas, session, start),
 					stage: "Workers",
@@ -1098,19 +1091,18 @@ export default function (pi: ExtensionAPI) {
 				key: string,
 				signal: AbortSignal,
 				onUpdate: ((u: any) => void) | undefined,
-				displayId: string | undefined,
 				jobId: string | undefined,
 				writer: string,
 			) => {
 				const prepared = co;
-				if (!prepared) return call(key, signal, onUpdate, displayId, jobId);
+				if (!prepared) return call(key, signal, onUpdate, jobId);
 				writing.set(prepared.repoRoot, writer);
 				try {
 					return await runImplementJob(
 						prepared,
 						async (end) => {
 							updateActivityWidget(ctx, ended);
-							return await call(key, signal, onUpdate, displayId, jobId, end);
+							return await call(key, signal, onUpdate, jobId, end);
 						},
 						(err: any) => {
 							// A worker still running would keep writing while finish commits; stop its group first.
@@ -1141,7 +1133,7 @@ export default function (pi: ExtensionAPI) {
 			};
 			if (!background) {
 				const signal = toolSignal ? AbortSignal.any([toolSignal, ended]) : ended;
-				return tracked(start(callKey, signal, onUpdate, foregroundId, undefined, co?.id ?? ""));
+				return tracked(start(callKey, signal, onUpdate, undefined, co?.id ?? ""));
 			}
 
 			// The turn's abort does not stop a background job; /delegate cancel and session shutdown do.
@@ -1164,7 +1156,7 @@ export default function (pi: ExtensionAPI) {
 					{ triggerTurn: !controller.signal.aborted, deliverAs: "followUp" },
 				);
 			};
-			tracked(start(callKey, AbortSignal.any([controller.signal, ended]), undefined, undefined, id, id))
+			tracked(start(callKey, AbortSignal.any([controller.signal, ended]), undefined, id, id))
 				.then((result: any) => {
 					spend.cost += costOf(result.usage ?? {});
 					deliver(result.content.map((c: any) => c.text).join("\n"), result.details, Boolean(result.isError));

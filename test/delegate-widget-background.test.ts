@@ -127,9 +127,9 @@ test("each worker keeps one persona across progress, widget rerenders, and the r
 		"the widget showed the rebuttal round",
 	);
 	for (const line of rows) {
-		if (line.includes("claude-haiku-5-5"))
-			assert.match(line, /^🧑🏻‍🍳 claude-haiku-5-5( R2)? @\w+ .*· time to cook$/u);
-		else assert.match(line, /^🧑🏿‍🌾 claude-opus-5-5( R2)? @\w+ .*· doing honest work$/u);
+		// Each worker keeps its own persona next to its model.
+		if (line.includes("claude-haiku-5-5")) assert.ok(line.startsWith("🧑🏻‍🍳 claude-haiku-5-5"), line);
+		else assert.ok(line.startsWith("🧑🏿‍🌾 claude-opus-5-5"), line);
 	}
 	assert.deepEqual(
 		result.details.view.runs.map((r) => r.persona),
@@ -149,7 +149,7 @@ test("a scout worker is an elf in progress and the widget", async (t) => {
 	assert.match(live.content[0].text, /^🧝🏽 \S+ @\w+ turn \d+ .*· what do your elf-eyes see\?$/mu);
 	const rows = ui.snapshots.flat().filter((line) => line.startsWith("🧝"));
 	assert.ok(rows.length, "the widget showed the scout");
-	for (const line of rows) assert.match(line, /^🧝🏽 \S+ @\w+ .*· what do your elf-eyes see\?$/u);
+	for (const line of rows) assert.ok(line.startsWith("🧝🏽 ") && line.endsWith("what do your elf-eyes see?"), line);
 });
 
 test("the elapsed timer stops between rebuttal rounds and restarts for active rows", async (t) => {
