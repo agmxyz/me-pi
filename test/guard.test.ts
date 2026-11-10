@@ -273,7 +273,8 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 });
 
 // Each row was a bypass reported in a guard PR's review or fix; a guard change adds each new one here.
-// #95's rows come from that draft PR's review corpus and review rounds.
+// #95's rows come from that draft PR's review corpus and review rounds. Rows are checked as the main session
+// (`historyRewrites: false`), the weaker mode.
 test("must-ask regressions: past bypasses still ask", () => {
 	for (const [command, branch, source] of [
 		["python3 - <<'EOF' | sh\nrm -rf ~\nEOF", onFeature, "#83"],
@@ -391,8 +392,25 @@ test("must-ask regressions: past bypasses still ask", () => {
 		["yarn exec rm -rf ~", onFeature, "#95"],
 		["mise exec -- rm -rf ~", onFeature, "#95"],
 		["asdf exec rm -rf ~", onFeature, "#95"],
+		["git rebase -x 'rm -rf ~' HEAD~1", onFeature, "#114"],
+		["GIT_SEQUENCE_EDITOR='rm -rf ~;:' git rebase -i HEAD~1", onFeature, "#114"],
+		["git filter-branch --tree-filter 'rm -rf ~' HEAD", onFeature, "#114"],
+		["git rebase --exec 'rm -rf ~' main", onFeature, "#114"],
+		["git rebase --exec='rm -rf ~' main", onFeature, "#114"],
+		["git rebase -ix 'rm -rf ~' HEAD~2", onFeature, "#114"],
+		["git rebase -x'rm -rf ~' HEAD~1", onFeature, "#114"],
+		["GIT_EDITOR='rm -rf ~;:' git rebase -i HEAD~1", onFeature, "#114"],
+		["env GIT_SEQUENCE_EDITOR='rm -rf ~;:' git rebase -i HEAD~1", onFeature, "#114"],
+		["export GIT_SEQUENCE_EDITOR='rm -rf ~;:'; git rebase -i HEAD~1", onFeature, "#114"],
+		["git -c sequence.editor='rm -rf ~;:' rebase -i HEAD~1", onFeature, "#114"],
+		["git --config-env=core.editor=E commit --amend", onFeature, "#114"],
+		["git -c core.editor='rm -rf ~;:' commit --amend", onFeature, "#114"],
+		["EDITOR='rm -rf ~;:' git commit --amend", onFeature, "#114"],
+		["git filter-branch --index-filter 'rm -rf ~' HEAD", onFeature, "#114"],
+		["git filter-branch --msg-filter='rm -rf ~' HEAD", onFeature, "#114"],
+		["git filter-branch --env-filter 'rm -rf ~' HEAD", onFeature, "#114"],
 	]) {
-		assert.ok(classify(command, branch), `${source}: ${command}`);
+		assert.ok(classify(command, branch, { historyRewrites: false }), `${source}: ${command}`);
 	}
 });
 
@@ -714,7 +732,8 @@ test("history rewrites: classify skips them with historyRewrites: false, and onl
 	for (const command of [
 		"git commit --amend --no-edit",
 		"git rebase -i HEAD~3",
-		"git filter-branch --tree-filter x HEAD",
+		"git filter-branch --subdirectory-filter sub HEAD",
+		"git rebase main",
 		"git branch -D old",
 		"git branch --delete --force old",
 	]) {
@@ -727,7 +746,7 @@ test("history rewrites: classify skips them with historyRewrites: false, and onl
 		["git rebase main && git push origin main", "push to main/master"],
 		["git branch -D old; rm -rf ~", "recursive rm"],
 		["git commit --amend -m x && git reset --hard", "git reset --hard"],
-		["git filter-branch --tree-filter x HEAD && git clean -fd", "git clean -f"],
+		["git filter-branch --subdirectory-filter sub HEAD && git clean -fd", "git clean -f"],
 		// filter-repo expires every reflog and prunes by default: it always asks.
 		["git filter-repo --path x", "history rewrite (filter-repo)"],
 	]) {
@@ -748,6 +767,9 @@ test("the main session runs history rewrites without asking; a worker still bloc
 	assert.equal(await handler(event("git commit --amend --no-edit"), { cwd, hasUI: false }), undefined);
 	assert.equal(await handler(event("git branch -D old"), { cwd, hasUI: false }), undefined);
 	assert.equal((await handler(event("git reset --hard"), { cwd, hasUI: false }))?.block, true);
+	const exec = await handler(event("git rebase -x 'rm -rf ~' HEAD~1"), { cwd, hasUI: false });
+	assert.equal(exec?.block, true);
+	assert.match(exec.reason, /history rewrite \(rebase --exec\)/);
 	process.env.ME_PI_RUN = "1";
 	const worker = await handler(event("git commit --amend --no-edit"), { cwd, hasUI: false });
 	assert.equal(worker?.block, true);
