@@ -26,9 +26,11 @@ const {
 	isCheckRun,
 	nextImplementId,
 	prepare,
+	recordWorker,
 	settingsResources,
 	settingsTripwire,
 	snapshotGit,
+	writerElsewhere,
 } = await import("../packages/pi-workers/extensions/delegate-implement.ts");
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-implement-test-"));
@@ -354,6 +356,76 @@ test("a lock whose pid is dead is taken over", async () => {
 	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im91\n`);
 	await finish(job, ok(job));
 	assert.ok(!existsSync(lockOf(repo)));
+});
+
+// A pid that has exited, and a live detached process group standing in for an orphaned worker.
+async function deadPid() {
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((r) => dead.once("exit", r));
+	return dead.pid;
+}
+function orphanGroup(t) {
+	const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+	t.after(() => {
+		try {
+			process.kill(-worker.pid, "SIGKILL");
+		} catch {}
+	});
+	return worker;
+}
+
+test("a lock whose session is dead but whose worker group runs is held, and says so", async (t) => {
+	const { repo } = goalFixture();
+	const session = await deadPid();
+	const worker = orphanGroup(t);
+	const content = `${session} im6 ${worker.pid}\n`;
+	writeFileSync(lockOf(repo), content);
+	const refused = await prepare(repo, "im93", CHECK).catch((err) => err);
+	const orphan = new RegExp(
+		`^implement job im6's session \\(pid ${session}\\) is gone, but its worker \\(pid ${worker.pid}\\) still runs in .*; it stops at its next tool call, or end it with \`kill -9 -${worker.pid}\``,
+	);
+	assert.match(refused.message, orphan);
+	assert.doesNotMatch(refused.message, /handback/);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), content, "takeover kills nothing and keeps the lock");
+	const blocked = await writerElsewhere([join(repo, "a.txt")], repo);
+	assert.match(blocked, orphan);
+	assert.doesNotMatch(blocked, /handback/);
+	process.kill(-worker.pid, "SIGKILL");
+	await new Promise((r) => worker.once("exit", r));
+	assert.equal(await writerElsewhere([join(repo, "a.txt")], repo), undefined, "free once the group is gone");
+	const job = await prepare(repo, "im93", CHECK);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im93\n`);
+	await finish(job, ok(job));
+});
+
+test("recordWorker adds the worker pid to this job's lock only", async () => {
+	const { repo } = goalFixture();
+	const job = await prepare(repo, "im94", CHECK);
+	recordWorker(job, 4242);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im94 4242\n`);
+	recordWorker(job, 4343);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im94 4343\n`, "a retry's worker replaces it");
+	await finish(job, ok(job));
+	recordWorker(job, 4444);
+	assert.ok(!existsSync(lockOf(repo)), "a released lock is not recreated");
+	const other = `${process.pid} im95\n`;
+	writeFileSync(lockOf(repo), other);
+	recordWorker(job, 4545);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), other, "another holder's lock is kept");
+	assert.deepEqual(
+		readdirSync(join(repo, ".git")).filter((n) => n.startsWith("me-pi-implement.lock.")),
+		[],
+		"no temp files left",
+	);
+	// A live session holds its lock whatever its worker field says; a dead session with a dead worker frees it.
+	writeFileSync(lockOf(repo), `${process.pid} im96 ${await deadPid()}\n`);
+	await assert.rejects(
+		prepare(repo, "im97", CHECK),
+		/implement job im96 \(pid \d+\) is already writing in .*handback/,
+	);
+	writeFileSync(lockOf(repo), `${await deadPid()} im96 ${await deadPid()}\n`);
+	const next = await prepare(repo, "im97", CHECK);
+	await finish(next, ok(next));
 });
 
 test("finish: worker commits give the range, a clean tree, no lock, and a 0600 details file", async () => {

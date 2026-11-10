@@ -11,6 +11,9 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 - While another Pi session's `implement` job writes in a checkout, this session's `edit`, `write`, and Git tree writes there are blocked, with a pointer to `git worktree add`. Before, only the session that started the job was blocked. A git write whose directory the command does not show (a later `cd`, `bash -c`, `--git-dir`, an expanded path) is blocked while another session's job runs in any checkout of the repo or this session's own job runs, and `edit` and `write` paths given as `~/…` or `file://…` are checked where they land. When Git cannot say whether a job is writing (it times out, or refuses the repository), the call is blocked.
 - `git worktree remove` and `git worktree move` are blocked while an `implement` job runs in that worktree.
 - `implement` workers in a linked worktree can no longer write its `.git` file.
+- A checkout stays taken while an `implement` worker whose session died (killed, crashed) is still running: its lock now also names the worker's pid, and the refusal or block says the session is gone, which pid still runs, and that it stops at its next tool call or can be killed. Before, the lock read free at once and a second writer could start beside the orphan (#126). Reload every Pi session after updating: a session on the older code reads the new lock as unreadable and blocks writes in that checkout.
+- Workers no longer inherit `ME_PI_STATUS_LOG` or `ME_PI_SPEND_BUDGET_USD`, so a worker's check (such as me-pi's own tests) runs as it would outside the supervised session (#127).
+- `git symbolic-ref --short HEAD`, `git submodule status|summary`, and `git sparse-checkout list` are no longer blocked as tree writes in a checkout where an `implement` job runs; their writing forms still are.
 
 ## [0.1.6] - 2026-11-10
 

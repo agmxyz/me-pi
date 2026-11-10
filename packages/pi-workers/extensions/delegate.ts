@@ -45,6 +45,7 @@ import {
 	nextImplementId,
 	type Outcome,
 	prepare as prepareImplement,
+	recordWorker,
 	runImplementJob,
 	worktreeRemovalBlocked,
 	writerElsewhere,
@@ -206,7 +207,17 @@ function runWorkerAttempt(
 			onExit: (code, problem) => finish(code, problem),
 		});
 		const pid = proc.pid;
-		if (pid !== undefined) implement?.pids.add(pid);
+		if (pid !== undefined && implement) {
+			implement.pids.add(pid);
+			// The lock stays held by this worker if the session dies before it (see recordWorker).
+			try {
+				recordWorker(implement.job, pid);
+			} catch (err) {
+				ledger.stderr(
+					`delegate: could not record worker ${pid} in ${implement.job.lockPath}: ${(err as Error).message}\n`,
+				);
+			}
+		}
 		// implement: Pi's print mode handles SIGTERM by stopping its bash commands, which run in their own groups.
 		ledger.attach(pid === undefined ? undefined : () => proc.stop(implement ? "term-then-kill" : "kill"));
 		let finished = false;
