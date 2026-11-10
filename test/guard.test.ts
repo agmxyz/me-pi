@@ -273,7 +273,7 @@ test("flags pushes to main/master, history rewrites, discards, and recursive rm"
 });
 
 // Each row was a bypass reported in a guard PR's review or fix; a guard change adds each new one here.
-// #95's rows come from its review corpus (test/guard-corpus*.json on its branch) and review rounds.
+// #95's rows come from that draft PR's review corpus and review rounds.
 test("must-ask regressions: past bypasses still ask", () => {
 	for (const [command, branch, source] of [
 		["python3 - <<'EOF' | sh\nrm -rf ~\nEOF", onFeature, "#83"],

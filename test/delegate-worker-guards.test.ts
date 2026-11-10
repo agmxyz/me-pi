@@ -457,14 +457,16 @@ test("past the wrap-up budget, an output worker can still write into its output 
 	const outside = await hook({ toolName: "write", input: { path: join(cwd, "x.md") } }, { cwd });
 	assert.match(outside.reason, /budget reached/);
 	assert.equal(outside.terminate, false);
-	for (const [toolName, input] of [
-		["read", { path: join(out, "a.md") }],
-		["bash", { command: "ls" }],
+	// The allowed write counted toward the allowance, so the fourth over-budget call terminates.
+	for (const [toolName, input, terminate] of [
+		["read", { path: join(out, "a.md") }, false],
+		["bash", { command: "ls" }, true],
 	]) {
 		const blocked = await hook({ toolName, input }, { cwd });
 		assert.match(blocked.reason, /budget reached/, toolName);
+		assert.equal(blocked.terminate, terminate, toolName);
 	}
-	// Allowed writes spend the same allowance: once it is gone, an in-directory write also terminates.
+	// Once the allowance is gone, a later in-directory write is blocked and terminates too.
 	const last = await hook(inside, { cwd });
 	assert.match(last.reason, /budget reached/);
 	assert.equal(last.terminate, true);

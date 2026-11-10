@@ -4,7 +4,7 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 
 ## [Unreleased]
 
-- A worker with `output: true` can still write into its own output directory after its wrap-up budget runs out, so it no longer loses its final file. Each such write uses the same over-budget allowance as a blocked call, and every other tool stays blocked.
+- A read-only worker with `output: true` can still write into its own output directory after its wrap-up budget runs out, so it no longer loses its final file. Each such write uses the same over-budget allowance as a blocked call, and every other tool stays blocked.
 
 ## [0.1.5] - 2026-11-09
 
