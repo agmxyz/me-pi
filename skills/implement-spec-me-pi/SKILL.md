@@ -15,7 +15,7 @@ metadata:
 
 User entry: `/skill:implement-spec-me-pi` followed by the spec, ticket graph or designated tracker, repository, and execution constraints.
 
-The coordinator owns the graph, ledger, scheduling, user decisions, acceptance, and integration. Workers cannot delegate or ask the user questions. Each implement worker edits, checks, and commits before the coordinator's mandatory independent review. Use one implement writer per repository; execute ready tickets serially in the existing checkout on one integration branch. Do not create a worktree or merger workflow. This skill owns graph scheduling and integration; it does not call the separate user-only `implement-me-pi` skill through `Skill`.
+The coordinator owns the graph, ledger, scheduling, user decisions, acceptance, and integration. Workers cannot delegate or ask the user questions. Each implement worker edits, checks, and commits before the coordinator's mandatory independent review. Use one implement writer at a time; execute ready tickets serially in the existing checkout on one integration branch. Do not create a worktree or merger workflow. This skill owns graph scheduling and integration; it does not call the separate user-only `implement-me-pi` skill through `Skill`.
 
 ## 1. Establish the execution contract
 
@@ -38,7 +38,7 @@ Keep the coordinator's ledger and reports outside the checkout; workers receive 
 
 ## 3. Implement one ready ticket
 
-Before a ticket's first dispatch, split it into frozen slices when it likely exceeds about 1,500 changed lines or several long verification loops: one 45-minute attempt rarely finishes more. Record each slice in the ledger as its own planned slice. Dispatch `delegate(role="implement", background=true, check=<exact command>, task=<brief>)` for the selected ticket or slice. `implement` takes no `runs`; it uses the configured worker pool. Use the existing checkout and integration branch. Keep one writer per repository and execute its ready tickets serially; do not start another writer or merger workflow.
+Before a ticket's first dispatch, split it into frozen slices when it likely exceeds about 1,500 changed lines or several long verification loops: one 45-minute attempt rarely finishes more. Record each slice in the ledger as its own planned slice. Dispatch `delegate(role="implement", background=true, check=<exact command>, task=<brief>)` for the selected ticket or slice. `implement` takes no `runs`; it uses the configured worker pool. Use the existing checkout and integration branch. Keep one writer at a time and execute its ready tickets serially; do not start another writer or merger workflow.
 
 The compact, self-contained brief names the repository/cwd, integration branch, starting SHA, ticket objective, source paths, finalized decisions and exclusions, runtime/dependency constraints, commit convention, exact check, selected verification evidence and its limits, acceptance criteria, and required evidence. Tell the worker to understand existing behavior/tests, make the smallest evidence-driven change, use red-first reproduction when it materially helps, run focused verification with a per-test timeout while iterating, run the exact check alone after its final edit, and commit only passing work. Preserve any explicit user/repository test-first requirement; do not load `tdd` by default. Require `BLOCKED: <step>: <reason>` for missing decisions, capabilities, or evidence. Workers cannot delegate or ask the user.
 

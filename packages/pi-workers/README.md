@@ -41,7 +41,7 @@ The coordinator chooses a built-in role and briefs it for the task. The roles ar
 
 - **`scout`** searches read-only and normally returns a few sentences with `path:line` evidence.
 - **`general`** is a read-only worker you can brief as a reviewer, researcher, plan critic or investigator. It isn't a collection of separate agents.
-- **`implement`** edits, runs commands and commits on your branch. It needs a clean checkout on a branch other than `main` or `master`, takes a per-repo lock and runs the check you name. An edit after the check makes it stale; unfinished work may be saved as a `WIP` commit.
+- **`implement`** edits, runs commands and commits on your branch. It needs a clean checkout on a branch other than `main` or `master`, takes that checkout's lock and runs the check you name. An edit after the check makes it stale; unfinished work may be saved as a `WIP` commit.
 
 Workers load your own `AGENTS.md` and skills; `## ` sections marked `(coordinator only)` are stripped from worker prompts. Read-only workers can also write drafts to their own temp directory with `output: true`; web tools require `web: true` and aren't available to `implement`.
 
@@ -57,7 +57,7 @@ The package also includes `guard`, which asks before risky bash and blocks match
 ## Where it's weaker
 
 - **Custom worker profiles.** You can brief `general` for different jobs and choose models per call, but you can't define a new persistent role with its own toolset and defaults.
-- **Parallel writers.** Today one `implement` worker writes per repo, in your checkout. Worktree-based writers aren't supported yet.
+- **Parallel writers.** One `implement` worker writes per checkout. For a second feature at the same time, add a Git worktree and start a Pi session there; `delegate` does not create or clean up worktrees for you.
 - **Long-lived jobs.** Background jobs end on `/reload`, a session switch, or Pi exit, and a worker's session can't be resumed.
 - **A live view or built-in chains.** You see progress and the final answer, not the worker's conversation; workflows beyond that depend on your own skills.
 

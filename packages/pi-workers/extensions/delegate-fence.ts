@@ -1,5 +1,6 @@
 import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { HOME } from "./delegate-config.ts";
 
 /** A path through its symlinks (macOS /tmp is /private/tmp), or as given when it does not exist. */
@@ -14,6 +15,17 @@ export function realpathOr(path: string): string {
 /** `~` and `~/…` under HOME; every other form (`~user/…`, `a/~/b`) as given. */
 export function expandHome(path: string): string {
 	return path === "~" || path.startsWith("~/") ? join(HOME, path.slice(1)) : path;
+}
+
+/** The absolute path Pi's `edit` and `write` tools give a `path` argument: `@`, `~`, `~/…`, and `file://` forms too. */
+export function toolPath(path: string, cwd: string): string {
+	const given = path.replace(UNICODE_SPACES, " ").replace(/^@/, "");
+	if (/^file:\/\//.test(given)) {
+		try {
+			return fileURLToPath(given);
+		} catch {} // Malformed: the tool reports it.
+	}
+	return resolve(cwd, expandHome(given));
 }
 
 // --- Secret paths (enforced inside workers) -------------------------------------------------------
@@ -129,7 +141,7 @@ export const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 /**
  * Why a worker's write/edit call is blocked, or undefined when its path is inside `outDir` and not inside `denyDir`
- * (implement: the git common dir). `~` and `file:` paths are refused rather than expanded, so this check cannot
+ * (implement: the git common dir) or `outDir`'s own `.git`. `~` and `file:` paths are refused rather than expanded, so this check cannot
  * resolve them differently from Pi.
  */
 export function writeBlockedIn(
@@ -150,6 +162,8 @@ export function writeBlockedIn(
 	const inside = relative(realpathOr(outDir), target);
 	if (notStrictlyInside(inside))
 		return isAbsolute(given) ? `${path} is outside ${outDir}` : relativeHint(path, target, outDir, given);
+	// A linked worktree's `.git` is a file outside the git directory that points into it.
+	if (denyDir && inside === ".git") return `${path} is the checkout's link to the git directory`;
 	const denied = denyDir && relative(realpathOr(denyDir), target);
 	if (denied !== undefined && (denied === "" || !notStrictlyInside(denied)))
 		return `${path} is inside the git directory ${denyDir}`;
@@ -163,16 +177,6 @@ function relativeHint(path: string, target: string, outDir: string, given: strin
 	const suggested = join(outDir, given);
 	const hint = notStrictlyInside(relative(outDir, suggested)) ? "" : `; write to ${suggested} instead`;
 	return `${path} resolves to ${target}, outside ${outDir}${hint}`;
-}
-
-// `git -C <dir>` or a leading `cd <dir> &&|;`: where a command runs, if it says.
-const TARGET_DIR = /\bgit\s+-C\s+("[^"]*"|'[^']*'|\S+)|^\s*(?:cd|pushd)\s+("[^"]*"|'[^']*'|\S+)\s*(?:&&|;)/;
-export function commandDir(command: string, cwd: string): string | undefined {
-	const m = command.match(TARGET_DIR);
-	const dir = (m?.[1] ?? m?.[2])?.replace(/^["']|["']$/g, "");
-	if (dir === undefined) return undefined;
-	const absolute = resolve(cwd, expandHome(dir));
-	return realTarget(absolute) ?? absolute;
 }
 
 export const within = (root: string, target: string) => {

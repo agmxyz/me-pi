@@ -113,7 +113,7 @@ test("both user-invoked implementation entrypoints retain full review and bounde
 	assert.match(singleTask, /do not invoke the separate graph skill through `Skill`/);
 	assert.match(specGraph, /commits before the coordinator's mandatory independent review/);
 	assert.match(specGraph, /corrective commit/);
-	assert.match(specGraph, /one implement writer per repository/);
+	assert.match(specGraph, /one implement writer at a time/);
 	assert.match(specGraph, /one integration branch/);
 	assert.match(specGraph, /does not call the separate user-only `implement-me-pi` skill through `Skill`/);
 

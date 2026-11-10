@@ -1,5 +1,5 @@
 /**
- * Checkout lifecycle for the `implement` role: `prepare` locks and validates the branch;
+ * Checkout lifecycle for the `implement` role: `prepare` locks the checkout (one job per worktree) and validates the branch;
  * `finish` commits leftovers as WIP, validates tripwires, writes details, and releases the lock;
  * `formatHandback` renders the tool result. The worker writes in the real checkout, so the
  * snapshots watch what it must not touch.
@@ -7,10 +7,10 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { type ArtifactWriteResult, FAILED_TOOL_ARTIFACT_REDACTION, redactSensitiveText } from "./delegate-artifacts.ts";
 import { ENV_CHECK, ENV_DENY_DIR, ENV_OUTPUT_DIR, ENV_PARENT, ENV_ROLE } from "./delegate-env.ts";
@@ -34,10 +34,15 @@ export type GitSnapshot = {
 	config: string;
 	// sha256 over the common dir's hooks/ and info/ files.
 	hooks: string;
+	// Branch refs checked out in the repo's other worktrees: their sessions move them, not this job.
+	elsewhere: Set<string>;
 };
 
 const SETTINGS_RESOURCES = ["packages", "extensions", "skills", "prompts", "themes"];
 const LOCK_NAME = "me-pi-implement.lock";
+// The way out when a checkout is taken: a second checkout of the same repo, which has its own lock.
+const WORKTREE_HINT =
+	"if the user wants unrelated work now, offer a sibling worktree (`git worktree add ../<repo>.worktrees/<slug> -b goal/<slug>`, then a Pi session there)";
 // A commit older than the job start minus this is not the worker's: the branch was fast-forwarded to existing work.
 const CLOCK_SKEW_MS = 60_000;
 
@@ -46,9 +51,10 @@ export const GIT_LIMITS = { timeoutMs: 30_000 };
 
 type GitResult = { ok: boolean; code?: number; out: string; err: string };
 
-async function git(repoRoot: string, args: string[]): Promise<GitResult> {
+async function git(repoRoot: string, args: string[], env?: NodeJS.ProcessEnv): Promise<GitResult> {
 	try {
 		const { stdout, stderr } = await run("git", ["-C", repoRoot, ...args], {
+			env,
 			encoding: "utf8",
 			maxBuffer: 64 * 1024 * 1024,
 			timeout: GIT_LIMITS.timeoutMs,
@@ -86,7 +92,7 @@ async function filesIn(dir: string): Promise<[string, number, Buffer | string][]
 }
 
 export async function snapshotGit(repoRoot: string): Promise<GitSnapshot> {
-	const [refsOut, config, commonDir] = await Promise.all([
+	const [refsOut, config, dirs, worktrees] = await Promise.all([
 		gitOrThrow(repoRoot, [
 			"for-each-ref",
 			"--format=%(refname) %(objectname)",
@@ -96,7 +102,8 @@ export async function snapshotGit(repoRoot: string): Promise<GitSnapshot> {
 		]),
 		// Exit 1 with no output: no local entries.
 		gitOrThrow(repoRoot, ["config", "--local", "--list"], [1]),
-		gitOrThrow(repoRoot, ["rev-parse", "--git-common-dir"]),
+		gitOrThrow(repoRoot, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"]),
+		gitOrThrow(repoRoot, ["worktree", "list", "--porcelain"]),
 	]);
 	const refs = new Map(
 		refsOut
@@ -104,13 +111,20 @@ export async function snapshotGit(repoRoot: string): Promise<GitSnapshot> {
 			.filter(Boolean)
 			.map((line) => line.split(" ") as [string, string]),
 	);
-	const common = resolve(repoRoot, commonDir.trim());
+	const [toplevel, common] = dirs.trim().split("\n");
+	// Paths are compared resolved: git lists real paths, and the checkout may be reached through a symlink.
+	const own = realpathOr(toplevel);
+	const elsewhere = new Set(
+		parseWorktrees(worktrees).flatMap(({ path, branch }) =>
+			branch !== undefined && realpathOr(path) !== own ? [branch] : [],
+		),
+	);
 	const hash = createHash("sha256");
 	for (const sub of ["hooks", "info"]) {
 		const files = (await filesIn(join(common, sub))).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 		for (const [path, mode, content] of files) hash.update(`${sub}/${path}\0${mode}\0`).update(content).update("\0");
 	}
-	return { refs, config, hooks: hash.digest("hex") };
+	return { refs, config, hooks: hash.digest("hex"), elsewhere };
 }
 
 const missingFrom = (a: string, b: string, sign: string) => {
@@ -123,11 +137,26 @@ const missingFrom = (a: string, b: string, sign: string) => {
 // Upstream tracking that the main session's `push -u` or `branch -u` writes.
 const TRACKING = /^[-+]branch\..+\.(?:remote|merge)=/;
 
-/** What changed between the snapshots that a job must not change. Only `branch` (`refs/heads/x`) may move; new refs are fine. */
+const HEADS = "refs/heads/";
+
+/**
+ * What changed between the snapshots that a job must not change. Only `branch` (`refs/heads/x`) may move; new refs are
+ * fine. A branch checked out in another worktree at either snapshot belongs to that worktree's session: it and its
+ * `branch.<name>.*` config may change or go. main and master stay watched wherever they are checked out.
+ */
 export function gitTripwires(before: GitSnapshot, after: GitSnapshot, branch: string): string[] {
 	const reasons: string[] = [];
+	const theirs = new Set(
+		[...before.elsewhere, ...after.elsewhere].filter(
+			(ref) => ref.startsWith(HEADS) && !PROTECTED_BRANCHES.has(ref.slice(HEADS.length)),
+		),
+	);
+	// `branch.<name>.<key>=`: a key has no dot, so branch `a` does not cover branch `a.b`.
+	const theirConfig = [...theirs].map((ref) => `branch.${ref.slice(HEADS.length)}.`);
+	const isTheirs = (line: string) =>
+		theirConfig.some((prefix) => line.startsWith(prefix, 1) && /^[^.=]+=/.test(line.slice(1 + prefix.length)));
 	for (const [ref, sha] of before.refs) {
-		if (ref === branch) continue;
+		if (ref === branch || theirs.has(ref)) continue;
 		const now = after.refs.get(ref);
 		if (now === undefined) reasons.push(`${ref} was deleted during the job`);
 		else if (now !== sha) reasons.push(`${ref} moved during the job (${sha.slice(0, 7)} -> ${now.slice(0, 7)})`);
@@ -139,7 +168,7 @@ export function gitTripwires(before: GitSnapshot, after: GitSnapshot, branch: st
 	const diff = [
 		...missingFrom(before.config, after.config, "-").filter((l) => !TRACKING.test(l) || !changedKeys.has(keyOf(l))),
 		...added.filter((l) => !TRACKING.test(l)),
-	];
+	].filter((l) => !isTheirs(l));
 	if (diff.length) reasons.push(`local git config changed: ${diff.join(", ")}`);
 	if (before.hooks !== after.hooks) reasons.push("files under the git common dir's hooks/ or info/ changed");
 	return reasons;
@@ -189,7 +218,7 @@ export type CheckState = {
 export type Checkout = {
 	id: string;
 	repoRoot: string;
-	// The git common dir: the worker may not write inside it, and the lock lives there.
+	// The git common dir, shared by every worktree of the repo: the worker may not write inside it.
 	commonDir: string;
 	ref: string;
 	branch: string;
@@ -314,7 +343,7 @@ export class ImplementLockRefusal extends Error {
 	}
 }
 
-// Takes the per-repo lock; a lock whose pid is dead is taken over, a live or unreadable one refuses. A takeover
+// Takes the checkout's lock; a lock whose pid is dead is taken over, a live or unreadable one refuses. A takeover
 // renames the stale lock aside and re-checks it, so two takeovers cannot both win.
 async function takeLock(lockPath: string, id: string, repoRoot: string, toolCallId?: string): Promise<void> {
 	for (let attempt = 0; attempt < 3; attempt++) {
@@ -329,8 +358,8 @@ async function takeLock(lockPath: string, id: string, repoRoot: string, toolCall
 		if (!holder || isAlive(holder.pid))
 			throw new ImplementLockRefusal(
 				holder
-					? `implement job ${holder.id} (pid ${holder.pid}) is already writing in ${repoRoot}; wait for its handback`
-					: `${lockPath} is unreadable; another implement job may be starting in ${repoRoot}. Remove it only if none runs.`,
+					? `${jobOf(holder)} is already writing in ${repoRoot}; wait for its handback, or ${WORKTREE_HINT}`
+					: unreadableLock({ repoRoot, lockPath }),
 				id,
 				toolCallId,
 			);
@@ -362,6 +391,104 @@ async function releaseLock(lockPath: string, id: string): Promise<void> {
 	if (content.trim().split(" ")[1] === id) await rm(lockPath, { force: true });
 }
 
+type Writer = { repoRoot: string; lockPath: string; holder?: ReturnType<typeof lockHolder> };
+const unreadableLock = (writer: Writer) =>
+	`${writer.lockPath} is unreadable; another implement job may be starting in ${writer.repoRoot}. Remove it only if none runs.`;
+const jobOf = (holder: NonNullable<Writer["holder"]>) => `implement job ${holder.id} (pid ${holder.pid})`;
+
+// git's output for a directory in a checkout; undefined when git says `dir` is in none (outside a repository, or
+// inside a git dir). Throws on any other failure (a timeout, a repository git refuses to read): whether a job writes
+// there is then unknown, which callers report as a block.
+async function gitInCheckout(dir: string, args: string[]): Promise<string | undefined> {
+	// LC_ALL=C: the two messages are matched in English.
+	const res = await git(dir, args, { ...process.env, LC_ALL: "C" });
+	if (res.ok) return res.out;
+	if (/not a git repository|must be run in a work tree/.test(res.err)) return undefined;
+	throw new Error(`could not check for an implement job in ${dir}: ${res.err || `git ${args[0]} failed`}`);
+}
+
+// `path` when it is a directory, else its nearest existing parent directory.
+function existingDir(path: string): string {
+	let dir = path;
+	while (!statSync(dir, { throwIfNoEntry: false })?.isDirectory() && dirname(dir) !== dir) dir = dirname(dir);
+	return dir;
+}
+
+// The held lock of the checkout containing `dir`: its live holder, or none when unreadable. Undefined when free or
+// dead, and when `dir` is in no checkout. Throws when git cannot say.
+async function writerIn(dir: string): Promise<Writer | undefined> {
+	const dirs = await gitInCheckout(dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir"]);
+	if (dirs === undefined) return undefined;
+	const [repoRoot, gitDir] = dirs.trim().split("\n");
+	const lockPath = join(gitDir, LOCK_NAME);
+	const content = await readFile(lockPath, "utf8").catch((err) => {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw new Error(`could not read ${lockPath}: ${(err as Error).message}`);
+	});
+	if (content === undefined) return undefined;
+	const holder = lockHolder(content);
+	return holder && !isAlive(holder.pid) ? undefined : { repoRoot, lockPath, holder };
+}
+
+// `git worktree list --porcelain` as checkouts with the branch each has checked out, the main one first.
+function parseWorktrees(list: string): { path: string; branch?: string }[] {
+	const worktrees: { path: string; branch?: string }[] = [];
+	for (const line of list.split("\n")) {
+		if (line.startsWith("worktree ")) worktrees.push({ path: line.slice("worktree ".length) });
+		else if (line.startsWith("branch ")) worktrees[worktrees.length - 1].branch = line.slice("branch ".length);
+	}
+	return worktrees;
+}
+
+// The checkouts of the repo at `cwd`; none outside a repository. Throws when git cannot say.
+const worktreesOf = async (cwd: string) =>
+	parseWorktrees((await gitInCheckout(cwd, ["worktree", "list", "--porcelain"])) ?? "");
+
+/**
+ * Why this process must not write at `targets` (files or directories): another process's implement job has the lock
+ * of a checkout holding one, or git could not say. Undefined when each lock is free, dead, or this process's own
+ * (its `delegate` instance blocks for its own jobs), and for a target in no checkout. With no `targets` (the write's
+ * place is not known), every checkout of the repo at `cwd` counts.
+ */
+export async function writerElsewhere(targets: string[] | undefined, cwd: string): Promise<string | undefined> {
+	try {
+		const dirs = targets?.map(existingDir) ?? (await worktreesOf(cwd)).map((worktree) => worktree.path);
+		for (const dir of dirs) {
+			const writer = await writerIn(dir);
+			if (!writer) continue;
+			if (!writer.holder) return unreadableLock(writer);
+			if (writer.holder.pid === process.pid) continue;
+			return `${jobOf(writer.holder)} of another session is writing in ${writer.repoRoot}; wait for its handback, or ${WORKTREE_HINT}.`;
+		}
+	} catch (err) {
+		return (err as Error).message;
+	}
+	return undefined;
+}
+
+/**
+ * Why a `git worktree remove` or `move` must wait: a job of any session is writing in one of `targets`, which git
+ * would take from under it when its tree is clean, or git could not say. With no `targets` (paths the command does
+ * not show), any linked worktree of the repo at `cwd` counts; git never removes the main one.
+ */
+export async function worktreeRemovalBlocked(targets: string[] | undefined, cwd: string): Promise<string | undefined> {
+	try {
+		const dirs = targets ?? (await worktreesOf(cwd)).slice(1).map((worktree) => worktree.path);
+		for (const dir of dirs) {
+			// A missing path, or one inside a checkout, is not a worktree: git refuses it.
+			if (!existsSync(dir)) continue;
+			const writer = await writerIn(dir);
+			if (!writer || realpathOr(dir) !== realpathOr(writer.repoRoot)) continue;
+			return writer.holder
+				? `${jobOf(writer.holder)} is writing in ${writer.repoRoot}; removing the worktree would take it from under the job. Wait for its handback.`
+				: unreadableLock(writer);
+		}
+	} catch (err) {
+		return (err as Error).message;
+	}
+	return undefined;
+}
+
 // A failure's first line, capped: the WIP subject and the ✗ line.
 const failureLine = (failure: string | undefined) =>
 	failure?.trim() ? failure.trim().split("\n")[0].slice(0, FIRST_LINE_CAP) : undefined;
@@ -375,7 +502,10 @@ const IN_PROGRESS = [
 	["REVERT_HEAD", "a revert"],
 ];
 
-/** Refuses, leaving nothing behind, unless `cwd` is a clean checkout on a non-main branch with no job writing in it. */
+/**
+ * Refuses, leaving nothing behind, unless `cwd` is a clean checkout on a non-main branch with no job writing in it.
+ * The lock is in the checkout's own git dir, so each worktree of a repo takes one job of its own.
+ */
 export async function prepare(cwd: string, id: string, check: string, toolCallId?: string): Promise<Checkout> {
 	const dirs = await git(cwd, [
 		"rev-parse",
@@ -397,7 +527,7 @@ export async function prepare(cwd: string, id: string, check: string, toolCallId
 	if (PROTECTED_BRANCHES.has(branch))
 		throw new Error(`implement does not commit on ${branch}; \`git switch -c goal/<slug>\` first`);
 	// The lock first, so a job already writing here is named rather than reported as a dirty tree.
-	const lockPath = join(commonDir, LOCK_NAME);
+	const lockPath = join(gitDir, LOCK_NAME);
 	await takeLock(lockPath, id, repoRoot, toolCallId);
 	try {
 		const busy = IN_PROGRESS.find(([path]) => existsSync(join(gitDir, path)));

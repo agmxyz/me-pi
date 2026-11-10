@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import {
 	bgCtx,
 	CHECK,
@@ -280,6 +281,11 @@ test("implement: a second job in the same repo is refused; the main session's wr
 	assert.equal((await bash("cd sub && git add -A", repo))?.block, true);
 	assert.equal((await bash(`git -C ${repo}/sub commit -m x`, outside))?.block, true);
 	assert.equal((await bash("git -C .. commit -m x", join(repo, "sub")))?.block, true);
+	// A read elsewhere does not move the write; a place the text does not show counts as here.
+	assert.equal((await bash(`git -C ${outside} status && git commit -m x`, repo))?.block, true);
+	assert.equal((await bash(`git status && cd ${outside} && git commit -m x`, repo))?.block, true);
+	assert.equal((await bash(`cd ${repo}\ngit commit -m x`, outside))?.block, true);
+	assert.equal(await bash(`git -C ${repo} status && git commit -m x`, outside), undefined);
 	// A dangling symlink cannot be resolved: blocked only under the root.
 	symlinkSync(join(TEST_HOME, "missing-target"), join(outside, "dangling"));
 	symlinkSync(join(TEST_HOME, "missing-target"), join(repo, "dangling"));
@@ -508,6 +514,189 @@ test("implement workers cannot write inside the git dir and stop when their coor
 	const orphan = setup(t, { env: { ...env, ME_PI_PARENT: String(gone.pid) } }).handlers.tool_call;
 	const stopped = await orphan({ toolName: "read", input: { path: "sub/a.txt" } }, { cwd: real });
 	assert.deepEqual(stopped, { block: true, reason: "Blocked: the coordinator is gone; stop now.", terminate: true });
+});
+
+test("implement workers in a linked worktree cannot write its .git file or the shared git dir", async (t) => {
+	const { real, git } = implementRepo();
+	const wt = `${real}.worktrees/y`;
+	git("worktree", "add", "-q", "-b", "goal/y", wt);
+	const env = { ME_PI_RUN: "1", ME_PI_ROLE: "implement", ME_PI_OUTPUT_DIR: wt, ME_PI_DENY_DIR: join(real, ".git") };
+	const hook = setup(t, { env: { ...env, ME_PI_PARENT: String(process.pid) } }).handlers.tool_call;
+	for (const toolName of ["write", "edit"]) {
+		const link = await hook({ toolName, input: { path: ".git" } }, { cwd: wt });
+		assert.equal(link?.block, true, toolName);
+		assert.match(link.reason, /\.git is the checkout's link to the git directory/);
+	}
+	assert.equal((await hook({ toolName: "write", input: { path: join(wt, ".git") } }, { cwd: real }))?.block, true);
+	assert.equal(await hook({ toolName: "write", input: { path: "sub/new.txt" } }, { cwd: wt }), undefined);
+	assert.equal(await hook({ toolName: "write", input: { path: "sub/.git" } }, { cwd: wt }), undefined);
+});
+
+test("another session's implement lock blocks this session's writes in that checkout, not its reads or a worktree", async (t) => {
+	const hook = setup(t).handlers.tool_call;
+	const { repo, real, git, lock } = implementRepo();
+	const wt = `${real}.worktrees/y`;
+	git("worktree", "add", "-q", "-b", "goal/y", wt);
+	const outside = mkdtempSync(join(TEST_HOME, "outside-"));
+	const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+	t.after(() => other.kill());
+	const call = (toolName, input, cwd = repo) => hook({ toolName, input }, { cwd });
+	const bash = (command, cwd = repo) => call("bash", { command }, cwd);
+	assert.equal(await call("edit", { path: "sub/a.txt" }), undefined, "no lock, no block");
+
+	writeFileSync(lock, `${other.pid} im3\n`);
+	const blocked = await call("edit", { path: "sub/a.txt" });
+	assert.equal(blocked?.block, true);
+	assert.equal(
+		blocked.reason,
+		`implement job im3 (pid ${other.pid}) of another session is writing in ${real}; wait for its handback, or if the user wants unrelated work now, offer a sibling worktree (\`git worktree add ../<repo>.worktrees/<slug> -b goal/<slug>\`, then a Pi session there).`,
+	);
+	assert.equal((await call("write", { path: join(repo, "new", "deep", "x.txt") }, outside))?.block, true);
+	// Where these run is not in their text, so every checkout of the repo counts.
+	for (const command of [`git -C ${wt} status && git commit -m x`, 'cd "$WT" && git commit -m x'])
+		assert.equal((await bash(command))?.block, true, command);
+	// Shapes that reach the occupied checkout from a free one.
+	for (const command of [
+		`cd ${real}\ngit commit -m x`,
+		`cd ${real} || true; git commit -m x`,
+		`bash -c "cd ${real} && git commit -m x"`,
+		`git --git-dir=${real}/.git --work-tree=${real} commit -m x`,
+		`git -c color.ui=never -C ${real} commit -m x`,
+		`git -C ${wt} status && /usr/bin/git -C ${real} commit -m x`,
+	])
+		assert.equal((await bash(command, wt))?.block, true, command);
+	assert.equal((await bash(`git -C ${wt} status && env X=1 git commit -m x`))?.block, true, "the write runs here");
+	assert.equal(
+		await bash(`git -C ${real} status && git commit -m x`, wt),
+		undefined,
+		"the write runs in the free one",
+	);
+	assert.equal((await call("write", { path: pathToFileURL(join(real, "sub", "u.txt")).href }, wt))?.block, true);
+	for (const command of ["git switch -c goal/z", "git commit -m x", "git stash", `git -C ${real} add -A`])
+		assert.equal((await bash(command, command.includes("-C") ? outside : repo))?.block, true, command);
+	assert.equal((await bash("git add -A", join(repo, "sub")))?.block, true, "from a subdirectory");
+	for (const command of ["git status", "git log --oneline", `git worktree add ${real}.worktrees/z -b goal/z`, "ls"])
+		assert.equal(await bash(command), undefined, command);
+	assert.equal(await call("edit", { path: join(outside, "x.txt") }), undefined);
+	assert.equal(await call("edit", { path: "sub/a.txt" }, wt), undefined, "the sibling worktree is free");
+	assert.equal(await bash("git commit -m x", wt), undefined);
+	assert.equal(await bash(`git -C ${wt} commit -m x`), undefined);
+
+	rmSync(lock);
+	const wtLock = join(real, ".git", "worktrees", "y", "me-pi-implement.lock");
+	writeFileSync(wtLock, `${other.pid} im4\n`);
+	assert.equal(await call("edit", { path: "sub/a.txt" }), undefined, "a lock in the worktree leaves the anchor free");
+	const inWt = await call("edit", { path: "sub/a.txt" }, wt);
+	assert.match(inWt?.reason ?? "", new RegExp(`^implement job im4 .* is writing in ${wt};`));
+	assert.equal((await bash(`cd ${wt} && git commit -m x`))?.block, true);
+	assert.equal((await bash(`git status && cd ${wt} && git commit -m x`))?.block, true, "a later cd: any checkout");
+	assert.equal(await bash(`git status && cd ${wt} && git log`), undefined);
+	symlinkSync(join(wt, "sub"), join(outside, "into-wt"));
+	assert.equal((await call("write", { path: join(outside, "into-wt", "new.txt") }))?.block, true, "through a symlink");
+	rmSync(wtLock);
+
+	writeFileSync(lock, `${process.pid} im5\n`);
+	assert.equal(await call("edit", { path: "sub/a.txt" }), undefined, "this session's own job is the writing map's");
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((r) => dead.once("exit", r));
+	writeFileSync(lock, `${dead.pid} im6\n`);
+	assert.equal(await call("edit", { path: "sub/a.txt" }), undefined, "a dead holder blocks nothing");
+	writeFileSync(lock, "garbage\n");
+	assert.match(
+		(await call("edit", { path: "sub/a.txt" }))?.reason ?? "",
+		/me-pi-implement\.lock is unreadable; another implement job may be starting/,
+	);
+});
+
+test("when git cannot say whether a job is writing, writes and worktree removals are blocked", async (t) => {
+	const { GIT_LIMITS } = await import("../packages/pi-workers/extensions/delegate-implement.ts");
+	const hook = setup(t).handlers.tool_call;
+	const { repo, real, git } = implementRepo();
+	const wt = `${real}.worktrees/y`;
+	git("worktree", "add", "-q", "-b", "goal/y", wt);
+	const outside = mkdtempSync(join(TEST_HOME, "outside-"));
+	const call = (toolName, input, cwd = repo) => hook({ toolName, input }, { cwd });
+	const commands = ["git commit -m x", 'cd "$WT" && git commit -m x', `git worktree remove ${wt}`];
+	assert.equal(await call("edit", { path: "sub/a.txt" }), undefined);
+	assert.equal(await call("edit", { path: "x.txt" }, outside), undefined, "git answers: not a checkout");
+	for (const command of commands) assert.equal(await call("bash", { command }), undefined, command);
+
+	// Every git call hangs until the timeout kills it.
+	const bin = mkdtempSync(join(TEST_HOME, "hung-git-"));
+	writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+	const saved = { timeoutMs: GIT_LIMITS.timeoutMs, path: process.env.PATH };
+	t.after(() => {
+		GIT_LIMITS.timeoutMs = saved.timeoutMs;
+		process.env.PATH = saved.path;
+	});
+	GIT_LIMITS.timeoutMs = 100;
+	process.env.PATH = `${bin}:${saved.path}`;
+	const blocked = await call("edit", { path: "sub/a.txt" });
+	assert.equal(blocked?.block, true);
+	assert.match(blocked.reason, /^could not check for an implement job in .*: git rev-parse timed out after 100 ms$/);
+	const refused = await call("edit", { path: "x.txt" }, outside);
+	assert.equal(refused?.block, true, "no answer is not `no checkout`");
+	for (const command of commands) assert.equal((await call("bash", { command }))?.block, true, command);
+	assert.equal(await call("bash", { command: "git status" }), undefined, "a read is not checked");
+});
+
+test("a worktree with a live implement lock cannot be removed, by any session; a free or dead one can", async (t) => {
+	const hook = setup(t).handlers.tool_call;
+	const { repo, real, git } = implementRepo();
+	const wt = `${real}.worktrees/y`;
+	git("worktree", "add", "-q", "-b", "goal/y", wt);
+	const wtLock = join(real, ".git", "worktrees", "y", "me-pi-implement.lock");
+	const bash = (command, cwd = repo) => hook({ toolName: "bash", input: { command } }, { cwd });
+	const forms = [
+		`git worktree remove ${wt}`,
+		`git worktree remove ${wt}/`,
+		`git worktree remove ../${real.split("/").pop()}.worktrees/y`,
+		`git worktree move ${wt} ${wt}-moved`,
+		`git fetch && cd ${real}.worktrees && git worktree remove y`,
+		`git worktree remove --force ${wt}`,
+		`git worktree remove -f ${wt}`,
+		`git worktree remove ${wt} --force`,
+		`git -C ${real} worktree remove ${wt}`,
+		`cd ${real}.worktrees && git worktree remove y`,
+		`git status && git worktree remove ${wt}`,
+		`cd ${real}.worktrees\ngit worktree remove y`,
+		`echo ${wt} | xargs git worktree remove`,
+		`git worktree remove ${wt}*`,
+	];
+	for (const command of forms) assert.equal(await bash(command), undefined, `free: ${command}`);
+
+	const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+	t.after(() => other.kill());
+	for (const pid of [other.pid, process.pid]) {
+		writeFileSync(wtLock, `${pid} im7\n`);
+		for (const command of forms) {
+			const blocked = await bash(command);
+			assert.equal(blocked?.block, true, command);
+			assert.equal(
+				blocked.reason,
+				`implement job im7 (pid ${pid}) is writing in ${wt}; removing the worktree would take it from under the job. Wait for its handback.`,
+			);
+		}
+	}
+	assert.equal(await bash(`git worktree remove ${real}.worktrees/missing`), undefined, "no such worktree");
+	assert.equal(await bash(`git worktree remove ${wt}/sub`), undefined, "a path inside one: git refuses it");
+	assert.equal((await bash('git worktree remove "$WT"'))?.block, true, "an unreadable target: any live lock");
+	assert.equal((await bash(`git merge goal/y && git worktree remove ${wt}`))?.block, true, "after a tree write");
+	rmSync(wtLock);
+	writeFileSync(join(real, ".git", "me-pi-implement.lock"), `${process.pid} im9\n`);
+	assert.equal(await bash('git worktree remove "$WT"'), undefined, "the main checkout is never removed");
+	rmSync(join(real, ".git", "me-pi-implement.lock"));
+	writeFileSync(wtLock, "garbage\n");
+	assert.equal(await bash('git worktree remove "$WT"', mkdtempSync(join(TEST_HOME, "norepo-"))), undefined);
+	assert.equal(await bash(`git worktree add ${real}.worktrees/z -b goal/z`), undefined);
+	assert.equal(await bash("git worktree list"), undefined);
+	assert.equal(await bash("git worktree prune"), undefined);
+	writeFileSync(wtLock, "garbage\n");
+	assert.match((await bash(forms[0]))?.reason ?? "", /me-pi-implement\.lock is unreadable/);
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((r) => dead.once("exit", r));
+	writeFileSync(wtLock, `${dead.pid} im8\n`);
+	assert.equal(await bash(forms[0]), undefined, "a dead holder blocks nothing");
 });
 
 test("implement: a WIP HEAD from an earlier attempt reaches the worker's prompt", async (t) => {
