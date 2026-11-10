@@ -9,6 +9,7 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 - The `delegate bg: N running, $X spent` footer line is gone. It counted only background jobs, so it showed the wrong total while foreground workers ran. The activity widget shows running jobs, each result ends with its cost, and `/delegate status` lists recent calls with a total.
 - Two features can run at once in one repo: `implement` locks one checkout instead of the whole repo, so a session in a Git worktree runs its own job while another writes in the main checkout. A job no longer trips when a branch checked out in another worktree moves or is deleted; `main`, `master`, tags, the stash, and other config still trip it.
 - While another Pi session's `implement` job writes in a checkout, this session's `edit`, `write`, and Git tree writes there are blocked, with a pointer to `git worktree add`. Before, only the session that started the job was blocked.
+- `git worktree remove` is blocked while an `implement` job runs in that worktree.
 - `implement` workers in a linked worktree can no longer write its `.git` file.
 
 ## [0.1.6] - 2026-11-10

@@ -578,6 +578,54 @@ test("another session's implement lock blocks this session's writes in that chec
 	);
 });
 
+test("a worktree with a live implement lock cannot be removed, by any session; a free or dead one can", async (t) => {
+	const hook = setup(t).handlers.tool_call;
+	const { repo, real, git } = implementRepo();
+	const wt = `${real}.worktrees/y`;
+	git("worktree", "add", "-q", "-b", "goal/y", wt);
+	const wtLock = join(real, ".git", "worktrees", "y", "me-pi-implement.lock");
+	const bash = (command, cwd = repo) => hook({ toolName: "bash", input: { command } }, { cwd });
+	const forms = [
+		`git worktree remove ${wt}`,
+		`git worktree remove ${wt}/`,
+		"git worktree remove ../" + `${real.split("/").pop()}.worktrees/y`,
+		`git worktree remove --force ${wt}`,
+		`git worktree remove -f ${wt}`,
+		`git worktree remove ${wt} --force`,
+		`git -C ${real} worktree remove ${wt}`,
+		`cd ${real}.worktrees && git worktree remove y`,
+		`git status && git worktree remove ${wt}`,
+	];
+	for (const command of forms) assert.equal(await bash(command), undefined, `free: ${command}`);
+
+	const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+	t.after(() => other.kill());
+	for (const pid of [other.pid, process.pid]) {
+		writeFileSync(wtLock, `${pid} im7\n`);
+		for (const command of forms) {
+			const blocked = await bash(command);
+			assert.equal(blocked?.block, true, command);
+			assert.equal(
+				blocked.reason,
+				`implement job im7 (pid ${pid}) is writing in ${wt}; removing the worktree would take it from under the job. Wait for its handback.`,
+			);
+		}
+	}
+	assert.equal(await bash(`git worktree remove ${real}.worktrees/missing`), undefined, "no such worktree");
+	assert.equal(await bash(`git worktree remove ${wt}/sub`), undefined, "a path inside one: git refuses it");
+	assert.equal((await bash('git worktree remove "$WT"'))?.block, true, "an unreadable target: any live lock");
+	assert.equal(await bash('git worktree remove "$WT"', mkdtempSync(join(TEST_HOME, "norepo-"))), undefined);
+	assert.equal(await bash(`git worktree add ${real}.worktrees/z -b goal/z`), undefined);
+	assert.equal(await bash("git worktree list"), undefined);
+	assert.equal(await bash("git worktree prune"), undefined);
+	writeFileSync(wtLock, "garbage\n");
+	assert.match((await bash(forms[0]))?.reason ?? "", /me-pi-implement\.lock is unreadable/);
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((r) => dead.once("exit", r));
+	writeFileSync(wtLock, `${dead.pid} im8\n`);
+	assert.equal(await bash(forms[0]), undefined, "a dead holder blocks nothing");
+});
+
 test("implement: a WIP HEAD from an earlier attempt reaches the worker's prompt", async (t) => {
 	const { tool } = setup(t, { env: implementEnv("") });
 	const { repo, git, ctx } = implementRepo();

@@ -356,7 +356,7 @@ async function takeLock(lockPath: string, id: string, repoRoot: string, toolCall
 			throw new ImplementLockRefusal(
 				holder
 					? `implement job ${holder.id} (pid ${holder.pid}) is already writing in ${repoRoot}; wait for its handback, or ${WORKTREE_HINT}`
-					: `${lockPath} is unreadable; another implement job may be starting in ${repoRoot}. Remove it only if none runs.`,
+					: unreadableLock({ repoRoot, lockPath }),
 				id,
 				toolCallId,
 			);
@@ -388,12 +388,12 @@ async function releaseLock(lockPath: string, id: string): Promise<void> {
 	if (content.trim().split(" ")[1] === id) await rm(lockPath, { force: true });
 }
 
-/**
- * Why this process must not write in the checkout holding `dir`: another process's implement job has its lock.
- * Undefined when the lock is free, dead, or this process's own (its `delegate` instance blocks for its own jobs),
- * and when `dir` is in no checkout.
- */
-export async function writerElsewhere(dir: string): Promise<string | undefined> {
+type Writer = { repoRoot: string; lockPath: string; holder?: { pid: number; id: string } };
+const unreadableLock = (writer: Writer) =>
+	`${writer.lockPath} is unreadable; another implement job may be starting in ${writer.repoRoot}. Remove it only if none runs.`;
+
+// The held lock of the checkout containing `dir`: its live holder, or none when unreadable. Undefined when free or dead.
+async function writerIn(dir: string): Promise<Writer | undefined> {
 	const dirs = await git(dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir"]);
 	if (!dirs.ok) return undefined;
 	const [repoRoot, gitDir] = dirs.out.trim().split("\n");
@@ -401,10 +401,44 @@ export async function writerElsewhere(dir: string): Promise<string | undefined> 
 	const content = await readFile(lockPath, "utf8").catch(() => undefined);
 	if (content === undefined) return undefined;
 	const holder = lockHolder(content);
-	if (!holder)
-		return `${lockPath} is unreadable; another implement job may be starting in ${repoRoot}. Remove it only if none runs.`;
-	if (holder.pid === process.pid || !isAlive(holder.pid)) return undefined;
-	return `implement job ${holder.id} (pid ${holder.pid}) of another session is writing in ${repoRoot}; wait for its handback, or ${WORKTREE_HINT}.`;
+	return holder && !isAlive(holder.pid) ? undefined : { repoRoot, lockPath, holder };
+}
+
+/**
+ * Why this process must not write in the checkout holding `dir`: another process's implement job has its lock.
+ * Undefined when the lock is free, dead, or this process's own (its `delegate` instance blocks for its own jobs),
+ * and when `dir` is in no checkout.
+ */
+export async function writerElsewhere(dir: string): Promise<string | undefined> {
+	const writer = await writerIn(dir);
+	if (!writer?.holder) return writer && unreadableLock(writer);
+	if (writer.holder.pid === process.pid) return undefined;
+	return `implement job ${writer.holder.id} (pid ${writer.holder.pid}) of another session is writing in ${writer.repoRoot}; wait for its handback, or ${WORKTREE_HINT}.`;
+}
+
+/**
+ * Why a `git worktree remove` must wait: a job of any session is writing in one of `targets`, which git would remove
+ * from under it when its tree is clean. With no `targets` (paths the command does not show), any worktree of the
+ * repo at `cwd` counts.
+ */
+export async function worktreeRemovalBlocked(targets: string[] | undefined, cwd: string): Promise<string | undefined> {
+	let dirs = targets;
+	if (!dirs) {
+		const list = await git(cwd, ["worktree", "list", "--porcelain"]);
+		dirs = list.out
+			.split("\n")
+			.filter((line) => line.startsWith("worktree "))
+			.map((line) => line.slice("worktree ".length));
+	}
+	for (const dir of dirs) {
+		const writer = await writerIn(dir);
+		// A path inside a checkout is not a worktree: git refuses it.
+		if (!writer || realpathOr(dir) !== realpathOr(writer.repoRoot)) continue;
+		return writer.holder
+			? `implement job ${writer.holder.id} (pid ${writer.holder.pid}) is writing in ${writer.repoRoot}; removing the worktree would take it from under the job. Wait for its handback.`
+			: unreadableLock(writer);
+	}
+	return undefined;
 }
 
 // A failure's first line, capped: the WIP subject and the ✗ line.

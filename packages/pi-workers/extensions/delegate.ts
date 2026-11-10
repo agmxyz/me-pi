@@ -35,7 +35,7 @@ import {
 	validateOneOffModel,
 } from "./delegate-config.ts";
 import { isWorkerProcess } from "./delegate-env.ts";
-import { commandDir, realpathOr, realTarget, UNICODE_SPACES, within } from "./delegate-fence.ts";
+import { commandDir, expandHome, realpathOr, realTarget, UNICODE_SPACES, within } from "./delegate-fence.ts";
 import {
 	type Checkout,
 	type Facts,
@@ -46,6 +46,7 @@ import {
 	type Outcome,
 	prepare as prepareImplement,
 	runImplementJob,
+	worktreeRemovalBlocked,
 	writerElsewhere,
 } from "./delegate-implement.ts";
 import { killGroup, startWorkerProcess } from "./delegate-process.ts";
@@ -72,7 +73,7 @@ import {
 	registerWorker,
 	workerLaunch,
 } from "./delegate-worker.ts";
-import { gitTreeWrite } from "./guard.ts";
+import { gitTreeWrite, gitWorktreeRemovals } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
 export const LIMITS = {
@@ -697,7 +698,13 @@ export default function (pi: ExtensionAPI) {
 					reason: `implement job ${id} is writing in ${root}; wait for its handback${id.startsWith("bg") ? ` or /delegate cancel ${id}` : ""}.`,
 				};
 		}
-		const reason = lands === undefined ? undefined : await writerElsewhere(lands);
+		let reason = lands === undefined ? undefined : await writerElsewhere(lands);
+		const removals = event.toolName === "bash" ? gitWorktreeRemovals(String(input.command ?? "")) : [];
+		if (!reason && removals.length) {
+			const base = commandDir(String(input.command ?? ""), ctx.cwd) ?? ctx.cwd;
+			const targets = removals === "unknown" ? undefined : removals.map((path) => resolve(base, expandHome(path)));
+			reason = await worktreeRemovalBlocked(targets, base);
+		}
 		return reason ? { block: true, reason } : undefined;
 	});
 

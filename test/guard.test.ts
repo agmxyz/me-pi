@@ -6,6 +6,7 @@ const {
 	classify,
 	workerRisk,
 	gitTreeWrite,
+	gitWorktreeRemovals,
 	PROTECTED_BRANCHES,
 } = await import("../packages/pi-workers/extensions/guard.ts");
 
@@ -754,6 +755,27 @@ test("an implement worker's git in a fresh mktemp repo passes; leaving it or poi
 		assert.ok(classify(command, onMain), command);
 	delete process.env.ME_PI_ROLE;
 	assert.ok(classify(fresh[2], onMain), "the main session's guard never exempts temp repos");
+});
+
+test("gitWorktreeRemovals lists the worktrees a command removes", () => {
+	for (const [command, targets] of [
+		["git worktree remove ../wt", ["../wt"]],
+		["git worktree remove -f ../wt", ["../wt"]],
+		["git worktree remove ../wt --force", ["../wt"]],
+		["git worktree remove --force '/tmp/a b'", "unknown"],
+		['git worktree remove "$WT"', "unknown"],
+		["git worktree remove $(pwd)/wt", "unknown"],
+		["git -C /repo worktree remove wt", ["wt"]],
+		["git worktree remove a && git worktree remove b", ["a", "b"]],
+		["git status; git worktree remove a 2>&1", ["a"]],
+		["git worktree remove", []],
+		["git worktree add ../wt -b x", []],
+		["git worktree list", []],
+		["git worktree prune", []],
+		['git commit -m "git worktree remove a"', []],
+		["echo git worktree remove a", []],
+	] as const)
+		assert.deepEqual(gitWorktreeRemovals(command), targets, command);
 });
 
 test("gitTreeWrite names checkout-writing git subcommands and passes reads", () => {
