@@ -414,6 +414,12 @@ test("must-ask regressions: past bypasses still ask", () => {
 	}
 });
 
+test("a git -c value with quotes is read in linear time", () => {
+	const started = performance.now();
+	classify(`git -c ${"a".repeat(5000)}"`, onFeature, { historyRewrites: false });
+	assert.ok(performance.now() - started < 1000, "GIT_GLOBALS backtracks");
+});
+
 test("allows feature pushes, PRs, and routine commands", () => {
 	for (const [command, branch] of [
 		["git push", onFeature],
