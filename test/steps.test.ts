@@ -65,6 +65,7 @@ function setup({ mode = "tui", branch = [] as any[] } = {}) {
 		prompt: () => {
 			fire("before_agent_start");
 			fire("agent_start");
+			fire("message_start", { message: { role: "user" } });
 		},
 		end: (stopReason = "stop") => fire("agent_end", { messages: [{ role: "assistant", stopReason }] }),
 		command: (args: string) => commands.steps.handler(args, ctx),
@@ -75,6 +76,9 @@ function setup({ mode = "tui", branch = [] as any[] } = {}) {
 		notes,
 	};
 }
+
+// A `plan` tool result as it sits in session history.
+const planResult = (details: any) => ({ type: "message", message: { role: "toolResult", toolName: "plan", details } });
 
 // A fixed clock: `wait(ms)` moves time forward for the step timer.
 let now = 0;
@@ -234,8 +238,7 @@ test("the step timer stops when the widget goes away or the session ends", async
 });
 
 test("a resumed plan stays hidden until the model picks it up, then resumes from its count", async () => {
-	const result = (details: any) => ({ type: "message", message: { role: "toolResult", toolName: "plan", details } });
-	const s = setup({ branch: [result({ steps: ["A", "B", "C"], done: 1 })] });
+	const s = setup({ branch: [planResult({ steps: ["A", "B", "C"], done: 1 })] });
 	assert.equal(s.show(), "(hidden)");
 	s.fire("session_tree");
 	assert.equal(s.show(), "(hidden)");
@@ -245,12 +248,11 @@ test("a resumed plan stays hidden until the model picks it up, then resumes from
 });
 
 test("restore ignores entries that are not plans and clamps done", async () => {
-	const result = (details: any) => ({ type: "message", message: { role: "toolResult", toolName: "plan", details } });
 	for (const [branch, expected] of [
-		[[result({ steps: ["A", "B", "C"], done: 1 }), result({ steps: "not a list" })], "✓ A\n● B · 0s\n○ C"],
+		[[planResult({ steps: ["A", "B", "C"], done: 1 }), planResult({ steps: "not a list" })], "✓ A\n● B · 0s\n○ C"],
 		// done past the end clamps to finished, and a finished plan clears at the next prompt.
-		[[result({ steps: ["A", "B"], done: 7 })], "(hidden)"],
-		[[result({ steps: ["X", "Y"] })], "● X · 0s\n○ Y"],
+		[[planResult({ steps: ["A", "B"], done: 7 })], "(hidden)"],
+		[[planResult({ steps: ["X", "Y"] })], "● X · 0s\n○ Y"],
 	] as const) {
 		const s = setup({ branch: [...branch] });
 		s.prompt();
@@ -288,4 +290,21 @@ test("a plan call has no transcript row; a failed one shows its error", () => {
 		tool.renderResult(failed, {}, theme, { isError: true }).render(80).join(""),
 		/plan failed: done: expected integer/,
 	);
+});
+
+test("a message queued into the running loop hides the plan until the model touches it", async () => {
+	const s = setup();
+	s.prompt();
+	await s.plan({ steps: ["A", "B", "C"] });
+	assert.equal(s.show(), "● A · 0s\n○ B\n○ C");
+	s.fire("message_start", { message: { role: "user" } });
+	assert.equal(s.show(), "(hidden)");
+	s.fire("message_start", { message: { role: "assistant" } });
+	assert.equal(s.show(), "(hidden)");
+	s.end();
+	assert.equal(s.show(), "(hidden)");
+	s.prompt();
+	s.fire("message_start", { message: { role: "custom" } });
+	await s.plan({ done: 1 });
+	assert.equal(s.show(), "✓ A\n● B · 0s\n○ C");
 });

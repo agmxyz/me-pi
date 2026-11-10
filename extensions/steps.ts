@@ -19,9 +19,10 @@ const settingsPath = () => join(getAgentDir(), "steps.json");
 function parsePlan(value: unknown): Plan | undefined {
 	const { steps, done } = (value ?? {}) as Partial<Plan>;
 	if (!Array.isArray(steps) || !steps.every((step) => typeof step === "string")) return undefined;
-	const count = Number.isInteger(done) ? (done as number) : 0;
-	return { steps, done: Math.max(0, Math.min(count, steps.length)) };
+	return { steps, done: clampDone(Number.isInteger(done) ? (done as number) : 0, steps) };
 }
+
+const clampDone = (done: number, steps: string[]) => Math.max(0, Math.min(done, steps.length));
 
 /** The saved on/off choice: on when no choice was saved; an unreadable file is reported and treated as on. */
 function readEnabled(): { enabled: boolean; error?: string } {
@@ -146,8 +147,7 @@ export default function (pi: ExtensionAPI) {
 				const pickedUp = !fresh;
 				fresh = true;
 				if (params.steps) plan = { steps: params.steps, done: 0 };
-				if (params.done !== undefined)
-					plan = { ...plan, done: Math.max(0, Math.min(params.done, plan.steps.length)) };
+				if (params.done !== undefined) plan = { ...plan, done: clampDone(params.done, plan.steps) };
 				if (pickedUp || params.steps || plan.done !== before) stepStartedAt = Date.now();
 				render();
 				return { content: [{ type: "text", text: "ok" }], details: plan };
@@ -197,10 +197,13 @@ export default function (pi: ExtensionAPI) {
 		render();
 	});
 
-	// A new prompt (user input or a background job's report) hides the plan until the model touches it;
-	// agent_start also fires for retries and queued messages within the same prompt.
-	pi.on("before_agent_start", () => {
+	// A new message for the model (your prompt, a queued follow-up, or a background job's report) hides the
+	// plan until the model touches it. Queued messages join the running loop without before_agent_start.
+	pi.on("message_start", (event) => {
+		const { role } = event.message;
+		if (role !== "user" && role !== "custom") return;
 		fresh = false;
+		render();
 	});
 	pi.on("agent_start", () => {
 		// A finished plan from the previous prompt clears; an unfinished one carries on.
