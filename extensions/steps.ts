@@ -46,6 +46,9 @@ function writeEnabled(enabled: boolean) {
 	writeFileSync(settingsPath(), `${JSON.stringify({ enabled })}\n`);
 }
 
+const textOf = (result: { content: { type: string; text?: string }[] }) =>
+	result.content.map((part) => (part.type === "text" ? part.text : "")).join(" ");
+
 const elapsed = (ms: number) => {
 	const seconds = Math.floor(ms / 1000);
 	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
@@ -130,7 +133,7 @@ export default function (pi: ExtensionAPI) {
 			label: "Plan",
 			description: "Live checklist for the user. `steps` sets the list; `done` is the count of finished steps.",
 			promptGuidelines: [
-				"For tasks with 3+ steps, call plan only in parallel with another tool call, never alone: set steps (each under 40 characters) with the first action, then update done whenever you start a new step. Never tick the last step; the reply completes it.",
+				"For tasks with 3+ steps, call plan only in parallel with another tool call, never alone: set steps (each under 40 characters) with the first action, then update done whenever you start a new step. Never tick the last step; the reply completes it. When you stop with steps left, set done to the steps finished in that last tool call.",
 				"An earlier prompt's plan stays hidden until you call plan again: set new steps for new work, or update done to resume it. Skip plan for prompts unrelated to it.",
 				"When the work stops matching the plan (a step dropped, changed, or added), call plan with the corrected steps and done; never leave a step the user would read as false.",
 			],
@@ -149,17 +152,11 @@ export default function (pi: ExtensionAPI) {
 				render();
 				return { content: [{ type: "text", text: "ok" }], details: plan };
 			},
-			renderCall(args, theme) {
-				const parts = [
-					...(args.steps ? [`${args.steps.length} steps`] : []),
-					...(args.done !== undefined ? [`${args.done} done`] : []),
-				];
-				const text = `plan · ${parts.join(" · ") || "…"}`;
-				return new Text(theme.fg("dim", text), 0, 0);
-			},
-			renderResult() {
-				return new Text("", 0, 0);
-			},
+			// The widget already shows the plan, so a call has no row in the transcript; only a failed call shows.
+			renderShell: "self",
+			renderCall: () => new Text("", 0, 0),
+			renderResult: (result, _options, theme, context) =>
+				new Text(context.isError ? theme.fg("error", `plan failed: ${textOf(result)}`) : "", 0, 0),
 		});
 	});
 

@@ -274,3 +274,18 @@ test("a setting that can't be read for another reason is reported and steps stay
 		rmSync(SETTINGS, { recursive: true, force: true });
 	}
 });
+
+test("a plan call has no transcript row; a failed one shows its error", () => {
+	const s = setup();
+	const tool = s.tool();
+	const theme = { fg: (_color: string, text: string) => text };
+	assert.equal(tool.renderShell, "self");
+	assert.deepEqual(tool.renderCall({ steps: ["A"] }, theme, {}).render(80), []);
+	const ok = { content: [{ type: "text", text: "ok" }] };
+	assert.deepEqual(tool.renderResult(ok, {}, theme, { isError: false }).render(80), []);
+	const failed = { content: [{ type: "text", text: "done: expected integer" }] };
+	assert.match(
+		tool.renderResult(failed, {}, theme, { isError: true }).render(80).join(""),
+		/plan failed: done: expected integer/,
+	);
+});
