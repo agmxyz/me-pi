@@ -409,6 +409,11 @@ test("must-ask regressions: past bypasses still ask", () => {
 		["git filter-branch --index-filter 'rm -rf ~' HEAD", onFeature, "#114"],
 		["git filter-branch --msg-filter='rm -rf ~' HEAD", onFeature, "#114"],
 		["git filter-branch --env-filter 'rm -rf ~' HEAD", onFeature, "#114"],
+		["git rebase --exe 'rm -rf ~' HEAD~1", onFeature, "#114"],
+		["git rebase --ex='rm -rf ~' HEAD~1", onFeature, "#114"],
+		["git filter-branch --setup 'rm -rf ~' HEAD", onFeature, "#114"],
+		["GIT_EDITOR='rm -rf ~;:' git rebase --continue", onFeature, "#114"],
+		["GIT_SEQUENCE_EDITOR+='rm -rf ~;:' git rebase -i HEAD~1", onFeature, "#114"],
 	]) {
 		assert.ok(classify(command, branch, { historyRewrites: false }), `${source}: ${command}`);
 	}
@@ -744,6 +749,10 @@ test("history rewrites: classify skips them with historyRewrites: false, and onl
 		"git branch --delete --force old",
 	]) {
 		assert.match(classify(command, onFeature) ?? "", /history rewrite|git branch -D/, command);
+		assert.equal(classify(command, onFeature, { historyRewrites: false }), undefined, command);
+	}
+	// A resumed rebase without an editor override runs nothing new.
+	for (const command of ["git rebase --continue", "git rebase --abort"]) {
 		assert.equal(classify(command, onFeature, { historyRewrites: false }), undefined, command);
 	}
 	// Other risks in the same command still count.

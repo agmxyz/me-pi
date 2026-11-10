@@ -1,7 +1,8 @@
 /**
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
- * With a UI it asks for confirmation; without one (print mode) it blocks. History rewrites only block in delegate
- * workers (see `classify`).
+ * With a UI it asks for confirmation; without one (print mode) it blocks. Plain history rewrites only block in
+ * delegate workers; ones that run a command (`rebase -x`, an editor override, a `filter-branch` command filter) also
+ * ask in the main session (see `classify`).
  * `/guard on|off` toggles it for the current session; every session starts on.
  * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
  * misses commands it can't read (interpreter code, a non-recursive rm).
@@ -28,8 +29,9 @@ const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 // A command position: start of line/command, after `;`, `&`, `|`, `(`, `{`, `` ` ``, `$(`, a shell keyword
 // (`then`, `do`, `else`), a wrapper with its options (`env -i`, `xargs -0`, `sudo`, `nohup`, `time`, `exec`,
 // `rtk [proxy]`, `command`), `eval`, `find -exec`, or a shell's `-c` (`bash -lc`, `zsh -c`), plus optional
-// `NAME=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as `grep 'git push'` from matching.
-const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
+// `NAME=value` or `NAME+=value` prefixes and a directory path (`/usr/bin/git`). Keeps mentions such as
+// `grep 'git push'` from matching.
+const AT_COMMAND = String.raw`(?:^|[;&|(){\x60\n]|\$\(\s*|\b(?:then|do|else)\s+|\b(?:rtk(?:\s+proxy)?|env|command|sudo|xargs|nohup|time|exec)(?:\s+-\S+)*\s+|\beval\s+["']?|\s-exec(?:dir)?\s+|\b(?:ba|z|da|k)?sh\s+(?:${SHELL_OPTION}\s+)*-\w*c\w*\s+["']?)\s*(?:[A-Za-z_]\w*\+?=(?:"[^"]*"|'[^']*'|\S*)\s+)*(?:[\w.~-]*\/)*`;
 // `git` global options (`-C dir`, `-c k=v`, `-c k='a b'`, `--git-dir=...`) before the subcommand.
 const GIT_GLOBALS = String.raw`(?:\s+(?:-[Cc]\s+(?:[^\s"']|"[^"]*"|'[^']*')+|--(?:git-dir|work-tree|namespace|super-prefix)(?:=\S*|\s+(?:"[^"]*"|'[^']*'|\S+))|--?[\w-]+(?:=\S*)?))*`;
 // Rest of the same command: steps over redirects that contain `&` or `|` (`2>&1`, `>&2`, `&>`, `&>>`, `>|`), so words
@@ -124,9 +126,12 @@ function pushRisk(words: string[], currentBranch: () => string | undefined, else
 
 // Anywhere in the command, since `GIT_COMMAND` doesn't capture env prefixes: an editor variable assignment
 // (`X=… git`, `env X=…`, `export X=…`) or a `core.editor`/`sequence.editor` config (`-c`, `--config-env`).
-const EDITOR_OVERRIDE = /(?<![\w-])(?:GIT_SEQUENCE_EDITOR|GIT_EDITOR|VISUAL|EDITOR)=|(?:core|sequence)\.editor/i;
-// `filter-branch` filters that run a command; `--subdirectory-filter` doesn't.
-const COMMAND_FILTER = /^--(?:tree|index|msg|env|commit|parent|tag-name)-filter(?:=|$)/;
+const EDITOR_OVERRIDE = /(?<![\w-])(?:GIT_SEQUENCE_EDITOR|GIT_EDITOR|VISUAL|EDITOR)\+?=|(?:core|sequence)\.editor/i;
+// `filter-branch` options that run a command (the filters and `--setup`); `--subdirectory-filter` doesn't.
+const COMMAND_FILTER = /^--(?:(?:tree|index|msg|env|commit|parent|tag-name)-filter|setup)(?:=|$)/;
+// `rebase --exec` or a unique prefix git accepts (`--ex`, `--exe`); `-x cmd`, glued `-xcmd`, or a short cluster
+// holding x (`-ix`). A cluster where x is another option's glued value matches too, so it fails closed (asks).
+const REBASE_EXEC = /^(?:--ex(?:ec?)?(?:=|$)|-[A-Za-z]*x)/;
 
 function gitRisk(
 	sub: string,
@@ -143,13 +148,14 @@ function gitRisk(
 			if (!words.includes("--amend")) return undefined;
 			if (historyRewrites) return "history rewrite (commit --amend)";
 			return editorOverride ? "history rewrite (editor override)" : undefined;
-		case "rebase":
-			if (["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w))) return undefined;
-			if (historyRewrites) return "history rewrite (rebase)";
-			// `-x cmd`, a cluster (`-ix`), or glued (`-xcmd`); an odd cluster fails closed.
-			if (words.some((w) => w === "--exec" || w.startsWith("--exec=") || /^-[A-Za-z]*x/.test(w)))
-				return "history rewrite (rebase --exec)";
-			return editorOverride ? "history rewrite (editor override)" : undefined;
+		case "rebase": {
+			const resumed = ["--abort", "--continue", "--skip", "--quit"].some((w) => words.includes(w));
+			if (historyRewrites) return resumed ? undefined : "history rewrite (rebase)";
+			// A resumed rebase still opens the editor, so an override asks before the resume early-return.
+			if (editorOverride) return "history rewrite (editor override)";
+			if (resumed) return undefined;
+			return words.some((w) => REBASE_EXEC.test(w)) ? "history rewrite (rebase --exec)" : undefined;
+		}
 		case "filter-branch":
 			if (historyRewrites) return "history rewrite (filter-branch)";
 			return words.some((w) => COMMAND_FILTER.test(w))
