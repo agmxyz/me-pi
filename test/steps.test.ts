@@ -21,7 +21,6 @@ function setup({ mode = "tui", branch = [] as any[] } = {}) {
 	let tool: any;
 	let widget: any;
 	let renders = 0;
-	const entries: any[] = [];
 	let active = ["read", "bash"];
 	const notes: string[] = [];
 	const commands: Record<string, any> = {};
@@ -38,7 +37,6 @@ function setup({ mode = "tui", branch = [] as any[] } = {}) {
 		registerCommand: (name: string, options: any) => {
 			commands[name] = options;
 		},
-		appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
 		getActiveTools: () => active,
 		setActiveTools: (names: string[]) => {
 			active = names;
@@ -56,7 +54,7 @@ function setup({ mode = "tui", branch = [] as any[] } = {}) {
 		},
 		notify: (text: string, level: string) => notes.push(`${level}: ${text}`),
 	};
-	const ctx = { mode, ui, sessionManager: { getBranch: () => [...branch, ...entries] } };
+	const ctx = { mode, ui, sessionManager: { getBranch: () => branch } };
 	const fire = (event: string, payload: any = {}) => {
 		for (const handler of handlers[event] ?? []) handler(payload, ctx);
 	};
@@ -72,7 +70,6 @@ function setup({ mode = "tui", branch = [] as any[] } = {}) {
 		command: (args: string) => commands.steps.handler(args, ctx),
 		fire,
 		tool: () => tool,
-		entries,
 		renders: () => renders,
 		active: () => active,
 		notes,
@@ -126,16 +123,17 @@ test("a plan paused with steps left shows as paused, not done", async () => {
 	assert.equal(s.show(), "◐ 2/5 · next: C");
 });
 
-test("a new prompt hides an earlier plan until the model calls plan again", async () => {
+test("an earlier prompt's plan stays hidden during and after a prompt that doesn't touch it", async () => {
 	const s = setup();
 	s.prompt();
 	await s.plan({ steps: ["A", "B", "C", "D", "E"] });
 	await s.plan({ done: 2 });
 	s.end();
+	assert.equal(s.show(), "◐ 2/5 · next: C");
 	s.prompt();
 	assert.equal(s.show(), "(hidden)");
 	s.end();
-	assert.equal(s.show(), "◐ 2/5 · next: C");
+	assert.equal(s.show(), "(hidden)");
 	s.prompt();
 	await s.plan({ done: 4 });
 	assert.equal(s.show(), "✓ A\n✓ B\n✓ C\n✓ D\n● E · 0s");
@@ -173,6 +171,20 @@ test("/steps off hides the widget and drops the plan tool; /steps on restores bo
 	assert.equal(s.show(), "● A · 0s\n○ B\n○ C");
 	await s.command("maybe");
 	assert.equal(s.notes.at(-1), "warning: usage: /steps [on|off]");
+});
+
+test("a failed save says so once and still switches this session", async () => {
+	mkdirSync(SETTINGS, { recursive: true });
+	try {
+		const s = setup({});
+		s.notes.length = 0;
+		await s.command("off");
+		assert.equal(s.notes.length, 1);
+		assert.match(s.notes[0], /^error: steps off for this session only: not saved \(/);
+		assert.deepEqual(s.active(), ["read", "bash"]);
+	} finally {
+		rmSync(SETTINGS, { recursive: true, force: true });
+	}
 });
 
 test("/steps off applies to every later session until /steps on", async () => {
@@ -221,43 +233,30 @@ test("the step timer stops when the widget goes away or the session ends", async
 	assert.equal(s.renders(), 3, "a shut-down session does not tick");
 });
 
-test("a plan completed by a normal end stays complete after resume", async () => {
-	const s = setup();
+test("a resumed plan stays hidden until the model picks it up, then resumes from its count", async () => {
+	const result = (details: any) => ({ type: "message", message: { role: "toolResult", toolName: "plan", details } });
+	const s = setup({ branch: [result({ steps: ["A", "B", "C"], done: 1 })] });
+	assert.equal(s.show(), "(hidden)");
+	s.fire("session_tree");
+	assert.equal(s.show(), "(hidden)");
 	s.prompt();
-	await s.plan({ steps: ["A", "B"] });
 	await s.plan({ done: 1 });
-	s.end();
-	assert.deepEqual(s.entries, [
-		{ type: "custom", customType: "steps-completed", data: { steps: ["A", "B"], done: 2 } },
-	]);
-	const resumed = setup({
-		branch: [
-			{
-				type: "message",
-				message: { role: "toolResult", toolName: "plan", details: { steps: ["A", "B"], done: 1 } },
-			},
-			...s.entries,
-		],
-	});
-	assert.equal(resumed.show(), "(hidden)");
-	resumed.fire("session_tree");
-	assert.equal(resumed.show(), "✓ 2/2 steps");
+	assert.equal(s.show(), "✓ A\n● B · 0s\n○ C");
 });
 
-test("restore ignores entries that are not plans and clamps done", () => {
+test("restore ignores entries that are not plans and clamps done", async () => {
 	const result = (details: any) => ({ type: "message", message: { role: "toolResult", toolName: "plan", details } });
-	const s = setup({
-		branch: [
-			result({ steps: ["A", "B", "C"], done: 1 }),
-			result({ steps: "not a list" }),
-			{ type: "custom", customType: "steps-completed", data: { done: 9 } },
-		],
-	});
-	s.fire("session_tree");
-	assert.equal(s.show(), "◐ 1/3 · next: B");
-	const t = setup({ branch: [result({ steps: ["A", "B"], done: 7 }), result({ steps: ["X", "Y"] })] });
-	t.fire("session_tree");
-	assert.equal(t.show(), "◐ 0/2 · next: X");
+	for (const [branch, expected] of [
+		[[result({ steps: ["A", "B", "C"], done: 1 }), result({ steps: "not a list" })], "✓ A\n● B · 0s\n○ C"],
+		// done past the end clamps to finished, and a finished plan clears at the next prompt.
+		[[result({ steps: ["A", "B"], done: 7 })], "(hidden)"],
+		[[result({ steps: ["X", "Y"] })], "● X · 0s\n○ Y"],
+	] as const) {
+		const s = setup({ branch: [...branch] });
+		s.prompt();
+		await s.plan({});
+		assert.equal(s.show(), expected);
+	}
 });
 
 test("done is a whole number of steps", () => {

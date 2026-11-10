@@ -12,8 +12,6 @@ import { Type } from "typebox";
 type Plan = { steps: string[]; done: number };
 const WIDGET = "steps";
 const TOOL = "plan";
-// A session entry (not sent to the model) that records a plan completed by a normal end, for restore().
-const COMPLETED = "steps-completed";
 
 const settingsPath = () => join(getAgentDir(), "steps.json");
 
@@ -56,8 +54,8 @@ const elapsed = (ms: number) => {
 export default function (pi: ExtensionAPI) {
 	let plan: Plan = { steps: [], done: 0 };
 	let running = false;
-	// The plan shows while running only once the model calls `plan` in the current prompt; a plan from an
-	// earlier prompt may be stale or unrelated, so until then nothing shows.
+	// The widget shows only a plan the model touched in the current or last prompt. A plan from an earlier
+	// prompt may be finished, stale, or unrelated, and the widget can't tell which, so it stays hidden.
 	let fresh = false;
 	// When the current step started, for its timer; reset when the step changes or a prompt picks the plan up.
 	let stepStartedAt = Date.now();
@@ -73,13 +71,12 @@ export default function (pi: ExtensionAPI) {
 	const render = () => {
 		if (!ui) return;
 		const { steps, done } = plan;
-		const live = running && fresh;
 		stopTick();
-		if (!enabled || !steps.length || (running && !fresh)) return ui.setWidget(WIDGET, undefined);
+		if (!enabled || !steps.length || !fresh) return ui.setWidget(WIDGET, undefined);
 		ui.setWidget(
 			WIDGET,
 			(tui, theme) => {
-				if (live) {
+				if (running) {
 					tick = setInterval(() => tui.requestRender(), 1000);
 					tick.unref();
 				}
@@ -107,18 +104,15 @@ export default function (pi: ExtensionAPI) {
 		);
 	};
 
-	// Rebuild from the active branch so resume, /fork and /tree show the right plan: the latest `plan` result,
-	// or the completion agent_end recorded after it.
+	// Rebuild from the active branch's latest `plan` result, so after resume, /fork or /tree the model can pick
+	// the plan up with `done` alone. It stays hidden until the model does.
 	const restore = (ctx: ExtensionContext) => {
 		plan = { steps: [], done: 0 };
+		fresh = false;
 		for (const entry of ctx.sessionManager.getBranch()) {
-			const saved =
-				entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === TOOL
-					? parsePlan(entry.message.details)
-					: entry.type === "custom" && entry.customType === COMPLETED
-						? parsePlan(entry.data)
-						: undefined;
-			if (saved) plan = saved;
+			if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== TOOL)
+				continue;
+			plan = parsePlan(entry.message.details) ?? plan;
 		}
 	};
 
@@ -177,10 +171,11 @@ export default function (pi: ExtensionAPI) {
 			const arg = args.trim();
 			if (arg === "on" || arg === "off") {
 				enabled = arg === "on";
+				let saveError: string | undefined;
 				try {
 					writeEnabled(enabled);
 				} catch (err) {
-					ctx.ui.notify(`steps: not saved, so only this session is ${arg} (${(err as Error).message})`, "error");
+					saveError = (err as Error).message;
 				}
 				// The plan tool exists only in TUI sessions (registered on session_start).
 				if (ui) {
@@ -188,6 +183,8 @@ export default function (pi: ExtensionAPI) {
 					pi.setActiveTools(enabled ? [...others, TOOL] : others);
 				}
 				render();
+				if (saveError)
+					return ctx.ui.notify(`steps ${arg} for this session only: not saved (${saveError})`, "error");
 			} else if (arg) return ctx.ui.notify("usage: /steps [on|off]", "warning");
 			ctx.ui.notify(`steps ${enabled ? "on" : "off"} (open sessions pick it up on /reload)`, "info");
 		},
@@ -219,11 +216,8 @@ export default function (pi: ExtensionAPI) {
 		// that step left completes the plan. More steps left means the plan is paused, e.g. on a background job.
 		const last = event.messages.findLast((m) => m.role === "assistant");
 		const { steps, done } = plan;
-		const completes = steps.length && done < steps.length && done >= steps.length - 1;
-		if (fresh && completes && last?.role === "assistant" && last.stopReason === "stop") {
+		if (fresh && steps.length && done >= steps.length - 1 && last?.role === "assistant" && last.stopReason === "stop")
 			plan = { ...plan, done: steps.length };
-			pi.appendEntry(COMPLETED, plan);
-		}
 		running = false;
 		render();
 	});
