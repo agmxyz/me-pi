@@ -132,7 +132,7 @@ test("toolResultText joins text parts and ignores the rest", () => {
 	assert.equal(toolResultText(text(long)), long, "no truncation at this layer");
 });
 
-test("failedToolResult extracts bash fields with first-field fallbacks", () => {
+test("failedToolResult extracts bash output and error fields with first-field fallbacks", () => {
 	assert.deepEqual(failedToolResult(undefined, "bash"), {});
 	assert.deepEqual(
 		failedToolResult(

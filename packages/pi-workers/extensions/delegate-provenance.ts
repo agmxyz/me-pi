@@ -232,9 +232,9 @@ export function failedToolResult(resultValue: unknown, toolName: string | undefi
 	const structuredOutput =
 		eventText(structured, "output") ?? eventText(result, "output") ?? eventText(details, "output");
 	// Bash records only the code bashStatuses accepts; a vetoed or alias-only code is not provided.
-	const bash = toolName === "bash" ? bashStatuses(resultValue) : undefined;
-	const exitCode = bash
-		? { present: bash.exitCode !== undefined, value: bash.exitCode }
+	const bashStatus = toolName === "bash" ? bashStatuses(resultValue) : undefined;
+	const exitCode = bashStatus
+		? { present: bashStatus.exitCode !== undefined, value: bashStatus.exitCode }
 		: firstEventField(
 				eventField(structured, "exit_code"),
 				eventField(structured, "exitCode"),
@@ -269,7 +269,7 @@ export function failedToolResult(resultValue: unknown, toolName: string | undefi
 		...(structuredOutput !== undefined || content !== undefined ? { outputText: structuredOutput ?? content } : {}),
 		...(error.present ? { error: error.value as string } : {}),
 		...(diagnostic.present ? { childDiagnostics: diagnostic.value as string | readonly string[] } : {}),
-		...(bash?.diagnostics.length ? { statusDiagnostics: bash.diagnostics } : {}),
+		...(bashStatus?.diagnostics.length ? { statusDiagnostics: bashStatus.diagnostics } : {}),
 		...(fullOutputPath.present ? { fullOutputPath: fullOutputPath.value as string } : {}),
 		...(diagnosticReferences.present
 			? { childDiagnosticReferences: diagnosticReferences.value as readonly string[] }
