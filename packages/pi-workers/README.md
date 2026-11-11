@@ -45,7 +45,7 @@ The coordinator chooses a built-in role and briefs it for the task. The roles ar
 
 Workers load your own `AGENTS.md` and skills; `## ` sections marked `(coordinator only)` are stripped from worker prompts. Read-only workers can also write drafts to their own temp directory with `output: true`; web tools require `web: true` and aren't available to `implement`.
 
-The package also includes `guard`, which asks before risky bash and blocks matching commands in `implement`, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md).
+The package also includes `guard`, which asks before risky bash and blocks matching commands in `implement`, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session; with `ME_PI_UNATTENDED=1` it refuses instead of asking and stays on. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md).
 
 ## Why use it?
 
