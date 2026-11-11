@@ -2,7 +2,7 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
-## [0.1.7] - 2026-11-11
+## [0.2.0] - 2026-11-11
 
 - `guard`'s confirm now closes, and counts as denied, when the turn is aborted or Pi gets SIGTERM; before, the session waited for an answer (#133).
 - A worker's cost-cap stop message now shows the configured cap (`cost cap $5 reached`), including when an infra retry hits it. Before, it showed the cap left for that attempt.
