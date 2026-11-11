@@ -56,7 +56,7 @@ Everything else stays the user's: merging, closing an issue or PR, labels or com
 2. Push the branch and open the PR.
 3. Review against the fixed review point with every lens: <lenses>. Fix findings of Medium or higher; list the rest.
 4. A commit made after the reviews that changes behaviour (tests included) gets a delta review by an independent read-only worker before you report. A comment-only or rename-only commit needs none.
-5. Wait for the PR's CI (`gh pr checks <pr> --watch`). If a run stays queued for more than 5 minutes, stop waiting and report BLOCKED, naming the queued check.
+5. Wait for the PR's CI: poll `gh pr checks <pr>` every 30 seconds until no check is queued, then `gh pr checks <pr> --watch` for the result. A check still queued after 5 minutes of polling is BLOCKED: report it, naming the check.
 6. Report, then stop.
 
 ## Report
