@@ -570,7 +570,7 @@ process.stdin.on("end", () => {
   if (mode === "echo-env") {
     const e = process.env;
     const keys = Object.keys(e).filter((k) => k.startsWith("GIT_CONFIG_") || k.startsWith("GH_") || k.startsWith("GITHUB_") || k === "ME_PI_ROLE" || k === "ME_PI_OUTPUT_DIR" || k === "ME_PI_DENY_DIR" || k === "ME_PI_PARENT");
-    emit("ENV " + JSON.stringify({ env: Object.fromEntries(keys.sort().map((k) => [k, e[k]])), tools: flag("--tools"), approve: args.includes("--approve"), noApprove: args.includes("--no-approve"), cwd: process.cwd() }));
+    emit("ENV " + JSON.stringify({ env: Object.fromEntries(keys.sort().map((k) => [k, e[k]])), tools: flag("--tools"), approve: args.includes("--approve"), noApprove: args.includes("--no-approve"), cwd: process.cwd(), lock: readFileSync(git("rev-parse", "--git-dir").stdout.trim() + "/me-pi-implement.lock", "utf8"), pid: process.pid }));
     process.exit(0);
   }
   if (mode === "echo-budget") { emit(process.env.ME_PI_BUDGET || "none"); process.exit(0); }
@@ -675,6 +675,9 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 		ME_PI_SKILLS: undefined,
 		ME_PI_DELEGATE_JOB_ID: undefined,
 		ME_PI_DELEGATE_ATTEMPT: undefined,
+		// The coordinator's opt-in status (an eval-style session sets them): off unless a test asks.
+		ME_PI_STATUS_LOG: undefined,
+		ME_PI_SPEND_BUDGET_USD: undefined,
 		ME_PI_TEST_ROOT: REPO_ROOT,
 		FAKE_PI_EVENT_MARKER: undefined,
 		FAKE_PI_TOOL_EVENTS: undefined,

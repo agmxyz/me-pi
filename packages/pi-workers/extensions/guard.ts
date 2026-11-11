@@ -526,6 +526,27 @@ const INSTALL_SH = new RegExp(
 // Options that keep `git config <key>` a read: scopes and value types (`--type X` is dropped first).
 const CONFIG_READ_OPTIONS = new Set(["--local", "--global", "--system", "--worktree", "--bool", "--int", "--path"]);
 
+/**
+ * Whether a call of a subcommand that can write only reads: `stash list|show`, `symbolic-ref` with one ref and no
+ * `-d` (`-q HEAD`, `--short HEAD`), `submodule` alone or `status|summary`, and `sparse-checkout list`. The one rule
+ * for the worker's shared-state block and the main session's tree-write block.
+ */
+function gitReadOnly(sub: string, words: string[]): boolean {
+	const positional = words.filter((w) => !w.startsWith("-"));
+	switch (sub) {
+		case "stash":
+			return words[0] === "list" || words[0] === "show";
+		case "symbolic-ref":
+			return positional.length < 2 && !hasShort(words, "d", "--delete");
+		case "submodule":
+			return positional.length === 0 || positional[0] === "status" || positional[0] === "summary";
+		case "sparse-checkout":
+			return words[0] === "list";
+		default:
+			return false;
+	}
+}
+
 function workerGitRisk(sub: string, words: string[]): string | undefined {
 	switch (sub) {
 		case "push":
@@ -540,8 +561,7 @@ function workerGitRisk(sub: string, words: string[]): string | undefined {
 		case "pull":
 			return `git ${sub} (commit only your own changes)`;
 		case "stash":
-			// `git stash list|show` only read.
-			return words[0] === "list" || words[0] === "show" ? undefined : "git stash (leave failing work uncommitted)";
+			return gitReadOnly(sub, words) ? undefined : "git stash (leave failing work uncommitted)";
 		case "commit":
 			return hasShort(words, "n", "--no-verify") ? "git commit --no-verify (hooks must run)" : undefined;
 		case "config": {
@@ -556,10 +576,7 @@ function workerGitRisk(sub: string, words: string[]): string | undefined {
 		case "update-ref":
 			return "git update-ref (moves shared refs)";
 		case "symbolic-ref":
-			// Reads (`-q HEAD`, `--short HEAD`) pass; setting or deleting a symbolic ref does not.
-			return words.filter((w) => !w.startsWith("-")).length >= 2 || hasShort(words, "d", "--delete")
-				? "git symbolic-ref (moves shared refs)"
-				: undefined;
+			return gitReadOnly(sub, words) ? undefined : "git symbolic-ref (moves shared refs)";
 		case "branch":
 			return hasShort(words, "[mM]", "--move") ? "git branch -m (renames shared refs)" : undefined;
 		case "tag":
@@ -677,8 +694,7 @@ export function gitWorktreeRemovals(command: string): string[][] | "unknown" {
 // Whether a git call changes the index, the working tree, HEAD, or a branch.
 function treeWrite(sub: string, args: string): boolean {
 	return gitReadings(args).some((words) => {
-		// `git stash list|show` only read.
-		if (sub === "stash" && ["list", "show"].includes(words[0])) return false;
+		if (gitReadOnly(sub, words)) return false;
 		// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
 		if (sub === "branch")
 			return hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w));

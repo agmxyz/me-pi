@@ -26,9 +26,12 @@ const {
 	isCheckRun,
 	nextImplementId,
 	prepare,
+	recordWorker,
 	settingsResources,
 	settingsTripwire,
 	snapshotGit,
+	worktreeRemovalBlocked,
+	writerElsewhere,
 } = await import("../packages/pi-workers/extensions/delegate-implement.ts");
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-implement-test-"));
@@ -354,6 +357,122 @@ test("a lock whose pid is dead is taken over", async () => {
 	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im91\n`);
 	await finish(job, ok(job));
 	assert.ok(!existsSync(lockOf(repo)));
+});
+
+// The block for a lock whose session is gone while a group led by its worker pid lives: never a kill command, since
+// the pid may have been reused.
+const orphanMessage = (id, session, worker, lockPath) => {
+	const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(
+		`^implement job ${id}'s session \\(pid ${session}\\) is gone; pid ${worker} may still be its worker in .*\\. Check it \\(\`ps -o pid,lstart,command -g ${worker}\`\\): a worker stops at its next tool call\\. If it is not the worker, remove ${escaped(realpathSync(lockPath))}\\.$`,
+	);
+};
+
+// A pid that has exited, and a live detached process group standing in for an orphaned worker.
+async function deadPid() {
+	const dead = spawn(process.execPath, ["-e", ""]);
+	await new Promise((r) => dead.once("exit", r));
+	return dead.pid;
+}
+function orphanGroup(t) {
+	const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+	t.after(() => {
+		try {
+			process.kill(-worker.pid, "SIGKILL");
+		} catch {}
+	});
+	return worker;
+}
+
+test("a lock whose session is dead but whose worker group runs is held, and says so", async (t) => {
+	const { repo } = goalFixture();
+	const session = await deadPid();
+	const worker = orphanGroup(t);
+	const content = `${session} im6 ${worker.pid}\n`;
+	writeFileSync(lockOf(repo), content);
+	const refused = await prepare(repo, "im93", CHECK).catch((err) => err);
+	const orphan = orphanMessage("im6", session, worker.pid, lockOf(repo));
+	assert.match(refused.message, orphan);
+	assert.doesNotMatch(refused.message, /handback/);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), content, "takeover kills nothing and keeps the lock");
+	const blocked = await writerElsewhere([join(repo, "a.txt")], repo);
+	assert.match(blocked, orphan);
+	assert.doesNotMatch(blocked, /handback/);
+	process.kill(-worker.pid, "SIGKILL");
+	await new Promise((r) => worker.once("exit", r));
+	assert.equal(await writerElsewhere([join(repo, "a.txt")], repo), undefined, "free once the group is gone");
+	const job = await prepare(repo, "im93", CHECK);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im93\n`);
+	await finish(job, ok(job));
+});
+
+test("worktree removal under a dead session's live worker names the orphan, not a handback", async (t) => {
+	const { repo, git } = goalFixture();
+	const y = sibling(repo, git, "y", "goal/y");
+	const lockPath = join(repo, ".git", "worktrees", "y", "me-pi-implement.lock");
+	const session = await deadPid();
+	const worker = orphanGroup(t);
+	writeFileSync(lockPath, `${session} im7 ${worker.pid}\n`);
+	const blocked = await worktreeRemovalBlocked([y.path], repo);
+	assert.match(blocked, orphanMessage("im7", session, worker.pid, lockPath));
+	process.kill(-worker.pid, "SIGKILL");
+	await new Promise((r) => worker.once("exit", r));
+	assert.equal(await worktreeRemovalBlocked([y.path], repo), undefined);
+});
+
+test("a two-field lock whose session dies mid-check is named as the job's, never as an orphan", async (t) => {
+	const { repo } = goalFixture();
+	const session = await deadPid();
+	writeFileSync(lockOf(repo), `${session} im8\n`);
+	// The session is alive for the first probe (the lock reads held) and gone by the next.
+	const kill = process.kill;
+	let probes = 0;
+	t.mock.method(process, "kill", (pid, signal) => {
+		if (pid === session && signal === 0 && probes++ === 0) return true;
+		return kill.call(process, pid, signal);
+	});
+	const blocked = await writerElsewhere([join(repo, "a.txt")], repo);
+	assert.match(blocked, new RegExp(`^implement job im8 \\(pid ${session}\\) of another session is writing in `));
+	assert.doesNotMatch(blocked, /undefined/);
+});
+
+test("recordWorker adds the worker pid to this job's lock only", async () => {
+	const { repo } = goalFixture();
+	const job = await prepare(repo, "im94", CHECK);
+	recordWorker(job, 4242);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im94 4242\n`);
+	recordWorker(job, 4343);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), `${process.pid} im94 4343\n`, "a retry's worker replaces it");
+	// A worker spawned while finish runs (a retry still in flight) must not put back the lock finish is removing.
+	const finishing = finish(job, ok(job));
+	recordWorker(job, 4444);
+	assert.equal(
+		readFileSync(lockOf(repo), "utf8"),
+		`${process.pid} im94 4343\n`,
+		"a finishing job's lock is left alone",
+	);
+	await finishing;
+	assert.ok(!existsSync(lockOf(repo)));
+	recordWorker(job, 4444);
+	assert.ok(!existsSync(lockOf(repo)), "a released lock is not recreated");
+	const other = `${process.pid} im95\n`;
+	writeFileSync(lockOf(repo), other);
+	recordWorker(job, 4545);
+	assert.equal(readFileSync(lockOf(repo), "utf8"), other, "another holder's lock is kept");
+	assert.deepEqual(
+		readdirSync(join(repo, ".git")).filter((n) => n.startsWith("me-pi-implement.lock.")),
+		[],
+		"no temp files left",
+	);
+	// A live session holds its lock whatever its worker field says; a dead session with a dead worker frees it.
+	writeFileSync(lockOf(repo), `${process.pid} im96 ${await deadPid()}\n`);
+	await assert.rejects(
+		prepare(repo, "im97", CHECK),
+		/implement job im96 \(pid \d+\) is already writing in .*handback/,
+	);
+	writeFileSync(lockOf(repo), `${await deadPid()} im96 ${await deadPid()}\n`);
+	const next = await prepare(repo, "im97", CHECK);
+	await finish(next, ok(next));
 });
 
 test("finish: worker commits give the range, a clean tree, no lock, and a 0600 details file", async () => {

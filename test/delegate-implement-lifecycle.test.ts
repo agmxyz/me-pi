@@ -365,6 +365,7 @@ test("implement worker env: fences, parent, remote and gh cut-offs, tools, appro
 	};
 	const untrusted = await echo({ ...ctx, cwd: join(repo, "sub") });
 	assert.equal(realpathSync(untrusted.cwd), join(real, "sub"));
+	assert.match(untrusted.lock, new RegExp(`^${process.pid} im\\d+ ${untrusted.pid}\\n$`), "the lock names the worker");
 	assert.equal(untrusted.tools, "read,grep,find,ls,Skill,edit,write,bash");
 	assert.deepEqual([untrusted.approve, untrusted.noApprove], [false, true]);
 	const { GH_CONFIG_DIR, ...env } = untrusted.env;
@@ -374,7 +375,9 @@ test("implement worker env: fences, parent, remote and gh cut-offs, tools, appro
 	for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]) {
 		assert.equal(name in env, false, `${name} removed`);
 	}
-	const controlled = Object.fromEntries(Object.entries(env).filter(([k]) => /^(GIT_CONFIG_|ME_PI_)/.test(k)));
+	const controlled = Object.fromEntries(
+		Object.entries(env).filter(([k]) => /^(GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)|ME_PI_)/.test(k)),
+	);
 	assert.deepEqual(controlled, {
 		GIT_CONFIG_COUNT: "5",
 		GIT_CONFIG_KEY_0: "user.name",

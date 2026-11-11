@@ -7,7 +7,16 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	renameSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -232,6 +241,8 @@ export type Checkout = {
 	gitBefore: GitSnapshot;
 	settingsBefore: string;
 	lockPath: string;
+	// Set when finish starts: its lock release must not race a late worker's recordWorker.
+	finishing?: boolean;
 	// TMPDIR at prepare: finish writes the details file here even if the environment changed since.
 	tmpRoot: string;
 	// An empty 0700 dir for GH_CONFIG_DIR, so gh in the worker finds no login; removed by finish.
@@ -299,6 +310,7 @@ const safeDocument = (text: string) =>
 		(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
 	);
 
+// A negative pid asks about the process group it leads: a worker's children outlive it there.
 const isAlive = (pid: number) => {
 	try {
 		process.kill(pid, 0);
@@ -308,11 +320,20 @@ const isAlive = (pid: number) => {
 	}
 };
 
-// `<pid> <id>`, or undefined when the content is empty or unparseable (treated as live: a holder may be writing it).
+// `<session pid> <id> [<worker pid>]`, or undefined when the content is empty or unparseable (treated as live: a holder
+// may be writing it). The worker pid is absent until the first attempt spawns, and in locks of older versions.
 const lockHolder = (content: string) => {
-	const m = content.trim().match(/^(\d+) (\S+)$/);
-	return m ? { pid: Number(m[1]), id: m[2] } : undefined;
+	const m = content.trim().match(/^(\d+) (\S+)(?: (\d+))?$/);
+	return m ? { pid: Number(m[1]), id: m[2], worker: m[3] ? Number(m[3]) : undefined } : undefined;
 };
+type Holder = NonNullable<ReturnType<typeof lockHolder>>;
+
+// A lock is held while its session lives, or, after the session died without releasing it, while its worker's
+// group does: the orphan can still write until it stops. Takeover never kills it. The worker pid may since have been
+// reused by an unrelated group leader, which then holds the lock falsely; the block says how to tell (orphanWorker).
+const held = (holder: Holder) =>
+	isAlive(holder.pid) || (holder.worker !== undefined && holder.worker > 0 && isAlive(-holder.worker));
+const orphaned = (holder: Holder) => holder.worker !== undefined && !isAlive(holder.pid);
 
 // Links a fully written temp file to the lock path: the lock appears atomically, with its content, or not at all.
 async function linkLock(lockPath: string, id: string): Promise<void> {
@@ -355,11 +376,13 @@ async function takeLock(lockPath: string, id: string, repoRoot: string, toolCall
 		const content = await readFile(lockPath, "utf8").catch(() => undefined);
 		if (content === undefined) continue; // Released meanwhile.
 		const holder = lockHolder(content);
-		if (!holder || isAlive(holder.pid))
+		if (!holder || held(holder))
 			throw new ImplementLockRefusal(
-				holder
-					? `${jobOf(holder)} is already writing in ${repoRoot}; wait for its handback, or ${WORKTREE_HINT}`
-					: unreadableLock({ repoRoot, lockPath }),
+				!holder
+					? unreadableLock({ repoRoot, lockPath })
+					: orphaned(holder)
+						? orphanWorker({ repoRoot, lockPath, holder })
+						: `${jobOf(holder)} is already writing in ${repoRoot}; wait for its handback, or ${WORKTREE_HINT}`,
 				id,
 				toolCallId,
 			);
@@ -391,10 +414,29 @@ async function releaseLock(lockPath: string, id: string): Promise<void> {
 	if (content.trim().split(" ")[1] === id) await rm(lockPath, { force: true });
 }
 
-type Writer = { repoRoot: string; lockPath: string; holder?: ReturnType<typeof lockHolder> };
+/**
+ * Adds the worker's pid to this job's lock, after each attempt spawns. A no-op once `finish` has started, which
+ * releases the lock across awaits; a lock that is gone or another job's is left as it is.
+ */
+export function recordWorker(job: Checkout, worker: number): void {
+	if (job.finishing) return;
+	let holder: Holder | undefined;
+	try {
+		holder = lockHolder(readFileSync(job.lockPath, "utf8"));
+	} catch {}
+	if (holder?.pid !== process.pid || holder.id !== job.id) return;
+	const temp = `${job.lockPath}.${process.pid}.${job.id}.worker.tmp`;
+	writeFileSync(temp, `${process.pid} ${job.id} ${worker}\n`, { mode: 0o600 });
+	renameSync(temp, job.lockPath);
+}
+
+type Writer = { repoRoot: string; lockPath: string; holder?: Holder };
 const unreadableLock = (writer: Writer) =>
 	`${writer.lockPath} is unreadable; another implement job may be starting in ${writer.repoRoot}. Remove it only if none runs.`;
-const jobOf = (holder: NonNullable<Writer["holder"]>) => `implement job ${holder.id} (pid ${holder.pid})`;
+const jobOf = (holder: Holder) => `implement job ${holder.id} (pid ${holder.pid})`;
+// No kill command: the worker pid may since lead an unrelated group.
+const orphanWorker = ({ repoRoot, lockPath, holder }: Required<Writer>) =>
+	`implement job ${holder.id}'s session (pid ${holder.pid}) is gone; pid ${holder.worker} may still be its worker in ${repoRoot}. Check it (\`ps -o pid,lstart,command -g ${holder.worker}\`): a worker stops at its next tool call. If it is not the worker, remove ${lockPath}.`;
 
 // git's output for a directory in a checkout; undefined when git says `dir` is in none (outside a repository, or
 // inside a git dir). Throws on any other failure (a timeout, a repository git refuses to read): whether a job writes
@@ -427,7 +469,7 @@ async function writerIn(dir: string): Promise<Writer | undefined> {
 	});
 	if (content === undefined) return undefined;
 	const holder = lockHolder(content);
-	return holder && !isAlive(holder.pid) ? undefined : { repoRoot, lockPath, holder };
+	return holder && !held(holder) ? undefined : { repoRoot, lockPath, holder };
 }
 
 // `git worktree list --porcelain` as checkouts with the branch each has checked out, the main one first.
@@ -458,6 +500,7 @@ export async function writerElsewhere(targets: string[] | undefined, cwd: string
 			if (!writer) continue;
 			if (!writer.holder) return unreadableLock(writer);
 			if (writer.holder.pid === process.pid) continue;
+			if (orphaned(writer.holder)) return orphanWorker({ ...writer, holder: writer.holder });
 			return `${jobOf(writer.holder)} of another session is writing in ${writer.repoRoot}; wait for its handback, or ${WORKTREE_HINT}.`;
 		}
 	} catch (err) {
@@ -479,6 +522,7 @@ export async function worktreeRemovalBlocked(targets: string[] | undefined, cwd:
 			if (!existsSync(dir)) continue;
 			const writer = await writerIn(dir);
 			if (!writer || realpathOr(dir) !== realpathOr(writer.repoRoot)) continue;
+			if (writer.holder && orphaned(writer.holder)) return orphanWorker({ ...writer, holder: writer.holder });
 			return writer.holder
 				? `${jobOf(writer.holder)} is writing in ${writer.repoRoot}; removing the worktree would take it from under the job. Wait for its handback.`
 				: unreadableLock(writer);
@@ -877,6 +921,7 @@ export async function runImplementJob<T>(
 
 /** Ends a job; never throws. Commits leftovers as WIP on the job's branch, checks the range and tripwires. */
 export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Facts> {
+	job.finishing = true;
 	const facts: Facts = {
 		id: job.id,
 		branch: job.branch,
