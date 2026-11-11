@@ -132,7 +132,6 @@ test("toolResultText joins text parts and ignores the rest", () => {
 	assert.equal(toolResultText(text(long)), long, "no truncation at this layer");
 });
 
-// Pins known behavior: the first exit-code alias is recorded even when bashStatuses would veto it (#35).
 test("failedToolResult extracts bash fields with first-field fallbacks", () => {
 	assert.deepEqual(failedToolResult(undefined, "bash"), {});
 	assert.deepEqual(
@@ -147,7 +146,6 @@ test("failedToolResult extracts bash fields with first-field fallbacks", () => {
 			"bash",
 		),
 		{
-			exitCode: 2,
 			outputText: "details-out",
 			error: "details-err",
 			childDiagnostics: ["d"],
@@ -163,6 +161,29 @@ test("failedToolResult extracts bash fields with first-field fallbacks", () => {
 	assert.deepEqual(failedToolResult({ error: undefined }, "bash"), { error: undefined });
 });
 
+test("failedToolResult drops a bash exit code that a contradicting alias vetoes", () => {
+	assert.deepEqual(failedToolResult({ structuredContent: { exit_code: 0 }, exitCode: 1 }, "bash"), {
+		statusDiagnostics: ["structuredContent.exit_code=0", "exitCode=1"],
+	});
+});
+
+test("failedToolResult drops a bash exit code given only by an alias", () => {
+	assert.deepEqual(failedToolResult({ structuredContent: { exitCode: 2 } }, "bash"), {
+		statusDiagnostics: ["structuredContent.exitCode=2"],
+	});
+});
+
+test("failedToolResult keeps a canonical bash exit code", () => {
+	assert.deepEqual(failedToolResult({ structuredContent: { exit_code: 7 } }, "bash"), {
+		exitCode: 7,
+		statusDiagnostics: ["structuredContent.exit_code=7"],
+	});
+	assert.deepEqual(failedToolResult({ structuredContent: { exit_code: 0 } }, "bash"), {
+		exitCode: 0,
+		statusDiagnostics: ["structuredContent.exit_code=0"],
+	});
+});
+
 test("failedToolResult summary for non-bash tools", () => {
 	assert.deepEqual(failedToolResult(text("c"), "read"), { outputText: "c", summary: "c" });
 	assert.deepEqual(failedToolResult({ ...text("c"), structuredContent: { k: 1 } }, "read"), {
@@ -173,6 +194,10 @@ test("failedToolResult summary for non-bash tools", () => {
 	assert.deepEqual(failedToolResult({ structuredContent: { exit_code: 1 } }, "edit"), {
 		exitCode: 1,
 		summary: { exit_code: 1 },
+	});
+	assert.deepEqual(failedToolResult({ structuredContent: { exitCode: 1 } }, "edit"), {
+		exitCode: 1,
+		summary: { exitCode: 1 },
 	});
 	assert.deepEqual(failedToolResult({}, undefined), {});
 });

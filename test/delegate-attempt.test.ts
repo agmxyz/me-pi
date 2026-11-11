@@ -5,6 +5,7 @@ const { createAttemptLedger, infraRetryable, mergeAttempts } = await import(
 	"../packages/pi-workers/extensions/delegate-attempt.ts"
 );
 const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../packages/pi-workers/extensions/delegate-provenance.ts");
+const { FailedToolArtifactCollector } = await import("../packages/pi-workers/extensions/delegate-artifacts.ts");
 
 // Array-fed ledger tests: synthetic Pi event records mirroring the fake-pi provenance modes in the harness.
 
@@ -173,6 +174,26 @@ test("ledger: bash exit codes decide the effect; contradictory aliases leave it 
 	assert.match(
 		result.stderr,
 		/contradictory Bash success status diagnostics:\nisError=false toolCallId=alias-mismatch/,
+	);
+});
+
+test("ledger: a failed bash result with a contradicting exit-code alias records the exit code as not provided", () => {
+	const { collector } = ledgerFor(
+		[
+			start("alias-veto", "bash", { command: "false" }),
+			end("alias-veto", "bash", true, { ...text("failed"), structuredContent: { exit_code: 0 }, exitCode: 1 }),
+			reply("done"),
+		],
+		{ implement: true },
+	);
+	assert.equal(collector.records.length, 1);
+	const artifacts = new FailedToolArtifactCollector("im-alias-veto");
+	artifacts.record(collector.records[0]);
+	const [entry] = artifacts.snapshot().entries;
+	assert.deepEqual(entry.exitCode, { state: "not-provided", value: null });
+	assert.deepEqual(
+		entry.statusDiagnostics.map((item: { text: string }) => item.text),
+		["structuredContent.exit_code=0", "exitCode=1"],
 	);
 });
 

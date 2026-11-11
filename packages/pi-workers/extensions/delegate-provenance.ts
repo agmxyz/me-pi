@@ -231,14 +231,18 @@ export function failedToolResult(resultValue: unknown, toolName: string | undefi
 	const content = toolResultText(result);
 	const structuredOutput =
 		eventText(structured, "output") ?? eventText(result, "output") ?? eventText(details, "output");
-	const exitCode = firstEventField(
-		eventField(structured, "exit_code"),
-		eventField(structured, "exitCode"),
-		eventField(details, "exit_code"),
-		eventField(details, "exitCode"),
-		eventField(result, "exit_code"),
-		eventField(result, "exitCode"),
-	);
+	// Bash records only the code bashStatuses accepts; a vetoed or alias-only code is not provided.
+	const bash = toolName === "bash" ? bashStatuses(resultValue) : undefined;
+	const exitCode = bash
+		? { present: bash.exitCode !== undefined, value: bash.exitCode }
+		: firstEventField(
+				eventField(structured, "exit_code"),
+				eventField(structured, "exitCode"),
+				eventField(details, "exit_code"),
+				eventField(details, "exitCode"),
+				eventField(result, "exit_code"),
+				eventField(result, "exitCode"),
+			);
 	const structuredContent = eventField(result, "structuredContent");
 	const summary = eventField(structured, "summary");
 	const diagnostic = firstEventField(eventField(result, "childDiagnostics"), eventField(details, "childDiagnostics"));
@@ -265,9 +269,7 @@ export function failedToolResult(resultValue: unknown, toolName: string | undefi
 		...(structuredOutput !== undefined || content !== undefined ? { outputText: structuredOutput ?? content } : {}),
 		...(error.present ? { error: error.value as string } : {}),
 		...(diagnostic.present ? { childDiagnostics: diagnostic.value as string | readonly string[] } : {}),
-		...(toolName === "bash" && bashStatuses(resultValue).diagnostics.length
-			? { statusDiagnostics: bashStatuses(resultValue).diagnostics }
-			: {}),
+		...(bash?.diagnostics.length ? { statusDiagnostics: bash.diagnostics } : {}),
 		...(fullOutputPath.present ? { fullOutputPath: fullOutputPath.value as string } : {}),
 		...(diagnosticReferences.present
 			? { childDiagnosticReferences: diagnosticReferences.value as readonly string[] }
