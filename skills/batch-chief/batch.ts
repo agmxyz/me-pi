@@ -663,12 +663,303 @@ function renderLedger(run: Run, details: Map<number, string[]>, now: Date): stri
 	return lines.join("\n");
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Effect commands: each fetches what it decides on, and records only what it observed.
+
+const PR_FIELDS =
+	"number,state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,body,files,url,mergeCommit";
+const LOCK = "me-pi-implement.lock";
+
+function launched(row: Row): Launch {
+	if (!row.launch) throw new Refusal(`#${row.ticket} was never launched; it has no worktree, branch or pane`);
+	return row.launch;
+}
+
+function viewPr(run: Run, row: Row, runner: Runner): any {
+	const branch = launched(row).branch;
+	const view = runner.exec("gh", ["pr", "view", branch, "--json", PR_FIELDS], { cwd: run.preflight.repo });
+	if (view.code !== 0) throw new Refusal(`cannot read the PR of ${branch}: ${view.stderr.trim()}`);
+	return JSON.parse(view.stdout);
+}
+
+/** A check's name and whether it passed, for both shapes `statusCheckRollup` carries. */
+function checkResult(c: any): { name: string; passed: boolean; result: string } {
+	if (c?.__typename === "StatusContext")
+		return { name: c.context, passed: c.state === "SUCCESS", result: String(c.state).toLowerCase() };
+	const done = c?.status === "COMPLETED";
+	const passed = done && ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(c.conclusion);
+	return { name: c?.name, passed, result: String(done ? c.conclusion : c?.status).toLowerCase() };
+}
+
+/**
+ * Failures of the checks on the PR head (`statusCheckRollup` is the head commit's): every required check must be
+ * present and passed, and no other reported check may be failing or pending. Unknown rules require at least one
+ * check.
+ */
+function checkFailures(pr: any, rules: Rules | "unknown"): string[] {
+	const checks = ((pr.statusCheckRollup ?? []) as any[]).map(checkResult);
+	const required = rules === "unknown" ? [] : rules.requiredChecks;
+	const failures = required.flatMap((name) => {
+		const found = checks.filter((c) => c.name === name);
+		if (!found.length) return [`required check ${name} has not run on ${pr.headRefOid}`];
+		return found.every((c) => c.passed)
+			? []
+			: [`required check ${name} has not passed on ${pr.headRefOid} (${found.map((c) => c.result).join(", ")})`];
+	});
+	for (const c of checks)
+		if (!c.passed && !required.includes(c.name))
+			failures.push(`check ${c.name} has not passed on ${pr.headRefOid} (${c.result})`);
+	if (rules === "unknown" && !checks.length)
+		failures.push(`no checks reported on ${pr.headRefOid} and the base rules are unknown`);
+	return failures;
+}
+
+function gitIn(runner: Runner, dir: string, ...args: string[]): Result {
+	return runner.exec("git", ["-C", dir, ...args]);
+}
+
+/** The porcelain status lines of a worktree, or a Refusal when git cannot read it. */
+function dirtyLines(runner: Runner, worktree: string): string[] {
+	const out = gitIn(runner, worktree, "status", "--porcelain");
+	if (out.code !== 0) throw new Refusal(`git status failed in ${worktree}: ${out.stderr.trim()}`);
+	return out.stdout.split("\n").filter((l) => l.trim());
+}
+
+function gate(argv: string[], runner: Runner, cwd: string): string {
+	const { values, positionals } = parse(argv, { judged: "string" });
+	const run = currentRun(runner, cwd);
+	const row = rowOf(run, ticketNumber(positionals[0], "the row"));
+	check(row, "gate");
+	const judged = required(values, "judged");
+	const launch = launched(row);
+	const facts: { ok: boolean; text: string }[] = [];
+	const fact = (ok: boolean, text: string) => facts.push({ ok, text });
+	const dirty = dirtyLines(runner, launch.worktree);
+	fact(
+		!dirty.length,
+		dirty.length
+			? `worktree ${launch.worktree} is not clean: ${dirty.join("; ")}`
+			: `worktree ${launch.worktree} is clean`,
+	);
+	const tip = gitIn(runner, launch.worktree, "rev-parse", "HEAD");
+	const local = tip.code === 0 ? tip.stdout.trim() : `unreadable (${tip.stderr.trim()})`;
+	const pr = viewPr(run, row, runner);
+	fact(
+		local === pr.headRefOid,
+		`local tip ${local} ${local === pr.headRefOid ? "equals" : "differs from"} the PR head ${pr.headRefOid}`,
+	);
+	fact(pr.state === "OPEN", `PR #${pr.number} is ${pr.state}`);
+	const base = run.preflight.base;
+	fact(pr.baseRefName === base, `PR targets ${pr.baseRefName}; the run's base is ${base}`);
+	fact(pr.mergeable === "MERGEABLE", `PR mergeable: ${pr.mergeable}`);
+	const failures = checkFailures(pr, run.preflight.rules);
+	if (failures.length) for (const failure of failures) fact(false, failure);
+	else fact(true, `checks passed on ${pr.headRefOid}`);
+	const closes = new RegExp(`\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#${row.ticket}\\b`, "i").test(pr.body ?? "");
+	fact(closes, closes ? `body closes #${row.ticket}` : `body does not close #${row.ticket}`);
+	const files = ((pr.files ?? []) as any[]).map((f) => `  ${f.path} +${f.additions} -${f.deletions}`);
+	const passed = facts.every((f) => f.ok);
+	const out = [
+		`Fetched by this command (PR #${pr.number}${pr.url ? ` ${pr.url}` : ""}):`,
+		...facts.map((f) => `  ${f.ok ? "PASS" : "FAIL"}: ${f.text}`),
+		`  files changed (${files.length}):`,
+		...files.map((f) => `  ${f}`),
+		"Read by the chief:",
+		`  ${judged}`,
+		"Taken on report (not verified):",
+		`  everything ${launch.report} states (check runs, reviews, what changed and why); this command did not read it`,
+	];
+	if (!passed) throw new Refusal(`gate failed; #${row.ticket} stays ${label(row)}\n${out.join("\n")}`);
+	record(run, { at: runner.now().toISOString(), type: "gate", ticket: row.ticket, sha: pr.headRefOid, judged });
+	return `${out.join("\n")}\n#${row.ticket} is ${label(row)}`;
+}
+
+function merge(argv: string[], runner: Runner, cwd: string): string {
+	const { positionals } = parse(argv, {});
+	const run = currentRun(runner, cwd);
+	const row = rowOf(run, ticketNumber(positionals[0], "the row"));
+	check(row, "merge-intent");
+	if (row.intent)
+		throw new Refusal(
+			`a merge intent for #${row.ticket} at ${row.intent.sha} is pending since ${row.intent.at}; run status to reconcile it before anything else`,
+		);
+	const covering = run.approvals.filter((a) => a.action === "merge" && a.tickets.includes(row.ticket));
+	if (!covering.some((a) => !a.inferred))
+		throw new Refusal(
+			covering.length
+				? `only an inferred merge approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`
+				: `no merge approval covers #${row.ticket}; record the user's words with approve --action merge`,
+		);
+	const rules = run.preflight.rules as Rules | "unknown";
+	if (rules !== "unknown" && rules.mergeMethods && !rules.mergeMethods.includes("squash"))
+		throw new Refusal(`the base rules allow ${rules.mergeMethods.join(", ")}, not squash`);
+	const pr = viewPr(run, row, runner);
+	if (pr.state !== "OPEN") throw new Refusal(`PR #${pr.number} is ${pr.state}; run status to reconcile`);
+	if (pr.headRefOid !== row.sha)
+		throw new Refusal(
+			`#${row.ticket} was gated at ${row.sha} but the PR head is ${pr.headRefOid}; run status, then gate again`,
+		);
+	const failures = checkFailures(pr, rules);
+	if (failures.length) throw new Refusal(failures.join("; "));
+	const repo = run.preflight.repo;
+	if (pr.mergeStateStatus === "BEHIND" && (rules === "unknown" || rules.upToDate)) {
+		const update = runner.exec("gh", ["pr", "update-branch", String(pr.number)], { cwd: repo });
+		if (update.code !== 0)
+			throw new Refusal(
+				`PR #${pr.number} is behind ${pr.baseRefName} and gh pr update-branch failed: ${update.stderr.trim()}`,
+			);
+		record(run, { at: runner.now().toISOString(), type: "head-moved", ticket: row.ticket, reason: "update-branch" });
+		return `PR #${pr.number} was behind ${pr.baseRefName} and the rules ${rules === "unknown" ? "are unknown" : "require it up to date"}: branch updated; #${row.ticket} is ${label(row)}; gate again when CI finishes on the new head`;
+	}
+	record(run, { at: runner.now().toISOString(), type: "merge-intent", ticket: row.ticket, sha: row.sha });
+	const merged = runner.exec("gh", ["pr", "merge", String(pr.number), "--squash", "--match-head-commit", row.sha!], {
+		cwd: repo,
+	});
+	const after = viewPr(run, row, runner);
+	if (after.state !== "MERGED")
+		throw new Refusal(
+			`GitHub says PR #${pr.number} is ${after.state}, not merged${merged.code !== 0 ? ` (gh pr merge exited ${merged.code}: ${merged.stderr.trim()})` : ""}; the intent stays pending: run status before anything else`,
+		);
+	const commit = after.mergeCommit?.oid ?? null;
+	record(run, { at: runner.now().toISOString(), type: "merged", ticket: row.ticket, commit });
+	return `#${row.ticket} is MERGED as ${commit}`;
+}
+
+/** Whether a live Pi runs in the pane; `undefined` when the pane is gone. */
+function piInPane(runner: Runner, pane: string): boolean | undefined {
+	const info = runner.exec("herdr", ["pane", "process-info", "--pane", pane]);
+	if (info.code !== 0) {
+		if (/pane_not_found/.test(info.stdout + info.stderr)) return undefined;
+		throw new Refusal(`cannot read the processes of pane ${pane}: ${(info.stderr || info.stdout).trim()}`);
+	}
+	const procs = JSON.parse(info.stdout)?.result?.process_info?.foreground_processes ?? [];
+	return procs.some((p: any) => /(^|\/)pi$/.test(p?.argv0 ?? ""));
+}
+
+/** Why the chief may not type into the pane now, or `undefined` when a prompt is safe. */
+function promptBlocker(runner: Runner, pane: string): string | undefined {
+	const live = piInPane(runner, pane);
+	if (!live)
+		return `no live Pi in pane ${pane}${live === undefined ? " (the pane is gone)" : ""}; a prompt would type into the shell`;
+	const read = runner.exec("herdr", ["agent", "read", pane, "--source", "visible"]);
+	if (read.code !== 0) return `cannot read pane ${pane}: ${read.stderr.trim()}`;
+	if (/enter select/.test(read.stdout) || /^\s*Allow .+\?\s*$/m.test(read.stdout))
+		return `a dialog is visible in pane ${pane}; Enter would answer it: release it with herdr agent send-keys ${pane} esc and take the question to the user`;
+	return undefined;
+}
+
+function prompt(argv: string[], runner: Runner, cwd: string): string {
+	const { positionals } = parse(argv, {});
+	const [n, ...words] = positionals;
+	const run = currentRun(runner, cwd);
+	const row = rowOf(run, ticketNumber(n, "the row"));
+	const text = words.join(" ").trim();
+	if (!text) throw new Refusal("prompt needs the text to send");
+	const pane = launched(row).pane;
+	const blocker = promptBlocker(runner, pane);
+	if (blocker) throw new Refusal(blocker);
+	const sent = runner.exec("herdr", ["agent", "prompt", pane, text]);
+	if (sent.code !== 0) throw new Refusal(`herdr agent prompt ${pane} failed: ${(sent.stderr || sent.stdout).trim()}`);
+	return `sent to #${row.ticket} in pane ${pane}`;
+}
+
+const QUIT_POLLS = 15;
+
+/** Releases one terminal row's resources in order; returns the lines to print and why anything was left. */
+function cleanRow(run: Run, row: Row, runner: Runner, dryRun: boolean): { lines: string[]; left?: string } {
+	const launch = row.launch!;
+	const repo = run.preflight.repo;
+	const lines: string[] = [];
+	const effect = (cmd: string, args: string[], cwd?: string): Result => {
+		if (dryRun) {
+			lines.push(`  would run: ${[cmd, ...args].join(" ")}`);
+			return { code: 0, stdout: "", stderr: "" };
+		}
+		lines.push(`  ran: ${[cmd, ...args].join(" ")}`);
+		return runner.exec(cmd, args, cwd ? { cwd } : undefined);
+	};
+	const live = piInPane(runner, launch.pane);
+	if (live) {
+		const blocker = promptBlocker(runner, launch.pane);
+		if (blocker) return { lines, left: blocker };
+		const quit = effect("herdr", ["agent", "prompt", launch.pane, "/quit"]);
+		if (quit.code !== 0) return { lines, left: `/quit was not sent: ${quit.stderr.trim()}` };
+		if (!dryRun) {
+			let polls = 0;
+			while (piInPane(runner, launch.pane)) {
+				if (++polls > QUIT_POLLS) return { lines, left: `Pi still runs in pane ${launch.pane} after /quit` };
+				runner.exec("sleep", ["1"]);
+			}
+		}
+	}
+	if (existsSync(launch.worktree)) {
+		const gitDir = gitIn(runner, launch.worktree, "rev-parse", "--path-format=absolute", "--git-dir");
+		if (gitDir.code !== 0)
+			return { lines, left: `cannot find the git dir of ${launch.worktree}: ${gitDir.stderr.trim()}` };
+		const lock = join(gitDir.stdout.trim(), LOCK);
+		if (existsSync(lock)) return { lines, left: `${lock} is present: a worker is writing` };
+		const dirty = dirtyLines(runner, launch.worktree);
+		if (dirty.length) return { lines, left: `worktree ${launch.worktree} is not clean: ${dirty.join("; ")}` };
+		const removed = effect("git", ["worktree", "remove", launch.worktree], repo);
+		if (removed.code !== 0) return { lines, left: `git worktree remove failed: ${removed.stderr.trim()}` };
+	}
+	if (row.state === "MERGED") {
+		const exists = runner.exec("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${launch.branch}`], {
+			cwd: repo,
+		});
+		if (exists.code === 0) {
+			const deleted = effect("git", ["branch", "-D", launch.branch], repo);
+			if (deleted.code !== 0)
+				return { lines, left: `git branch -D ${launch.branch} failed: ${deleted.stderr.trim()}` };
+		}
+	} else lines.push(`  kept branch ${launch.branch}: the PR is not merged`);
+	if (live !== undefined) {
+		const closed = effect("herdr", ["pane", "close", launch.pane]);
+		if (closed.code !== 0) return { lines, left: `herdr pane close ${launch.pane} failed: ${closed.stderr.trim()}` };
+	}
+	return { lines };
+}
+
+function cleanup(argv: string[], runner: Runner, cwd: string): string {
+	const { values } = parse(argv, { "dry-run": "boolean" });
+	const dryRun = values["dry-run"] === true;
+	const run = currentRun(runner, cwd);
+	const out: string[] = [dryRun ? "cleanup --dry-run: nothing is changed" : "cleanup"];
+	const left: string[] = [];
+	for (const row of run.rows.values()) {
+		if (!row.launch) continue;
+		const resources = `worktree ${row.launch.worktree}, branch ${row.launch.branch}, pane ${row.launch.pane}`;
+		if (!TERMINAL.includes(row.state)) {
+			left.push(`#${row.ticket} ${resources}: the row is ${label(row)}, not terminal`);
+			continue;
+		}
+		out.push(`#${row.ticket} ${label(row)}:`);
+		const result = cleanRow(run, row, runner, dryRun);
+		out.push(...result.lines);
+		if (result.left) {
+			out.push(`  left: ${result.left}`);
+			left.push(`#${row.ticket} ${resources}: ${result.left}`);
+		}
+	}
+	out.push(
+		"Notes:",
+		...(run.notes.length ? run.notes.map((n) => `- ${n.kind} #${n.ticket}: ${n.text}`) : ["- none"]),
+		"Resources left:",
+		...(left.length ? left.map((l) => `- ${l}`) : ["- none"]),
+	);
+	return out.join("\n");
+}
+
 const COMMANDS: Record<string, (argv: string[], runner: Runner, cwd: string) => string> = {
 	preflight,
 	event,
 	approve,
 	note,
 	status,
+	gate,
+	merge,
+	prompt,
+	cleanup,
 };
 
 /** Runs one helper command; exit code 1 is a refusal the chief can act on, 2 an unexpected failure. */
