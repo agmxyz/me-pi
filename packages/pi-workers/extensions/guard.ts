@@ -1,10 +1,11 @@
 /**
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
- * With a UI it asks for confirmation; without one (print mode) it blocks. Plain history rewrites only block in
- * delegate workers; ones that run a command (`rebase -x`, an editor override, a `filter-branch` command filter or
- * `--setup`) ask in every session (see `classify`). So do git options and env that run a command (`-c alias.x=…`,
+ * With a UI it asks for confirmation; without one (print mode), or in an unattended session (`ME_PI_UNATTENDED=1`), it
+ * blocks. Plain history rewrites only block in delegate workers; ones that run a command (`rebase -x`, an editor
+ * override, a `filter-branch` command filter or `--setup`) ask in every session (see `classify`). So do git options and env that run a command (`-c alias.x=…`,
  * `--upload-pack`, `submodule foreach`, `GIT_SSH_COMMAND`, `GIT_PAGER`, `git config core.pager …`).
- * `/guard on|off` toggles it for the current session; every session starts on.
+ * `/guard on|off` toggles it for the current session, except that an unattended session refuses `off`; every session
+ * starts on.
  * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
  * misses commands it can't read (interpreter code, a non-recursive rm).
  */
