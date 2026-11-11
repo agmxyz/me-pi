@@ -14,7 +14,7 @@ The helper owns the run's state: `batch.ts <command>` below means `node <skill-d
 
 ## Rows
 
-Each ticket is a row; its state names who owes the next move.
+Each ticket is a row; its state names who owes the next move. A row is named by its ticket number, or by a label for work without an issue (a release, a skill PR): a lowercase letter, then lowercase letters, digits and inner hyphens, at most 32 characters. `<n>` below is that number or label; `gate` skips the closing-keyword check for a label row.
 
 | State | Next move | Leaves on |
 |---|---|---|

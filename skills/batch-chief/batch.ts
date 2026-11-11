@@ -40,8 +40,11 @@ interface Launch {
 	report: string;
 }
 
+/** A row's id: a ticket number, or a label for work without an issue (see `rowId`). */
+type RowId = number | string;
+
 interface Row {
-	ticket: number;
+	ticket: RowId;
 	state: State;
 	round?: Round;
 	owner?: "chief" | "user";
@@ -77,7 +80,7 @@ interface PreflightEvent {
 	rulesError?: string;
 	check: string;
 	chiefPane: string;
-	tickets: number[];
+	tickets: RowId[];
 }
 
 interface ApproveEvent {
@@ -85,7 +88,7 @@ interface ApproveEvent {
 	type: "approve";
 	quote: string;
 	action: string;
-	tickets: number[];
+	tickets: RowId[];
 	inferred: boolean;
 }
 
@@ -93,12 +96,12 @@ interface NoteEvent {
 	at: string;
 	type: "note";
 	kind: string;
-	ticket: number;
+	ticket: RowId;
 	text: string;
 }
 
 /** Events that move one row, one payload per type; `apply` folds each. */
-type RowEvent = { at: string; ticket: number } & (
+type RowEvent = { at: string; ticket: RowId } & (
 	| { type: "launch"; launch: Launch; deadline: number }
 	| { type: "report"; path: string; status: "DONE" | "BLOCKED"; source: "event" | "status" }
 	| { type: "answer"; basis: string; deadline: number }
@@ -120,7 +123,7 @@ interface Run {
 	id: string;
 	dir: string;
 	preflight: PreflightEvent;
-	rows: Map<number, Row>;
+	rows: Map<RowId, Row>;
 	approvals: ApproveEvent[];
 	notes: NoteEvent[];
 }
@@ -350,7 +353,7 @@ function currentRun(runner: Runner, cwd: string): Run {
 }
 
 function rowOf(run: Run, ticket: unknown): Row {
-	const row = typeof ticket === "number" ? run.rows.get(ticket) : undefined;
+	const row = typeof ticket === "number" || typeof ticket === "string" ? run.rows.get(ticket) : undefined;
 	if (!row) throw new Refusal(`#${ticket} is not a row of run ${run.id}; rows: ${[...run.rows.keys()].join(", ")}`);
 	return row;
 }
@@ -358,14 +361,23 @@ function rowOf(run: Run, ticket: unknown): Row {
 // ---------------------------------------------------------------------------------------------------------------
 // Commands.
 
-function ticketNumber(text: string | undefined, what: string): number {
-	if (!text || !/^[1-9]\d*$/.test(text))
-		throw new Refusal(`${what} must be a ticket number, got ${JSON.stringify(text)}`);
-	return Number(text);
+const LABEL_MAX = 32;
+
+/**
+ * A row id as given on the command line: digits without a leading zero are a ticket number; a label starts with a
+ * lowercase letter and holds lowercase letters and digits in hyphen-separated words, at most 32 characters, so it is
+ * never a number or an option and is safe in a shell word and a file name.
+ */
+function rowId(text: string | undefined, what: string): RowId {
+	if (text && /^[1-9]\d*$/.test(text)) return Number(text);
+	if (text && text.length <= LABEL_MAX && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(text)) return text;
+	throw new Refusal(
+		`${what} must be a ticket number or a label (a lowercase letter, then lowercase letters, digits and single inner hyphens, at most ${LABEL_MAX} characters), got ${JSON.stringify(text)}`,
+	);
 }
 
-function ticketList(text: string | undefined, what: string): number[] {
-	const tickets = (text ?? "").split(",").map((t) => ticketNumber(t.trim(), what));
+function ticketList(text: string | undefined, what: string): RowId[] {
+	const tickets = (text ?? "").split(",").map((t) => rowId(t.trim(), what));
 	if (new Set(tickets).size !== tickets.length) throw new Refusal(`${what} names a ticket twice: ${text}`);
 	return tickets;
 }
@@ -496,7 +508,7 @@ function reportStatus(path: string): { status?: "DONE" | "BLOCKED"; value: strin
 	return { value: "" };
 }
 
-function reportEvent(at: string, ticket: number, path: string, source: "event" | "status"): RowEvent {
+function reportEvent(at: string, ticket: RowId, path: string, source: "event" | "status"): RowEvent {
 	if (!existsSync(path)) throw new Refusal(`report ${path} does not exist`);
 	const { status, value } = reportStatus(path);
 	if (!status)
@@ -514,7 +526,7 @@ const briefLine = (line: string) => normalise(normalise(line).replace(/^(?:#+|[-
 function event(argv: string[], runner: Runner, cwd: string): string {
 	const [n, type, ...rest] = argv;
 	const run = currentRun(runner, cwd);
-	const row = rowOf(run, ticketNumber(n, "the row"));
+	const row = rowOf(run, rowId(n, "the row"));
 	if (!type) throw new Refusal(`name an event; ${where(row)}`);
 	if (NOT_BY_EVENT[type])
 		throw new Refusal(`${type} is not recorded through event: ${NOT_BY_EVENT[type]}; ${where(row)}`);
@@ -628,11 +640,11 @@ function note(argv: string[], runner: Runner, cwd: string): string {
 	const run = currentRun(runner, cwd);
 	const kind = required(values, "kind");
 	if (!NOTE_KINDS.includes(kind)) throw new Refusal(`--kind must be one of ${NOTE_KINDS.join(", ")}`);
-	const ticket = rowOf(run, ticketNumber(required(values, "ticket"), "--ticket")).ticket;
+	const ticket = rowOf(run, rowId(required(values, "ticket"), "--ticket")).ticket;
 	const text = positionals.join(" ").trim();
 	if (!text) throw new Refusal(`note needs the text of what happened`);
 	record(run, { at: runner.now().toISOString(), type: "note", kind, ticket, text });
-	return `note recorded: ${kind} #${ticket}`;
+	return `note recorded: ${kind} #${ticket}\nledger: ${writeLedger(run, new Map(), runner.now())}`;
 }
 
 /** Reconciles one row with the outside, which wins, and returns the lines to show under it. */
@@ -691,7 +703,7 @@ function deadlineText(row: Row, now: Date): string {
 function status(argv: string[], runner: Runner, cwd: string): string {
 	parse(argv, {});
 	const run = currentRun(runner, cwd);
-	const details = new Map<number, string[]>();
+	const details = new Map<RowId, string[]>();
 	for (const row of run.rows.values()) details.set(row.ticket, reconcile(run, row, runner));
 	const now = runner.now();
 	const p = run.preflight;
@@ -702,17 +714,25 @@ function status(argv: string[], runner: Runner, cwd: string): string {
 		for (const command of allowedCommands(row)) out.push(`  allowed: ${command}`);
 		for (const line of details.get(row.ticket)!) out.push(`  ${line}`);
 	}
-	const ledger = join(run.dir, "ledger.md");
-	writeFileSync(ledger, renderLedger(run, details, now));
-	out.push(`ledger: ${ledger}`);
+	out.push(`ledger: ${writeLedger(run, details, now)}`);
 	return out.join("\n");
 }
 
-function renderLedger(run: Run, details: Map<number, string[]>, now: Date): string {
+/**
+ * Regenerates `ledger.md` from the run and returns its path. `details` holds what `status` observed outside per row;
+ * `note` passes none, so its ledger shows the recorded events only.
+ */
+function writeLedger(run: Run, details: Map<RowId, string[]>, now: Date): string {
+	const ledger = join(run.dir, "ledger.md");
+	writeFileSync(ledger, renderLedger(run, details, now));
+	return ledger;
+}
+
+function renderLedger(run: Run, details: Map<RowId, string[]>, now: Date): string {
 	const p = run.preflight;
 	const cell = (text: string) => text.replace(/\|/g, "\\|");
 	const lines = [
-		`<!-- Generated by batch.ts status from events.jsonl at ${now.toISOString()}; edits here are overwritten. -->`,
+		`<!-- Generated by batch.ts status or note from events.jsonl at ${now.toISOString()}; edits here are overwritten. -->`,
 		`# Batch run ${run.id}`,
 		"",
 		`- Repo: \`${p.repo}\`, base \`${p.base}\` at \`${p.sha}\`, main checkout clean at preflight`,
@@ -725,7 +745,7 @@ function renderLedger(run: Run, details: Map<number, string[]>, now: Date): stri
 		"| --- | --- | --- | --- | --- | --- | --- |",
 		...[...run.rows.values()].map(
 			(r) =>
-				`| #${r.ticket} | ${label(r)} | ${next(r)} | ${deadlineText(r, now)} | ${r.launch?.branch ?? ""} | ${r.lastAt} | ${cell(details.get(r.ticket)!.join("; "))} |`,
+				`| #${r.ticket} | ${label(r)} | ${next(r)} | ${deadlineText(r, now)} | ${r.launch?.branch ?? ""} | ${r.lastAt} | ${cell((details.get(r.ticket) ?? []).join("; "))} |`,
 		),
 		"",
 		"## Approvals",
@@ -814,7 +834,7 @@ function dirtyLines(runner: Runner, worktree: string): string[] {
 function gate(argv: string[], runner: Runner, cwd: string): string {
 	const { values, positionals } = parse(argv, { judged: "string" });
 	const run = currentRun(runner, cwd);
-	const row = rowOf(run, ticketNumber(positionals[0], "the row"));
+	const row = rowOf(run, rowId(positionals[0], "the row"));
 	check(row, "gate");
 	const judged = required(values, "judged");
 	const launch = launched(row);
@@ -841,13 +861,19 @@ function gate(argv: string[], runner: Runner, cwd: string): string {
 	const failures = checkFailures(pr, run.preflight.rules);
 	if (failures.length) for (const failure of failures) fact(false, failure);
 	else fact(true, `checks passed on ${pr.headRefOid}`);
-	const closes = new RegExp(`\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#${row.ticket}\\b`, "i").test(pr.body ?? "");
-	fact(closes, closes ? `body closes #${row.ticket}` : `body does not close #${row.ticket}`);
+	const skipped: string[] = [];
+	if (typeof row.ticket === "number") {
+		const closes = new RegExp(`\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#${row.ticket}\\b`, "i").test(
+			pr.body ?? "",
+		);
+		fact(closes, closes ? `body closes #${row.ticket}` : `body does not close #${row.ticket}`);
+	} else skipped.push(`body closing keyword not checked: ${row.ticket} is a label row, not a ticket`);
 	const files = ((pr.files ?? []) as any[]).map((f) => `  ${f.path} +${f.additions} -${f.deletions}`);
 	const passed = facts.every((f) => f.ok);
 	const out = [
 		`Fetched by this command (PR #${pr.number}${pr.url ? ` ${pr.url}` : ""}):`,
 		...facts.map((f) => `  ${f.ok ? "PASS" : "FAIL"}: ${f.text}`),
+		...skipped.map((s) => `  SKIP: ${s}`),
 		`  files changed (${files.length}):`,
 		...files.map((f) => `  ${f}`),
 		"Read by the chief:",
@@ -863,7 +889,7 @@ function gate(argv: string[], runner: Runner, cwd: string): string {
 function merge(argv: string[], runner: Runner, cwd: string): string {
 	const { positionals } = parse(argv, {});
 	const run = currentRun(runner, cwd);
-	const row = rowOf(run, ticketNumber(positionals[0], "the row"));
+	const row = rowOf(run, rowId(positionals[0], "the row"));
 	check(row, "merge-intent");
 	if (row.intent)
 		throw new Refusal(
@@ -949,7 +975,7 @@ function prompt(argv: string[], runner: Runner, cwd: string): string {
 	const { positionals } = parse(argv, {});
 	const [n, ...words] = positionals;
 	const run = currentRun(runner, cwd);
-	const row = rowOf(run, ticketNumber(n, "the row"));
+	const row = rowOf(run, rowId(n, "the row"));
 	const text = words.join(" ").trim();
 	if (!text) throw new Refusal("prompt needs the text to send");
 	const pane = launched(row).pane;

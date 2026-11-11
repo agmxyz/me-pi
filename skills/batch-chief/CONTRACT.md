@@ -4,7 +4,7 @@ The chief writes one contract per row in step 3 of [`SKILL.md`](SKILL.md), into 
 
 | Placeholder | Value |
 |---|---|
-| `<n>` | ticket number |
+| `<n>` | the row: its ticket number, or its label for work without an issue |
 | `<chief pane>` | the chief's herdr pane id, as given to `preflight` |
 | `<brief>` | path of `brief-<n>.md` |
 | `<worktree>`, `<branch>`, `<base>`, `<base sha>` | the row's checkout, its branch, and the base it was cut from |
@@ -34,12 +34,12 @@ You are the Pi coordinator for one ticket. A chief session in herdr pane `<chief
 - Fixed review point: `<review point>`.
 - Check: `<check>`. Tell your worker in its brief: run the check alone, with no pipe, chain, redirect or extra flags.
 - Other coordinators write in sibling worktrees. Touch only your worktree and branch: no `git stash`, no tag move, no change to `<base>`.
-- Ticket: issue #<n> of this repo.
+- Ticket: issue #<n> of this repo, or none when `<n>` is a label.
 
 ## Authorised (by the user, in the chief session, <date>: "<user's words>")
 
 <authorised actions; for example:>
-- Push `<branch>` to `origin` (ordinary push, no force) and open one PR against `<base>` whose body ends with `Closes #<n>`.
+- Push `<branch>` to `origin` (ordinary push, no force) and open one PR against `<base>`; for a ticket row its body ends with `Closes #<n>`.
 - Push corrective commits to that branch.
 
 Everything else stays the user's: merging, closing an issue or PR, labels or comments on the tracker, force-push, pushes to any other branch, releases, installs. Your scope ends at "PR open, reviewed, CI green"; the user decides each merge.
