@@ -957,6 +957,52 @@ test("confirms with UI, blocks without UI or on refusal", async () => {
 	assert.equal(await handler({ ...event, toolName: "read", input: { path: "x" } }, { cwd, hasUI: false }), undefined);
 });
 
+// Rejects instead of hanging when `promise` does not settle in time.
+const within = (promise, label, ms = 2000) => {
+	const timeout = Promise.withResolvers();
+	const timer = setTimeout(() => timeout.reject(new Error(`${label}: not settled within ${ms} ms`)), ms);
+	return Promise.race([promise, timeout.promise]).finally(() => clearTimeout(timer));
+};
+
+// A confirm that records its options and stays pending until the test answers it.
+const pendingConfirm = () => {
+	const entry = Promise.withResolvers();
+	const answer = Promise.withResolvers();
+	const confirm = (_title, _message, opts) => {
+		entry.resolve(opts);
+		return answer.promise;
+	};
+	return { confirm, entry: entry.promise, answer: answer.resolve };
+};
+
+test("confirm gets the turn's abort signal and an abort while it is open blocks (#133)", async () => {
+	const { handler } = setup();
+	const event = { type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command: "git push origin main" } };
+	const ac = new AbortController();
+	const fake = pendingConfirm();
+	const result = handler(event, { cwd: process.cwd(), hasUI: true, signal: ac.signal, ui: { confirm: fake.confirm } });
+	const opts = await within(fake.entry, "confirm entry");
+	assert.equal(opts?.signal, ac.signal);
+	// Like Pi's dialog: an aborted signal closes it with no answer.
+	opts.signal.addEventListener("abort", () => fake.answer(false), { once: true });
+	ac.abort();
+	const outcome = await within(result, "handler");
+	assert.equal(outcome?.block, true);
+});
+
+test("a confirm that answers yes after the turn aborted still blocks (#133)", async () => {
+	const { handler } = setup();
+	const event = { type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command: "git push origin main" } };
+	const ac = new AbortController();
+	const fake = pendingConfirm();
+	const result = handler(event, { cwd: process.cwd(), hasUI: true, signal: ac.signal, ui: { confirm: fake.confirm } });
+	await within(fake.entry, "confirm entry");
+	ac.abort();
+	fake.answer(true);
+	const outcome = await within(result, "handler");
+	assert.equal(outcome?.block, true);
+});
+
 test("history rewrites: classify skips them with historyRewrites: false, and only that", () => {
 	for (const command of [
 		"git commit --amend --no-edit",
@@ -1031,6 +1077,131 @@ test("/guard toggles enforcement for the session", async () => {
 
 	await command.handler("maybe", ctx);
 	assert.equal(notes.pop(), "usage: /guard [on|off]");
+});
+
+// Restores ME_PI_UNATTENDED and ME_PI_RUN after test `t` and unsets ME_PI_RUN (a main session); returns a setter
+// for ME_PI_UNATTENDED (undefined: unset).
+const unattendedEnv = (t) => {
+	const saved = { ME_PI_UNATTENDED: process.env.ME_PI_UNATTENDED, ME_PI_RUN: process.env.ME_PI_RUN };
+	t.after(() => {
+		for (const [name, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	});
+	delete process.env.ME_PI_RUN;
+	return (value) => {
+		if (value === undefined) delete process.env.ME_PI_UNATTENDED;
+		else process.env.ME_PI_UNATTENDED = value;
+	};
+};
+const setUnattended = (t, value) => unattendedEnv(t)(value);
+
+const bashCall = (command) => ({ type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command } });
+
+test("unattended: a risky command blocks without ever opening the confirm (#134)", async (t) => {
+	setUnattended(t, "1");
+	const { handler } = setup();
+	for (const [command, risk] of [
+		["git reset --hard", "git reset --hard"],
+		["git push origin main", "push to main/master"],
+	]) {
+		for (const hasUI of [true, false]) {
+			let confirms = 0;
+			const ctx = {
+				cwd: process.cwd(),
+				hasUI,
+				ui: {
+					confirm: async () => {
+						confirms++;
+						return true;
+					},
+				},
+			};
+			const outcome = await handler(bashCall(command), ctx);
+			assert.equal(outcome?.block, true, `${command} hasUI=${hasUI}`);
+			assert.ok(outcome.reason.startsWith(`Blocked (${risk}): unattended session`), outcome.reason);
+			assert.equal(confirms, 0, `${command} hasUI=${hasUI}`);
+		}
+	}
+});
+
+test("unattended: the denial tells the model to take another route or report it (#134)", async (t) => {
+	setUnattended(t, "1");
+	const { handler } = setup();
+	const outcome = await handler(bashCall("git reset --hard"), {
+		cwd: process.cwd(),
+		hasUI: true,
+		ui: { confirm: async () => true },
+	});
+	assert.deepEqual(outcome, {
+		block: true,
+		reason:
+			"Blocked (git reset --hard): unattended session, no one can approve. Take another route or report the command to your supervisor.",
+	});
+});
+
+test("unattended: /guard off leaves the guard on and says why (#134)", async (t) => {
+	setUnattended(t, "1");
+	const { handler, command } = setup();
+	const notes = [];
+	const ctx = {
+		cwd: process.cwd(),
+		hasUI: true,
+		ui: { notify: (message) => notes.push(message), confirm: async () => true },
+	};
+	await command.handler("off", ctx);
+	assert.deepEqual(notes.splice(0), [
+		"guard stays on: unattended session (ME_PI_UNATTENDED=1), no one can approve its commands",
+		"guard on",
+	]);
+	await command.handler("", ctx);
+	assert.deepEqual(notes.splice(0), ["guard on"]);
+	assert.equal((await handler(bashCall("git push origin main"), ctx))?.block, true);
+});
+
+test("kept: without ME_PI_UNATTENDED=1 the guard confirms, denies headless, toggles, as before (#134)", async (t) => {
+	const setFlag = unattendedEnv(t);
+	for (const value of [undefined, "0", "", "true"]) {
+		setFlag(value);
+		const label = `ME_PI_UNATTENDED=${value}`;
+		const { handler, command } = setup();
+		const cwd = process.cwd();
+		const push = bashCall("git push origin main");
+		let confirms = 0;
+		const answering = (answer) => ({
+			cwd,
+			hasUI: true,
+			ui: {
+				confirm: async () => {
+					confirms++;
+					return answer;
+				},
+			},
+		});
+		assert.equal(await handler(push, answering(true)), undefined, label);
+		assert.deepEqual(
+			await handler(push, answering(false)),
+			{ block: true, reason: "Blocked by user (push to main/master)." },
+			label,
+		);
+		assert.equal(confirms, 2, label);
+		assert.deepEqual(
+			await handler(push, { cwd, hasUI: false }),
+			{ block: true, reason: "Blocked (push to main/master): needs explicit user approval; no UI to confirm." },
+			label,
+		);
+		assert.equal(await handler(bashCall("git status"), { cwd, hasUI: false }), undefined, label);
+		assert.equal(await handler(bashCall("git commit --amend --no-edit"), { cwd, hasUI: false }), undefined, label);
+		const notes = [];
+		const ctx = { cwd, hasUI: false, ui: { notify: (message) => notes.push(message) } };
+		await command.handler("off", ctx);
+		assert.deepEqual(notes.splice(0), ["guard off"], label);
+		assert.equal(await handler(push, ctx), undefined, label);
+		await command.handler("on", ctx);
+		assert.deepEqual(notes.splice(0), ["guard on"], label);
+		assert.equal((await handler(push, ctx))?.block, true, label);
+	}
 });
 
 test("/guard completes on and off", () => {

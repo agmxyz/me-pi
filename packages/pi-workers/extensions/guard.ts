@@ -1,17 +1,18 @@
 /**
  * Safety net for irreversible bash commands (force push, main push, history rewrites, resets, discards, recursive rm).
- * With a UI it asks for confirmation; without one (print mode) it blocks. Plain history rewrites only block in
- * delegate workers; ones that run a command (`rebase -x`, an editor override, a `filter-branch` command filter or
- * `--setup`) ask in every session (see `classify`). So do git options and env that run a command (`-c alias.x=…`,
+ * With a UI it asks for confirmation; without one (print mode), or in an unattended session (`ME_PI_UNATTENDED=1`), it
+ * blocks. Plain history rewrites only block in delegate workers; ones that run a command (`rebase -x`, an editor
+ * override, a `filter-branch` command filter or `--setup`) ask in every session (see `classify`). So do git options and env that run a command (`-c alias.x=…`,
  * `--upload-pack`, `submodule foreach`, `GIT_SSH_COMMAND`, `GIT_PAGER`, `git config core.pager …`).
- * `/guard on|off` toggles it for the current session; every session starts on.
+ * `/guard on|off` toggles it for the current session, except that an unattended session refuses `off`; every session
+ * starts on.
  * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
  * misses commands it can't read (interpreter code, a non-recursive rm).
  */
 
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isImplementWorker, isWorkerProcess, workerIdentity } from "./delegate-env.ts";
+import { ENV_UNATTENDED, isImplementWorker, isUnattended, isWorkerProcess, workerIdentity } from "./delegate-env.ts";
 
 export const GUARD_STOP_EVENT = "me-pi:guard-stop";
 
@@ -736,7 +737,13 @@ export default function (pi: ExtensionAPI) {
 			MODES.filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {
 			const arg = args.trim();
-			if (MODES.includes(arg)) enabled = arg === "on";
+			// Whoever types in an unattended pane (a supervisor) is not the user, so it cannot turn guard off.
+			if (arg === "off" && isUnattended())
+				ctx.ui.notify(
+					`guard stays on: unattended session (${ENV_UNATTENDED}=1), no one can approve its commands`,
+					"warning",
+				);
+			else if (MODES.includes(arg)) enabled = arg === "on";
 			else if (arg) return ctx.ui.notify(`usage: /guard [${MODES.join("|")}]`, "warning");
 			ctx.ui.notify(`guard ${enabled ? "on" : "off"}`, "info");
 		},
@@ -764,8 +771,15 @@ export default function (pi: ExtensionAPI) {
 			}
 			return { block: true, reason };
 		};
+		// A confirm in an unattended pane is answered by whatever is typed there next, not by the user.
+		if (isUnattended())
+			return block(
+				`Blocked (${risk}): unattended session, no one can approve. Take another route or report the command to your supervisor.`,
+			);
 		if (!ctx.hasUI) return block(`Blocked (${risk}): needs explicit user approval; no UI to confirm.`);
-		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command);
+		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command, { signal: ctx.signal });
+		// An abort closes the dialog; it must deny even if an answer raced it.
+		if (ctx.signal?.aborted) return block(`Blocked (${risk}): the turn was aborted before approval.`);
 		return ok ? undefined : block(`Blocked by user (${risk}).`);
 	});
 }
