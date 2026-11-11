@@ -25,28 +25,13 @@ function frontmatterLines(source) {
 	return end === -1 ? undefined : lines.slice(1, end);
 }
 
+/**
+ * Returns every `url:` value on every frontmatter line, at any nesting and in block or flow style, so a layout
+ * this line-wise scan does not model is still checked (fails closed) instead of reading as "no credits".
+ */
 function creditUrls(lines) {
-	const urls = [];
-	let inMetadata = false;
-	let creditsIndent = -1;
-	for (const rawLine of lines) {
-		const line = rawLine.trimEnd();
-		if (!line) continue;
-		const indent = line.length - line.trimStart().length;
-		if (indent === 0) {
-			inMetadata = line === "metadata:";
-			creditsIndent = -1;
-			continue;
-		}
-		if (creditsIndent !== -1 && indent <= creditsIndent) creditsIndent = -1;
-		if (inMetadata && creditsIndent === -1 && /^\s+credits:$/.test(line)) {
-			creditsIndent = indent;
-			continue;
-		}
-		const url = creditsIndent === -1 ? undefined : /url: "?(\S+?)"?$/.exec(line)?.[1];
-		if (url) urls.push(url);
-	}
-	return urls;
+	const urlValue = /(?:^|[\s{,])["']?url["']?:[ \t]*(?:"([^"]*)"|'([^']*)'|([^\s,}\]]*))/g;
+	return lines.flatMap((line) => [...line.matchAll(urlValue)].map((match) => match[1] ?? match[2] ?? match[3]));
 }
 
 function relativeLinks(source) {
@@ -168,6 +153,46 @@ test("an unpinned credits url after a blank line or trailing whitespace fails", 
 		const skillFile = join(skills, "implement-me-pi/SKILL.md");
 		await replaceInFile(skillFile, "metadata:\n  credits:\n", "metadata: \n\n  credits:\t\n");
 		await replaceInFile(skillFile, `url: "${implementCreditUrl}"\n`, `url: "${unpinnedImplementCreditUrl}"  \n`);
+		assertOneProblem(validateSkills(skills), "implement-me-pi:", unpinnedImplementCreditUrl);
+	});
+});
+
+test("an unpinned credits url under a commented metadata key fails", async () => {
+	await withSkillsCopy(async (skills) => {
+		const skillFile = join(skills, "implement-me-pi/SKILL.md");
+		await replaceInFile(skillFile, "metadata:\n", "metadata: # credits\n");
+		await replaceInFile(skillFile, `"${implementCreditUrl}"`, `"${unpinnedImplementCreditUrl}"`);
+		assertOneProblem(validateSkills(skills), "implement-me-pi:", unpinnedImplementCreditUrl);
+	});
+});
+
+test("an unpinned credits url followed by a comment fails", async () => {
+	await withSkillsCopy(async (skills) => {
+		await replaceInFile(
+			join(skills, "implement-me-pi/SKILL.md"),
+			`url: "${implementCreditUrl}"\n`,
+			`url: "${unpinnedImplementCreditUrl}" # upstream\n`,
+		);
+		assertOneProblem(validateSkills(skills), "implement-me-pi:", unpinnedImplementCreditUrl);
+	});
+});
+
+test("an unpinned credits url in flow-style credits fails", async () => {
+	await withSkillsCopy(async (skills) => {
+		await replaceInFile(
+			join(skills, "implement-me-pi/SKILL.md"),
+			`  credits:\n    - skill: implement\n      author: Matt Pocock\n      license: MIT\n      url: "${implementCreditUrl}"\n      use: adapted\n`,
+			`  credits: [{ skill: implement, url: "${unpinnedImplementCreditUrl}" }]\n`,
+		);
+		assertOneProblem(validateSkills(skills), "implement-me-pi:", unpinnedImplementCreditUrl);
+	});
+});
+
+test("an unpinned credits url under a quoted metadata key fails", async () => {
+	await withSkillsCopy(async (skills) => {
+		const skillFile = join(skills, "implement-me-pi/SKILL.md");
+		await replaceInFile(skillFile, "metadata:\n", '"metadata":\n');
+		await replaceInFile(skillFile, `"${implementCreditUrl}"`, `"${unpinnedImplementCreditUrl}"`);
 		assertOneProblem(validateSkills(skills), "implement-me-pi:", unpinnedImplementCreditUrl);
 	});
 });
