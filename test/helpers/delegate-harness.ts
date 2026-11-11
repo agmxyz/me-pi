@@ -584,6 +584,13 @@ process.stdin.on("end", () => {
     setTimeout(() => { retryable("429 rate_limit_error: too many requests"); process.exit(1); }, Number(process.env.FAKE_PI_RETRY_DELAY || 0));
     return;
   }
+  // retry-then-* modes need FAKE_PI_MARKER; the first launch costs $0.002 (retryable's reply) before it exits.
+  const retryModes = ["retry-then-expensive", "retry-then-echo-budget"];
+  if (retryModes.includes(mode) && readFileSync(process.env.FAKE_PI_MARKER, "utf8").trim().split("\\n").length === 1) {
+    retryable("429 rate_limit_error: too many requests");
+    process.exit(1);
+  }
+  if (mode === "retry-then-echo-budget") { emit(process.env.ME_PI_BUDGET || "none"); process.exit(0); }
   if (mode === "hang" || mode === "retry-then-hang") { emit("working", { stopReason: "toolUse" }); setInterval(() => {}, 1000); return; }
   if (mode === "tool-activity") {
     const selected = (flag("--model") || "").includes("haiku") ? "read" : "grep";
@@ -598,9 +605,9 @@ process.stdin.on("end", () => {
     setTimeout(() => { emit("activity answer"); process.exit(0); }, Number(process.env.FAKE_PI_ACTIVITY_DELAY || 250));
     return;
   }
-  if (mode === "expensive") {
+  if (mode === "expensive" || mode === "retry-then-expensive") {
     console.log(JSON.stringify({ type: "tool_execution_start", toolName: "read", args: { path: "src/a.ts" } }));
-    emit("still going", { cost: 9, stopReason: "toolUse" });
+    emit("still going", { cost: Number(process.env.FAKE_PI_COST || 9), stopReason: "toolUse" });
     setInterval(() => {}, 1000);
     return;
   }
