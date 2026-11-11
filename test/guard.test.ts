@@ -957,6 +957,52 @@ test("confirms with UI, blocks without UI or on refusal", async () => {
 	assert.equal(await handler({ ...event, toolName: "read", input: { path: "x" } }, { cwd, hasUI: false }), undefined);
 });
 
+// Rejects instead of hanging when `promise` does not settle in time.
+const within = (promise, label, ms = 2000) => {
+	const timeout = Promise.withResolvers();
+	const timer = setTimeout(() => timeout.reject(new Error(`${label}: not settled within ${ms} ms`)), ms);
+	return Promise.race([promise, timeout.promise]).finally(() => clearTimeout(timer));
+};
+
+// A confirm that records its options and stays pending until the test answers it.
+const pendingConfirm = () => {
+	const entry = Promise.withResolvers();
+	const answer = Promise.withResolvers();
+	const confirm = (_title, _message, opts) => {
+		entry.resolve(opts);
+		return answer.promise;
+	};
+	return { confirm, entry: entry.promise, answer: answer.resolve };
+};
+
+test("confirm gets the turn's abort signal and an abort while it is open blocks (#133)", async () => {
+	const { handler } = setup();
+	const event = { type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command: "git push origin main" } };
+	const ac = new AbortController();
+	const fake = pendingConfirm();
+	const result = handler(event, { cwd: process.cwd(), hasUI: true, signal: ac.signal, ui: { confirm: fake.confirm } });
+	const opts = await within(fake.entry, "confirm entry");
+	assert.equal(opts?.signal, ac.signal);
+	// Like Pi's dialog: an aborted signal closes it with no answer.
+	opts.signal.addEventListener("abort", () => fake.answer(false), { once: true });
+	ac.abort();
+	const outcome = await within(result, "handler");
+	assert.equal(outcome?.block, true);
+});
+
+test("a confirm that answers yes after the turn aborted still blocks (#133)", async () => {
+	const { handler } = setup();
+	const event = { type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command: "git push origin main" } };
+	const ac = new AbortController();
+	const fake = pendingConfirm();
+	const result = handler(event, { cwd: process.cwd(), hasUI: true, signal: ac.signal, ui: { confirm: fake.confirm } });
+	await within(fake.entry, "confirm entry");
+	ac.abort();
+	fake.answer(true);
+	const outcome = await within(result, "handler");
+	assert.equal(outcome?.block, true);
+});
+
 test("history rewrites: classify skips them with historyRewrites: false, and only that", () => {
 	for (const command of [
 		"git commit --amend --no-edit",
