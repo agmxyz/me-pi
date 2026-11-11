@@ -299,6 +299,7 @@ async function runWorker(
 	const budget: AttemptBudget = {
 		limitSecs: secs,
 		hardDeadline,
+		limitCostUsd: hardCostCap,
 		hardCostCapUsd: hardCostCap,
 		toolDeadline,
 		toolCostCapUsd: toolCostCap,

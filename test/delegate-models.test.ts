@@ -601,10 +601,11 @@ test("a retry after the tool deadline retains the deadline stop and a competing 
 		env: {
 			FAKE_PI_MODE: "rate-limit-delayed",
 			FAKE_PI_FAIL_MODEL: HAIKU,
-			FAKE_PI_RETRY_DELAY: "850",
+			FAKE_PI_RETRY_DELAY: "1000",
 			FAKE_PI_MARKER: delayedMarker,
 		},
-		limits: { timeoutSecs: 1 },
+		// Tool deadline 100 ms, hard kill 10 s: the retry 1 s after spawn is always >= 900 ms past the first and about 9 s, less spawn time, before the second.
+		limits: { timeoutSecs: 10, wrapUpShare: 0.01 },
 	});
 	const deadline = await run(delayed.tool, {
 		role: "general",
