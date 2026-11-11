@@ -34,7 +34,8 @@
 			"packages/pi-workers/extensions/*.ts",
 			"test/*.ts",
 			"test/fixtures/*.ts",
-			"evals/*.ts"
+			"evals/*.ts",
+			"skills/batch-chief/batch.ts"
 		]
 	}
 }
