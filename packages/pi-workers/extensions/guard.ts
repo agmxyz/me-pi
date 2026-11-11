@@ -11,7 +11,7 @@
 
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isImplementWorker, isWorkerProcess, workerIdentity } from "./delegate-env.ts";
+import { ENV_UNATTENDED, isImplementWorker, isUnattended, isWorkerProcess, workerIdentity } from "./delegate-env.ts";
 
 export const GUARD_STOP_EVENT = "me-pi:guard-stop";
 
@@ -736,7 +736,13 @@ export default function (pi: ExtensionAPI) {
 			MODES.filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {
 			const arg = args.trim();
-			if (MODES.includes(arg)) enabled = arg === "on";
+			// Whoever types in an unattended pane (a supervisor) is not the user, so it cannot turn guard off.
+			if (arg === "off" && isUnattended())
+				ctx.ui.notify(
+					`guard stays on: unattended session (${ENV_UNATTENDED}=1), no one can approve its commands`,
+					"warning",
+				);
+			else if (MODES.includes(arg)) enabled = arg === "on";
 			else if (arg) return ctx.ui.notify(`usage: /guard [${MODES.join("|")}]`, "warning");
 			ctx.ui.notify(`guard ${enabled ? "on" : "off"}`, "info");
 		},
@@ -764,6 +770,11 @@ export default function (pi: ExtensionAPI) {
 			}
 			return { block: true, reason };
 		};
+		// A confirm in an unattended pane is answered by whatever is typed there next, not by the user.
+		if (isUnattended())
+			return block(
+				`Blocked (${risk}): unattended session, no one can approve. Take another route or report the command to your supervisor.`,
+			);
 		if (!ctx.hasUI) return block(`Blocked (${risk}): needs explicit user approval; no UI to confirm.`);
 		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command, { signal: ctx.signal });
 		// An abort closes the dialog; it must deny even if an answer raced it.
