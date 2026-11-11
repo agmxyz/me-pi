@@ -21,7 +21,12 @@ export interface Runner {
 }
 
 type State = "QUEUED" | "RUNNING" | "ASKED" | "REPORTED" | "GATED" | "MERGED" | "LEFT_OPEN" | "DROPPED";
-type Round = "implement" | "review" | "fix" | "update";
+/** Coordinator rounds; the first is the one `launch` starts, the rest are what `round` reopens a row with. */
+const ROUNDS = ["implement", "review", "fix", "update"] as const;
+type Round = (typeof ROUNDS)[number];
+const LATER_ROUNDS = ROUNDS.filter((r) => r !== "implement");
+/** The events.jsonl format this helper writes and reads; a run with another version is refused. */
+const VERSION = 1;
 const TERMINAL: State[] = ["MERGED", "LEFT_OPEN", "DROPPED"];
 const NOTE_KINDS = ["manual-fix", "chief-answer", "wrong-instruction", "gate-miss", "user-friction"];
 const TOOLS = ["git", "gh", "herdr"];
@@ -49,30 +54,84 @@ interface Row {
 	chiefAnswers: number;
 	/** A merge intent with no observed result yet. */
 	intent?: { sha: string; at: string };
-	commit?: string;
+	commit?: string | null;
 }
 
-interface Event {
-	at: string;
-	type: string;
-	ticket?: number;
-	[key: string]: any;
+interface Rules {
+	requiredChecks: string[];
+	upToDate: boolean;
+	/** Null when no rule restricts the merge method. */
+	mergeMethods: string[] | null;
 }
+
+interface PreflightEvent {
+	at: string;
+	type: "preflight";
+	version: number;
+	repo: string;
+	base: string;
+	sha: string;
+	clean: true;
+	tools: Record<string, boolean>;
+	rules: Rules | "unknown";
+	rulesError?: string;
+	check: string;
+	chiefPane: string;
+	tickets: number[];
+}
+
+interface ApproveEvent {
+	at: string;
+	type: "approve";
+	quote: string;
+	action: string;
+	tickets: number[];
+	inferred: boolean;
+}
+
+interface NoteEvent {
+	at: string;
+	type: "note";
+	kind: string;
+	ticket: number;
+	text: string;
+}
+
+/** Events that move one row, one payload per type; `apply` folds each. */
+type RowEvent = { at: string; ticket: number } & (
+	| { type: "launch"; launch: Launch; deadline: number }
+	| { type: "report"; path: string; status: "DONE" | "BLOCKED"; source: "event" | "status" }
+	| { type: "answer"; basis: string; deadline: number }
+	| { type: "answer"; user: string; deadline: number }
+	| { type: "escalate" }
+	| { type: "gate"; sha: string; judged: string }
+	| { type: "round"; round: Round; deadline: number }
+	/** `head` is the observed PR head, or null when `merge` ran update-branch and the new head is not known yet. */
+	| { type: "head-moved"; head: string | null; reason: "pr-head" | "update-branch" }
+	| { type: "merge-intent"; sha: string }
+	| { type: "merged"; commit: string | null }
+	| { type: "leave-open" }
+	| { type: "drop"; user: string }
+);
+
+type Event = PreflightEvent | ApproveEvent | NoteEvent | RowEvent;
 
 interface Run {
 	id: string;
 	dir: string;
-	preflight: Event;
+	preflight: PreflightEvent;
 	rows: Map<number, Row>;
-	approvals: Event[];
-	notes: Event[];
+	approvals: ApproveEvent[];
+	notes: NoteEvent[];
 }
 
 /** A command refused for a reason the chief can act on; exit code 1. */
 class Refusal extends Error {}
 
 // ---------------------------------------------------------------------------------------------------------------
-// Transition table: the only place that decides which event a row accepts and what it becomes.
+// Transition table: which event a row accepts; `apply` decides what it becomes. Which events are recorded is decided
+// by the commands: `reconcile` records `report`, `merged` and `head-moved` from what it observes, `merge` records
+// `merge-intent`, `head-moved` and `merged`.
 
 /** Row events in table order, with the states they leave from. */
 const TABLE: { event: string; accepts: (row: Row) => boolean }[] = [
@@ -121,12 +180,16 @@ function next(row: Row): string {
 /** Throws a Refusal naming the row's state and the events it accepts when `type` is not one of them. */
 function check(row: Row, type: string): void {
 	if (accepted(row).includes(type)) return;
-	const accepts = accepted(row).join(", ") || "nothing";
 	if (type === "answer" && row.state === "ASKED" && row.owner === "chief")
 		throw new Refusal(
-			`#${row.ticket} already had a chief answer; the question goes to the user: event ${row.ticket} escalate (#${row.ticket} is ${label(row)}; it accepts: ${accepts})`,
+			`#${row.ticket} already had a chief answer; the question goes to the user: event ${row.ticket} escalate (${where(row)})`,
 		);
-	throw new Refusal(`#${row.ticket} is ${label(row)}; it accepts: ${accepts}`);
+	throw new Refusal(where(row));
+}
+
+/** The row's state and the events it accepts, as every refusal names them. */
+function where(row: Row): string {
+	return `#${row.ticket} is ${label(row)}; it accepts: ${accepted(row).join(", ") || "nothing"}`;
 }
 
 function running(row: Row, round: Round, minutes: number, at: string): void {
@@ -140,12 +203,12 @@ function running(row: Row, round: Round, minutes: number, at: string): void {
 }
 
 /** Applies one checked row event. */
-function apply(row: Row, e: Event): void {
+function apply(row: Row, e: RowEvent): void {
 	check(row, e.type);
 	switch (e.type) {
 		case "launch":
 			row.launch = e.launch;
-			running(row, "implement", e.deadline, e.at);
+			running(row, ROUNDS[0], e.deadline, e.at);
 			break;
 		case "report":
 			if (e.status === "DONE") row.state = "REPORTED";
@@ -204,7 +267,9 @@ function allowedCommands(row: Row): string[] {
 				? `event ${n} answer --basis "<quoted brief line>"`
 				: `event ${n} answer --user "<user's words>"`,
 		escalate: `event ${n} escalate`,
-		round: `event ${n} round <review|fix|update> --deadline <minutes>`,
+		gate: `gate ${n} --judged "<your note on the diff>"`,
+		round: `event ${n} round <${LATER_ROUNDS.join("|")}> --deadline <minutes>`,
+		...(row.intent ? {} : { "merge-intent": `merge ${n}` }),
 		"leave-open": `event ${n} leave-open`,
 		drop: `event ${n} drop --user "<user's words>"`,
 	};
@@ -222,7 +287,7 @@ function mainCheckout(runner: Runner, dir: string): string {
 
 const batchDir = (repo: string) => join(`${repo}.worktrees`, ".batch");
 
-function readEvents(dir: string): Event[] {
+function readEvents(dir: string): unknown[] {
 	const path = join(dir, "events.jsonl");
 	return readFileSync(path, "utf8")
 		.split("\n")
@@ -236,12 +301,20 @@ function readEvents(dir: string): Event[] {
 		});
 }
 
-/** Rebuilds the run from its events; an event the table refuses means the log was edited by hand. */
+/**
+ * Rebuilds the run from its events; an event the table refuses means the log was edited by hand. A run whose
+ * preflight carries another format version is refused before any event is read as this version's.
+ */
 function rebuild(id: string, dir: string): Run {
-	const [preflight, ...rest] = readEvents(dir);
-	if (preflight?.type !== "preflight") throw new Error(`${dir}/events.jsonl does not start with a preflight event`);
+	const [first, ...rest] = readEvents(dir) as Event[];
+	if (first?.type !== "preflight") throw new Error(`${dir}/events.jsonl does not start with a preflight event`);
+	const preflight = first;
+	if (preflight.version !== VERSION)
+		throw new Refusal(
+			`run ${id} was written by another version of the helper: its events.jsonl has version ${preflight.version ?? "none"}; this helper writes version ${VERSION}. Finish that run with the helper that wrote it, or point ${join(dirname(dir), "current")} elsewhere`,
+		);
 	const run: Run = { id, dir, preflight, rows: new Map(), approvals: [], notes: [] };
-	for (const ticket of preflight.tickets as number[])
+	for (const ticket of preflight.tickets)
 		run.rows.set(ticket, { ticket, state: "QUEUED", lastAt: preflight.at, chiefAnswers: 0 });
 	for (const e of rest) {
 		try {
@@ -256,13 +329,14 @@ function rebuild(id: string, dir: string): Run {
 }
 
 function fold(run: Run, e: Event): void {
+	if (e.type === "preflight") throw new Error("a second preflight event");
 	if (e.type === "approve") run.approvals.push(e);
 	else if (e.type === "note") run.notes.push(e);
 	else apply(rowOf(run, e.ticket), e);
 }
 
 /** Checks `e` against the current state, then appends it: a refused event is never written. */
-function record(run: Run, e: Event): void {
+function record(run: Run, e: ApproveEvent | NoteEvent | RowEvent): void {
 	fold(run, e);
 	appendFileSync(join(run.dir, "events.jsonl"), `${JSON.stringify(e)}\n`);
 }
@@ -322,13 +396,6 @@ function parse(argv: string[], options: Record<string, "string" | "boolean">) {
 	}
 }
 
-interface Rules {
-	requiredChecks: string[];
-	upToDate: boolean;
-	/** Null when no rule restricts the merge method. */
-	mergeMethods: string[] | null;
-}
-
 function parseRules(json: string): Rules {
 	const rules = JSON.parse(json);
 	if (!Array.isArray(rules)) throw new Error("the rules response is not a list");
@@ -386,9 +453,10 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 			rulesError = `unreadable rules response: ${(error as Error).message}`;
 		}
 	}
-	const event: Event = {
+	const event: PreflightEvent = {
 		at: now.toISOString(),
 		type: "preflight",
+		version: VERSION,
 		repo,
 		base,
 		sha: git("rev-parse", "HEAD"),
@@ -412,46 +480,54 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 	].join("\n");
 }
 
-/** Reads a report's `Status` line (`Status: DONE` or a `Status` heading followed by its value). */
-function reportStatus(path: string): "DONE" | "BLOCKED" | undefined {
+/**
+ * Reads a report's first `Status` line (`Status: DONE` or a `Status` heading followed by its value): the status when
+ * the value is exactly DONE or BLOCKED (optionally bold), else the value as written, which is not a finished report.
+ */
+function reportStatus(path: string): { status?: "DONE" | "BLOCKED"; value: string } {
 	const lines = readFileSync(path, "utf8").split("\n");
 	for (let i = 0; i < lines.length; i++) {
 		const match = /^(?:#+\s*)?\**Status\**\s*:?\s*(.*)$/i.exec(lines[i].trim());
 		if (!match) continue;
 		const value = match[1].trim() || (lines.slice(i + 1).find((l) => l.trim()) ?? "").trim();
-		return /^\**(DONE|BLOCKED)\b/.exec(value)?.[1] as "DONE" | "BLOCKED" | undefined;
+		const status = /^(\*\*)?(DONE|BLOCKED)\1$/.exec(value)?.[2] as "DONE" | "BLOCKED" | undefined;
+		return { status, value };
 	}
-	return undefined;
+	return { value: "" };
 }
 
-function reportEvent(at: string, ticket: number, path: string, source: "event" | "status"): Event {
+function reportEvent(at: string, ticket: number, path: string, source: "event" | "status"): RowEvent {
 	if (!existsSync(path)) throw new Refusal(`report ${path} does not exist`);
-	const status = reportStatus(path);
-	if (!status) throw new Refusal(`report ${path} has no Status line saying DONE or BLOCKED`);
+	const { status, value } = reportStatus(path);
+	if (!status)
+		throw new Refusal(
+			`report ${path} is not finished: its Status line must be exactly DONE or BLOCKED, got ${JSON.stringify(value)}`,
+		);
 	return { at, type: "report", ticket, path, status, source };
 }
 
 const normalise = (text: string) => text.replace(/\s+/g, " ").trim();
 
+/** A brief line as `--basis` must quote it: whitespace normalised, a leading list or heading marker dropped. */
+const briefLine = (line: string) => normalise(normalise(line).replace(/^(?:#+|[-*+]|\d+[.)])\s+/, ""));
+
 function event(argv: string[], runner: Runner, cwd: string): string {
 	const [n, type, ...rest] = argv;
 	const run = currentRun(runner, cwd);
 	const row = rowOf(run, ticketNumber(n, "the row"));
-	if (!type)
-		throw new Refusal(
-			`name an event; #${row.ticket} is ${label(row)}; it accepts: ${accepted(row).join(", ") || "nothing"}`,
-		);
-	if (NOT_BY_EVENT[type]) throw new Refusal(`${type} is not recorded through event: ${NOT_BY_EVENT[type]}`);
+	if (!type) throw new Refusal(`name an event; ${where(row)}`);
+	if (NOT_BY_EVENT[type])
+		throw new Refusal(`${type} is not recorded through event: ${NOT_BY_EVENT[type]}; ${where(row)}`);
 	if (!TABLE.some((t) => t.event === type))
 		throw new Refusal(
 			`unknown event ${type}; events: ${TABLE.map((t) => t.event)
 				.filter((e) => !NOT_BY_EVENT[e])
-				.join(", ")}`,
+				.join(", ")}; ${where(row)}`,
 		);
 	check(row, type);
 	const at = runner.now().toISOString();
-	const base = { at, type, ticket: row.ticket };
-	let e: Event;
+	const base = { at, ticket: row.ticket };
+	let e: RowEvent;
 	switch (type) {
 		case "launch": {
 			const { values } = parse(rest, {
@@ -473,7 +549,7 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 				report: path("report"),
 			};
 			if (!existsSync(launch.brief)) throw new Refusal(`brief ${launch.brief} does not exist`);
-			e = { ...base, launch, deadline: minutes(values) };
+			e = { ...base, type, launch, deadline: minutes(values) };
 			break;
 		}
 		case "report": {
@@ -488,34 +564,40 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 				if (values.user !== undefined)
 					throw new Refusal(`#${row.ticket} is ASKED(chief); escalate before a user answer`);
 				const basis = required(values, "basis");
-				const brief = readFileSync(row.launch!.brief, "utf8");
-				if (!normalise(brief).includes(normalise(basis)))
+				const lines = readFileSync(row.launch!.brief, "utf8").split("\n").map(briefLine);
+				if (!lines.includes(briefLine(basis)))
 					throw new Refusal(
-						`--basis is not in the brief ${row.launch!.brief}; quote the line that decides it, or escalate`,
+						`--basis is not in the brief ${row.launch!.brief} as a whole line; quote the whole line that decides it, or escalate`,
 					);
-				e = { ...base, basis, deadline };
+				e = { ...base, type, basis, deadline };
 			} else {
 				if (values.basis !== undefined) throw new Refusal(`#${row.ticket} is ASKED(user); only --user answers it`);
-				e = { ...base, user: required(values, "user"), deadline };
+				e = { ...base, type, user: required(values, "user"), deadline };
 			}
 			break;
 		}
 		case "round": {
 			const { values, positionals } = parse(rest, { deadline: "string" });
-			const round = positionals[0];
-			if (positionals.length !== 1 || !["review", "fix", "update"].includes(round))
-				throw new Refusal(`round takes one of review, fix, update; got ${JSON.stringify(positionals.join(" "))}`);
-			e = { ...base, round, deadline: minutes(values) };
+			const round = LATER_ROUNDS.find((r) => r === positionals[0]);
+			if (positionals.length !== 1 || !round)
+				throw new Refusal(
+					`round takes one of ${LATER_ROUNDS.join(", ")}; got ${JSON.stringify(positionals.join(" "))}`,
+				);
+			e = { ...base, type, round, deadline: minutes(values) };
 			break;
 		}
 		case "drop": {
 			const { values } = parse(rest, { user: "string" });
-			e = { ...base, user: required(values, "user") };
+			e = { ...base, type, user: required(values, "user") };
 			break;
 		}
-		default:
+		case "escalate":
+		case "leave-open":
 			parse(rest, {});
-			e = base;
+			e = { ...base, type };
+			break;
+		default:
+			throw new Error(`event ${type} is in the table but has no parser`);
 	}
 	record(run, e);
 	return `#${row.ticket} is ${label(row)}`;
@@ -529,7 +611,7 @@ function approve(argv: string[], runner: Runner, cwd: string): string {
 		throw new Refusal(`--action must be a word such as merge, got ${JSON.stringify(action)}`);
 	const tickets = ticketList(required(values, "tickets"), "--tickets");
 	for (const ticket of tickets) rowOf(run, ticket);
-	const e: Event = {
+	const e: ApproveEvent = {
 		at: runner.now().toISOString(),
 		type: "approve",
 		quote: required(values, "quote"),
@@ -580,7 +662,7 @@ function reconcile(run: Run, row: Row, runner: Runner): string[] {
 			if (row.state === "GATED" && pr.state === "MERGED")
 				record(run, { at: at(), type: "merged", ticket: row.ticket, commit: pr.mergeCommit?.oid ?? null });
 			else if (row.state === "GATED" && pr.headRefOid !== row.sha)
-				record(run, { at: at(), type: "head-moved", ticket: row.ticket, head: pr.headRefOid });
+				record(run, { at: at(), type: "head-moved", ticket: row.ticket, head: pr.headRefOid, reason: "pr-head" });
 			else if (pr.state !== "OPEN" && row.state !== "GATED")
 				lines.push(
 					`PR is ${pr.state} on GitHub while the row is ${label(row)}; ask the user and record the outcome`,
@@ -591,7 +673,7 @@ function reconcile(run: Run, row: Row, runner: Runner): string[] {
 	return lines;
 }
 
-function rulesText(preflight: Event): string {
+function rulesText(preflight: PreflightEvent): string {
 	const rules = preflight.rules;
 	if (rules === "unknown") return `unknown (${preflight.rulesError})`;
 	return [
@@ -651,7 +733,7 @@ function renderLedger(run: Run, details: Map<number, string[]>, now: Date): stri
 		...(run.approvals.length
 			? run.approvals.map(
 					(a) =>
-						`- ${a.at} ${a.action} ${a.tickets.map((t: number) => `#${t}`).join(", ")}: ${JSON.stringify(a.quote)}${a.inferred ? " (inferred)" : ""}`,
+						`- ${a.at} ${a.action} ${a.tickets.map((t) => `#${t}`).join(", ")}: ${JSON.stringify(a.quote)}${a.inferred ? " (inferred)" : ""}`,
 				)
 			: ["- none"]),
 		"",
@@ -668,7 +750,11 @@ function renderLedger(run: Run, details: Map<number, string[]>, now: Date): stri
 
 const PR_FIELDS =
 	"number,state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,body,files,url,mergeCommit";
+// Owned by LOCK_NAME in packages/pi-workers/extensions/delegate-implement.ts; test/batch-chief.test.ts holds the contract.
 const LOCK = "me-pi-implement.lock";
+
+/** Where an implement job's lock sits in a checkout's git dir. */
+export const implementLock = (gitDir: string) => join(gitDir, LOCK);
 
 function launched(row: Row): Launch {
 	if (!row.launch) throw new Refusal(`#${row.ticket} was never launched; it has no worktree, branch or pane`);
@@ -790,7 +876,7 @@ function merge(argv: string[], runner: Runner, cwd: string): string {
 				? `only an inferred merge approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`
 				: `no merge approval covers #${row.ticket}; record the user's words with approve --action merge`,
 		);
-	const rules = run.preflight.rules as Rules | "unknown";
+	const rules = run.preflight.rules;
 	if (rules !== "unknown" && rules.mergeMethods && !rules.mergeMethods.includes("squash"))
 		throw new Refusal(`the base rules allow ${rules.mergeMethods.join(", ")}, not squash`);
 	const pr = viewPr(run, row, runner);
@@ -808,10 +894,16 @@ function merge(argv: string[], runner: Runner, cwd: string): string {
 			throw new Refusal(
 				`PR #${pr.number} is behind ${pr.baseRefName} and gh pr update-branch failed: ${update.stderr.trim()}`,
 			);
-		record(run, { at: runner.now().toISOString(), type: "head-moved", ticket: row.ticket, reason: "update-branch" });
+		record(run, {
+			at: runner.now().toISOString(),
+			type: "head-moved",
+			ticket: row.ticket,
+			head: null,
+			reason: "update-branch",
+		});
 		return `PR #${pr.number} was behind ${pr.baseRefName} and the rules ${rules === "unknown" ? "are unknown" : "require it up to date"}: branch updated; #${row.ticket} is ${label(row)}; gate again when CI finishes on the new head`;
 	}
-	record(run, { at: runner.now().toISOString(), type: "merge-intent", ticket: row.ticket, sha: row.sha });
+	record(run, { at: runner.now().toISOString(), type: "merge-intent", ticket: row.ticket, sha: row.sha! });
 	const merged = runner.exec("gh", ["pr", "merge", String(pr.number), "--squash", "--match-head-commit", row.sha!], {
 		cwd: repo,
 	});
@@ -836,6 +928,11 @@ function piInPane(runner: Runner, pane: string): boolean | undefined {
 	return procs.some((p: any) => /(^|\/)pi$/.test(p?.argv0 ?? ""));
 }
 
+/** Whether pane text shows an open dialog: a select hint, or a `guard` confirm title (`Allow <risk>?`). */
+export function dialogVisible(screen: string): boolean {
+	return /enter select/.test(screen) || /^\s*Allow .+\?\s*$/m.test(screen);
+}
+
 /** Why the chief may not type into the pane now, or `undefined` when a prompt is safe. */
 function promptBlocker(runner: Runner, pane: string): string | undefined {
 	const live = piInPane(runner, pane);
@@ -843,7 +940,7 @@ function promptBlocker(runner: Runner, pane: string): string | undefined {
 		return `no live Pi in pane ${pane}${live === undefined ? " (the pane is gone)" : ""}; a prompt would type into the shell`;
 	const read = runner.exec("herdr", ["agent", "read", pane, "--source", "visible"]);
 	if (read.code !== 0) return `cannot read pane ${pane}: ${read.stderr.trim()}`;
-	if (/enter select/.test(read.stdout) || /^\s*Allow .+\?\s*$/m.test(read.stdout))
+	if (dialogVisible(read.stdout))
 		return `a dialog is visible in pane ${pane}; Enter would answer it: release it with herdr agent send-keys ${pane} esc and take the question to the user`;
 	return undefined;
 }
@@ -896,7 +993,7 @@ function cleanRow(run: Run, row: Row, runner: Runner, dryRun: boolean): { lines:
 		const gitDir = gitIn(runner, launch.worktree, "rev-parse", "--path-format=absolute", "--git-dir");
 		if (gitDir.code !== 0)
 			return { lines, left: `cannot find the git dir of ${launch.worktree}: ${gitDir.stderr.trim()}` };
-		const lock = join(gitDir.stdout.trim(), LOCK);
+		const lock = implementLock(gitDir.stdout.trim());
 		if (existsSync(lock)) return { lines, left: `${lock} is present: a worker is writing` };
 		const dirty = dirtyLines(runner, launch.worktree);
 		if (dirty.length) return { lines, left: `worktree ${launch.worktree} is not clean: ${dirty.join("; ")}` };

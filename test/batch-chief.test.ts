@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
 	appendFileSync,
 	existsSync,
@@ -12,7 +13,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { main, type Result, type Runner } from "../skills/batch-chief/batch.ts";
+import { prepare } from "../packages/pi-workers/extensions/delegate-implement.ts";
+import registerGuard from "../packages/pi-workers/extensions/guard.ts";
+import { dialogVisible, implementLock, main, type Result, type Runner } from "../skills/batch-chief/batch.ts";
 
 // Every effect goes through a fake runner; files live under a temp dir, never the real ~/.pi or this checkout.
 const ROOT = mkdtempSync(join(tmpdir(), "batch-chief-test-"));
@@ -301,7 +304,18 @@ function launchOptions(f: Fixture, n: number) {
 test("events recorded by their own commands are refused through event", () => {
 	const f = fixture();
 	gated(f);
-	assertRefused(f.run("event", "5", "merged"), "not recorded through event");
+	assertRefused(
+		f.run("event", "5", "merged"),
+		"not recorded through event",
+		`#5 is GATED(${HEAD})`,
+		"it accepts: round, head-moved, merge-intent, merged, leave-open, drop",
+	);
+	assertRefused(
+		f.run("event", "5", "frobnicate"),
+		"unknown event frobnicate",
+		`#5 is GATED(${HEAD})`,
+		"it accepts: round, head-moved, merge-intent, merged, leave-open, drop",
+	);
 });
 
 test("status records a report file newer than the row's last event, and ignores an older one", () => {
@@ -683,4 +697,188 @@ test("cleanup leaves a dirty worktree and a row with a present lock, and lists t
 	assert.ok(existsSync(r5.wt) && existsSync(r6.wt));
 	assert.match(out, /Resources left:[\s\S]*#5 [^\n]*not clean[^\n]*scratch\.txt/);
 	assert.match(out, /Resources left:[\s\S]*#6 [^\n]*me-pi-implement\.lock/);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Review fixes.
+
+test("status lists gate on a REPORTED row and merge on a GATED row, and neither elsewhere", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	const gateLine = 'allowed: gate 5 --judged "<your note on the diff>"';
+	const mergeLine = "allowed: merge 5";
+	let out = assertOk(f.run("status"));
+	assert.ok(!out.includes("gate 5") && !out.includes(mergeLine), out);
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
+	out = assertOk(f.run("status"));
+	assert.ok(out.includes(gateLine), out);
+	assert.ok(!out.includes(mergeLine), out);
+	f.append({ at: "2026-11-11T10:06:00.000Z", type: "gate", ticket: 5, sha: HEAD });
+	f.state.prs["feat/t5"] = goodPr();
+	out = assertOk(f.run("status"));
+	assert.ok(out.includes(mergeLine), out);
+	assert.ok(!out.includes("gate 5"), out);
+	assert.ok(!/allowed: (gate|merge) 6/.test(out), out);
+});
+
+test("a chief answer's basis must be one whole line of the brief, not a fragment", () => {
+	const f = fixture();
+	writeFileSync(f.brief, "# Brief\n\n- The test may use a fake clock.\n1. Keep   the old name.\n");
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	assertOk(f.launch(6));
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "BLOCKED", "10:04")));
+	assertOk(f.run("event", "6", "report", "--path", f.report(6, "BLOCKED", "10:04")));
+	assertRefused(f.run("event", "5", "answer", "--basis", "the"), "as a whole line");
+	assertRefused(f.run("event", "5", "answer", "--basis", "may use a fake clock."), "as a whole line");
+	assertOk(f.run("event", "5", "answer", "--basis", "The test may use a fake clock."));
+	assertOk(f.run("event", "6", "answer", "--basis", "Keep the old name."));
+});
+
+test("cleanup leaves and lists a row whose Pi still runs after /quit, removing nothing", () => {
+	const f = fixture();
+	const [r5, r6] = cleanable(f);
+	f.state.exec[`herdr agent prompt ${r5.id} /quit`] = ok();
+	const out = assertOk(f.run("cleanup"));
+	assert.deepEqual(
+		f.calls.filter((c) => EFFECT.test(c)),
+		[
+			`herdr agent prompt ${r5.id} /quit`,
+			`herdr agent prompt ${r6.id} /quit`,
+			`git worktree remove ${r6.wt}`,
+			`herdr pane close ${r6.id}`,
+		],
+	);
+	assert.ok(existsSync(r5.wt));
+	assert.ok(!f.calls.some((c) => c.includes("kill")));
+	assert.match(out, new RegExp(`Resources left:\\n- #5 [^\\n]*Pi still runs in pane ${r5.id} after /quit`));
+});
+
+test("cleanup of a row whose pane is already gone removes the worktree and closes no pane", () => {
+	const f = fixture();
+	const [r5] = cleanable(f);
+	f.state.exec[`herdr pane process-info --pane ${r5.id}`] = {
+		code: 1,
+		stdout: '{"error":{"code":"pane_not_found"}}',
+		stderr: "",
+	};
+	const out = assertOk(f.run("cleanup"));
+	const effects = f.calls.filter((c) => EFFECT.test(c));
+	assert.deepEqual(
+		effects.filter((c) => c.includes(r5.id) || c.includes("t5")),
+		[`git worktree remove ${r5.wt}`, "git branch -D feat/t5"],
+	);
+	assert.match(out, /Resources left:\n- none/);
+});
+
+test("merge on a behind PR whose update-branch fails records nothing and names the failure", () => {
+	const f = fixture();
+	approvedGated(f);
+	f.state.prs["feat/t5"] = goodPr({ mergeStateStatus: "BEHIND" });
+	f.state.exec["gh pr update-branch 12"] = { code: 1, stdout: "", stderr: "HTTP 422: merge conflict" };
+	const before = f.events().length;
+	assertRefused(f.run("merge", "5"), "gh pr update-branch failed", "HTTP 422: merge conflict");
+	assert.equal(f.events().length, before);
+	assert.deepEqual(mergeCalls(f), []);
+	assert.match(rowLine(f, 5), new RegExp(`^#5 GATED\\(${HEAD}\\)`));
+});
+
+test("merge is refused when the base rules' merge methods exclude squash", () => {
+	const f = fixture();
+	f.state.rules = ok(
+		JSON.stringify([{ type: "pull_request", parameters: { allowed_merge_methods: ["merge", "rebase"] } }]),
+	);
+	approvedGated(f);
+	assertRefused(f.run("merge", "5"), "allow merge, rebase, not squash");
+	assert.deepEqual(mergeCalls(f), []);
+	assert.notEqual(f.events().at(-1).type, "merge-intent");
+});
+
+test("contract: the guard's confirm title is a dialog to prompt", async () => {
+	let handler: any;
+	registerGuard({
+		on: (_event: string, h: any) => {
+			handler = h;
+		},
+		registerCommand: () => {},
+		events: { emit: () => {} },
+	} as any);
+	const titles: string[] = [];
+	const command = "git push origin main";
+	const cwd = mkdtempSync(join(ROOT, "guard-"));
+	await handler(
+		{ type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command } },
+		{
+			cwd,
+			hasUI: true,
+			ui: {
+				confirm: async (title: string) => {
+					titles.push(title);
+					return false;
+				},
+			},
+		},
+	);
+	assert.equal(titles.length, 1, "guard did not open a confirm");
+	const screen = `${titles[0]}\n\n  ${command}\n\n→ Yes\n  No\n`;
+	assert.ok(!screen.includes("enter select"));
+	assert.equal(dialogVisible(screen), true, `batch does not see the guard confirm ${JSON.stringify(titles[0])}`);
+	assert.equal(dialogVisible("> please rebase\n"), false);
+});
+
+test("contract: batch's lock path is where the implement job takes its lock", async () => {
+	const repo = mkdtempSync(join(ROOT, "lock-repo-"));
+	const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+	git("init", "-q", "--template=", "-b", "main");
+	git("config", "core.hooksPath", "/dev/null");
+	git("config", "commit.gpgsign", "false");
+	git("config", "user.email", "batch-test@example.invalid");
+	git("config", "user.name", "Batch Test");
+	writeFileSync(join(repo, "a.txt"), "a\n");
+	git("add", "-A");
+	git("commit", "-q", "-m", "initial");
+	git("switch", "-q", "-c", "goal/x");
+	const job = await prepare(repo, "im70", "npm test");
+	try {
+		const lock = implementLock(git("rev-parse", "--path-format=absolute", "--git-dir"));
+		assert.ok(existsSync(lock), `no implement lock at ${lock}`);
+		assert.equal(lock, job.lockPath);
+	} finally {
+		rmSync(job.lockPath, { force: true });
+		rmSync(job.ghConfigDir, { recursive: true, force: true });
+	}
+});
+
+test("a run written by another version of the helper is refused", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assert.equal(typeof f.events()[0].version, "number");
+	const path = join(f.runDir(), "events.jsonl");
+	const [first, ...rest] = readFileSync(path, "utf8").split("\n");
+	const old = { ...JSON.parse(first) };
+	delete old.version;
+	writeFileSync(path, [JSON.stringify(old), ...rest].join("\n"));
+	for (const argv of [["status"], ["event", "5", "drop", "--user", "x"], ["cleanup"]])
+		assertRefused(
+			f.run(...argv),
+			"written by another version of the helper",
+			"version none",
+			"this helper writes version",
+		);
+});
+
+test("a report whose Status line is still the template placeholder is not a report", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	f.at("10:05");
+	for (const status of ["DONE | BLOCKED", "<DONE or BLOCKED>", "DONE, mostly"])
+		assertRefused(f.run("event", "5", "report", "--path", f.report(5, status, "10:04")), "exactly DONE or BLOCKED");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "**BLOCKED**", "10:04")));
+	assert.match(rowLine(f, 5), /^#5 ASKED\(chief\)/);
+	const template = readFileSync(join(import.meta.dirname, "../skills/batch-chief/CONTRACT.md"), "utf8");
+	assert.match(template, /## Status\n<DONE or BLOCKED>\n/);
 });
