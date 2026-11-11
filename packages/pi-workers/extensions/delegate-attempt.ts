@@ -94,6 +94,8 @@ export interface AttemptBudget {
 	/** The role's configured time limit, named in the timeout message; retries keep `hardDeadline`, so time left shrinks. */
 	limitSecs: number;
 	hardDeadline: number;
+	/** The role's configured cost cap, named in the cost-cap message; retries lower `hardCostCapUsd` by what was spent. */
+	limitCostUsd: number;
 	hardCostCapUsd: number;
 	toolDeadline: number;
 	toolCostCapUsd: number;
@@ -598,7 +600,7 @@ export function createAttemptLedger({
 			if (currentCost >= budget.toolCostCapUsd) retainParentFact("wrap-up-limit", "tool-cost");
 			if (currentCost >= budget.hardCostCapUsd) {
 				retainParentFact("hard-cost-limit", "hard-cost");
-				stop(`cost cap $${budget.hardCostCapUsd} reached`);
+				stop(`cost cap $${budget.limitCostUsd} reached`);
 			}
 		}
 		cancelPendingProgress();

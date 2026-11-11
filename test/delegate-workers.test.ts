@@ -562,6 +562,62 @@ test("an infra retry that times out names the limit and keeps the deadline", { t
 	assert.ok(elapsed < 3500, `${elapsed}ms: the retry kept the first attempt's deadline`);
 });
 
+test("an infra retry that hits the cost cap names the configured cap", { timeout: 20000 }, async (t) => {
+	const marker = scratch("retry-then-expensive-marker");
+	const { tool } = setup(t, {
+		env: { FAKE_PI_MODE: "retry-then-expensive", FAKE_PI_MARKER: marker },
+		limits: { infraRetryDelaysMs: [1] },
+	});
+	const res = await run(tool, { role: "scout", task: "x" });
+	assert.equal(readFileSync(marker, "utf8").trim().split("\n").length, 2, "two launches");
+	assert.equal(res.details.round1[0].infraRetries?.length, 1);
+	assert.match(text(res), /^✗ stopped: cost cap \$5 reached/);
+});
+
+test("a nondefault cost cap is named on the first attempt and after an infra retry", { timeout: 20000 }, async (t) => {
+	const first = await run(setup(t, { env: { FAKE_PI_MODE: "expensive" }, limits: { costCapUsd: 2 } }).tool, {
+		role: "scout",
+		task: "x",
+	});
+	assert.match(text(first), /^✗ stopped: cost cap \$2 reached\n/);
+	const marker = scratch("retry-then-expensive-cap-marker");
+	const retried = await run(
+		setup(t, {
+			env: { FAKE_PI_MODE: "retry-then-expensive", FAKE_PI_MARKER: marker },
+			limits: { costCapUsd: 2, infraRetryDelaysMs: [1] },
+		}).tool,
+		{ role: "scout", task: "x" },
+	);
+	assert.equal(readFileSync(marker, "utf8").trim().split("\n").length, 2, "two launches");
+	assert.equal(retried.details.round1[0].infraRetries?.length, 1);
+	assert.match(text(retried), /^✗ stopped: cost cap \$2 reached\n/);
+});
+
+test("an infra retry gets the caps left after the first attempt's spend", { timeout: 20000 }, async (t) => {
+	const echoMarker = scratch("retry-then-echo-budget-marker");
+	const echoed = await run(
+		setup(t, {
+			env: { FAKE_PI_MODE: "retry-then-echo-budget", FAKE_PI_MARKER: echoMarker },
+			limits: { infraRetryDelaysMs: [1] },
+		}).tool,
+		{ role: "scout", task: "x" },
+	);
+	assert.equal(readFileSync(echoMarker, "utf8").trim().split("\n").length, 2, "two launches");
+	assert.equal(JSON.parse(text(echoed).split("\n")[0]).cost, 4 - 0.002);
+	// $4.999 is above the $4.998 left after the first attempt's $0.002 but below the $5 cap.
+	const marker = scratch("retry-then-expensive-remaining-marker");
+	const capped = await run(
+		setup(t, {
+			env: { FAKE_PI_MODE: "retry-then-expensive", FAKE_PI_MARKER: marker, FAKE_PI_COST: "4.999" },
+			limits: { infraRetryDelaysMs: [1] },
+		}).tool,
+		{ role: "scout", task: "x" },
+	);
+	assert.equal(readFileSync(marker, "utf8").trim().split("\n").length, 2, "two launches");
+	assert.equal(capped.isError, true);
+	assert.match(text(capped), /^✗ stopped: cost cap \$[\d.]+ reached\n[\s\S]*\nPartial answer:\nstill going\n/);
+});
+
 test("a non-scout timeout names that role's limit", { timeout: 20000 }, async (t) => {
 	const { tool } = setup(t, { env: { FAKE_PI_MODE: "hang" }, limits: { timeoutSecs: 1.5 } });
 	const res = await run(tool, { role: "general", task: "x" });
