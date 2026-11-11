@@ -42,6 +42,9 @@ for relative in (
     ".agents/skills/pi-live-test/pi-live.sh",
     "skills/ticket-readiness/SKILL.md",
     "skills/ticket-readiness/RUBRIC.md",
+    "skills/batch-chief/SKILL.md",
+    "skills/batch-chief/CONTRACT.md",
+    "skills/batch-chief/batch.ts",
 ):
     original = os.path.join(source, relative)
     if not os.path.isfile(original):
@@ -192,7 +195,8 @@ assert_skill_links() {
   local agent_dir="$1" repo_root="$2"
   assert_link "$agent_dir/skills/implement-me-pi" "$repo_root/skills/implement-me-pi" &&
     assert_link "$agent_dir/skills/implement-spec-me-pi" "$repo_root/skills/implement-spec-me-pi" &&
-    assert_link "$agent_dir/skills/ticket-readiness" "$repo_root/skills/ticket-readiness"
+    assert_link "$agent_dir/skills/ticket-readiness" "$repo_root/skills/ticket-readiness" &&
+    assert_link "$agent_dir/skills/batch-chief" "$repo_root/skills/batch-chief"
 }
 SKILL_LOADER_RUN=0
 run_skill_loader() { # <home> <agent dir> <mode> <project...>; disable package installation/network while probing resource discovery.
