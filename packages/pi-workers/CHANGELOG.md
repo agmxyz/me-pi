@@ -2,7 +2,7 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
-## [Unreleased]
+## [0.1.7] - 2026-11-11
 
 - A worker's cost-cap stop message now shows the configured cap (`cost cap $5 reached`), including when an infra retry hits it. Before, it showed the cap left for that attempt.
 - `guard` asks in every session before git options and env that run a command: `git -c` with a key off a short safe list (`user.*`, `color.*`, `pull.rebase`, …), `--config-env`, `git config` writes of such keys, `submodule foreach`, `clone -c/--template`, `--exec-path`, `--upload-pack` (and `clone -u`), `push --receive-pack/--exec`, `archive --exec`, `grep -O`, `difftool -x`, an editor override on any git command, and `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `GIT_EXTERNAL_DIFF`, `GIT_CONFIG_*`, `GIT_TEMPLATE_DIR`, `LESSOPEN`, or a `GIT_PAGER`/`PAGER` other than `cat`. Safe `-c` and `git config` keys, `GIT_PAGER=cat`, and `git config` reads and `--unset` stay quiet; these checks also apply in an implement worker's fresh temp repo (#115).
