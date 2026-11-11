@@ -13,6 +13,7 @@ const FAR = Date.now() + 3_600_000;
 const BUDGET = {
 	limitSecs: 300,
 	hardDeadline: FAR,
+	limitCostUsd: 5,
 	hardCostCapUsd: 5,
 	toolDeadline: FAR,
 	toolCostCapUsd: 4,
@@ -235,7 +236,7 @@ test("ledger: auto_retry_start correlates with the requested model's provider er
 });
 
 test("ledger: reaching the hard cost cap on a continuing reply stops synchronously", () => {
-	const budget = { ...BUDGET, hardCostCapUsd: 1, toolCostCapUsd: 0.8 };
+	const budget = { ...BUDGET, limitCostUsd: 1, hardCostCapUsd: 1, toolCostCapUsd: 0.8 };
 	const { result, provenance, kills } = ledgerFor([reply("working", { cost: 1.5, stopReason: "toolUse" })], {
 		budget,
 		exit: null,
