@@ -15,6 +15,7 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 - A checkout stays taken while an `implement` worker whose session died (killed, crashed) is still running: its lock now also names the worker's pid, and the refusal or block says the session is gone, which pid may still be its worker and how to check it, that a worker stops at its next tool call, and which lock file to remove if the pid is not the worker. Before, the lock read free at once and a second writer could start beside the orphan (#126). Reload every Pi session after updating: a session on the older code reads the new lock as unreadable and blocks writes in that checkout.
 - Workers no longer inherit `ME_PI_STATUS_LOG` or `ME_PI_SPEND_BUDGET_USD`, so a worker's check (such as me-pi's own tests) runs as it would outside the supervised session (#127).
 - `git symbolic-ref --short HEAD`, `git submodule status|summary`, and `git sparse-checkout list` are no longer blocked as tree writes in a checkout where an `implement` job runs; their writing forms still are.
+- The failed-tools artifact records a bash exit code as provided only when the canonical `structuredContent.exit_code` is present and no alias contradicts it; before, it recorded the first alias found.
 
 ## [0.1.6] - 2026-11-10
 

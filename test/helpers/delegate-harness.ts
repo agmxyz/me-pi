@@ -451,6 +451,7 @@ process.stdin.on("end", () => {
         content: [{ type: "text", text: "Targeted failed: GITHUB_TOKEN=target-secret AWS_SECRET_ACCESS_KEY='target-aws-secret'" }],
         error: "AWS_SECRET_ACCESS_KEY='error-fake-secret'",
         structuredContent: { output: "Targeted failed: GITHUB_TOKEN=target-secret AWS_SECRET_ACCESS_KEY='target-aws-secret'", full_output_path: process.env.FAKE_PI_REF },
+        // Alias-only on purpose (no structuredContent.exit_code): the effect stays unknown, so acceptance is withheld, and the artifact records the code as not provided.
         details: { exitCode: 7, fullOutputPath: process.env.FAKE_PI_REF },
       } });
       tool("bash", { command: process.env.FAKE_PI_RAN || "npm test" }, false, { result: {
