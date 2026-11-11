@@ -590,7 +590,11 @@ test("implement captures targeted failures while a later declared check passes",
 		entry.command.effectiveCommand.value.text,
 		'GITHUB_TOKEN=[REDACTED] AWS_SECRET_ACCESS_KEY="[REDACTED]" rtk npm run targeted-test',
 	);
-	assert.equal(entry.exitCode.value, 7, "exitCode is extracted from actual result details");
+	assert.deepEqual(
+		entry.exitCode,
+		{ state: "not-provided", value: null },
+		"an alias-only exit code (details.exitCode without canonical structuredContent.exit_code) is recorded as not provided",
+	);
 	assert.match(entry.output.value.text, /GITHUB_TOKEN=\[REDACTED\]/);
 	assert.match(entry.output.value.text, /AWS_SECRET_ACCESS_KEY="\[REDACTED\]"/);
 	assert.equal(entry.error.value.text, 'AWS_SECRET_ACCESS_KEY="[REDACTED]"');
