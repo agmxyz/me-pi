@@ -85,7 +85,7 @@ The chief types into a coordinator's pane only with `batch.ts prompt`. A coordin
 
 While any coordinator is running, run only commands that `guard` lets through without asking: a coordinator's line arriving in the chief pane would answer the open dialog. A needed gated command waits until every coordinator is stopped, or the user runs it himself.
 
-Coordinators are stopped in order (`/quit`), then the worktree is removed; never `kill -9`. An interrupted coordinator is resumed with `pi --session <session file>` and told: "You were interrupted. Check the state of the repository before repeating anything, and say which command you were about to run before you run it again."
+Coordinators are stopped in order (`/quit`), then the worktree is removed; never `kill -9`. An interrupted coordinator is resumed with `pi --session <session file>` (at its pane's shell prompt: `herdr agent start coordinator-<n> --kind pi --pane <pane> -- --session <session file>`) and told, with `batch.ts prompt`: "You were interrupted. Check the state of the repository before repeating anything, and say which command you were about to run before you run it again."
 
 From `launch` on, a worktree belongs to its coordinator: the chief writes only in the main checkout and the run directory, and a change in a worktree goes through its coordinator.
 

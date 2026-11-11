@@ -18,6 +18,8 @@ The chief writes one contract per row in step 3 of [`SKILL.md`](SKILL.md), into 
 | `<authorised actions>` | the actions the recorded approvals cover for this ticket |
 | `<report>` | `<run dir>/report-<n>.md` |
 
+`<pr>` stays as written: the coordinator fills it with the PR it opens.
+
 ## Contract
 
 ```markdown
