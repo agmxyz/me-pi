@@ -4,7 +4,7 @@
  * and their transition table.
  */
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -312,10 +312,7 @@ function rebuild(id: string, dir: string): Run {
 	const [first, ...rest] = readEvents(dir) as Event[];
 	if (first?.type !== "preflight") throw new Error(`${dir}/events.jsonl does not start with a preflight event`);
 	const preflight = first;
-	if (preflight.version !== VERSION)
-		throw new Refusal(
-			`run ${id} was written by another version of the helper: its events.jsonl has version ${preflight.version ?? "none"}; this helper writes version ${VERSION}. Finish that run with the helper that wrote it, or point ${join(dirname(dir), "current")} elsewhere`,
-		);
+	if (preflight.version !== VERSION) throw new Refusal(otherVersion(id, preflight.version));
 	const run: Run = { id, dir, preflight, rows: new Map(), approvals: [], notes: [] };
 	for (const ticket of preflight.tickets)
 		run.rows.set(ticket, { ticket, state: "QUEUED", lastAt: preflight.at, chiefAnswers: 0 });
@@ -329,6 +326,21 @@ function rebuild(id: string, dir: string): Run {
 		}
 	}
 	return run;
+}
+
+function otherVersion(id: string, version: unknown): string {
+	return `run ${id} was written by another version of the helper: its events.jsonl has version ${version ?? "none"}; this helper writes version ${VERSION}. Finish that run with the helper that wrote it, or run preflight again with --set-aside-old-run to start a new run without checking it`;
+}
+
+/** The format version a run's first event carries, read without replaying the run's events. */
+function logVersion(dir: string): unknown {
+	const path = join(dir, "events.jsonl");
+	const first = readFileSync(path, "utf8").split("\n", 1)[0];
+	try {
+		return JSON.parse(first)?.version;
+	} catch (error) {
+		throw new Error(`${path}:1 is not JSON: ${(error as Error).message}`);
+	}
 }
 
 function fold(run: Run, e: Event): void {
@@ -425,7 +437,13 @@ function parseRules(json: string): Rules {
 }
 
 function preflight(argv: string[], runner: Runner, cwd: string): string {
-	const { values } = parse(argv, { repo: "string", tickets: "string", check: "string", "chief-pane": "string" });
+	const { values } = parse(argv, {
+		repo: "string",
+		tickets: "string",
+		check: "string",
+		"chief-pane": "string",
+		"set-aside-old-run": "boolean",
+	});
 	const repo = mainCheckout(runner, resolve(cwd, required(values, "repo")));
 	const tickets = ticketList(required(values, "tickets"), "--tickets");
 	const git = (...args: string[]) => {
@@ -439,13 +457,22 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 	if (dirty) throw new Refusal(`the main checkout ${repo} is not clean:\n${dirty}`);
 	const batch = batchDir(repo);
 	const pointer = join(batch, "current");
+	let setAside: string | undefined;
 	if (existsSync(pointer)) {
 		const id = readFileSync(pointer, "utf8").trim();
-		const open = [...rebuild(id, join(batch, id)).rows.values()].filter((r) => !TERMINAL.includes(r.state));
-		if (open.length)
-			throw new Refusal(
-				`run ${id} still has rows that are not terminal: ${open.map((r) => `#${r.ticket}`).join(", ")}`,
-			);
+		const old = join(batch, id);
+		const version = logVersion(old);
+		if (version !== VERSION) {
+			// Another version's events are never replayed through this table; the user vouches the run is finished.
+			if (values["set-aside-old-run"] !== true) throw new Refusal(otherVersion(id, version));
+			setAside = `set aside run ${id} (version ${version ?? "none"}), not checked; it stays in ${old}, and any worktree, branch or pane it left is not cleaned up`;
+		} else {
+			const open = [...rebuild(id, old).rows.values()].filter((r) => !TERMINAL.includes(r.state));
+			if (open.length)
+				throw new Refusal(
+					`run ${id} still has rows that are not terminal: ${open.map((r) => `#${r.ticket}`).join(", ")}`,
+				);
+		}
 	}
 	const now = runner.now();
 	const id = now.toISOString().replace(/[:.]/g, "-");
@@ -486,6 +513,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 	const missing = TOOLS.filter((tool) => !tools[tool]);
 	return [
 		`run ${id} created in ${dir}`,
+		...(setAside ? [setAside] : []),
 		`base ${base} at ${event.sha}; rules: ${rulesText(event)}`,
 		...(missing.length ? [`missing tools: ${missing.join(", ")}`] : []),
 		`rows QUEUED: ${tickets.map((t) => `#${t}`).join(", ")}`,
@@ -1074,6 +1102,12 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 		"Resources left:",
 		...(left.length ? left.map((l) => `- ${l}`) : ["- none"]),
 	);
+	const finished = !left.length && [...run.rows.values()].every((r) => TERMINAL.includes(r.state));
+	if (finished && !dryRun) {
+		const pointer = join(dirname(run.dir), "current");
+		unlinkSync(pointer);
+		out.push(`current run cleared: ${pointer} removed; ${run.dir} stays; the next batch starts with preflight`);
+	}
 	return out.join("\n");
 }
 

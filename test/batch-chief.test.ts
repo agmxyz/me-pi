@@ -980,3 +980,154 @@ test("a report whose Status line is still the template placeholder is not a repo
 	const template = readFileSync(join(import.meta.dirname, "../skills/batch-chief/CONTRACT.md"), "utf8");
 	assert.match(template, /## Status\n<DONE or BLOCKED>\n/);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The current run pointer and format versions.
+
+const currentPointer = (f: Fixture) => join(`${f.repo}.worktrees`, ".batch", "current");
+
+test("a cleanup that leaves nothing removes current, keeps the run directory, and the next preflight starts", () => {
+	const f = fixture();
+	cleanable(f);
+	const dir = f.runDir();
+	const out = assertOk(f.run("cleanup"));
+	assert.match(out, /Resources left:\n- none/);
+	assert.ok(!existsSync(currentPointer(f)), `current is still there after:\n${out}`);
+	assert.match(out.split("\n").at(-1)!, /current run cleared/);
+	assert.ok(existsSync(join(dir, "events.jsonl")), "the run's events.jsonl was removed");
+	for (const argv of [
+		["status"],
+		["event", "5", "drop", "--user", "x"],
+		["cleanup"],
+		["note", "--kind", "manual-fix", "--ticket", "5", "x"],
+	])
+		assertRefused(f.run(...argv), "no current run", "run preflight first");
+	f.at("11:00");
+	assertOk(f.preflight());
+	assert.notEqual(f.runDir(), dir);
+});
+
+test("a cleanup that leaves a resource or a row that is not terminal keeps current", () => {
+	const dirty = fixture();
+	const [r5] = cleanable(dirty);
+	dirty.state.exec[`git -C ${r5.wt} status --porcelain`] = ok("?? scratch.txt\n");
+	assert.match(assertOk(dirty.run("cleanup")), /Resources left:\n- #5 /);
+	assert.ok(existsSync(currentPointer(dirty)), "current removed while a worktree is left");
+	const running = fixture();
+	assertOk(running.preflight());
+	assertOk(running.launch(5));
+	assertOk(running.run("cleanup"));
+	assert.ok(existsSync(currentPointer(running)), "current removed while #5 runs");
+	const queued = fixture();
+	assertOk(queued.preflight());
+	assert.match(assertOk(queued.run("cleanup")), /Resources left:\n- none/);
+	assert.ok(existsSync(currentPointer(queued)), "current removed while rows are QUEUED");
+});
+
+test("cleanup --dry-run never removes current", () => {
+	const f = fixture();
+	cleanable(f);
+	const out = assertOk(f.run("cleanup", "--dry-run"));
+	assert.match(out, /Resources left:\n- none/);
+	assert.ok(existsSync(currentPointer(f)), "dry run removed current");
+});
+
+/** Rewrites the current run's preflight to `version` and replaces its later events with `rest`. */
+function otherVersion(f: Fixture, version: number, rest: object[]) {
+	const path = join(f.runDir(), "events.jsonl");
+	const [first] = f.events();
+	writeFileSync(path, [{ ...first, version }, ...rest].map((e) => `${JSON.stringify(e)}\n`).join(""));
+	return readFileSync(path, "utf8");
+}
+
+test("preflight refuses a current run of another version, finished or not, and names the flag that sets it aside", () => {
+	for (const rest of [
+		[{ at: "2026-11-11T10:01:00.000Z", type: "finished-v2", ticket: 5 }],
+		[{ at: "2026-11-11T10:01:00.000Z", type: "launch", ticket: 5 }],
+	]) {
+		const f = fixture();
+		assertOk(f.preflight());
+		const old = f.runDir();
+		otherVersion(f, 2, rest);
+		f.at("11:00");
+		assertRefused(
+			f.preflight(),
+			"written by another version of the helper",
+			"version 2",
+			"preflight again with --set-aside-old-run",
+		);
+		assert.equal(f.runDir(), old, "a refused preflight moved current");
+	}
+});
+
+test("preflight --set-aside-old-run starts a new run and leaves the other version's run on disk unread", () => {
+	for (const rest of [[], [{ at: "2026-11-11T10:01:00.000Z", type: "launch", ticket: 5 }]]) {
+		const f = fixture();
+		assertOk(f.preflight());
+		const old = f.runDir();
+		const before = otherVersion(f, 2, rest);
+		f.at("11:00");
+		const out = assertOk(
+			f.run(
+				"preflight",
+				...["--repo", f.repo, "--tickets", "5,6", "--check", "npm test", "--chief-pane", "w1:p1"],
+				"--set-aside-old-run",
+			),
+		);
+		assert.ok(
+			out.includes(`set aside run ${old.split("/").at(-1)} (version 2), not checked; it stays in ${old}`),
+			out,
+		);
+		assert.notEqual(f.runDir(), old);
+		assert.equal(readFileSync(join(old, "events.jsonl"), "utf8"), before);
+	}
+});
+
+test("preflight --set-aside-old-run still refuses an unfinished run of this version", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	f.at("11:00");
+	assertRefused(
+		f.run(
+			"preflight",
+			...["--repo", f.repo, "--tickets", "7", "--check", "npm test", "--chief-pane", "w1:p1"],
+			"--set-aside-old-run",
+		),
+		"still has rows that are not terminal: #5, #6",
+	);
+});
+
+test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => {
+	const f = fixture();
+	const golden = readFileSync(join(import.meta.dirname, "fixtures/batch-chief/v1-events.jsonl"), "utf8");
+	const batch = join(`${f.repo}.worktrees`, ".batch");
+	mkdirSync(join(batch, "golden-v1"), { recursive: true });
+	writeFileSync(join(batch, "golden-v1", "events.jsonl"), golden);
+	writeFileSync(join(batch, "current"), "golden-v1\n");
+	f.at("10:55");
+	const out = assertOk(f.run("status"));
+	const rows = out.split("\n").filter((l) => /^(#| {2}allowed:)/.test(l));
+	assert.deepEqual(rows, [
+		"#5 MERGED next: nobody",
+		"#release LEFT_OPEN next: nobody",
+		"#7 DROPPED next: nobody",
+		"#8 RUNNING(review) next: coordinator, deadline 2026-11-11T11:19:00.000Z",
+		"  allowed: event 8 report --path /golden/report-8.md",
+		'  allowed: event 8 drop --user "<user\'s words>"',
+	]);
+	assert.equal(readFileSync(join(batch, "golden-v1", "events.jsonl"), "utf8"), golden, "status recorded an event");
+	const ledger = readFileSync(join(batch, "golden-v1", "ledger.md"), "utf8");
+	for (const line of [
+		"| #5 | MERGED | nobody |  | feat/t5 | 2026-11-11T10:23:00.000Z |  |",
+		"| #release | LEFT_OPEN | nobody |  | feat/trelease | 2026-11-11T10:45:00.000Z |  |",
+		"| #7 | DROPPED | nobody |  | feat/t7 | 2026-11-11T10:46:00.000Z |  |",
+		"| #8 | RUNNING(review) | coordinator | 2026-11-11T11:19:00.000Z | feat/t8 | 2026-11-11T10:49:00.000Z |  |",
+		'- 2026-11-11T10:22:00.000Z merge #5: "merge 5"',
+		'- 2026-11-11T10:44:00.000Z merge #release: "ship them all" (inferred)',
+		"- chief-answer #release: answered from the brief's clock line",
+		"- gate-miss #8: CI ran on the old head",
+	])
+		assert.ok(ledger.includes(line), `ledger lacks ${line}:\n${ledger}`);
+	assert.ok(ledger.includes("`/golden/repo`, base `main` at `1111111111111111111111111111111111111111`"), ledger);
+});

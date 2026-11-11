@@ -48,7 +48,7 @@ From the main checkout, on the base branch and clean:
 
 `batch.ts preflight --repo <path> --tickets <n,...> --check "<cmd>" --chief-pane <your pane id>`
 
-Your pane id is `pane_id` in `herdr pane current`. Read the output: base and SHA, missing tools, and the base branch's rules (required checks, up-to-date requirement, merge methods). Rules `unknown` means the read failed; say so to the user, since `gate` then needs at least one passing check on the head and `merge` updates any branch that is behind.
+Your pane id is `pane_id` in `herdr pane current`. `preflight` refuses while the previous run has a row that is not terminal. A previous run written by another version of the helper is refused unread: confirm with the user that it is finished and cleaned up, then add `--set-aside-old-run`. Read the output: base and SHA, missing tools, and the base branch's rules (required checks, up-to-date requirement, merge methods). Rules `unknown` means the read failed; say so to the user, since `gate` then needs at least one passing check on the head and `merge` updates any branch that is behind.
 
 **Ready:** `preflight` printed `run <id> created`, every row is `QUEUED`, and the user has seen any missing tool and the rules line.
 
@@ -97,7 +97,7 @@ Record friction as it happens: `batch.ts note --kind <manual-fix|chief-answer|wr
 
 ## 5. Cleanup and notes
 
-Run `batch.ts cleanup --dry-run`, then `batch.ts cleanup`. Per terminal row it quits the coordinator through the same dialog check, confirms no Pi remains in the pane and the lock is absent, confirms the worktree is clean, removes it, deletes the local branch only when merged, and closes the pane. A resource that fails a check is left and listed; hand each one to the user.
+Run `batch.ts cleanup --dry-run`, then `batch.ts cleanup`. Per terminal row it quits the coordinator through the same dialog check, confirms no Pi remains in the pane and the lock is absent, confirms the worktree is clean, removes it, deletes the local branch only when merged, and closes the pane. A resource that fails a check is left and listed; hand each one to the user. When every row is terminal and nothing is left, `cleanup` ends the run (`current run cleared`), and the next batch starts with `preflight`.
 
 `cleanup` ends with the notes. Route each to the lowest layer that can own it: code or package first, then the upstream skill (`ticket-readiness`, the implementation skill), then the coordinator contract, this skill last. Propose each to the user as a ticket or a PR; this skill changes only through that PR.
 
