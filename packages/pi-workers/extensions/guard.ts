@@ -765,7 +765,9 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason };
 		};
 		if (!ctx.hasUI) return block(`Blocked (${risk}): needs explicit user approval; no UI to confirm.`);
-		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command);
+		const ok = await ctx.ui.confirm(`Allow ${risk}?`, command, { signal: ctx.signal });
+		// An abort closes the dialog; it must deny even if an answer raced it.
+		if (ctx.signal?.aborted) return block(`Blocked (${risk}): the turn was aborted before approval.`);
 		return ok ? undefined : block(`Blocked by user (${risk}).`);
 	});
 }
