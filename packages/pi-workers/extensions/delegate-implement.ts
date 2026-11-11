@@ -241,6 +241,8 @@ export type Checkout = {
 	gitBefore: GitSnapshot;
 	settingsBefore: string;
 	lockPath: string;
+	// Set when finish starts: its lock release must not race a late worker's recordWorker.
+	finishing?: boolean;
 	// TMPDIR at prepare: finish writes the details file here even if the environment changed since.
 	tmpRoot: string;
 	// An empty 0700 dir for GH_CONFIG_DIR, so gh in the worker finds no login; removed by finish.
@@ -327,10 +329,11 @@ const lockHolder = (content: string) => {
 type Holder = NonNullable<ReturnType<typeof lockHolder>>;
 
 // A lock is held while its session lives, or, after the session died without releasing it, while its worker's
-// group does: the orphan can still write until it stops. Takeover never kills it; a reused pid only holds falsely.
+// group does: the orphan can still write until it stops. Takeover never kills it. The worker pid may since have been
+// reused by an unrelated group leader, which then holds the lock falsely; the block says how to tell (orphanWorker).
 const held = (holder: Holder) =>
 	isAlive(holder.pid) || (holder.worker !== undefined && holder.worker > 0 && isAlive(-holder.worker));
-const orphaned = (holder: Holder) => !isAlive(holder.pid);
+const orphaned = (holder: Holder) => holder.worker !== undefined && !isAlive(holder.pid);
 
 // Links a fully written temp file to the lock path: the lock appears atomically, with its content, or not at all.
 async function linkLock(lockPath: string, id: string): Promise<void> {
@@ -378,7 +381,7 @@ async function takeLock(lockPath: string, id: string, repoRoot: string, toolCall
 				!holder
 					? unreadableLock({ repoRoot, lockPath })
 					: orphaned(holder)
-						? orphanWorker(holder, repoRoot)
+						? orphanWorker({ repoRoot, lockPath, holder })
 						: `${jobOf(holder)} is already writing in ${repoRoot}; wait for its handback, or ${WORKTREE_HINT}`,
 				id,
 				toolCallId,
@@ -412,10 +415,11 @@ async function releaseLock(lockPath: string, id: string): Promise<void> {
 }
 
 /**
- * Adds the worker's pid to this job's lock, after each attempt spawns. Synchronous, so `finish` cannot release the
- * lock in between; a lock that is gone or another job's is left as it is.
+ * Adds the worker's pid to this job's lock, after each attempt spawns. A no-op once `finish` has started, which
+ * releases the lock across awaits; a lock that is gone or another job's is left as it is.
  */
 export function recordWorker(job: Checkout, worker: number): void {
+	if (job.finishing) return;
 	let holder: Holder | undefined;
 	try {
 		holder = lockHolder(readFileSync(job.lockPath, "utf8"));
@@ -430,8 +434,9 @@ type Writer = { repoRoot: string; lockPath: string; holder?: Holder };
 const unreadableLock = (writer: Writer) =>
 	`${writer.lockPath} is unreadable; another implement job may be starting in ${writer.repoRoot}. Remove it only if none runs.`;
 const jobOf = (holder: Holder) => `implement job ${holder.id} (pid ${holder.pid})`;
-const orphanWorker = (holder: Holder, repoRoot: string) =>
-	`implement job ${holder.id}'s session (pid ${holder.pid}) is gone, but its worker (pid ${holder.worker}) still runs in ${repoRoot}; it stops at its next tool call, or end it with \`kill -9 -${holder.worker}\`.`;
+// No kill command: the worker pid may since lead an unrelated group.
+const orphanWorker = ({ repoRoot, lockPath, holder }: Required<Writer>) =>
+	`implement job ${holder.id}'s session (pid ${holder.pid}) is gone; pid ${holder.worker} may still be its worker in ${repoRoot}. Check it (\`ps -o pid,lstart,command -g ${holder.worker}\`): a worker stops at its next tool call. If it is not the worker, remove ${lockPath}.`;
 
 // git's output for a directory in a checkout; undefined when git says `dir` is in none (outside a repository, or
 // inside a git dir). Throws on any other failure (a timeout, a repository git refuses to read): whether a job writes
@@ -495,7 +500,7 @@ export async function writerElsewhere(targets: string[] | undefined, cwd: string
 			if (!writer) continue;
 			if (!writer.holder) return unreadableLock(writer);
 			if (writer.holder.pid === process.pid) continue;
-			if (orphaned(writer.holder)) return orphanWorker(writer.holder, writer.repoRoot);
+			if (orphaned(writer.holder)) return orphanWorker({ ...writer, holder: writer.holder });
 			return `${jobOf(writer.holder)} of another session is writing in ${writer.repoRoot}; wait for its handback, or ${WORKTREE_HINT}.`;
 		}
 	} catch (err) {
@@ -517,7 +522,7 @@ export async function worktreeRemovalBlocked(targets: string[] | undefined, cwd:
 			if (!existsSync(dir)) continue;
 			const writer = await writerIn(dir);
 			if (!writer || realpathOr(dir) !== realpathOr(writer.repoRoot)) continue;
-			if (writer.holder && orphaned(writer.holder)) return orphanWorker(writer.holder, writer.repoRoot);
+			if (writer.holder && orphaned(writer.holder)) return orphanWorker({ ...writer, holder: writer.holder });
 			return writer.holder
 				? `${jobOf(writer.holder)} is writing in ${writer.repoRoot}; removing the worktree would take it from under the job. Wait for its handback.`
 				: unreadableLock(writer);
@@ -916,6 +921,7 @@ export async function runImplementJob<T>(
 
 /** Ends a job; never throws. Commits leftovers as WIP on the job's branch, checks the range and tripwires. */
 export async function finish(job: Checkout, outcome: Outcome = {}): Promise<Facts> {
+	job.finishing = true;
 	const facts: Facts = {
 		id: job.id,
 		branch: job.branch,
