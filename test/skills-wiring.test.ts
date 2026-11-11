@@ -29,15 +29,17 @@ function creditUrls(lines) {
 	const urls = [];
 	let inMetadata = false;
 	let creditsIndent = -1;
-	for (const line of lines) {
+	for (const rawLine of lines) {
+		const line = rawLine.trimEnd();
+		if (!line) continue;
 		const indent = line.length - line.trimStart().length;
 		if (indent === 0) {
 			inMetadata = line === "metadata:";
 			creditsIndent = -1;
 			continue;
 		}
-		if (creditsIndent !== -1 && line.trim() && indent <= creditsIndent) creditsIndent = -1;
-		if (inMetadata && creditsIndent === -1 && /^\s+credits:\s*$/.test(line)) {
+		if (creditsIndent !== -1 && indent <= creditsIndent) creditsIndent = -1;
+		if (inMetadata && creditsIndent === -1 && /^\s+credits:$/.test(line)) {
 			creditsIndent = indent;
 			continue;
 		}
@@ -147,15 +149,26 @@ test("a relative Markdown link to a missing file fails", async () => {
 	});
 });
 
+const implementCreditUrl = "https://github.com/mattpocock/skills/tree/4ae2317/skills/engineering/implement";
+const unpinnedImplementCreditUrl = implementCreditUrl.replace("/tree/4ae2317/", "/tree/main/");
+
 test("a credits url not pinned to a commit fails", async () => {
 	await withSkillsCopy(async (skills) => {
-		const url = "https://github.com/mattpocock/skills/tree/main/skills/engineering/implement";
 		await replaceInFile(
 			join(skills, "implement-me-pi/SKILL.md"),
-			'tree/4ae2317/skills/engineering/implement"',
-			'tree/main/skills/engineering/implement"',
+			`"${implementCreditUrl}"`,
+			`"${unpinnedImplementCreditUrl}"`,
 		);
-		assertOneProblem(validateSkills(skills), "implement-me-pi:", url);
+		assertOneProblem(validateSkills(skills), "implement-me-pi:", unpinnedImplementCreditUrl);
+	});
+});
+
+test("an unpinned credits url after a blank line or trailing whitespace fails", async () => {
+	await withSkillsCopy(async (skills) => {
+		const skillFile = join(skills, "implement-me-pi/SKILL.md");
+		await replaceInFile(skillFile, "metadata:\n  credits:\n", "metadata: \n\n  credits:\t\n");
+		await replaceInFile(skillFile, `url: "${implementCreditUrl}"\n`, `url: "${unpinnedImplementCreditUrl}"  \n`);
+		assertOneProblem(validateSkills(skills), "implement-me-pi:", unpinnedImplementCreditUrl);
 	});
 });
 
