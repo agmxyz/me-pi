@@ -136,52 +136,133 @@ class Refusal extends Error {}
 // by the commands: `reconcile` records `report`, `merged` and `head-moved` from what it observes, `merge` records
 // `merge-intent`, `head-moved` and `merged`.
 
-/** Row events in table order, with the states they leave from. */
-const TABLE: { event: string; accepts: (row: Row) => boolean }[] = [
-	{ event: "launch", accepts: (r) => r.state === "QUEUED" },
-	{ event: "report", accepts: (r) => r.state === "RUNNING" },
-	{
-		event: "answer",
-		accepts: (r) => r.state === "ASKED" && (r.owner === "user" || r.chiefAnswers === 0),
-	},
-	{ event: "escalate", accepts: (r) => r.state === "ASKED" && r.owner === "chief" },
-	{ event: "gate", accepts: (r) => r.state === "REPORTED" },
-	{ event: "round", accepts: (r) => r.state === "REPORTED" || r.state === "GATED" },
-	{ event: "head-moved", accepts: (r) => r.state === "GATED" },
-	{ event: "merge-intent", accepts: (r) => r.state === "GATED" },
-	{ event: "merged", accepts: (r) => r.state === "GATED" },
-	{ event: "leave-open", accepts: (r) => r.state === "GATED" },
-	{ event: "drop", accepts: (r) => !TERMINAL.includes(r.state) },
-];
+type RowEventType = RowEvent["type"];
 
-/** Events another step records; `event` refuses them with this reason. */
-const NOT_BY_EVENT: Record<string, string> = {
-	gate: "the gate command records it when every fetched fact passes",
-	"head-moved": "status records it when the PR head differs from the gated SHA",
-	"merge-intent": "the merge command records it before merging",
-	merged: "status records it when GitHub says the PR is merged",
+interface Transition {
+	/** Whether a row in this state accepts the event. */
+	accepts: (row: Row) => boolean;
+	/** The command `status` lists while the row accepts the event (none when it returns undefined), or null. */
+	usage: ((row: Row) => string | undefined) | null;
+	/** Why `event` refuses it: the step that records it instead; null when `event` records it. */
+	recordedBy: string | null;
+}
+
+/** Every row event, in table order (the order refusals and `status` list them in), with the states it leaves from. */
+const TRANSITIONS: Record<RowEventType, Transition> = {
+	launch: {
+		accepts: (r) => r.state === "QUEUED",
+		usage: (r) =>
+			`event ${r.ticket} launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`,
+		recordedBy: null,
+	},
+	report: {
+		accepts: (r) => r.state === "RUNNING",
+		usage: (r) => `event ${r.ticket} report --path ${r.launch?.report ?? "<report>"}`,
+		recordedBy: null,
+	},
+	answer: {
+		accepts: (r) => r.state === "ASKED" && (r.owner === "user" || r.chiefAnswers === 0),
+		usage: (r) =>
+			r.owner === "chief"
+				? `event ${r.ticket} answer --basis "<quoted brief line>"`
+				: `event ${r.ticket} answer --user "<user's words>"`,
+		recordedBy: null,
+	},
+	escalate: {
+		accepts: (r) => r.state === "ASKED" && r.owner === "chief",
+		usage: (r) => `event ${r.ticket} escalate`,
+		recordedBy: null,
+	},
+	gate: {
+		accepts: (r) => r.state === "REPORTED",
+		usage: (r) => `gate ${r.ticket} --judged "<your note on the diff>"`,
+		recordedBy: "the gate command records it when every fetched fact passes",
+	},
+	round: {
+		accepts: (r) => r.state === "REPORTED" || r.state === "GATED",
+		usage: (r) => `event ${r.ticket} round <${LATER_ROUNDS.join("|")}> --deadline <minutes>`,
+		recordedBy: null,
+	},
+	"head-moved": {
+		accepts: (r) => r.state === "GATED",
+		usage: null,
+		recordedBy: "status records it when the PR head differs from the gated SHA",
+	},
+	"merge-intent": {
+		accepts: (r) => r.state === "GATED",
+		usage: (r) => (r.intent ? undefined : `merge ${r.ticket}`),
+		recordedBy: "the merge command records it before merging",
+	},
+	merged: {
+		accepts: (r) => r.state === "GATED",
+		usage: null,
+		recordedBy: "status records it when GitHub says the PR is merged",
+	},
+	"leave-open": {
+		accepts: (r) => r.state === "GATED",
+		usage: (r) => `event ${r.ticket} leave-open`,
+		recordedBy: null,
+	},
+	drop: {
+		accepts: (r) => !TERMINAL.includes(r.state),
+		usage: (r) => `event ${r.ticket} drop --user "<user's words>"`,
+		recordedBy: null,
+	},
 };
 
-function accepted(row: Row): string[] {
-	return TABLE.filter((t) => t.accepts(row)).map((t) => t.event);
+const ROW_EVENTS = Object.keys(TRANSITIONS) as RowEventType[];
+
+const isRowEvent = (type: string): type is RowEventType => Object.hasOwn(TRANSITIONS, type);
+
+/** The exhaustiveness check of a switch: a case left out makes its value reach here and fails `tsc`. */
+function unreachable(value: never): never {
+	throw new Error(`unhandled case ${JSON.stringify(value)}`);
+}
+
+function accepted(row: Row): RowEventType[] {
+	return ROW_EVENTS.filter((type) => TRANSITIONS[type].accepts(row));
 }
 
 function label(row: Row): string {
-	if (row.state === "RUNNING") return `RUNNING(${row.round})`;
-	if (row.state === "ASKED") return `ASKED(${row.owner})`;
-	if (row.state === "GATED") return `GATED(${row.sha})`;
-	return row.state;
+	switch (row.state) {
+		case "RUNNING":
+			return `RUNNING(${row.round})`;
+		case "ASKED":
+			return `ASKED(${row.owner})`;
+		case "GATED":
+			return `GATED(${row.sha})`;
+		case "QUEUED":
+		case "REPORTED":
+		case "MERGED":
+		case "LEFT_OPEN":
+		case "DROPPED":
+			return row.state;
+		default:
+			return unreachable(row.state);
+	}
 }
 
 function next(row: Row): string {
-	if (row.state === "RUNNING") return "coordinator";
-	if (row.state === "ASKED") return row.owner!;
-	if (row.state === "GATED") return "user, then chief";
-	return TERMINAL.includes(row.state) ? "nobody" : "chief";
+	switch (row.state) {
+		case "RUNNING":
+			return "coordinator";
+		case "ASKED":
+			return row.owner!;
+		case "GATED":
+			return "user, then chief";
+		case "QUEUED":
+		case "REPORTED":
+		case "MERGED":
+		case "LEFT_OPEN":
+		case "DROPPED":
+			return TERMINAL.includes(row.state) ? "nobody" : "chief";
+		default:
+			return unreachable(row.state);
+	}
 }
 
 /** Throws a Refusal naming the row's state and the events it accepts when `type` is not one of them. */
-function check(row: Row, type: string): void {
+function check(row: Row, type: RowEventType): void {
 	if (accepted(row).includes(type)) return;
 	if (type === "answer" && row.state === "ASKED" && row.owner === "chief")
 		throw new Refusal(
@@ -255,28 +336,18 @@ function apply(row: Row, e: RowEvent): void {
 			row.state = "DROPPED";
 			row.deadline = undefined;
 			break;
+		default:
+			unreachable(e);
 	}
 	row.lastAt = e.at;
 }
 
-/** The commands status lists for a row; events another command records are left out. */
+/** The commands status lists for a row; an event with no usage, or none in this state, is left out. */
 function allowedCommands(row: Row): string[] {
-	const n = row.ticket;
-	const usage: Record<string, string> = {
-		launch: `event ${n} launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`,
-		report: `event ${n} report --path ${row.launch?.report ?? "<report>"}`,
-		answer:
-			row.owner === "chief"
-				? `event ${n} answer --basis "<quoted brief line>"`
-				: `event ${n} answer --user "<user's words>"`,
-		escalate: `event ${n} escalate`,
-		gate: `gate ${n} --judged "<your note on the diff>"`,
-		round: `event ${n} round <${LATER_ROUNDS.join("|")}> --deadline <minutes>`,
-		...(row.intent ? {} : { "merge-intent": `merge ${n}` }),
-		"leave-open": `event ${n} leave-open`,
-		drop: `event ${n} drop --user "<user's words>"`,
-	};
-	return accepted(row).flatMap((event) => (usage[event] ? [usage[event]] : []));
+	return accepted(row).flatMap((type) => {
+		const usage = TRANSITIONS[type].usage?.(row);
+		return usage ? [usage] : [];
+	});
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -556,13 +627,11 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 	const run = currentRun(runner, cwd);
 	const row = rowOf(run, rowId(n, "the row"));
 	if (!type) throw new Refusal(`name an event; ${where(row)}`);
-	if (NOT_BY_EVENT[type])
-		throw new Refusal(`${type} is not recorded through event: ${NOT_BY_EVENT[type]}; ${where(row)}`);
-	if (!TABLE.some((t) => t.event === type))
+	const recordedBy = isRowEvent(type) ? TRANSITIONS[type].recordedBy : null;
+	if (recordedBy) throw new Refusal(`${type} is not recorded through event: ${recordedBy}; ${where(row)}`);
+	if (!isRowEvent(type))
 		throw new Refusal(
-			`unknown event ${type}; events: ${TABLE.map((t) => t.event)
-				.filter((e) => !NOT_BY_EVENT[e])
-				.join(", ")}; ${where(row)}`,
+			`unknown event ${type}; events: ${ROW_EVENTS.filter((e) => !TRANSITIONS[e].recordedBy).join(", ")}; ${where(row)}`,
 		);
 	check(row, type);
 	const at = runner.now().toISOString();
