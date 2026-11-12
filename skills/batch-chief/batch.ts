@@ -1154,6 +1154,8 @@ function cleanRow(
 	const exists = runner.exec("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${launch.branch}`], {
 		cwd: repo,
 	});
+	if (exists.code !== 0 && exists.code !== 1)
+		return { lines, left: `cannot check branch ${launch.branch}: ${exists.stderr.trim()}` };
 	let kept: string | undefined;
 	if (exists.code === 0 && row.state === "MERGED") {
 		const deleted = effect("git", ["branch", "-D", launch.branch], repo);

@@ -1160,6 +1160,20 @@ test("a cleanup that keeps a local branch lists it under Resources left and keep
 	assert.ok(existsSync(currentPointer(f)), `current removed while branch feat/t6 is kept:\n${out}`);
 });
 
+test("a cleanup whose branch check fails lists it under Resources left and keeps current", () => {
+	const f = fixture();
+	cleanable(f);
+	f.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = {
+		code: 128,
+		stdout: "",
+		stderr: "fatal: not a git repository\n",
+	};
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(out.includes("  left: cannot check branch feat/t6: fatal: not a git repository"), out);
+	assert.match(out, /Resources left:\n- #6 .*: cannot check branch feat\/t6: fatal: not a git repository$/);
+	assert.ok(existsSync(currentPointer(f)), `current removed while branch feat/t6 is unchecked:\n${out}`);
+});
+
 test("a cleanup whose current pointer cannot be removed still returns its output and names the failure", () => {
 	const f = fixture();
 	const [, r6] = cleanable(f);
