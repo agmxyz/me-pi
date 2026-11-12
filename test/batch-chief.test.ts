@@ -766,7 +766,7 @@ test("cleanup quits each coordinator, then removes the worktree, deletes a merge
 	);
 	assert.ok(!f.calls.some((c) => c.includes("kill")));
 	assert.match(out, /manual-fix #5: fixed a typo by hand/);
-	assert.match(out, /Resources left:\n- none/);
+	assert.match(out, /Resources left:\n- #6 branch feat\/t6: kept, the PR is not merged$/);
 });
 
 test("cleanup --dry-run changes nothing and prints what it would do", () => {
@@ -869,7 +869,7 @@ test("cleanup of a row whose pane is already gone removes the worktree and close
 		effects.filter((c) => c.includes(r5.id) || c.includes("t5")),
 		[`git worktree remove ${r5.wt}`, "git branch -D feat/t5"],
 	);
-	assert.match(out, /Resources left:\n- none/);
+	assert.match(out, /Resources left:\n- #6 branch feat\/t6: kept, the PR is not merged$/);
 });
 
 test("merge on a behind PR whose update-branch fails records nothing and names the failure", () => {
@@ -989,6 +989,7 @@ const currentPointer = (f: Fixture) => join(`${f.repo}.worktrees`, ".batch", "cu
 test("a cleanup that leaves nothing removes current, keeps the run directory, and the next preflight starts", () => {
 	const f = fixture();
 	cleanable(f);
+	f.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = { code: 1, stdout: "", stderr: "" };
 	const dir = f.runDir();
 	const out = assertOk(f.run("cleanup"));
 	assert.match(out, /Resources left:\n- none/);
@@ -1027,6 +1028,7 @@ test("a cleanup that leaves a resource or a row that is not terminal keeps curre
 test("cleanup --dry-run never removes current", () => {
 	const f = fixture();
 	cleanable(f);
+	f.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = { code: 1, stdout: "", stderr: "" };
 	const out = assertOk(f.run("cleanup", "--dry-run"));
 	assert.match(out, /Resources left:\n- none/);
 	assert.ok(existsSync(currentPointer(f)), "dry run removed current");
@@ -1072,6 +1074,7 @@ test("preflight --set-aside-old-run starts a new run and leaves the other versio
 				"preflight",
 				...["--repo", f.repo, "--tickets", "5,6", "--check", "npm test", "--chief-pane", "w1:p1"],
 				"--set-aside-old-run",
+				"the old run is finished and cleaned up",
 			),
 		);
 		assert.ok(
@@ -1093,9 +1096,87 @@ test("preflight --set-aside-old-run still refuses an unfinished run of this vers
 			"preflight",
 			...["--repo", f.repo, "--tickets", "7", "--check", "npm test", "--chief-pane", "w1:p1"],
 			"--set-aside-old-run",
+			"the old run is finished and cleaned up",
 		),
 		"still has rows that are not terminal: #5, #6",
 	);
+});
+
+const preflightArgs = (f: Fixture) => [
+	"--repo",
+	f.repo,
+	"--tickets",
+	"5,6",
+	"--check",
+	"npm test",
+	"--chief-pane",
+	"w1:p1",
+];
+
+test("preflight --set-aside-old-run takes the user's words and records them with the run set aside", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	const old = f.runDir();
+	otherVersion(f, 2, []);
+	f.at("11:00");
+	for (const words of ["", "   "])
+		assertRefused(f.run("preflight", ...preflightArgs(f), "--set-aside-old-run", words), "--set-aside-old-run");
+	assert.equal(f.runDir(), old, "a refused preflight moved current");
+	assert.equal(f.run("preflight", ...preflightArgs(f), "--set-aside-old-run").code, 1);
+	const words = "the old batch is merged and cleaned up";
+	assertOk(f.run("preflight", ...preflightArgs(f), "--set-aside-old-run", words));
+	const id = old.split("/").at(-1);
+	assert.deepEqual(f.events()[0].setAside, { run: id, version: 2, user: words });
+	assert.ok(
+		readLedger(f).includes(`- Set aside: run ${id} (version 2), not checked: ${JSON.stringify(words)}`),
+		readLedger(f),
+	);
+});
+
+test("only preflight's refusal of another version names --set-aside-old-run, after the user confirms", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	otherVersion(f, 2, []);
+	f.at("11:00");
+	assertRefused(
+		f.preflight(),
+		"Finish that run with the helper that wrote it",
+		"only after the user confirms it is finished and cleaned up",
+		`--set-aside-old-run "<user's words>"`,
+	);
+	for (const argv of [["status"], ["event", "5", "drop", "--user", "x"], ["cleanup"]]) {
+		const result = f.run(...argv);
+		assertRefused(result, "Finish that run with the helper that wrote it");
+		assert.ok(!result.out.includes("--set-aside-old-run"), result.out);
+	}
+});
+
+test("a cleanup that keeps a local branch lists it under Resources left and keeps current", () => {
+	const f = fixture();
+	cleanable(f);
+	const out = assertOk(f.run("cleanup"));
+	assert.match(out, /kept branch feat\/t6/);
+	assert.match(out, /Resources left:\n- #6 branch feat\/t6: kept, the PR is not merged$/);
+	assert.ok(existsSync(currentPointer(f)), `current removed while branch feat/t6 is kept:\n${out}`);
+});
+
+test("a cleanup whose current pointer cannot be removed still returns its output and names the failure", () => {
+	const f = fixture();
+	const [, r6] = cleanable(f);
+	f.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = { code: 1, stdout: "", stderr: "" };
+	// The last effect turns current into a directory, which unlink refuses whoever runs the test.
+	f.state.exec[`herdr pane close ${r6.id}`] = () => {
+		rmSync(currentPointer(f));
+		mkdirSync(currentPointer(f));
+		return ok();
+	};
+	const out = assertOk(f.run("cleanup"));
+	assert.match(out, /Resources left:\n- none/);
+	assert.ok(out.includes(`ran: git worktree remove ${r6.wt}`), out);
+	const last = out.split("\n").at(-1)!;
+	assert.ok(last.startsWith(`current run not cleared: removing ${currentPointer(f)} failed: `), out);
+	assert.match(last, /E(PERM|ISDIR)/);
+	assert.ok(existsSync(currentPointer(f)));
 });
 
 test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => {

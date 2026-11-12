@@ -81,6 +81,8 @@ interface PreflightEvent {
 	check: string;
 	chiefPane: string;
 	tickets: RowId[];
+	/** The run of another version this preflight set aside, with the user's words that it is finished and cleaned up. */
+	setAside?: { run: string; version: unknown; user: string };
 }
 
 interface ApproveEvent {
@@ -400,7 +402,7 @@ function rebuild(id: string, dir: string): Run {
 }
 
 function otherVersion(id: string, version: unknown): string {
-	return `run ${id} was written by another version of the helper: its events.jsonl has version ${version ?? "none"}; this helper writes version ${VERSION}. Finish that run with the helper that wrote it, or run preflight again with --set-aside-old-run to start a new run without checking it`;
+	return `run ${id} was written by another version of the helper: its events.jsonl has version ${version ?? "none"}; this helper writes version ${VERSION}. Finish that run with the helper that wrote it`;
 }
 
 /** The format version a run's first event carries, read without replaying the run's events. */
@@ -513,8 +515,11 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		tickets: "string",
 		check: "string",
 		"chief-pane": "string",
-		"set-aside-old-run": "boolean",
+		"set-aside-old-run": "string",
 	});
+	const setAsideWords = values["set-aside-old-run"];
+	if (setAsideWords !== undefined && (typeof setAsideWords !== "string" || !setAsideWords.trim()))
+		throw new Refusal(`--set-aside-old-run needs the user's words confirming the old run is finished and cleaned up`);
 	const repo = mainCheckout(runner, resolve(cwd, required(values, "repo")));
 	const tickets = ticketList(required(values, "tickets"), "--tickets");
 	const git = (...args: string[]) => {
@@ -528,15 +533,20 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 	if (dirty) throw new Refusal(`the main checkout ${repo} is not clean:\n${dirty}`);
 	const batch = batchDir(repo);
 	const pointer = join(batch, "current");
-	let setAside: string | undefined;
+	let setAside: PreflightEvent["setAside"];
+	let setAsideText: string | undefined;
 	if (existsSync(pointer)) {
 		const id = readFileSync(pointer, "utf8").trim();
 		const old = join(batch, id);
 		const version = logVersion(old);
 		if (version !== VERSION) {
 			// Another version's events are never replayed through this table; the user vouches the run is finished.
-			if (values["set-aside-old-run"] !== true) throw new Refusal(otherVersion(id, version));
-			setAside = `set aside run ${id} (version ${version ?? "none"}), not checked; it stays in ${old}, and any worktree, branch or pane it left is not cleaned up`;
+			if (typeof setAsideWords !== "string")
+				throw new Refusal(
+					`${otherVersion(id, version)}; run preflight again with --set-aside-old-run "<user's words>" only after the user confirms it is finished and cleaned up, to start a new run without checking it`,
+				);
+			setAside = { run: id, version: version ?? null, user: setAsideWords };
+			setAsideText = `set aside run ${id} (version ${version ?? "none"}), not checked; it stays in ${old}, and any worktree, branch or pane it left is not cleaned up; the user's words: ${JSON.stringify(setAsideWords)}`;
 		} else {
 			const open = [...rebuild(id, old).rows.values()].filter((r) => !TERMINAL.includes(r.state));
 			if (open.length)
@@ -577,6 +587,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		check: required(values, "check"),
 		chiefPane: required(values, "chief-pane"),
 		tickets,
+		...(setAside ? { setAside } : {}),
 	};
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(join(dir, "events.jsonl"), `${JSON.stringify(event)}\n`);
@@ -584,7 +595,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 	const missing = TOOLS.filter((tool) => !tools[tool]);
 	return [
 		`run ${id} created in ${dir}`,
-		...(setAside ? [setAside] : []),
+		...(setAsideText ? [setAsideText] : []),
 		`base ${base} at ${event.sha}; rules: ${rulesText(event)}`,
 		...(missing.length ? [`missing tools: ${missing.join(", ")}`] : []),
 		`rows QUEUED: ${tickets.map((t) => `#${t}`).join(", ")}`,
@@ -841,6 +852,11 @@ function renderLedger(run: Run, by: "status" | "note", now: Date, outside?: Map<
 		`- Chief pane: \`${p.chiefPane}\``,
 		`- Tools: ${TOOLS.map((t) => `${t} ${p.tools[t] ? "found" : "missing"}`).join(", ")}`,
 		`- Base rules: ${rulesText(p)}`,
+		...(p.setAside
+			? [
+					`- Set aside: run ${p.setAside.run} (version ${p.setAside.version ?? "none"}), not checked: ${JSON.stringify(p.setAside.user)}`,
+				]
+			: []),
 		"",
 		"| Row | State | Next | Deadline | Branch | Last event | Notes |",
 		"| --- | --- | --- | --- | --- | --- | --- |",
@@ -1089,8 +1105,16 @@ function prompt(argv: string[], runner: Runner, cwd: string): string {
 
 const QUIT_POLLS = 15;
 
-/** Releases one terminal row's resources in order; returns the lines to print and why anything was left. */
-function cleanRow(run: Run, row: Row, runner: Runner, dryRun: boolean): { lines: string[]; left?: string } {
+/**
+ * Releases one terminal row's resources in order; returns the lines to print, why anything was left, and the local
+ * branch it kept because the PR is not merged.
+ */
+function cleanRow(
+	run: Run,
+	row: Row,
+	runner: Runner,
+	dryRun: boolean,
+): { lines: string[]; left?: string; kept?: string } {
 	const launch = row.launch!;
 	const repo = run.preflight.repo;
 	const lines: string[] = [];
@@ -1127,21 +1151,22 @@ function cleanRow(run: Run, row: Row, runner: Runner, dryRun: boolean): { lines:
 		const removed = effect("git", ["worktree", "remove", launch.worktree], repo);
 		if (removed.code !== 0) return { lines, left: `git worktree remove failed: ${removed.stderr.trim()}` };
 	}
-	if (row.state === "MERGED") {
-		const exists = runner.exec("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${launch.branch}`], {
-			cwd: repo,
-		});
-		if (exists.code === 0) {
-			const deleted = effect("git", ["branch", "-D", launch.branch], repo);
-			if (deleted.code !== 0)
-				return { lines, left: `git branch -D ${launch.branch} failed: ${deleted.stderr.trim()}` };
-		}
-	} else lines.push(`  kept branch ${launch.branch}: the PR is not merged`);
+	const exists = runner.exec("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${launch.branch}`], {
+		cwd: repo,
+	});
+	let kept: string | undefined;
+	if (exists.code === 0 && row.state === "MERGED") {
+		const deleted = effect("git", ["branch", "-D", launch.branch], repo);
+		if (deleted.code !== 0) return { lines, left: `git branch -D ${launch.branch} failed: ${deleted.stderr.trim()}` };
+	} else if (exists.code === 0) {
+		lines.push(`  kept branch ${launch.branch}: the PR is not merged`);
+		kept = launch.branch;
+	}
 	if (live !== undefined) {
 		const closed = effect("herdr", ["pane", "close", launch.pane]);
 		if (closed.code !== 0) return { lines, left: `herdr pane close ${launch.pane} failed: ${closed.stderr.trim()}` };
 	}
-	return { lines };
+	return { lines, kept };
 }
 
 function cleanup(argv: string[], runner: Runner, cwd: string): string {
@@ -1163,7 +1188,7 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 		if (result.left) {
 			out.push(`  left: ${result.left}`);
 			left.push(`#${row.ticket} ${resources}: ${result.left}`);
-		}
+		} else if (result.kept) left.push(`#${row.ticket} branch ${result.kept}: kept, the PR is not merged`);
 	}
 	out.push(
 		"Notes:",
@@ -1174,8 +1199,12 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 	const finished = !left.length && [...run.rows.values()].every((r) => TERMINAL.includes(r.state));
 	if (finished && !dryRun) {
 		const pointer = join(dirname(run.dir), "current");
-		unlinkSync(pointer);
-		out.push(`current run cleared: ${pointer} removed; ${run.dir} stays; the next batch starts with preflight`);
+		try {
+			unlinkSync(pointer);
+			out.push(`current run cleared: ${pointer} removed; ${run.dir} stays; the next batch starts with preflight`);
+		} catch (error) {
+			out.push(`current run not cleared: removing ${pointer} failed: ${(error as Error).message}`);
+		}
 	}
 	return out.join("\n");
 }
