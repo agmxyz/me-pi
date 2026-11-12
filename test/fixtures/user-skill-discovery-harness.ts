@@ -19,6 +19,7 @@ await resourceLoader.reload();
 const { skills, diagnostics } = resourceLoader.getSkills();
 const byName = new Map(skills.map((skill) => [skill.name, skill]));
 const expectedNames = [
+	"batch-chief",
 	"implement",
 	"implement-me-pi",
 	"implement-spec",
@@ -44,7 +45,7 @@ if (mode === "--renamed-pilot-collision") {
 	assert.deepEqual(diagnostics, []);
 }
 
-for (const name of ["implement-me-pi", "implement-spec-me-pi"]) {
+for (const name of ["batch-chief", "implement-me-pi", "implement-spec-me-pi"]) {
 	const skill = byName.get(name);
 	assert.equal(skill.filePath, join(resolvedAgentDir, "skills", name, "SKILL.md"));
 	assert.equal(skill.disableModelInvocation, true);
