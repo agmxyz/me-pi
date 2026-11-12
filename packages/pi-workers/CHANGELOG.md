@@ -2,7 +2,7 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-11
 
 - `ME_PI_UNATTENDED=1` makes `guard` refuse, rather than confirm, every command it would ask about, and keeps `/guard off` from turning it off; for sessions in panes a supervisor types into (#134).
 - `guard`'s confirm now closes, and counts as denied, when the turn is aborted or Pi gets SIGTERM; before, the session waited for an answer (#133).
