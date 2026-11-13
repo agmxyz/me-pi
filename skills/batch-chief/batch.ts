@@ -4,8 +4,20 @@
  * and their transition table.
  */
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+	appendFileSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmdirSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 
 export interface Result {
@@ -25,8 +37,23 @@ type State = "QUEUED" | "RUNNING" | "ASKED" | "REPORTED" | "GATED" | "MERGED" | 
 const ROUNDS = ["implement", "review", "fix", "update"] as const;
 type Round = (typeof ROUNDS)[number];
 const LATER_ROUNDS = ROUNDS.filter((r) => r !== "implement");
-/** The events.jsonl format this helper writes and reads; a run with another version is refused. */
-const VERSION = 1;
+/**
+ * The events.jsonl format this helper writes; a run with a version outside `READS` is refused. Bump it when an older
+ * helper would ignore a new field or event that changes a refusal or an effect (as `live` changes what `merge` allows);
+ * an optional field that only adds display text (as `approve`'s `question`) needs none. A run keeps its preflight's
+ * version: this helper appends to an older run only events and fields that version has, which holds for version 1
+ * because `live` and `live-result` exist only on a row its preflight named with `live`.
+ */
+const VERSION = 2;
+/**
+ * The versions this helper reads. `1` is kept for runs the version-1 helper started that are still open (their
+ * `current` pointer is set) when the skill updates: such a log is a version-2 log without live checks, so it replays
+ * unchanged. Drop `1` from `READS`, with `v1-events.jsonl` and its tests, once no version-1 run can be open: the
+ * first release after every user has ended or set aside their version-1 runs.
+ */
+const READS = [1, VERSION];
+const LIVE_MODES = ["before-merge", "after-merge"] as const;
+type LiveMode = (typeof LIVE_MODES)[number];
 const TERMINAL: State[] = ["MERGED", "LEFT_OPEN", "DROPPED"];
 const NOTE_KINDS = ["manual-fix", "chief-answer", "wrong-instruction", "gate-miss", "user-friction"];
 const TOOLS = ["git", "gh", "herdr"];
@@ -54,10 +81,14 @@ interface Row {
 	deadlineMinutes?: number;
 	lastAt: string;
 	launch?: Launch;
+	/** When `launch` was recorded; while it equals `lastAt` the row has not moved since, so its contract may be written. */
+	launchedAt?: string;
 	chiefAnswers: number;
 	/** A merge intent with no observed result yet. */
 	intent?: { sha: string; at: string };
 	commit?: string | null;
+	/** The row's live check, named at preflight; `result` holds only a result at the row's current `sha`. */
+	live?: { mode: LiveMode; result?: { sha: string; result: "pass" | "fail"; evidence: string; at: string } };
 }
 
 interface Rules {
@@ -81,6 +112,8 @@ interface PreflightEvent {
 	check: string;
 	chiefPane: string;
 	tickets: RowId[];
+	/** The rows with a live check and when it runs; rows not named have none. */
+	live?: { ticket: RowId; mode: LiveMode }[];
 	/** The run of another version this preflight set aside, with the user's words that it is finished and cleaned up. */
 	setAside?: { run: string; version: unknown; user: string };
 }
@@ -89,6 +122,8 @@ interface ApproveEvent {
 	at: string;
 	type: "approve";
 	quote: string;
+	/** What the user's words answered; optional display text, so no version bump (see `VERSION`). */
+	question?: string;
 	action: string;
 	tickets: RowId[];
 	inferred: boolean;
@@ -116,6 +151,8 @@ type RowEvent = { at: string; ticket: RowId } & (
 	| { type: "merge-intent"; sha: string }
 	| { type: "merged"; commit: string | null }
 	| { type: "leave-open" }
+	/** A live check's result, against the row's gated SHA (for a merged row, the SHA it was gated and merged at). */
+	| { type: "live-result"; sha: string; result: "pass" | "fail"; evidence: string }
 	| { type: "drop"; user: string }
 );
 
@@ -205,6 +242,11 @@ const TRANSITIONS: Record<RowEventType, Transition> = {
 		usage: (r) => `event ${r.ticket} leave-open`,
 		recordedBy: null,
 	},
+	"live-result": {
+		accepts: (r) => !!r.live && (r.state === "GATED" || (r.state === "MERGED" && r.live.mode === "after-merge")),
+		usage: (r) => liveResultUsage(r.ticket),
+		recordedBy: "the live command records it",
+	},
 	drop: {
 		accepts: (r) => !TERMINAL.includes(r.state),
 		usage: (r) => `event ${r.ticket} drop --user "<user's words>"`,
@@ -213,6 +255,13 @@ const TRANSITIONS: Record<RowEventType, Transition> = {
 };
 
 const ROW_EVENTS = Object.keys(TRANSITIONS) as RowEventType[];
+
+function liveResultUsage(ticket: RowId, result = "<pass|fail>"): string {
+	return `live ${ticket} --result ${result} --evidence "<text or path>"`;
+}
+
+/** Whether a merged `after-merge` row still owes its live check result; it keeps the run open. */
+const liveOwed = (row: Row) => row.state === "MERGED" && row.live?.mode === "after-merge" && !row.live.result;
 
 const isRowEvent = (type: string): type is RowEventType => Object.hasOwn(TRANSITIONS, type);
 
@@ -294,6 +343,7 @@ function apply(row: Row, e: RowEvent): void {
 	switch (e.type) {
 		case "launch":
 			row.launch = e.launch;
+			row.launchedAt = e.at;
 			running(row, ROUNDS[0], e.deadline, e.at);
 			break;
 		case "report":
@@ -334,6 +384,9 @@ function apply(row: Row, e: RowEvent): void {
 		case "leave-open":
 			row.state = "LEFT_OPEN";
 			break;
+		case "live-result":
+			row.live!.result = { sha: e.sha, result: e.result, evidence: e.evidence, at: e.at };
+			break;
 		case "drop":
 			row.state = "DROPPED";
 			row.deadline = undefined;
@@ -341,6 +394,8 @@ function apply(row: Row, e: RowEvent): void {
 		default:
 			unreachable(e);
 	}
+	// A live result goes stale exactly as the gate does: whatever clears or moves the gated SHA clears it.
+	if (row.live?.result && row.live.result.sha !== row.sha) row.live.result = undefined;
 	row.lastAt = e.at;
 }
 
@@ -385,10 +440,11 @@ function rebuild(id: string, dir: string): Run {
 	const [first, ...rest] = readEvents(dir) as Event[];
 	if (first?.type !== "preflight") throw new Error(`${dir}/events.jsonl does not start with a preflight event`);
 	const preflight = first;
-	if (preflight.version !== VERSION) throw new Refusal(otherVersion(id, preflight.version));
+	if (!READS.includes(preflight.version)) throw new Refusal(otherVersion(id, preflight.version));
 	const run: Run = { id, dir, preflight, rows: new Map(), approvals: [], notes: [] };
 	for (const ticket of preflight.tickets)
 		run.rows.set(ticket, { ticket, state: "QUEUED", lastAt: preflight.at, chiefAnswers: 0 });
+	for (const { ticket, mode } of preflight.live ?? []) rowOf(run, ticket).live = { mode };
 	for (const e of rest) {
 		try {
 			fold(run, e);
@@ -402,7 +458,7 @@ function rebuild(id: string, dir: string): Run {
 }
 
 function otherVersion(id: string, version: unknown): string {
-	return `run ${id} was written by another version of the helper: its events.jsonl has version ${version ?? "none"}; this helper writes version ${VERSION}. Finish that run with the helper that wrote it`;
+	return `run ${id} was written by another version of the helper: its events.jsonl has version ${version ?? "none"}; this helper writes version ${VERSION} and reads ${READS.join(", ")}. Finish that run with the helper that wrote it`;
 }
 
 /** The format version a run's first event carries, read without replaying the run's events. */
@@ -467,6 +523,26 @@ function ticketList(text: string | undefined, what: string): RowId[] {
 	return tickets;
 }
 
+/** `--live <n>:<before-merge|after-merge>[,...]`: each entry names a row of `tickets` once. */
+function liveList(text: string, tickets: RowId[]): { ticket: RowId; mode: LiveMode }[] {
+	const entries = text.split(",").map((entry) => {
+		const match = /^([^:]+):(.*)$/.exec(entry.trim());
+		if (!match) throw new Refusal(`--live entries are <n>:<${LIVE_MODES.join("|")}>, got ${JSON.stringify(entry)}`);
+		const ticket = rowId(match[1], "--live");
+		if (!tickets.includes(ticket)) throw new Refusal(`--live names #${ticket}, which is not a row of --tickets`);
+		const mode = LIVE_MODES.find((m) => m === match[2]);
+		if (!mode)
+			throw new Refusal(
+				`--live mode of #${ticket} must be before-merge or after-merge, got ${JSON.stringify(match[2])}`,
+			);
+		return { ticket, mode };
+	});
+	const named = entries.map((e) => e.ticket);
+	const twice = named.find((t, i) => named.indexOf(t) !== i);
+	if (twice !== undefined) throw new Refusal(`--live names #${twice} twice: ${text}`);
+	return entries;
+}
+
 function required(values: Record<string, unknown>, name: string): string {
 	const value = values[name];
 	if (typeof value !== "string" || !value.trim()) throw new Refusal(`--${name} is required`);
@@ -515,6 +591,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		tickets: "string",
 		check: "string",
 		"chief-pane": "string",
+		live: "string",
 		"set-aside-old-run": "string",
 	});
 	const setAsideWords = values["set-aside-old-run"];
@@ -522,6 +599,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		throw new Refusal(`--set-aside-old-run needs the user's words confirming the old run is finished and cleaned up`);
 	const repo = mainCheckout(runner, resolve(cwd, required(values, "repo")));
 	const tickets = ticketList(required(values, "tickets"), "--tickets");
+	const live = values.live === undefined ? undefined : liveList(required(values, "live"), tickets);
 	const git = (...args: string[]) => {
 		const out = runner.exec("git", args, { cwd: repo });
 		if (out.code !== 0) throw new Error(`git ${args.join(" ")} failed in ${repo}: ${out.stderr.trim()}`);
@@ -539,7 +617,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		const id = readFileSync(pointer, "utf8").trim();
 		const old = join(batch, id);
 		const version = logVersion(old);
-		if (version !== VERSION) {
+		if (!READS.includes(version as number)) {
 			// Another version's events are never replayed through this table; the user vouches the run is finished.
 			if (typeof setAsideWords !== "string")
 				throw new Refusal(
@@ -548,10 +626,16 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 			setAside = { run: id, version: version ?? null, user: setAsideWords };
 			setAsideText = `set aside run ${id} (version ${version ?? "none"}), not checked; it stays in ${old}, and any worktree, branch or pane it left is not cleaned up; the user's words: ${JSON.stringify(setAsideWords)}`;
 		} else {
-			const open = [...rebuild(id, old).rows.values()].filter((r) => !TERMINAL.includes(r.state));
+			const rows = [...rebuild(id, old).rows.values()];
+			const open = rows.filter((r) => !TERMINAL.includes(r.state));
 			if (open.length)
 				throw new Refusal(
 					`run ${id} still has rows that are not terminal: ${open.map((r) => `#${r.ticket}`).join(", ")}`,
+				);
+			const owed = rows.filter(liveOwed);
+			if (owed.length)
+				throw new Refusal(
+					`run ${id} still owes a live check: ${owed.map((r) => `#${r.ticket} (batch.ts ${liveResultUsage(r.ticket)})`).join(", ")}`,
 				);
 		}
 	}
@@ -587,6 +671,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		check: required(values, "check"),
 		chiefPane: required(values, "chief-pane"),
 		tickets,
+		...(live ? { live } : {}),
 		...(setAside ? { setAside } : {}),
 	};
 	mkdirSync(dir, { recursive: true });
@@ -669,6 +754,8 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 				report: path("report"),
 			};
 			if (!existsSync(launch.brief)) throw new Refusal(`brief ${launch.brief} does not exist`);
+			const pushes = confirmedApprovals(run, row, "push", (a) => a.action === "push");
+			if (pushes.why) throw new Refusal(pushes.why);
 			e = { ...base, type, launch, deadline: minutes(values) };
 			break;
 		}
@@ -724,23 +811,61 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 }
 
 function approve(argv: string[], runner: Runner, cwd: string): string {
-	const { values } = parse(argv, { quote: "string", action: "string", tickets: "string", inferred: "boolean" });
+	const { values } = parse(argv, {
+		quote: "string",
+		question: "string",
+		action: "string",
+		tickets: "string",
+		prs: "string",
+		inferred: "boolean",
+	});
 	const run = currentRun(runner, cwd);
 	const action = required(values, "action");
 	if (!/^[a-z][a-z-]*$/.test(action))
 		throw new Refusal(`--action must be a word such as merge, got ${JSON.stringify(action)}`);
-	const tickets = ticketList(required(values, "tickets"), "--tickets");
+	if ((values.tickets === undefined) === (values.prs === undefined))
+		throw new Refusal("name the rows with exactly one of --tickets or --prs");
+	const tickets =
+		values.prs === undefined
+			? ticketList(required(values, "tickets"), "--tickets")
+			: prRows(run, runner, required(values, "prs"));
 	for (const ticket of tickets) rowOf(run, ticket);
+	const question = values.question === undefined ? undefined : required(values, "question");
 	const e: ApproveEvent = {
 		at: runner.now().toISOString(),
 		type: "approve",
 		quote: required(values, "quote"),
+		...(question === undefined ? {} : { question }),
 		action,
 		tickets,
 		inferred: values.inferred === true,
 	};
 	record(run, e);
 	return `approval recorded: ${action} ${tickets.map((t) => `#${t}`).join(", ")}${e.inferred ? " (inferred: confirm with the user before acting)" : ""}`;
+}
+
+/** The rows owning `--prs`, in its order: each launched row's branch is looked up on GitHub for its PR number. */
+function prRows(run: Run, runner: Runner, text: string): RowId[] {
+	const prs = text.split(",").map((p) => p.trim().replace(/^#/, ""));
+	if (prs.some((p) => !/^[1-9]\d*$/.test(p)))
+		throw new Refusal(`--prs must be PR numbers separated by commas, got ${JSON.stringify(text)}`);
+	if (new Set(prs).size !== prs.length) throw new Refusal(`--prs names a PR twice: ${text}`);
+	const owner = new Map<string, RowId>();
+	for (const row of run.rows.values()) {
+		if (!row.launch) continue;
+		const view = runner.exec("gh", ["pr", "view", row.launch.branch, "--json", "number"], {
+			cwd: run.preflight.repo,
+		});
+		if (view.code === 0) owner.set(String(JSON.parse(view.stdout).number), row.ticket);
+		else if (!/no pull requests found/.test(view.stderr))
+			throw new Refusal(`cannot read the PR of ${row.launch.branch}: ${view.stderr.trim()}`);
+	}
+	const missing = prs.find((p) => !owner.has(p));
+	if (missing)
+		throw new Refusal(
+			`PR #${missing} is not the PR of any row; rows' PRs: ${[...owner].map(([pr, t]) => `#${pr} (#${t})`).join(", ") || "none"}`,
+		);
+	return prs.map((p) => owner.get(p)!);
 }
 
 function note(argv: string[], runner: Runner, cwd: string): string {
@@ -794,7 +919,17 @@ function reconcile(run: Run, row: Row, runner: Runner): string[] {
 
 /** The lines under a row that the event log alone determines, shown by both `status` and the ledger. */
 function logLines(row: Row): string[] {
-	return row.intent ? [`merge intent at ${row.intent.sha} pending since ${row.intent.at}: the PR is not merged`] : [];
+	const lines = row.intent
+		? [`merge intent at ${row.intent.sha} pending since ${row.intent.at}: the PR is not merged`]
+		: [];
+	if (row.live) lines.push(`live check: ${row.live.mode}, ${liveText(row)}`);
+	return lines;
+}
+
+function liveText(row: Row): string {
+	const result = row.live?.result;
+	if (result) return `${result.result} at ${result.sha}: ${result.evidence}`;
+	return liveOwed(row) ? `OWED: run it, then batch.ts ${liveResultUsage(row.ticket)}` : "no result recorded";
 }
 
 function rulesText(preflight: PreflightEvent): string {
@@ -812,6 +947,10 @@ function deadlineText(row: Row, now: Date): string {
 	return `${row.deadline}${now.getTime() > Date.parse(row.deadline) ? " OVERDUE" : ""}`;
 }
 
+/**
+ * Prints the run and each row with its launch facts, allowed commands and observed outside. It reads no pane: a
+ * coordinator line such as `ATTEMPT FAILED` is the chief's to read, and only a report file moves a row.
+ */
 function status(argv: string[], runner: Runner, cwd: string): string {
 	parse(argv, {});
 	const run = currentRun(runner, cwd);
@@ -823,6 +962,8 @@ function status(argv: string[], runner: Runner, cwd: string): string {
 	for (const row of run.rows.values()) {
 		const deadline = deadlineText(row, now);
 		out.push(`#${row.ticket} ${label(row)} next: ${next(row)}${deadline ? `, deadline ${deadline}` : ""}`);
+		const l = row.launch;
+		if (l) out.push(`  launched: pane ${l.pane}, worktree ${l.worktree}, branch ${l.branch}, session ${l.session}`);
 		for (const command of allowedCommands(row)) out.push(`  allowed: ${command}`);
 		for (const line of [...details.get(row.ticket)!, ...logLines(row)]) out.push(`  ${line}`);
 	}
@@ -870,7 +1011,7 @@ function renderLedger(run: Run, by: "status" | "note", now: Date, outside?: Map<
 		...(run.approvals.length
 			? run.approvals.map(
 					(a) =>
-						`- ${a.at} ${a.action} ${a.tickets.map((t) => `#${t}`).join(", ")}: ${JSON.stringify(a.quote)}${a.inferred ? " (inferred)" : ""}`,
+						`- ${a.at} ${a.action} ${a.tickets.map((t) => `#${t}`).join(", ")}: ${JSON.stringify(a.quote)}${a.question === undefined ? "" : ` answering ${JSON.stringify(a.question)}`}${a.inferred ? " (inferred)" : ""}`,
 				)
 			: ["- none"]),
 		"",
@@ -948,6 +1089,11 @@ function dirtyLines(runner: Runner, worktree: string): string[] {
 	return out.stdout.split("\n").filter((l) => l.trim());
 }
 
+/** Printed last by a passing `gate`: how the chief puts the gate's decisions to the user. */
+const RECOMMEND_REMINDER = "Put one recommended action beside each decision you put to the user.";
+/** Printed by a passing `gate` and by `merge`, so friction is recorded while it is fresh. */
+const NOTE_REMINDER = 'Record any friction now: batch.ts note --kind <kind> --ticket <n> "<what>".';
+
 function gate(argv: string[], runner: Runner, cwd: string): string {
 	const { values, positionals } = parse(argv, { judged: "string" });
 	const run = currentRun(runner, cwd);
@@ -1000,7 +1146,7 @@ function gate(argv: string[], runner: Runner, cwd: string): string {
 	];
 	if (!passed) throw new Refusal(`gate failed; #${row.ticket} stays ${label(row)}\n${out.join("\n")}`);
 	record(run, { at: runner.now().toISOString(), type: "gate", ticket: row.ticket, sha: pr.headRefOid, judged });
-	return `${out.join("\n")}\n#${row.ticket} is ${label(row)}`;
+	return [...out, `#${row.ticket} is ${label(row)}`, RECOMMEND_REMINDER, NOTE_REMINDER].join("\n");
 }
 
 function merge(argv: string[], runner: Runner, cwd: string): string {
@@ -1012,13 +1158,10 @@ function merge(argv: string[], runner: Runner, cwd: string): string {
 		throw new Refusal(
 			`a merge intent for #${row.ticket} at ${row.intent.sha} is pending since ${row.intent.at}; run status to reconcile it before anything else`,
 		);
-	const covering = run.approvals.filter((a) => a.action === "merge" && a.tickets.includes(row.ticket));
-	if (!covering.some((a) => !a.inferred))
-		throw new Refusal(
-			covering.length
-				? `only an inferred merge approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`
-				: `no merge approval covers #${row.ticket}; record the user's words with approve --action merge`,
-		);
+	const approvals = confirmedApprovals(run, row, "merge", (a) => a.action === "merge");
+	if (approvals.why) throw new Refusal(approvals.why);
+	if (!approvals.confirmed.length)
+		throw new Refusal(`no merge approval covers #${row.ticket}; record the user's words with approve --action merge`);
 	const rules = run.preflight.rules;
 	if (rules !== "unknown" && rules.mergeMethods && !rules.mergeMethods.includes("squash"))
 		throw new Refusal(`the base rules allow ${rules.mergeMethods.join(", ")}, not squash`);
@@ -1030,6 +1173,11 @@ function merge(argv: string[], runner: Runner, cwd: string): string {
 		);
 	const failures = checkFailures(pr, rules);
 	if (failures.length) throw new Refusal(failures.join("; "));
+	const result = row.live?.result;
+	if (row.live?.mode === "before-merge" && result?.result !== "pass")
+		throw new Refusal(
+			`#${row.ticket} has a before-merge live check and no recorded pass at ${row.sha}${result ? ` (the last result at it is ${result.result})` : ""}; run it from the clone (batch.ts live ${row.ticket} start), then record the pass with batch.ts ${liveResultUsage(row.ticket, "pass")}`,
+		);
 	const repo = run.preflight.repo;
 	if (pr.mergeStateStatus === "BEHIND" && (rules === "unknown" || rules.upToDate)) {
 		const update = runner.exec("gh", ["pr", "update-branch", String(pr.number)], { cwd: repo });
@@ -1057,7 +1205,60 @@ function merge(argv: string[], runner: Runner, cwd: string): string {
 		);
 	const commit = after.mergeCommit?.oid ?? null;
 	record(run, { at: runner.now().toISOString(), type: "merged", ticket: row.ticket, commit });
-	return `#${row.ticket} is MERGED as ${commit}`;
+	return `#${row.ticket} is MERGED as ${commit}\n${NOTE_REMINDER}`;
+}
+
+/**
+ * `live <n> start` puts a clone of the main checkout at the gated SHA in `<run dir>/live/<n>/` (a clone, not a
+ * worktree, so no other checkout's lock holds it up); an existing clean clone is fetched and reused, nothing is
+ * deleted. `live <n> --result <pass|fail> --evidence <text>` records the result against the row's gated SHA.
+ */
+function live(argv: string[], runner: Runner, cwd: string): string {
+	const { values, positionals } = parse(argv, { result: "string", evidence: "string" });
+	const run = currentRun(runner, cwd);
+	const row = rowOf(run, rowId(positionals[0], "the row"));
+	if (!row.live)
+		throw new Refusal(`#${row.ticket} has no live check; a row gets one only at preflight --live <n>:<mode>`);
+	if (positionals[1] === "start" && positionals.length === 2 && values.result === undefined) {
+		if (row.state !== "GATED") throw new Refusal(`live start needs a GATED row; ${where(row)}`);
+		return liveStart(run, row, runner);
+	}
+	if (positionals.length !== 1)
+		throw new Refusal(`usage: live ${row.ticket} start, or ${liveResultUsage(row.ticket)}`);
+	const result = required(values, "result");
+	if (result !== "pass" && result !== "fail") throw new Refusal(`--result must be pass or fail, got ${result}`);
+	const evidence = required(values, "evidence");
+	check(row, "live-result");
+	const sha = row.sha!;
+	record(run, { at: runner.now().toISOString(), type: "live-result", ticket: row.ticket, sha, result, evidence });
+	return `#${row.ticket} live check ${result} recorded at ${sha}`;
+}
+
+function liveStart(run: Run, row: Row, runner: Runner): string {
+	const path = join(run.dir, "live", String(row.ticket));
+	const sha = row.sha!;
+	const step = (args: string[]) => {
+		const out = runner.exec("git", args);
+		if (out.code !== 0) throw new Refusal(`git ${args.join(" ")} failed: ${out.stderr.trim()}`);
+	};
+	let how: string;
+	if (isLink(path) || isLink(dirname(path)))
+		throw new Refusal(`${path} or its parent is a symlink; the clone goes only into the run's own live directory`);
+	if (existsSync(path)) {
+		const dirty = dirtyLines(runner, path);
+		if (dirty.length)
+			throw new Refusal(`${path} exists and is not clean: ${dirty.join("; ")}; nothing was changed in it`);
+		step(["-C", path, "fetch", "origin"]);
+		how = `reused the clone at ${path}`;
+	} else {
+		step(["clone", run.preflight.repo, path]);
+		how = `cloned ${run.preflight.repo} into ${path}`;
+	}
+	step(["-C", path, "checkout", "--detach", sha]);
+	return [
+		`${how}, detached at ${sha}`,
+		`run #${row.ticket}'s ${row.live!.mode} live check there, and the same check on the base as a control; then batch.ts ${liveResultUsage(row.ticket)}`,
+	].join("\n");
 }
 
 /** Whether a live Pi runs in the pane; `undefined` when the pane is gone. */
@@ -1096,11 +1297,204 @@ function prompt(argv: string[], runner: Runner, cwd: string): string {
 	const text = words.join(" ").trim();
 	if (!text) throw new Refusal("prompt needs the text to send");
 	const pane = launched(row).pane;
+	const contractFile = contractPath(run, row);
+	// Only the implement round needs it: later rounds follow a report, which the contract made the coordinator write.
+	if (row.state === "RUNNING" && row.round === "implement" && !existsSync(contractFile))
+		throw new Refusal(
+			`#${row.ticket} has no contract at ${contractFile}; write it before prompting the coordinator: batch.ts ${CONTRACT_USAGE(row.ticket)}`,
+		);
 	const blocker = promptBlocker(runner, pane);
 	if (blocker) throw new Refusal(blocker);
 	const sent = runner.exec("herdr", ["agent", "prompt", pane, text]);
 	if (sent.code !== 0) throw new Refusal(`herdr agent prompt ${pane} failed: ${(sent.stderr || sent.stdout).trim()}`);
 	return `sent to #${row.ticket} in pane ${pane}`;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The coordinator contract: CONTRACT.md beside this file is its only text; `contract` fills the placeholders its
+// table names and holds no copy of it.
+
+const CONTRACT_USAGE = (ticket: RowId) => `contract ${ticket} [--lenses "<text>"] --skill <name> --setup "<cmd>"`;
+
+const contractPath = (run: Run, row: Row) => join(run.dir, `contract-${row.ticket}.md`);
+
+/**
+ * The parts of CONTRACT.md `contract` uses: the placeholder table (first column to its default cell), the
+ * placeholders it declares kept as written, and the two blocks.
+ */
+function contractSource(): {
+	table: Map<string, string | undefined>;
+	kept: Set<string>;
+	contract: string;
+	template: string;
+} {
+	const path = join(import.meta.dirname, "CONTRACT.md");
+	const lines = readFileSync(path, "utf8").split("\n");
+	/** The cells of each row of the table whose header starts with `| <first> |`; `\|` is a pipe inside a cell. */
+	const rows = (first: string) => {
+		const head = lines.findIndex((l) => new RegExp(`^\\|\\s*${first}\\s*\\|`).test(l));
+		if (head < 0) throw new Error(`${path} has no | ${first} | table`);
+		const end = lines.findIndex((l, i) => i > head && !l.startsWith("|"));
+		return lines
+			.slice(head + 2, end < 0 ? undefined : end)
+			.map((l) => l.split(/(?<!\\)\|/).map((cell) => cell.replaceAll("\\|", "|").trim()));
+	};
+	const names = (cell: string) => [...cell.matchAll(/`(<[^`>]+>)`/g)].map((m) => m[1]);
+	const table = new Map<string, string | undefined>();
+	for (const [, first, , fallback] of rows("Placeholder"))
+		for (const name of names(first)) table.set(name, fallback || undefined);
+	const kept = new Set(rows("Kept as written").flatMap(([, first]) => names(first)));
+	/** The fenced markdown block under `heading`, with its fence lines; it closes at its own fence's length. */
+	const block = (heading: string) => {
+		const at = lines.indexOf(heading);
+		const open = lines.findIndex((l, i) => i > at && /^`{3,}markdown$/.test(l));
+		const fence = open < 0 ? "" : lines[open].slice(0, -"markdown".length);
+		const close = lines.findIndex((l, i) => i > open && l === fence);
+		if (at < 0 || open < 0 || close < 0) throw new Error(`${path} has no fenced markdown block under ${heading}`);
+		return lines.slice(open, close + 1);
+	};
+	return {
+		table,
+		kept,
+		contract: block("## Contract").slice(1, -1).join("\n"),
+		template: block("## Report template").join("\n"),
+	};
+}
+
+/** Replaces each placeholder of `values` in `text` in one pass, so a value (a user's quote) is never filled itself. */
+function fill(text: string, values: Map<string, string>): string {
+	const names = [...values.keys()].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+	return text.replace(new RegExp(names.join("|"), "g"), (name) => values.get(name)!);
+}
+
+/**
+ * `contract <n>` writes `<run dir>/contract-<n>.md` from CONTRACT.md: its contract block, then `## Report template`
+ * with the template block, every placeholder of the table filled from the run, the row's launch and the user's
+ * approvals. It runs only between `launch` and the row's next event, so the coordinator's contract is fixed once the
+ * row has moved; a rerun there rewrites the run's own derived file.
+ */
+function contract(argv: string[], runner: Runner, cwd: string): string {
+	const { values, positionals } = parse(argv, { lenses: "string", skill: "string", setup: "string" });
+	const run = currentRun(runner, cwd);
+	const row = rowOf(run, rowId(positionals[0], "the row"));
+	if (positionals.length !== 1) throw new Refusal(`usage: ${CONTRACT_USAGE(row.ticket)}`);
+	if (!row.launch)
+		throw new Refusal(
+			`contract needs the launch facts: run batch.ts event ${row.ticket} launch first; ${where(row)}`,
+		);
+	if (row.state !== "RUNNING" || row.round !== "implement" || row.lastAt !== row.launchedAt)
+		throw new Refusal(
+			`#${row.ticket}'s contract is fixed once the row moves past its launch; send a change with prompt; ${where(row)}`,
+		);
+	const { table, kept, contract: body, template } = contractSource();
+	const p = run.preflight;
+	const l = row.launch;
+	const missing = new Map<string, string>();
+	const filled = new Map<string, string>();
+	const option = (name: string) => {
+		const value = values[name];
+		return typeof value === "string" && value.trim() ? value : undefined;
+	};
+	const cut = gitIn(runner, l.worktree, "merge-base", "HEAD", `origin/${p.base}`);
+	const baseSha = cut.code === 0 && cut.stdout.trim() ? cut.stdout.trim() : undefined;
+	const authorised = authorisedActions(run, row);
+	const sources: Record<string, () => string | undefined> = {
+		"<n>": () => String(row.ticket),
+		"<chief pane>": () => p.chiefPane,
+		"<brief>": () => l.brief,
+		"<worktree>": () => l.worktree,
+		"<branch>": () => l.branch,
+		"<base>": () => p.base,
+		"<base sha>": () => baseSha,
+		"<review point>": () => baseSha,
+		"<check>": () => p.check,
+		"<setup>": () => option("setup"),
+		"<implementation skill>": () => option("skill"),
+		"<lenses>": () => option("lenses") ?? table.get("<lenses>"),
+		"<authorised actions>": () => authorised.lines,
+		"<report>": () => l.report,
+		"<scratch>": () => `${join(run.dir, "scratch", String(row.ticket))}/`,
+	};
+	const why: Record<string, string> = {
+		"<base sha>": `git -C ${l.worktree} merge-base HEAD origin/${p.base} failed: ${cut.stderr.trim() || "no output"}`,
+		"<review point>": "it is <base sha>, which has no value",
+		"<setup>": "--setup is required",
+		"<implementation skill>": "--skill is required",
+		"<lenses>": "--lenses is required: CONTRACT.md's table states no default",
+		"<authorised actions>": authorised.why ?? "",
+	};
+	for (const name of table.keys()) {
+		const source = sources[name];
+		if (!source) {
+			missing.set(
+				name,
+				"this helper has no source for it; give it one in batch.ts contract, or drop it from the table",
+			);
+			continue;
+		}
+		const value = source();
+		if (value === undefined) missing.set(name, why[name] ?? "no value");
+		else filled.set(name, value);
+	}
+	if (missing.size)
+		throw new Refusal(
+			`contract for #${row.ticket} not written: ${[...missing].map(([name, reason]) => `${name}: ${reason}`).join("; ")}`,
+		);
+	// The table's default lenses name <review point>: a default taken from the table is filled itself.
+	if (!option("lenses")) filled.set("<lenses>", fill(filled.get("<lenses>")!, filled));
+	// A placeholder in the text that neither table declares would reach the coordinator unfilled. The unfilled text
+	// is read, so a user's quote holding `<...>` is not taken for one.
+	const left = new Set(
+		[...body.matchAll(/<[^<>\n]+>/g)].map((m) => m[0]).filter((name) => !table.has(name) && !kept.has(name)),
+	);
+	if (left.size)
+		throw new Refusal(
+			`contract for #${row.ticket} not written: ${[...left].join(", ")} in CONTRACT.md's contract text, declared by neither table; add each to the placeholder table with its source in batch.ts contract, or to the kept-as-written table`,
+		);
+	const text = `${fill(body, filled)}\n\n## Report template\n\n${fill(template, filled)}\n`;
+	const path = contractPath(run, row);
+	writeFileSync(path, text);
+	return `contract for #${row.ticket} written to ${path}`;
+}
+
+/**
+ * The approvals of `run` matching `matches` that cover `row` and were recorded without `--inferred`. When some cover it
+ * but every one is inferred, `why` is the refusal: an inferred scope never authorises an action until the user confirms
+ * it. `what` names the action in that refusal.
+ */
+function confirmedApprovals(
+	run: Run,
+	row: Row,
+	what: string | undefined,
+	matches: (a: ApproveEvent) => boolean,
+): { confirmed: ApproveEvent[]; why?: string } {
+	const covering = run.approvals.filter((a) => matches(a) && a.tickets.includes(row.ticket));
+	const confirmed = covering.filter((a) => !a.inferred);
+	if (covering.length && !confirmed.length)
+		return {
+			confirmed,
+			why: `only an inferred ${what ? `${what} ` : ""}approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`,
+		};
+	return { confirmed };
+}
+
+/**
+ * The coordinator's authorised actions: one line per approval recorded without `--inferred` that covers the row,
+ * except `merge`, which stays the chief's. None, or only inferred ones, is a reason to refuse, as `launch` and
+ * `merge` refuse an inferred scope.
+ */
+function authorisedActions(run: Run, row: Row): { lines?: string; why?: string } {
+	const { confirmed, why } = confirmedApprovals(run, row, undefined, (a) => a.action !== "merge");
+	if (why) return { why };
+	if (!confirmed.length)
+		return {
+			why: `no approval covers #${row.ticket} for its coordinator (a merge approval is the chief's); record the user's words with approve --action push`,
+		};
+	const lines = confirmed.map(
+		(a) =>
+			`- ${a.action}, ${a.at}: ${JSON.stringify(a.quote)}${a.question === undefined ? "" : `, answering ${JSON.stringify(a.question)}`}`,
+	);
+	return { lines: lines.join("\n") };
 }
 
 const QUIT_POLLS = 15;
@@ -1171,17 +1565,175 @@ function cleanRow(
 	return { lines, kept };
 }
 
+/** The run's own directories that `cleanup` removes once every coordinator has quit; nothing else is ever removed. */
+const DISPOSABLE = ["scratch", "live"];
+/** The first format version whose contract made `DISPOSABLE` the run's: an older run's are listed, never removed. */
+const DISPOSABLE_SINCE = 2;
+
+/**
+ * The run directory as a real path, refused unless it is a real directory directly inside the real batch directory:
+ * the deletion roots are built from it alone, never from report, event or command-line text.
+ */
+function realRunDir(run: Run): string {
+	const batch = realpathSync(dirname(run.dir));
+	if (basename(run.dir) !== run.id || ["", ".", ".."].includes(run.id) || run.id.includes(sep))
+		throw new Refusal(`run id ${JSON.stringify(run.id)} is not a plain directory name`);
+	const dir = join(batch, run.id);
+	if (!lstatSync(dir).isDirectory() || realpathSync(dir) !== dir)
+		throw new Refusal(`run directory ${run.dir} is not a real directory inside ${batch}`);
+	return dir;
+}
+
+/** Whether `path` is a symlink, dangling or not (`existsSync` follows links and misses a dangling one). */
+function isLink(path: string): boolean {
+	try {
+		return lstatSync(path).isSymbolicLink();
+	} catch {
+		return false;
+	}
+}
+
+/** Throws unless `path` lies strictly inside `root` and its parent is the real, unlinked directory `parent`. */
+function assertInside(root: string, parent: string, path: string): void {
+	if (!path.startsWith(`${root}${sep}`) || dirname(path) !== parent || realpathSync(parent) !== parent)
+		throw new Error(`${path} does not resolve inside ${root}; nothing more is removed`);
+}
+
+/**
+ * Removes everything below the real directory `dir` bottom-up. Each entry is read with `lstat`, so a symlink is
+ * unlinked as a file and never followed; containment is checked again right before each removal.
+ */
+function removeBelow(root: string, dir: string): void {
+	for (const name of readdirSync(dir)) {
+		const path = join(dir, name);
+		assertInside(root, dir, path);
+		if (lstatSync(path).isDirectory()) {
+			removeBelow(root, path);
+			assertInside(root, dir, path);
+			rmdirSync(path);
+		} else unlinkSync(path);
+	}
+}
+
+/**
+ * Removes the run's `scratch/` and `live/` (or lists them on a dry run): a root that is a symlink is unlinked, a
+ * directory is emptied with `removeBelow` and removed. Returns the lines to print and the roots it could not remove.
+ */
+function removeDisposable(
+	run: Run,
+	dryRun: boolean,
+	names: readonly string[] = DISPOSABLE,
+): { lines: string[]; left: string[] } {
+	const lines: string[] = [];
+	const left: string[] = [];
+	let dir: string;
+	try {
+		dir = realRunDir(run);
+	} catch (error) {
+		const why = `scratch and live not removed: ${(error as Error).message}`;
+		return { lines: [`  left: ${why}`], left: [why] };
+	}
+	for (const name of names) {
+		const root = join(dir, name);
+		const shown = join(run.dir, name);
+		let kind: "symlink" | "directory" | "file";
+		try {
+			const st = lstatSync(root);
+			kind = st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "directory" : "file";
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			// The coordinators are already gone: report what is left rather than lose the outcome.
+			lines.push(`  left: ${shown}: ${(error as Error).message}`);
+			left.push(`${shown}: not checked: ${(error as Error).message}`);
+			continue;
+		}
+		const what = kind === "symlink" ? "unlink symlink" : "remove";
+		if (dryRun) {
+			lines.push(`  would ${what}: ${shown}`);
+			continue;
+		}
+		try {
+			if (kind === "directory") {
+				removeBelow(root, root);
+				assertInside(dir, dir, root);
+				rmdirSync(root);
+			} else {
+				assertInside(dir, dir, root);
+				unlinkSync(root);
+			}
+			lines.push(`  ${kind === "symlink" ? "unlinked symlink" : "removed"}: ${shown}`);
+		} catch (error) {
+			lines.push(`  left: ${shown}: ${(error as Error).message}`);
+			left.push(`${shown}: partly removed or kept: ${(error as Error).message}`);
+		}
+	}
+	return { lines, left };
+}
+
+/** The entries of a report's `## Scratch paths left` section as written, without `none`; read, never resolved. */
+function scratchPathsLeft(path: string): string[] {
+	if (!existsSync(path)) return [];
+	const lines = readFileSync(path, "utf8").split("\n");
+	const start = lines.findIndex((l) => /^#+\s*Scratch paths left\s*$/i.test(l.trim()));
+	if (start < 0) return [];
+	const end = lines.findIndex((l, i) => i > start && /^#+\s/.test(l.trim()));
+	return lines
+		.slice(start + 1, end < 0 ? undefined : end)
+		.flatMap((l) => /^[-*+]\s+(.*)$/.exec(l.trim())?.[1].trim() ?? [])
+		.filter((entry) => entry && !/^none\.?$/i.test(entry));
+}
+
+/** What `cleanup` hands to the user without touching it: remote branches of merged rows, scratch paths, a behind base. */
+function handOver(run: Run, runner: Runner): string[] {
+	const repo = run.preflight.repo;
+	const base = run.preflight.base;
+	const items: string[] = [];
+	const remoteHead = (branch: string) =>
+		runner.exec("git", ["ls-remote", "origin", `refs/heads/${branch}`], { cwd: repo });
+	for (const row of run.rows.values()) {
+		if (!row.launch) continue;
+		if (row.state === "MERGED") {
+			const remote = remoteHead(row.launch.branch);
+			if (remote.code !== 0)
+				items.push(`#${row.ticket} cannot check remote branch ${row.launch.branch}: ${remote.stderr.trim()}`);
+			else if (remote.stdout.trim())
+				items.push(`#${row.ticket} remote branch ${row.launch.branch} still exists on origin; not deleted`);
+		}
+		for (const entry of scratchPathsLeft(row.launch.report))
+			items.push(`#${row.ticket} scratch path left (from ${row.launch.report}): ${entry}`);
+	}
+	const remote = remoteHead(base);
+	const head = runner.exec("git", ["rev-parse", "HEAD"], { cwd: repo });
+	const sha = remote.stdout.split(/\s/)[0];
+	if (remote.code !== 0 || head.code !== 0 || !sha)
+		items.push(
+			`cannot tell whether main checkout ${repo} is behind origin/${base}: ${(remote.stderr || head.stderr).trim() || "no remote head"}`,
+		);
+	else if (sha !== head.stdout.trim()) {
+		const ancestor = runner.exec("git", ["merge-base", "--is-ancestor", sha, "HEAD"], { cwd: repo });
+		// Exit 1: origin's head is not in HEAD; "not a valid commit": origin has a commit this checkout never fetched.
+		if (ancestor.code === 1 || /not a valid (commit|object)/i.test(ancestor.stderr))
+			items.push(`main checkout ${repo} is behind origin/${base} (${sha}); pull it before the next batch`);
+		else if (ancestor.code !== 0)
+			items.push(`cannot tell whether main checkout ${repo} is behind origin/${base}: ${ancestor.stderr.trim()}`);
+	}
+	return items;
+}
+
 function cleanup(argv: string[], runner: Runner, cwd: string): string {
 	const { values } = parse(argv, { "dry-run": "boolean" });
 	const dryRun = values["dry-run"] === true;
 	const run = currentRun(runner, cwd);
 	const out: string[] = [dryRun ? "cleanup --dry-run: nothing is changed" : "cleanup"];
 	const left: string[] = [];
+	/** Rows whose coordinator was not confirmed gone, or whose resources failed a check: scratch and live stay. */
+	let unsettled = false;
 	for (const row of run.rows.values()) {
 		if (!row.launch) continue;
 		const resources = `worktree ${row.launch.worktree}, branch ${row.launch.branch}, pane ${row.launch.pane}`;
 		if (!TERMINAL.includes(row.state)) {
 			left.push(`#${row.ticket} ${resources}: the row is ${label(row)}, not terminal`);
+			unsettled = true;
 			continue;
 		}
 		out.push(`#${row.ticket} ${label(row)}:`);
@@ -1190,13 +1742,48 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 		if (result.left) {
 			out.push(`  left: ${result.left}`);
 			left.push(`#${row.ticket} ${resources}: ${result.left}`);
+			unsettled = true;
 		} else if (result.kept) left.push(`#${row.ticket} branch ${result.kept}: kept, the PR is not merged`);
 	}
+	unsettled ||= [...run.rows.values()].some((r) => !TERMINAL.includes(r.state));
+	const owed = [...run.rows.values()].filter(liveOwed);
+	for (const row of owed)
+		left.push(`#${row.ticket} live check (after-merge) owed: run it, then batch.ts ${liveResultUsage(row.ticket)}`);
+	out.push("Run directory:");
+	// Like `handOver`'s items, listed for the user and no reason to keep the run: this run's contract never gave them away.
+	const notOwned: string[] = [];
+	if (owed.length) {
+		// The owed check runs from its clone: live stays, scratch goes once the coordinators are gone.
+		const root = join(run.dir, "live");
+		if (existsSync(root) || isLink(root)) out.push(`  kept: ${root}: a live check is owed`);
+	}
+	if (run.preflight.version < DISPOSABLE_SINCE) {
+		for (const name of DISPOSABLE) {
+			const root = join(run.dir, name);
+			if (!existsSync(root) && !isLink(root)) continue;
+			const why = `not removed: run ${run.id} was started by the version-${run.preflight.version} helper, whose contract never made it disposable`;
+			out.push(`  ${why}: ${root}`);
+			notOwned.push(`${root}: ${why}`);
+		}
+	} else if (unsettled) {
+		for (const name of owed.length ? ["scratch"] : DISPOSABLE) {
+			const root = join(run.dir, name);
+			if (!existsSync(root) && !isLink(root)) continue;
+			out.push(`  kept: ${root}: a row is not terminal or its coordinator is not confirmed gone`);
+			left.push(`${root}: kept until every coordinator has quit`);
+		}
+	} else {
+		const removed = removeDisposable(run, dryRun, owed.length ? ["scratch"] : DISPOSABLE);
+		out.push(...removed.lines);
+		left.push(...removed.left);
+	}
+	// Listed for the user, never removed, and no reason to keep the run: the helper does not own them.
+	const handed = [...notOwned, ...handOver(run, runner)];
 	out.push(
 		"Notes:",
 		...(run.notes.length ? run.notes.map((n) => `- ${n.kind} #${n.ticket}: ${n.text}`) : ["- none"]),
 		"Resources left:",
-		...(left.length ? left.map((l) => `- ${l}`) : ["- none"]),
+		...(left.length || handed.length ? [...left, ...handed].map((l) => `- ${l}`) : ["- none"]),
 	);
 	const finished = !left.length && [...run.rows.values()].every((r) => TERMINAL.includes(r.state));
 	if (finished && !dryRun) {
@@ -1219,6 +1806,8 @@ const COMMANDS: Record<string, (argv: string[], runner: Runner, cwd: string) => 
 	status,
 	gate,
 	merge,
+	live,
+	contract,
 	prompt,
 	cleanup,
 };

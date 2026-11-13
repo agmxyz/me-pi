@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
 	appendFileSync,
+	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
+	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -37,8 +41,11 @@ const RULES = JSON.stringify([
 
 let fixtures = 0;
 
-/** A run fixture: a repo directory, a fake runner for git, gh and the clock, and the run's files. */
-function fixture() {
+/**
+ * A run fixture: a repo directory, a fake runner for git, gh and the clock, and the run's files. `entry` is the
+ * helper's `main`, or that of a copy of the skill directory.
+ */
+function fixture(entry = main) {
 	const dir = join(ROOT, `f${fixtures++}`);
 	const repo = join(dir, "repo");
 	mkdirSync(repo, { recursive: true });
@@ -65,6 +72,9 @@ function fixture() {
 			if (line === "git status --porcelain") return ok("");
 			if (args[0] === "--version") return ok(`${cmd} 1.0\n`);
 			if (line === "gh api repos/{owner}/{repo}/rules/branches/main") return state.rules;
+			// origin's base is where the main checkout is, and no other remote branch is left.
+			if (line === "git ls-remote origin refs/heads/main") return ok(`${SHA}\trefs/heads/main\n`);
+			if (/^git ls-remote origin refs\/heads\/\S+$/.test(line)) return ok("");
 			const view = /^gh pr view (\S+) --json /.exec(line);
 			if (view) {
 				const pr = state.prs[view[1]];
@@ -75,7 +85,7 @@ function fixture() {
 			return { code: 1, stdout: "", stderr: `fake runner: unexpected ${line}` };
 		},
 	};
-	const run = (...argv: string[]) => main(argv, runner, repo);
+	const run = (...argv: string[]) => entry(argv, runner, repo);
 	const batch = join(`${repo}.worktrees`, ".batch");
 	const runDir = () => join(batch, readFileSync(join(batch, "current"), "utf8").trim());
 	const events = () =>
@@ -95,8 +105,8 @@ function fixture() {
 		utimesSync(path, date, date);
 		return path;
 	};
-	const preflight = (tickets = "5,6") =>
-		run("preflight", "--repo", repo, "--tickets", tickets, "--check", "npm test", "--chief-pane", "w1:p1");
+	const preflight = (tickets = "5,6", ...extra: string[]) =>
+		run("preflight", "--repo", repo, "--tickets", tickets, "--check", "npm test", "--chief-pane", "w1:p1", ...extra);
 	const launch = (n: number | string) =>
 		run(
 			"event",
@@ -143,8 +153,8 @@ function rowLine(f: Fixture, n: number | string) {
 }
 
 /** Launches #5, reports it DONE at 10:05 and gates it at HEAD via an appended `gate` event. */
-function gated(f: Fixture) {
-	assertOk(f.preflight());
+function gated(f: Fixture, ...preflightExtra: string[]) {
+	assertOk(f.preflight("5,6", ...preflightExtra));
 	assertOk(f.launch(5));
 	f.at("10:05");
 	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
@@ -190,6 +200,40 @@ test("launch moves QUEUED to RUNNING(implement) with a deadline", () => {
 	assert.match(rowLine(f, 5), /^#5 RUNNING\(implement\) next: coordinator, deadline 2026-11-11T10:20:00\.000Z$/);
 	f.at("10:21");
 	assert.match(rowLine(f, 5), /deadline 2026-11-11T10:20:00\.000Z OVERDUE$/);
+});
+
+test("status prints pane, worktree, branch and session file of each launched row, and none for a queued row", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	const out = assertOk(f.run("status"));
+	const lines = out.split("\n");
+	const at = lines.findIndex((l) => l.startsWith("#5 "));
+	assert.ok(
+		lines.includes(
+			`  launched: pane w1:p5, worktree ${join(f.dir, "t5")}, branch feat/t5, session ${join(f.dir, "s5.jsonl")}`,
+		),
+		out,
+	);
+	assert.ok(lines.findIndex((l) => l.startsWith("  launched:")) > at, out);
+	assert.equal(lines.filter((l) => l.startsWith("  launched:")).length, 1, out);
+});
+
+test("status records nothing for an ATTEMPT FAILED line in the panes, unlike a report", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	f.at("10:05");
+	const before = assertOk(f.run("status"));
+	const events = f.events().length;
+	const line = "[coordinator 5] ATTEMPT FAILED: provider error on the implement job";
+	for (const pane of ["w1:p1", "w1:p5"]) f.state.exec[`herdr agent read ${pane} --source visible`] = ok(`${line}\n> `);
+	const calls = f.calls.length;
+	const after = assertOk(f.run("status"));
+	assert.equal(after, before);
+	assert.equal(f.events().length, events, "status recorded an event");
+	assert.match(rowLine(f, 5), /^#5 RUNNING\(implement\)/);
+	assert.ok(!f.calls.slice(calls).some((c) => c.startsWith("herdr ")), "status read a pane");
 });
 
 test("a DONE report moves RUNNING to REPORTED; a BLOCKED one to ASKED(chief)", () => {
@@ -375,6 +419,52 @@ test("approve and note are recorded; unknown kinds and tickets are refused", () 
 	const ledger = readLedger(f);
 	assert.match(ledger, /"merge 5 and 6"/);
 	assert.match(ledger, /gate-miss #5: CI ran on the old head/);
+});
+
+test("approve --question is stored in the event and shown in the ledger", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(
+		f.run("approve", "--quote", "yes, push", "--question", "push 5 and 6?", "--action", "push", "--tickets", "5,6"),
+	);
+	const [e] = f.events().filter((x) => x.type === "approve");
+	assert.equal(e.question, "push 5 and 6?");
+	assert.match(readLedger(f), /push #5, #6: "yes, push" answering "push 5 and 6\?"/);
+});
+
+test("approve --prs resolves each PR through a row's branch and refuses a PR no row owns", () => {
+	const f = fixture();
+	assertOk(f.preflight("5,6,7"));
+	assertOk(f.launch(5));
+	assertOk(f.launch(6));
+	f.state.prs["feat/t5"] = { number: 12 };
+	f.state.prs["feat/t6"] = { number: 13 };
+	assertOk(f.run("approve", "--quote", "merge 13 and 12", "--action", "merge", "--prs", "13,12"));
+	const [e] = f.events().filter((x) => x.type === "approve");
+	assert.deepEqual(e.tickets, [6, 5]);
+	assertRefused(
+		f.run("approve", "--quote", "merge 14", "--action", "merge", "--prs", "12,14"),
+		"PR #14 is not the PR of any row",
+		"#12 (#5)",
+	);
+	assertRefused(
+		f.run("approve", "--quote", "x", "--action", "merge", "--prs", "12", "--tickets", "5"),
+		"--tickets or --prs",
+	);
+	assert.equal(f.events().filter((x) => x.type === "approve").length, 1);
+});
+
+test("launch is refused while only an inferred push approval covers the row", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.run("approve", "--quote", "ship them all", "--action", "push", "--tickets", "5,6", "--inferred"));
+	assertRefused(
+		f.launch(5),
+		"only an inferred push approval covers #5; confirm it with the user and record their words with approve (without --inferred)",
+	);
+	assert.match(rowLine(f, 5), /^#5 QUEUED/);
+	assertOk(f.run("approve", "--quote", "yes, push 5", "--action", "push", "--tickets", "5"));
+	assertOk(f.launch(5));
 });
 
 test("ledger.md is regenerated by status, not appended", () => {
@@ -566,8 +656,8 @@ test("gate on a label row skips the closing-keyword check and says so", () => {
 });
 
 /** A gated #5 with a merge approval in the user's words. */
-function approvedGated(f: Fixture) {
-	gated(f);
+function approvedGated(f: Fixture, ...preflightExtra: string[]) {
+	gated(f, ...preflightExtra);
 	f.state.prs["feat/t5"] = goodPr();
 	assertOk(f.run("approve", "--quote", "merge 5", "--action", "merge", "--tickets", "5"));
 }
@@ -649,6 +739,27 @@ test("merge records an intent, merges pinned to the head, and records MERGED wit
 	assert.match(rowLine(f, 5), /^#5 MERGED/);
 });
 
+test("a passing gate ends with the recommendation and note reminders; a failed gate does not; merge prints the note reminder", () => {
+	const RECOMMEND = "Put one recommended action beside each decision you put to the user.";
+	const NOTE = 'Record any friction now: batch.ts note --kind <kind> --ticket <n> "<what>".';
+	const failed = fixture();
+	const wt = reported(failed);
+	failed.state.exec[`git -C ${wt} status --porcelain`] = ok(" M src/a.ts\n");
+	const refused = failed.run("gate", "5", "--judged", "looks fine");
+	assertRefused(refused);
+	assert.ok(!refused.out.includes(RECOMMEND) && !refused.out.includes(NOTE), refused.out);
+	const f = fixture();
+	reported(f);
+	assertOk(f.run("approve", "--quote", "merge 5", "--action", "merge", "--tickets", "5"));
+	const gated = f.run("gate", "5", "--judged", "diff matches the brief");
+	assert.deepEqual(assertOk(gated).split("\n").slice(-2), [RECOMMEND, NOTE]);
+	f.state.exec[MERGE_CALL] = () => {
+		f.state.prs["feat/t5"] = goodPr({ state: "MERGED", mergeCommit: { oid: MOVED } });
+		return ok();
+	};
+	assert.ok(assertOk(f.run("merge", "5")).includes(NOTE));
+});
+
 test("merge records no MERGED when GitHub does not say merged, and refuses to repeat a pending intent", () => {
 	const f = fixture();
 	approvedGated(f);
@@ -680,6 +791,7 @@ test("prompt sends to a live Pi with no dialog", () => {
 	assertOk(f.launch(5));
 	const id = pane(f, 5, true);
 	f.state.exec[`herdr agent prompt ${id} please rebase`] = ok();
+	writeFileSync(join(f.runDir(), "contract-5.md"), "contract");
 	f.calls.length = 0;
 	assertOk(f.run("prompt", "5", "please rebase"));
 	assert.deepEqual(
@@ -697,6 +809,7 @@ test("prompt is refused when a dialog is visible in the pane", () => {
 	assertOk(f.preflight());
 	assertOk(f.launch(5));
 	pane(f, 5, true, DIALOG);
+	writeFileSync(join(f.runDir(), "contract-5.md"), "contract");
 	assertRefused(f.run("prompt", "5", "please rebase"), "dialog is visible", "esc");
 	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
 });
@@ -706,16 +819,257 @@ test("prompt is refused on a dead pane", () => {
 	assertOk(f.preflight());
 	assertOk(f.launch(5));
 	pane(f, 5, false);
+	writeFileSync(join(f.runDir(), "contract-5.md"), "contract");
 	assertRefused(f.run("prompt", "5", "please rebase"), "no live Pi");
 	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The coordinator contract, written by `contract` from CONTRACT.md.
+
+const SKILL_DIR = join(import.meta.dirname, "../skills/batch-chief");
+const CONTRACT_SOURCE = readFileSync(join(SKILL_DIR, "CONTRACT.md"), "utf8");
+
+/** The backticked `<...>` tokens in the first column of CONTRACT.md's table headed `| <first> |`. */
+function tablePlaceholders(source: string, first = "Placeholder"): string[] {
+	const lines = source.split("\n");
+	const start = lines.findIndex((l) => l.startsWith(`| ${first} |`));
+	assert.ok(start >= 0, `CONTRACT.md has no ${first} table`);
+	const rows = lines.slice(start + 2);
+	const end = rows.findIndex((l) => !l.startsWith("|"));
+	return rows.slice(0, end).flatMap((l) => [...l.split("|")[1].matchAll(/`(<[^`>]+>)`/g)].map((m) => m[1]));
+}
+
+const CONTRACT_ARGS = ["--lenses", "code-review Standards and Spec", "--skill", "implement-me-pi", "--setup", "npm ci"];
+
+/** Records a push approval for #5 in the user's words, launches #5, and answers its worktree's merge-base. */
+function contractable(f: Fixture) {
+	assertOk(f.preflight());
+	f.at("10:01");
+	assertOk(
+		f.run(
+			"approve",
+			"--quote",
+			"push 5 and open the PR",
+			"--question",
+			"may 5 push?",
+			"--action",
+			"push",
+			"--tickets",
+			"5",
+		),
+	);
+	assertOk(f.run("approve", "--quote", "merge 5", "--action", "merge", "--tickets", "5"));
+	f.at("10:02");
+	assertOk(f.launch(5));
+	f.state.exec[`git -C ${join(f.dir, "t5")} merge-base HEAD origin/main`] = ok(`${MOVED}\n`);
+	return join(f.runDir(), "contract-5.md");
+}
+
+test("contract fills every table placeholder of CONTRACT.md from the run, keeping <pr> and the report template's fields", () => {
+	const f = fixture();
+	const path = contractable(f);
+	const out = assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+	assert.ok(out.includes(path), out);
+	const written = readFileSync(path, "utf8");
+	const placeholders = tablePlaceholders(CONTRACT_SOURCE);
+	assert.ok(placeholders.includes("<scratch>") && placeholders.includes("<authorised actions>"), placeholders.join());
+	for (const p of placeholders) assert.ok(!written.includes(p), `${p} left in:\n${written}`);
+	for (const kept of ["<pr>", "<one clause>", "git checkout -- <path>", "<DONE or BLOCKED>", "<URL>", "<criterion>"])
+		assert.ok(written.includes(kept), `${kept} missing from:\n${written}`);
+	const declared = tablePlaceholders(CONTRACT_SOURCE, "Kept as written");
+	assert.deepEqual([...declared].sort(), ["<one clause>", "<path>", "<pr>"]);
+	const left = new Set(written.slice(0, written.indexOf("\n## Report template\n")).match(/<[^<>\n]+>/g));
+	assert.deepEqual([...left].sort(), [...declared].sort(), "the contract keeps a token CONTRACT.md does not declare");
+	assert.match(written, /^# Coordinator contract: 5\n/);
+	assert.match(written, /\n## Report template\n[\s\S]*\n# Report: #5\n/);
+	for (const fact of [
+		"herdr pane `w1:p1`",
+		`Implementer contract: \`${f.brief}\``,
+		`Checkout: \`${join(f.dir, "t5")}\` (your cwd), branch \`feat/t5\`, created clean from \`main\` at \`${MOVED}\`. \`npm ci\` has been run.`,
+		`Fixed review point: \`${MOVED}\``,
+		"Check: `npm test`",
+		"with every lens: code-review Standards and Spec.",
+		`\`${join(f.runDir(), "scratch", "5")}/\``,
+		`Write \`${join(f.dir, "report-5.md")}\``,
+		'- push, 2026-11-11T10:01:00.000Z: "push 5 and open the PR", answering "may 5 push?"',
+	])
+		assert.ok(written.includes(fact), `${fact} missing from:\n${written}`);
+	assert.ok(!written.includes('"merge 5"'), "a merge approval is the chief's, not the coordinator's");
+	assert.ok(!written.includes("| Placeholder |"), "the chief's table was copied into the contract");
+});
+
+test("contract takes its text only from CONTRACT.md: batch.ts holds no copy of it", () => {
+	const helper = readFileSync(join(SKILL_DIR, "batch.ts"), "utf8");
+	for (const sentence of [
+		"You are the Pi coordinator for one ticket",
+		"Everything else stays the user's",
+		"Cost and wall time",
+	])
+		assert.ok(CONTRACT_SOURCE.includes(sentence) && !helper.includes(sentence), sentence);
+});
+
+test("contract without --lenses takes the default stated in CONTRACT.md's table, filled", () => {
+	const f = fixture();
+	const path = contractable(f);
+	assertOk(f.run("contract", "5", "--skill", "implement-me-pi", "--setup", "npm ci"));
+	assert.ok(
+		readFileSync(path, "utf8").includes(
+			`with every lens: the \`code-review\` skill's Standards and Spec lenses, run against \`${MOVED}\`.`,
+		),
+	);
+});
+
+test("contract refuses, naming the placeholder, when a value is missing, and writes nothing", () => {
+	const f = fixture();
+	const path = contractable(f);
+	assertRefused(f.run("contract", "5", "--lenses", "x", "--skill", "implement-me-pi"), "<setup>", "--setup");
+	assertRefused(f.run("contract", "5", "--lenses", "x", "--setup", "npm ci"), "<implementation skill>", "--skill");
+	f.state.exec[`git -C ${join(f.dir, "t5")} merge-base HEAD origin/main`] = { code: 1, stdout: "", stderr: "bad" };
+	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS), "<base sha>", "merge-base");
+	assert.ok(!existsSync(path));
+});
+
+test("contract refuses a row covered by no approval, or only by inferred ones, naming approve", () => {
+	const none = fixture();
+	assertOk(none.preflight());
+	assertOk(none.launch(5));
+	none.state.exec[`git -C ${join(none.dir, "t5")} merge-base HEAD origin/main`] = ok(`${SHA}\n`);
+	assertRefused(none.run("contract", "5", ...CONTRACT_ARGS), "<authorised actions>", "no approval", "approve");
+	assertOk(none.run("approve", "--quote", "merge it", "--action", "merge", "--tickets", "5"));
+	assertRefused(none.run("contract", "5", ...CONTRACT_ARGS), "<authorised actions>", "no approval");
+	assertOk(none.run("approve", "--quote", "ship all", "--action", "release", "--tickets", "5", "--inferred"));
+	assertRefused(
+		none.run("contract", "5", ...CONTRACT_ARGS),
+		"only an inferred approval covers #5",
+		"approve (without --inferred)",
+	);
+	assert.ok(!existsSync(join(none.runDir(), "contract-5.md")));
+});
+
+test("contract is written only between launch and the row's next event, and rewrites its own file there", () => {
+	const f = fixture();
+	const path = contractable(f);
+	assertRefused(f.run("contract", "6", ...CONTRACT_ARGS), "#6 is QUEUED", "event 6 launch");
+	assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+	assertOk(f.run("contract", "5", "--lenses", "evolvability", "--skill", "implement-me-pi", "--setup", "npm ci"));
+	assert.ok(readFileSync(path, "utf8").includes("with every lens: evolvability."));
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
+	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS), "#5 is REPORTED");
+	assert.ok(readFileSync(path, "utf8").includes("with every lens: evolvability."));
+});
+
+/** A fixture whose helper is a copy of batch.ts beside `source` as its CONTRACT.md. */
+async function withContract(source: string) {
+	assert.notEqual(source, CONTRACT_SOURCE, "the copy changes nothing");
+	const copy = mkdtempSync(join(ROOT, "skill-copy-"));
+	writeFileSync(join(copy, "batch.ts"), readFileSync(join(SKILL_DIR, "batch.ts")));
+	writeFileSync(join(copy, "CONTRACT.md"), source);
+	const copied = await import(join(copy, "batch.ts"));
+	return fixture(copied.main);
+}
+
+test("contract refuses, naming each, a placeholder in the contract text that neither table declares", async () => {
+	const f = await withContract(
+		CONTRACT_SOURCE.replace(
+			"# Coordinator contract: <n>",
+			"# Coordinator contract: <n>, <ticket title> (<ticket url>)",
+		),
+	);
+	const path = contractable(f);
+	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS), "<ticket title>", "<ticket url>");
+	assert.ok(!existsSync(path));
+	const dropped = await withContract(CONTRACT_SOURCE.replace(/\n\| `<check>` \|.*/, ""));
+	const droppedPath = contractable(dropped);
+	assertRefused(dropped.run("contract", "5", ...CONTRACT_ARGS), "<check>");
+	assert.ok(!existsSync(droppedPath));
+});
+
+test("contract keeps a fenced example inside the contract text whole", async () => {
+	const f = await withContract(
+		CONTRACT_SOURCE.replace("## Sequence\n", "## Sequence\n\n```bash\ngit log --oneline -1\n```\n"),
+	);
+	const path = contractable(f);
+	assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+	const written = readFileSync(path, "utf8");
+	assert.ok(written.includes("## Sequence\n\n```bash\ngit log --oneline -1\n```\n"), written);
+	assert.ok(written.includes("[coordinator 5] BLOCKED: "), `the contract was cut short:\n${written}`);
+});
+
+test("contract takes the default lenses from their own cell: text added beside it stays out", async () => {
+	const f = await withContract(
+		CONTRACT_SOURCE.replace(
+			"without it, the default |",
+			"without it, the default. Ask the user when intake named none \\| or one |",
+		),
+	);
+	const path = contractable(f);
+	assertOk(f.run("contract", "5", "--skill", "implement-me-pi", "--setup", "npm ci"));
+	const written = readFileSync(path, "utf8");
+	assert.ok(written.includes(`Standards and Spec lenses, run against \`${MOVED}\`.`), written);
+	assert.ok(!written.includes("Ask the user when intake"), written);
+});
+
+test("contract refuses, naming it, a placeholder CONTRACT.md's table gains that it has no source for", async () => {
+	const grown = CONTRACT_SOURCE.replace(
+		"| `<check>` |",
+		"| `<ticket title>` | the issue's title |\n| `<check>` |",
+	).replace("# Coordinator contract: <n>", "# Coordinator contract: <n>, <ticket title>");
+	const f = await withContract(grown);
+	const path = contractable(f);
+	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS), "<ticket title>");
+	assert.ok(!existsSync(path));
+});
+
+test("prompt refuses a RUNNING(implement) row whose contract is not written, naming the contract command", () => {
+	const f = fixture();
+	const path = contractable(f);
+	const id = pane(f, 5, true);
+	f.state.exec[`herdr agent prompt ${id} start`] = ok();
+	f.calls.length = 0;
+	assertRefused(f.run("prompt", "5", "start"), path, "batch.ts contract 5");
+	assert.ok(!f.calls.some((c) => c.startsWith("herdr")), f.calls.join("\n"));
+	assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+	assertOk(f.run("prompt", "5", "start"));
+});
+
+test("SKILL.md step 3 launches, then writes the contract with the command, then prompts, and re-checks a brief on a moved base", () => {
+	const skill = readFileSync(join(SKILL_DIR, "SKILL.md"), "utf8");
+	const step = skill.slice(skill.indexOf("## 3. Launch"), skill.indexOf("## 4."));
+	const at = (text: string) => {
+		const i = step.indexOf(text);
+		assert.ok(i >= 0, `step 3 lacks ${text}`);
+		return i;
+	};
+	assert.ok(at("batch.ts event <n> launch") < at("batch.ts contract <n>"));
+	assert.ok(at("batch.ts contract <n>") < at("batch.ts prompt <n>"));
+	assert.ok(!step.includes("with the `write` tool"), "step 3 still writes the contract by hand");
+	at("git log --oneline <brief's base>..origin/<base> -- <the brief's files>");
+	assert.ok(skill.split("\n").length < 130, "SKILL.md has 130 lines or more");
+	const branch = at("worktree add -b <branch>");
+	assert.ok(at("`<type>/<n>-<slug>`") - branch < 300, "step 3 item 1 does not name the branch rule");
+	at('--setup "<what item 2 ran>"');
+	assert.ok(CONTRACT_SOURCE.includes("what step 3, item 2 ran"), "CONTRACT.md's <setup> names another step");
+});
+
+test("SKILL.md step 4 writes a live check's result into the PR body before or after the merge, by its row", () => {
+	const skill = readFileSync(join(SKILL_DIR, "SKILL.md"), "utf8");
+	const bullet = skill.split("\n").find((l) => l.startsWith("- **Live check.**"));
+	assert.ok(bullet, "step 4 has no Live check bullet");
+	assert.match(bullet, /PR body before merging for `before-merge`, after the merge for `after-merge`/);
+	assert.ok(
+		bullet.split(/\. (?=[A-Z`])/).length <= 4,
+		`the Live check bullet has more than four sentences: ${bullet}`,
+	);
 });
 
 /**
  * A MERGED #5 and a launched, then DROPPED #6, each with a worktree and git dir on disk and a pane that runs Pi
  * until `/quit` is sent. Clears the recorded calls.
  */
-function cleanable(f: Fixture) {
-	approvedGated(f);
+function cleanable(f: Fixture, ...preflightExtra: string[]) {
+	approvedGated(f, ...preflightExtra);
 	assertOk(f.launch(6));
 	assertOk(f.run("event", "6", "drop", "--user", "not now"));
 	f.state.prs["feat/t5"] = goodPr({ state: "MERGED", mergeCommit: { oid: MOVED } });
@@ -978,7 +1332,48 @@ test("a report whose Status line is still the template placeholder is not a repo
 	assertOk(f.run("event", "5", "report", "--path", f.report(5, "**BLOCKED**", "10:04")));
 	assert.match(rowLine(f, 5), /^#5 ASKED\(chief\)/);
 	const template = readFileSync(join(import.meta.dirname, "../skills/batch-chief/CONTRACT.md"), "utf8");
-	assert.match(template, /## Status\n<DONE or BLOCKED>\n/);
+	assert.match(template, /\n## Report template\n[\s\S]*\n## Status\n<DONE or BLOCKED>\n/);
+});
+
+test("SKILL.md marks a coordinator's pane unattended before it starts Pi there, and CONTRACT.md quotes guard's refusal", async () => {
+	const skill = readFileSync(join(import.meta.dirname, "../skills/batch-chief/SKILL.md"), "utf8");
+	const exported = skill.indexOf('herdr pane run <pane> "export ME_PI_UNATTENDED=1"');
+	assert.ok(exported >= 0, "step 3 does not export ME_PI_UNATTENDED=1 into the pane");
+	assert.ok(exported < skill.indexOf("herdr agent start coordinator-<n>"), "the export comes after herdr agent start");
+	const contract = readFileSync(join(import.meta.dirname, "../skills/batch-chief/CONTRACT.md"), "utf8");
+	let handler: any;
+	registerGuard({
+		on: (_event: string, h: any) => {
+			handler = h;
+		},
+		registerCommand: () => {},
+		events: { emit: () => {} },
+	} as any);
+	const before = process.env.ME_PI_UNATTENDED;
+	process.env.ME_PI_UNATTENDED = "1";
+	let result: { block?: boolean; reason?: string } | undefined;
+	try {
+		result = await handler(
+			{ type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command: "git push origin main" } },
+			{ cwd: mkdtempSync(join(ROOT, "guard-")), hasUI: true, ui: { confirm: async () => assert.fail("confirm") } },
+		);
+	} finally {
+		if (before === undefined) delete process.env.ME_PI_UNATTENDED;
+		else process.env.ME_PI_UNATTENDED = before;
+	}
+	assert.equal(result?.block, true, "guard did not refuse in an unattended session");
+	// CONTRACT.md quotes the refusal up to its first sentence's end, with the risk elided.
+	const refusal = result!.reason!.replace(/^Blocked \([^)]*\)/, "Blocked (...)");
+	const quoted = refusal.slice(0, refusal.indexOf(". "));
+	assert.ok(quoted.startsWith("Blocked (...): "), refusal);
+	assert.ok(
+		contract.includes(`\`${quoted}\`: such a refusal is reported`),
+		`CONTRACT.md does not quote guard's refusal ${JSON.stringify(quoted)}`,
+	);
+	assert.match(
+		contract,
+		/such a refusal is reported .*never retried or rerouted through another tool, worker or path/,
+	);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1050,12 +1445,12 @@ test("preflight refuses a current run of another version, finished or not, and n
 		const f = fixture();
 		assertOk(f.preflight());
 		const old = f.runDir();
-		otherVersion(f, 2, rest);
+		otherVersion(f, 3, rest);
 		f.at("11:00");
 		assertRefused(
 			f.preflight(),
 			"written by another version of the helper",
-			"version 2",
+			"version 3",
 			"preflight again with --set-aside-old-run",
 		);
 		assert.equal(f.runDir(), old, "a refused preflight moved current");
@@ -1067,7 +1462,7 @@ test("preflight --set-aside-old-run starts a new run and leaves the other versio
 		const f = fixture();
 		assertOk(f.preflight());
 		const old = f.runDir();
-		const before = otherVersion(f, 2, rest);
+		const before = otherVersion(f, 3, rest);
 		f.at("11:00");
 		const out = assertOk(
 			f.run(
@@ -1078,7 +1473,7 @@ test("preflight --set-aside-old-run starts a new run and leaves the other versio
 			),
 		);
 		assert.ok(
-			out.includes(`set aside run ${old.split("/").at(-1)} (version 2), not checked; it stays in ${old}`),
+			out.includes(`set aside run ${old.split("/").at(-1)} (version 3), not checked; it stays in ${old}`),
 			out,
 		);
 		assert.notEqual(f.runDir(), old);
@@ -1117,7 +1512,7 @@ test("preflight --set-aside-old-run takes the user's words and records them with
 	const f = fixture();
 	assertOk(f.preflight());
 	const old = f.runDir();
-	otherVersion(f, 2, []);
+	otherVersion(f, 3, []);
 	f.at("11:00");
 	for (const words of ["", "   "])
 		assertRefused(f.run("preflight", ...preflightArgs(f), "--set-aside-old-run", words), "--set-aside-old-run");
@@ -1126,9 +1521,9 @@ test("preflight --set-aside-old-run takes the user's words and records them with
 	const words = "the old batch is merged and cleaned up";
 	assertOk(f.run("preflight", ...preflightArgs(f), "--set-aside-old-run", words));
 	const id = old.split("/").at(-1);
-	assert.deepEqual(f.events()[0].setAside, { run: id, version: 2, user: words });
+	assert.deepEqual(f.events()[0].setAside, { run: id, version: 3, user: words });
 	assert.ok(
-		readLedger(f).includes(`- Set aside: run ${id} (version 2), not checked: ${JSON.stringify(words)}`),
+		readLedger(f).includes(`- Set aside: run ${id} (version 3), not checked: ${JSON.stringify(words)}`),
 		readLedger(f),
 	);
 });
@@ -1136,7 +1531,7 @@ test("preflight --set-aside-old-run takes the user's words and records them with
 test("only preflight's refusal of another version names --set-aside-old-run, after the user confirms", () => {
 	const f = fixture();
 	assertOk(f.preflight());
-	otherVersion(f, 2, []);
+	otherVersion(f, 3, []);
 	f.at("11:00");
 	assertRefused(
 		f.preflight(),
@@ -1193,13 +1588,19 @@ test("a cleanup whose current pointer cannot be removed still returns its output
 	assert.ok(existsSync(currentPointer(f)));
 });
 
+/** Makes the frozen `fixtures/batch-chief/<name>.jsonl` the current run `golden-<name>`; returns its text and batch dir. */
+function goldenRun(f: Fixture, name: string) {
+	const golden = readFileSync(join(import.meta.dirname, `fixtures/batch-chief/${name}.jsonl`), "utf8");
+	const batch = join(`${f.repo}.worktrees`, ".batch");
+	mkdirSync(join(batch, `golden-${name}`), { recursive: true });
+	writeFileSync(join(batch, `golden-${name}`, "events.jsonl"), golden);
+	writeFileSync(join(batch, "current"), `golden-${name}\n`);
+	return { golden, batch };
+}
+
 test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => {
 	const f = fixture();
-	const golden = readFileSync(join(import.meta.dirname, "fixtures/batch-chief/v1-events.jsonl"), "utf8");
-	const batch = join(`${f.repo}.worktrees`, ".batch");
-	mkdirSync(join(batch, "golden-v1"), { recursive: true });
-	writeFileSync(join(batch, "golden-v1", "events.jsonl"), golden);
-	writeFileSync(join(batch, "current"), "golden-v1\n");
+	const { golden, batch } = goldenRun(f, "v1-events");
 	f.at("10:55");
 	const out = assertOk(f.run("status"));
 	const rows = out.split("\n").filter((l) => /^(#| {2}allowed:)/.test(l));
@@ -1211,8 +1612,12 @@ test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => 
 		"  allowed: event 8 report --path /golden/report-8.md",
 		'  allowed: event 8 drop --user "<user\'s words>"',
 	]);
-	assert.equal(readFileSync(join(batch, "golden-v1", "events.jsonl"), "utf8"), golden, "status recorded an event");
-	const ledger = readFileSync(join(batch, "golden-v1", "ledger.md"), "utf8");
+	assert.equal(
+		readFileSync(join(batch, "golden-v1-events", "events.jsonl"), "utf8"),
+		golden,
+		"status recorded an event",
+	);
+	const ledger = readFileSync(join(batch, "golden-v1-events", "ledger.md"), "utf8");
 	for (const line of [
 		"| #5 | MERGED | nobody |  | feat/t5 | 2026-11-11T10:23:00.000Z |  |",
 		"| #release | LEFT_OPEN | nobody |  | feat/trelease | 2026-11-11T10:45:00.000Z |  |",
@@ -1225,4 +1630,479 @@ test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => 
 	])
 		assert.ok(ledger.includes(line), `ledger lacks ${line}:\n${ledger}`);
 	assert.ok(ledger.includes("`/golden/repo`, base `main` at `1111111111111111111111111111111111111111`"), ledger);
+});
+
+// Generated once by running preflight --live, launch, report, an appended gate, approve --question, live --result and
+// merge through this file's fake runner, with the fixture dir replaced by /golden; frozen since.
+test("golden: a frozen version-2 events.jsonl with live checks rebuilds to the same rows", () => {
+	const f = fixture();
+	const { golden, batch } = goldenRun(f, "v2-events");
+	f.at("10:55");
+	const out = assertOk(f.run("status"));
+	const rows = out.split("\n").filter((l) => /^(#| {2}(allowed|live check):)/.test(l));
+	const result = `pass at ${HEAD}: curl showed the new header`;
+	const owed = `OWED: run it, then batch.ts live 6 --result <pass|fail> --evidence "<text or path>"`;
+	assert.deepEqual(rows, [
+		"#5 MERGED next: nobody",
+		`  live check: before-merge, ${result}`,
+		"#6 MERGED next: nobody",
+		'  allowed: live 6 --result <pass|fail> --evidence "<text or path>"',
+		`  live check: after-merge, ${owed}`,
+	]);
+	assert.equal(
+		readFileSync(join(batch, "golden-v2-events", "events.jsonl"), "utf8"),
+		golden,
+		"status recorded an event",
+	);
+	const ledger = readFileSync(join(batch, "golden-v2-events", "ledger.md"), "utf8");
+	for (const line of [
+		`| #5 | MERGED | nobody |  | feat/t5 | 2026-11-11T10:16:00.000Z | live check: before-merge, ${result} |`,
+		`| #6 | MERGED | nobody |  | feat/t6 | 2026-11-11T10:17:00.000Z | live check: after-merge, ${owed.replace("|", "\\|")} |`,
+		'- 2026-11-11T10:14:00.000Z merge #5, #6: "yes, merge both" answering "Merge #5 and #6?"',
+	])
+		assert.ok(ledger.includes(line), `ledger lacks ${line}:\n${ledger}`);
+	assert.ok(ledger.includes("`/golden/repo`, base `main` at `1111111111111111111111111111111111111111`"), ledger);
+	assertRefused(f.preflight(), "still owes a live check: #6");
+});
+
+test("a version-1 run has no live check: live commands refuse and record nothing", () => {
+	const f = fixture();
+	const { golden, batch } = goldenRun(f, "v1-events");
+	assertRefused(f.run("live", "8", "--result", "pass", "--evidence", "x"), "#8 has no live check");
+	assertRefused(f.run("live", "5", "start"), "#5 has no live check");
+	assert.equal(readFileSync(join(batch, "golden-v1-events", "events.jsonl"), "utf8"), golden);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Cleanup of the run's scratch and live clones, and what it lists for the user.
+
+/** A `cleanable` fixture whose #6 branch is already gone, so cleanup leaves no resource and the run can end. */
+function finishable(...preflightExtra: string[]) {
+	const f = fixture();
+	const rows = cleanable(f, ...preflightExtra);
+	f.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = { code: 1, stdout: "", stderr: "" };
+	return Object.assign(f, { rows });
+}
+
+/** Writes `text` at `path`, creating its directories. */
+function put(path: string, text = "x") {
+	mkdirSync(join(path, ".."), { recursive: true });
+	writeFileSync(path, text);
+	return path;
+}
+
+const gone = (path: string) => {
+	try {
+		lstatSync(path);
+		return false;
+	} catch {
+		return true;
+	}
+};
+
+test("cleanup removes the run's scratch and live directories after the coordinators quit, and keeps the run's records", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	put(join(dir, "scratch", "5", "notes.txt"));
+	put(join(dir, "scratch", "6", "deep", "repro.ts"));
+	put(join(dir, "live", "5", ".git", "HEAD"));
+	const kept = ["contract-5.md", "report-5.md"].map((name) => put(join(dir, name)));
+	assertOk(f.run("status"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(gone(join(dir, "scratch")) && gone(join(dir, "live")), out);
+	for (const path of [...kept, join(dir, "events.jsonl"), join(dir, "ledger.md")])
+		assert.ok(existsSync(path), `${path} was removed`);
+	assert.ok(out.includes(`removed: ${join(dir, "scratch")}`), out);
+	assert.ok(out.includes(`removed: ${join(dir, "live")}`), out);
+	assert.match(out.split("\n").at(-1)!, /current run cleared/);
+});
+
+test("cleanup unlinks a symlink inside scratch or live and never touches its target outside the run", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const outsideDir = join(f.dir, "outside");
+	const outsideFile = put(join(outsideDir, "keep.txt"), "keep");
+	const loneFile = put(join(f.dir, "lone.txt"), "lone");
+	mkdirSync(join(dir, "scratch", "5"), { recursive: true });
+	mkdirSync(join(dir, "live"), { recursive: true });
+	symlinkSync(outsideDir, join(dir, "scratch", "5", "to-dir"));
+	symlinkSync(loneFile, join(dir, "scratch", "5", "to-file"));
+	symlinkSync(outsideDir, join(dir, "live", "5"));
+	symlinkSync(join(f.dir, "missing"), join(dir, "scratch", "dangling"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(gone(join(dir, "scratch")) && gone(join(dir, "live")), out);
+	assert.equal(readFileSync(outsideFile, "utf8"), "keep");
+	assert.equal(readFileSync(loneFile, "utf8"), "lone");
+	assert.ok(lstatSync(outsideDir).isDirectory());
+});
+
+test("cleanup unlinks a scratch directory that is itself a symlink out of the run, leaving the target and its files", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const victim = join(f.dir, "victim");
+	const file = put(join(victim, "sub", "data.txt"), "data");
+	symlinkSync(victim, join(dir, "scratch"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(gone(join(dir, "scratch")), out);
+	assert.equal(readFileSync(file, "utf8"), "data");
+	assert.ok(out.includes(`unlinked symlink: ${join(dir, "scratch")}`), out);
+});
+
+test("cleanup lists a report's Scratch paths left, including .. and absolute paths, and removes none of them", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const relative = put(join(dir, "..", "..", "victim", "file.txt"), "rel");
+	const absolute = put(join(f.dir, "abs-victim", "file.txt"), "abs");
+	writeFileSync(
+		join(f.dir, "report-5.md"),
+		`# Report: #5\n\n## Status\nDONE\n\n## Scratch paths left\n- ../../victim\n- ${join(f.dir, "abs-victim")}\n\n## Not verified\n- none\n`,
+	);
+	writeFileSync(join(f.dir, "report-6.md"), "# Report: #6\n\n## Scratch paths left\n- none\n");
+	for (const argv of [["cleanup", "--dry-run"], ["cleanup"]]) {
+		const out = assertOk(f.run(...argv));
+		assert.ok(out.includes(`- #5 scratch path left (from ${join(f.dir, "report-5.md")}): ../../victim`), out);
+		assert.ok(
+			out.includes(`- #5 scratch path left (from ${join(f.dir, "report-5.md")}): ${join(f.dir, "abs-victim")}`),
+			out,
+		);
+		assert.ok(!out.includes("#6 scratch path left"), out);
+	}
+	assert.equal(readFileSync(relative, "utf8"), "rel");
+	assert.equal(readFileSync(absolute, "utf8"), "abs");
+});
+
+test("cleanup --dry-run lists the scratch and live directories it would remove and removes nothing", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const file = put(join(dir, "scratch", "5", "notes.txt"));
+	const clone = put(join(dir, "live", "5", "README.md"));
+	const out = assertOk(f.run("cleanup", "--dry-run"));
+	assert.ok(existsSync(file) && existsSync(clone), out);
+	assert.ok(out.includes(`would remove: ${join(dir, "scratch")}`), out);
+	assert.ok(out.includes(`would remove: ${join(dir, "live")}`), out);
+});
+
+test("cleanup keeps scratch and live while a coordinator still runs or a row is not terminal", () => {
+	const f = finishable();
+	const [r5] = f.rows;
+	f.state.exec[`herdr agent prompt ${r5.id} /quit`] = ok();
+	const file = put(join(f.runDir(), "scratch", "5", "notes.txt"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(existsSync(file), out);
+	assert.ok(out.includes(`kept: ${join(f.runDir(), "scratch")}`), out);
+	const running = fixture();
+	assertOk(running.preflight());
+	assertOk(running.launch(5));
+	const kept = put(join(running.runDir(), "live", "5", "x"));
+	assertOk(running.run("cleanup"));
+	assert.ok(existsSync(kept));
+});
+
+test("cleanup of a run the version-1 helper started keeps scratch and live, lists them, and still ends the run", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const [first, ...rest] = f.events();
+	writeFileSync(
+		join(dir, "events.jsonl"),
+		[{ ...first, version: 1 }, ...rest].map((e) => `${JSON.stringify(e)}\n`).join(""),
+	);
+	const files = [put(join(dir, "scratch", "5", "notes.txt")), put(join(dir, "live", "5", "README.md"))];
+	for (const argv of [["cleanup", "--dry-run"], ["cleanup"]]) {
+		const out = assertOk(f.run(...argv));
+		for (const file of files) assert.ok(existsSync(file), `${file} was removed:\n${out}`);
+		const left = out.slice(out.indexOf("Resources left:"));
+		for (const name of ["scratch", "live"]) assert.ok(left.includes(`- ${join(dir, name)}: not removed: run`), out);
+		assert.ok(!out.includes("would remove"), out);
+		if (argv.length === 1) assert.match(out.split("\n").at(-1)!, /current run cleared/);
+	}
+});
+
+test("cleanup that cannot read scratch after the coordinators quit reports the partial outcome under Resources left", () => {
+	const f = finishable();
+	const [, r6] = f.rows;
+	const dir = f.runDir();
+	put(join(dir, "scratch", "5", "notes.txt"));
+	// The last effect of the last row: from here on the run directory cannot be searched.
+	f.state.exec[`herdr pane close ${r6.id}`] = () => {
+		chmodSync(dir, 0o600);
+		return ok();
+	};
+	try {
+		const out = assertOk(f.run("cleanup"));
+		assert.ok(out.includes(`ran: herdr pane close ${r6.id}`), out);
+		const left = out.slice(out.indexOf("Resources left:"));
+		assert.match(left, new RegExp(`- ${join(dir, "scratch")}: [^\\n]*EACCES`), out);
+		assert.ok(!out.includes("current run cleared"), out);
+	} finally {
+		chmodSync(dir, 0o755);
+	}
+	assert.ok(existsSync(currentPointer(f)));
+});
+
+test("cleanup whose removal fails partway lists the root as partly removed or kept and keeps current", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const locked = join(dir, "scratch", "5", "locked");
+	const stuck = put(join(locked, "file.txt"));
+	put(join(dir, "live", "5", "README.md"));
+	chmodSync(locked, 0o500);
+	try {
+		const out = assertOk(f.run("cleanup"));
+		assert.ok(existsSync(stuck), out);
+		assert.ok(gone(join(dir, "live")), out);
+		assert.match(out, new RegExp(`- ${join(dir, "scratch")}: partly removed or kept: [^\\n]*EACCES`));
+		assert.ok(!out.includes("current run cleared"), out);
+	} finally {
+		chmodSync(locked, 0o755);
+	}
+	assert.ok(existsSync(currentPointer(f)));
+});
+
+test("cleanup refuses to remove anything when the run directory is a symlink, and lists why", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const file = put(join(dir, "scratch", "5", "notes.txt"));
+	const real = join(f.dir, "elsewhere");
+	renameSync(dir, real);
+	symlinkSync(real, dir);
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(existsSync(join(real, "scratch", "5", "notes.txt")) && existsSync(file), out);
+	assert.match(out, /- scratch and live not removed: run directory [^\n]* is not a real directory inside/);
+	assert.ok(!out.includes("current run cleared"), out);
+});
+
+test("cleanup lists a merged row's remote branch that still exists and a main checkout behind origin, removing neither", () => {
+	const f = finishable();
+	f.state.exec["git ls-remote origin refs/heads/feat/t5"] = ok(`${HEAD}\trefs/heads/feat/t5\n`);
+	f.state.exec["git ls-remote origin refs/heads/main"] = ok(`${MOVED}\trefs/heads/main\n`);
+	f.state.exec[`git merge-base --is-ancestor ${MOVED} HEAD`] = { code: 1, stdout: "", stderr: "" };
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(out.includes("- #5 remote branch feat/t5 still exists on origin"), out);
+	assert.ok(out.includes(`- main checkout ${f.repo} is behind origin/main (${MOVED})`), out);
+	assert.ok(!f.calls.some((c) => /push|ls-remote origin refs\/heads\/feat\/t6/.test(c)), f.calls.join("\n"));
+	assert.match(out.split("\n").at(-1)!, /current run cleared/);
+});
+
+test("CONTRACT.md puts all scratch in <scratch>, a placeholder of the table, and lists only paths outside it", () => {
+	const contract = readFileSync(join(import.meta.dirname, "../skills/batch-chief/CONTRACT.md"), "utf8");
+	assert.match(contract, /\n\| `<scratch>` \| `<run dir>\/scratch\/<n>\/`/);
+	assert.match(contract, /all scratch goes in `<scratch>` and stays there/);
+	assert.match(contract, /## Scratch paths left\n- <path outside `<scratch>`>, or none/);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Live checks: declared at preflight, run by the chief from a clone, recorded against the gated SHA.
+
+const LIVE_PASS = ["live", "5", "--result", "pass", "--evidence", "curl showed the new header"];
+
+/** The status lines under row `n`, up to the next row. */
+function rowDetails(f: Fixture, n: number | string) {
+	const lines = assertOk(f.run("status")).split("\n");
+	const at = lines.findIndex((l) => l.startsWith(`#${n} `));
+	const end = lines.findIndex((l, i) => i > at && !l.startsWith("  "));
+	return lines.slice(at + 1, end);
+}
+
+test("preflight --live records each named row's live check, and status and the ledger show it per row", () => {
+	const f = fixture();
+	assertOk(f.preflight("5,6,release", "--live", "5:before-merge,release:after-merge"));
+	assert.equal(f.events()[0].version, 2);
+	assert.deepEqual(f.events()[0].live, [
+		{ ticket: 5, mode: "before-merge" },
+		{ ticket: "release", mode: "after-merge" },
+	]);
+	assert.ok(rowDetails(f, 5).includes("  live check: before-merge, no result recorded"), rowDetails(f, 5).join("\n"));
+	assert.ok(rowDetails(f, "release").includes("  live check: after-merge, no result recorded"));
+	assert.ok(!rowDetails(f, 6).some((l) => l.includes("live check")), rowDetails(f, 6).join("\n"));
+	const ledger = readLedger(f);
+	assert.match(ledger, /\| #5 \| QUEUED \|.*live check: before-merge, no result recorded \|/);
+	assert.match(ledger, /\| #6 \| QUEUED \|[^\n]*\| {2}\|\n/);
+});
+
+test("preflight --live refuses an unknown row, an unknown mode, a duplicate row and a malformed entry", () => {
+	for (const [live, part] of [
+		["7:before-merge", "#7, which is not a row"],
+		["5:during-merge", "before-merge or after-merge"],
+		["5:before-merge,5:after-merge", "names #5 twice"],
+		["5", "<n>:<before-merge|after-merge>"],
+	]) {
+		const f = fixture();
+		assertRefused(f.preflight("5,6", "--live", live), "--live", part);
+		assert.ok(!existsSync(currentPointer(f)), `a refused preflight --live ${live} created a run`);
+	}
+});
+
+const DETACH = (path: string, sha: string) => `git -C ${path} checkout --detach ${sha}`;
+
+test("live <n> start clones the main checkout into the run's live/<n>/ and detaches it at the gated SHA", () => {
+	const f = fixture();
+	gated(f, "--live", "5:before-merge");
+	const path = join(f.runDir(), "live", "5");
+	f.state.exec[`git clone ${f.repo} ${path}`] = ok();
+	f.state.exec[DETACH(path, HEAD)] = ok();
+	f.calls.length = 0;
+	const out = assertOk(f.run("live", "5", "start"));
+	assert.deepEqual(
+		f.calls.filter((c) => c.startsWith("git ") && !c.startsWith("git rev-parse --path-format")),
+		[`git clone ${f.repo} ${path}`, DETACH(path, HEAD)],
+	);
+	assert.ok(out.includes(path), out);
+	assert.ok(out.includes(`batch.ts live 5 --result <pass|fail> --evidence "<text or path>"`), out);
+});
+
+test("live <n> start is refused outside GATED, on a row without a live check, and when a step fails", () => {
+	const f = fixture();
+	assertOk(f.preflight("5,6", "--live", "5:before-merge"));
+	assertOk(f.launch(5));
+	assertRefused(f.run("live", "5", "start"), "live start needs a GATED row", "#5 is RUNNING(implement)");
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
+	assertRefused(f.run("live", "5", "start"), "#5 is REPORTED");
+	assert.ok(!f.calls.some((c) => c.startsWith("git clone")), f.calls.join("\n"));
+	const plain = fixture();
+	gated(plain);
+	assertRefused(plain.run("live", "5", "start"), "#5 has no live check", "preflight --live");
+	const failing = fixture();
+	gated(failing, "--live", "5:before-merge");
+	const path = join(failing.runDir(), "live", "5");
+	failing.state.exec[`git clone ${failing.repo} ${path}`] = { code: 128, stdout: "", stderr: "fatal: no space" };
+	assertRefused(failing.run("live", "5", "start"), "git clone", "fatal: no space");
+	assert.ok(!failing.calls.some((c) => c.includes("--detach")));
+});
+
+test("live <n> start on an existing clone fetches and detaches it at the gated SHA, deleting nothing; a dirty one is refused", () => {
+	const f = fixture();
+	gated(f, "--live", "5:before-merge");
+	const path = join(f.runDir(), "live", "5");
+	const file = put(join(path, "result.log"), "earlier run");
+	f.state.exec[`git -C ${path} status --porcelain`] = ok();
+	f.state.exec[`git -C ${path} fetch origin`] = ok();
+	f.state.exec[DETACH(path, HEAD)] = ok();
+	f.calls.length = 0;
+	const out = assertOk(f.run("live", "5", "start"));
+	assert.deepEqual(
+		f.calls.filter((c) => c.startsWith(`git -C ${path}`) || c.startsWith("git clone")),
+		[`git -C ${path} status --porcelain`, `git -C ${path} fetch origin`, DETACH(path, HEAD)],
+	);
+	assert.ok(out.includes(`reused the clone at ${path}`), out);
+	assert.equal(readFileSync(file, "utf8"), "earlier run");
+	f.state.exec[`git -C ${path} status --porcelain`] = ok(" M src/a.ts\n");
+	f.calls.length = 0;
+	assertRefused(f.run("live", "5", "start"), `${path} exists and is not clean`, "M src/a.ts");
+	assert.ok(!f.calls.some((c) => c.includes("--detach")), f.calls.join("\n"));
+});
+
+test("live <n> --result records pass or fail against the gated SHA and is refused where it does not apply", () => {
+	const f = fixture();
+	gated(f, "--live", "5:before-merge");
+	assertRefused(f.run("live", "5", "--result", "maybe", "--evidence", "x"), "--result must be pass or fail");
+	assertRefused(f.run("live", "5", "--result", "pass"), "--evidence is required");
+	assertRefused(f.run("event", "5", "live-result"), "not recorded through event", "live command");
+	assertOk(f.run(...LIVE_PASS));
+	const last = f.events().at(-1);
+	assert.deepEqual([last.type, last.sha, last.result, last.evidence], ["live-result", HEAD, "pass", LIVE_PASS[5]]);
+	assert.ok(rowDetails(f, 5).includes(`  live check: before-merge, pass at ${HEAD}: ${LIVE_PASS[5]}`));
+	assertRefused(f.run("live", "6", "--result", "pass", "--evidence", "x"), "#6 has no live check");
+	const queued = fixture();
+	assertOk(queued.preflight("5,6", "--live", "5:before-merge"));
+	assertRefused(queued.run(...LIVE_PASS), "#5 is QUEUED");
+});
+
+test("merge refuses a before-merge row without a recorded pass at the SHA it merges, naming the command", () => {
+	const f = fixture();
+	approvedGated(f, "--live", "5:before-merge");
+	f.state.exec[MERGE_CALL] = () => {
+		f.state.prs["feat/t5"] = goodPr({ state: "MERGED", mergeCommit: { oid: MOVED } });
+		return ok();
+	};
+	assertRefused(
+		f.run("merge", "5"),
+		`#5 has a before-merge live check and no recorded pass at ${HEAD}`,
+		`batch.ts live 5 --result pass --evidence "<text or path>"`,
+	);
+	assertOk(f.run("live", "5", "--result", "fail", "--evidence", "still 500"));
+	assertRefused(f.run("merge", "5"), "no recorded pass", "the last result at it is fail");
+	assert.deepEqual(mergeCalls(f), []);
+	assertOk(f.run(...LIVE_PASS));
+	assertOk(f.run("merge", "5"));
+	assert.deepEqual(mergeCalls(f), [MERGE_CALL]);
+});
+
+test("a head move makes a live pass stale: after a re-gate at the new SHA merge refuses until a pass is recorded for it", () => {
+	const f = fixture();
+	approvedGated(f, "--live", "5:before-merge");
+	assertOk(f.run(...LIVE_PASS));
+	f.state.prs["feat/t5"] = goodPr({ headRefOid: MOVED });
+	assert.match(rowLine(f, 5), /^#5 REPORTED/);
+	assert.ok(rowDetails(f, 5).includes("  live check: before-merge, no result recorded"));
+	f.append({ at: "2026-11-11T10:07:00.000Z", type: "gate", ticket: 5, sha: MOVED, judged: "re-read" });
+	const moved = `gh pr merge 12 --squash --match-head-commit ${MOVED}`;
+	f.state.exec[moved] = () => {
+		f.state.prs["feat/t5"] = goodPr({ headRefOid: MOVED, state: "MERGED", mergeCommit: { oid: SHA } });
+		return ok();
+	};
+	assertRefused(f.run("merge", "5"), `no recorded pass at ${MOVED}`);
+	assert.deepEqual(mergeCalls(f), []);
+	assertOk(f.run(...LIVE_PASS));
+	assert.equal(f.events().at(-1).sha, MOVED);
+	assertOk(f.run("merge", "5"));
+	assert.deepEqual(mergeCalls(f), [moved]);
+});
+
+test("an after-merge row merges, then status lists its live check as owed until a result is recorded at the merged head", () => {
+	const f = fixture();
+	approvedGated(f, "--live", "5:after-merge");
+	f.state.exec[MERGE_CALL] = () => {
+		f.state.prs["feat/t5"] = goodPr({ state: "MERGED", mergeCommit: { oid: MOVED } });
+		return ok();
+	};
+	assertOk(f.run("merge", "5"));
+	const owed = `  live check: after-merge, OWED: run it, then batch.ts live 5 --result <pass|fail> --evidence "<text or path>"`;
+	assert.ok(rowDetails(f, 5).includes(owed), rowDetails(f, 5).join("\n"));
+	assert.match(readLedger(f), /\| #5 \| MERGED \|.*after-merge, OWED/);
+	assertRefused(f.run("live", "5", "start"), "live start needs a GATED row", "#5 is MERGED");
+	assertOk(f.run(...LIVE_PASS));
+	assert.equal(f.events().at(-1).sha, HEAD);
+	assert.ok(rowDetails(f, 5).includes(`  live check: after-merge, pass at ${HEAD}: ${LIVE_PASS[5]}`));
+	assert.ok(!assertOk(f.run("status")).includes("OWED"));
+});
+
+test("cleanup lists an owed live check under Resources left, keeps live/ and the run, and a recorded result clears it", () => {
+	const f = finishable("--live", "5:after-merge");
+	const clone = put(join(f.runDir(), "live", "5", "README.md"));
+	const scratch = put(join(f.runDir(), "scratch", "5", "notes.txt"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(
+		out.includes(
+			`- #5 live check (after-merge) owed: run it, then batch.ts live 5 --result <pass|fail> --evidence "<text or path>"`,
+		),
+		out,
+	);
+	assert.ok(out.includes(`kept: ${join(f.runDir(), "live")}: a live check is owed`), out);
+	assert.ok(existsSync(clone) && !existsSync(scratch), out);
+	assert.ok(existsSync(currentPointer(f)), `current removed while a live check is owed:\n${out}`);
+	assertOk(f.run("live", "5", "--result", "fail", "--evidence", "header missing in production"));
+	const again = assertOk(f.run("cleanup"));
+	assert.ok(!again.includes("owed"), again);
+	assert.ok(!existsSync(clone), again);
+	assert.match(again.split("\n").at(-1)!, /current run cleared/);
+});
+
+test("preflight writes version 2, reads a finished version-1 run, and refuses a run that still owes a live check", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	const old = f.runDir();
+	otherVersion(f, 1, [
+		{ at: "2026-11-11T10:01:00.000Z", type: "drop", ticket: 5, user: "no" },
+		{ at: "2026-11-11T10:01:00.000Z", type: "drop", ticket: 6, user: "no" },
+	]);
+	assert.match(rowLine(f, 5), /^#5 DROPPED/);
+	f.at("11:00");
+	assertOk(f.preflight());
+	assert.notEqual(f.runDir(), old);
+	assert.equal(f.events()[0].version, 2);
+	const owing = finishable("--live", "5:after-merge");
+	owing.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = { code: 1, stdout: "", stderr: "" };
+	owing.at("11:00");
+	assertRefused(owing.preflight(), "still owes a live check: #5", "batch.ts live 5 --result");
 });

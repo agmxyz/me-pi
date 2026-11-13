@@ -1,0 +1,13 @@
+{"at":"2026-11-11T10:00:00.000Z","type":"preflight","version":2,"repo":"/golden/repo","base":"main","sha":"1111111111111111111111111111111111111111","clean":true,"tools":{"git":true,"gh":true,"herdr":true},"rules":{"requiredChecks":["check"],"upToDate":true,"mergeMethods":["squash"]},"check":"npm test","chiefPane":"w1:p1","tickets":[5,6],"live":[{"ticket":5,"mode":"before-merge"},{"ticket":6,"mode":"after-merge"}]}
+{"at":"2026-11-11T10:01:00.000Z","ticket":5,"type":"launch","launch":{"worktree":"/golden/t5","branch":"feat/t5","pane":"w1:p5","session":"/golden/s5.jsonl","brief":"/golden/brief.md","report":"/golden/report-5.md"},"deadline":20}
+{"at":"2026-11-11T10:02:00.000Z","ticket":6,"type":"launch","launch":{"worktree":"/golden/t6","branch":"feat/t6","pane":"w1:p6","session":"/golden/s6.jsonl","brief":"/golden/brief.md","report":"/golden/report-6.md"},"deadline":20}
+{"at":"2026-11-11T10:10:00.000Z","type":"report","ticket":5,"path":"/golden/report-5.md","status":"DONE","source":"event"}
+{"at":"2026-11-11T10:11:00.000Z","type":"report","ticket":6,"path":"/golden/report-6.md","status":"DONE","source":"event"}
+{"at":"2026-11-11T10:12:00.000Z","type":"gate","ticket":5,"sha":"2222222222222222222222222222222222222222","judged":"diff matches the brief"}
+{"at":"2026-11-11T10:13:00.000Z","type":"gate","ticket":6,"sha":"3333333333333333333333333333333333333333","judged":"docs match"}
+{"at":"2026-11-11T10:14:00.000Z","type":"approve","quote":"yes, merge both","question":"Merge #5 and #6?","action":"merge","tickets":[5,6],"inferred":false}
+{"at":"2026-11-11T10:15:00.000Z","type":"live-result","ticket":5,"sha":"2222222222222222222222222222222222222222","result":"pass","evidence":"curl showed the new header"}
+{"at":"2026-11-11T10:16:00.000Z","type":"merge-intent","ticket":5,"sha":"2222222222222222222222222222222222222222"}
+{"at":"2026-11-11T10:16:00.000Z","type":"merged","ticket":5,"commit":"4444444444444444444444444444444444444444"}
+{"at":"2026-11-11T10:17:00.000Z","type":"merge-intent","ticket":6,"sha":"3333333333333333333333333333333333333333"}
+{"at":"2026-11-11T10:17:00.000Z","type":"merged","ticket":6,"commit":"5555555555555555555555555555555555555555"}
