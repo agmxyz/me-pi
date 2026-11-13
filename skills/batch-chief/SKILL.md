@@ -62,7 +62,7 @@ Run at most 4 rows `RUNNING` at once. Tickets that share a file are queued behin
 3. `herdr pane split <chief pane> --direction right --cwd <worktree> --no-focus`; the new pane id is in its output.
 4. `herdr pane run <pane> "export ME_PI_UNATTENDED=1"`, so `guard` in the coordinator refuses instead of opening a dialog; then `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file, which `status` prints from then on with the row's pane, worktree and branch.
 5. `batch.ts event <n> launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`, with `--report <run dir>/report-<n>.md`. Start with 45 minutes for `implement`.
-6. `batch.ts contract <n> --lenses "<lenses from intake>" --skill <implementation skill> --setup "<what step 2 ran>"` writes `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md), quoting the approvals recorded in step 2; `prompt` refuses the row until it exists.
+6. `batch.ts contract <n> [--lenses "<lenses from intake>"] --skill <implementation skill> --setup "<what step 2 ran>"` writes `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md), quoting the approvals recorded in step 2; `prompt` refuses the row until it exists.
 7. `batch.ts prompt <n> "/skill:<implementation skill> Your contract is <contract path>; it answers every question of step 1."`
 
 **Ready:** each launched row is `RUNNING(implement)` in `status`, and its coordinator has started work in its pane (`herdr agent read <pane> --source visible`).

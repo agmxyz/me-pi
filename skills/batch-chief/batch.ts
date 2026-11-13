@@ -1308,8 +1308,7 @@ function prompt(argv: string[], runner: Runner, cwd: string): string {
 // The coordinator contract: CONTRACT.md beside this file is its only text; `contract` fills the placeholders its
 // table names and holds no copy of it.
 
-const CONTRACT_USAGE = (ticket: RowId) =>
-	`contract ${ticket} [--lenses "<text>"] --skill <name> --setup "<cmd>"`;
+const CONTRACT_USAGE = (ticket: RowId) => `contract ${ticket} [--lenses "<text>"] --skill <name> --setup "<cmd>"`;
 
 const contractPath = (run: Run, row: Row) => join(run.dir, `contract-${row.ticket}.md`);
 
@@ -1333,7 +1332,11 @@ function contractSource(): { table: Map<string, string>; contract: string; templ
 		if (at < 0 || open < 0 || close < 0) throw new Error(`${path} has no fenced markdown block under ${heading}`);
 		return lines.slice(open, close + 1);
 	};
-	return { table, contract: block("## Contract").slice(1, -1).join("\n"), template: block("## Report template").join("\n") };
+	return {
+		table,
+		contract: block("## Contract").slice(1, -1).join("\n"),
+		template: block("## Report template").join("\n"),
+	};
 }
 
 /** Replaces each placeholder of `values` in `text` in one pass, so a value (a user's quote) is never filled itself. */
@@ -1353,7 +1356,10 @@ function contract(argv: string[], runner: Runner, cwd: string): string {
 	const run = currentRun(runner, cwd);
 	const row = rowOf(run, rowId(positionals[0], "the row"));
 	if (positionals.length !== 1) throw new Refusal(`usage: ${CONTRACT_USAGE(row.ticket)}`);
-	if (!row.launch) throw new Refusal(`contract needs the launch facts: run batch.ts event ${row.ticket} launch first; ${where(row)}`);
+	if (!row.launch)
+		throw new Refusal(
+			`contract needs the launch facts: run batch.ts event ${row.ticket} launch first; ${where(row)}`,
+		);
 	if (row.state !== "RUNNING" || row.round !== "implement" || row.lastAt !== row.launchedAt)
 		throw new Refusal(
 			`#${row.ticket}'s contract is fixed once the row moves past its launch; send a change with prompt; ${where(row)}`,
@@ -1398,7 +1404,10 @@ function contract(argv: string[], runner: Runner, cwd: string): string {
 	for (const name of table.keys()) {
 		const source = sources[name];
 		if (!source) {
-			missing.set(name, "this helper has no source for it; give it one in batch.ts contract, or drop it from the table");
+			missing.set(
+				name,
+				"this helper has no source for it; give it one in batch.ts contract, or drop it from the table",
+			);
 			continue;
 		}
 		const value = source();

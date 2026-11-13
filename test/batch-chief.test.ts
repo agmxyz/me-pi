@@ -814,9 +814,7 @@ function tablePlaceholders(source: string): string[] {
 	assert.ok(start >= 0, "CONTRACT.md has no placeholder table");
 	const rows = lines.slice(start + 2);
 	const end = rows.findIndex((l) => !l.startsWith("|"));
-	return rows
-		.slice(0, end)
-		.flatMap((l) => [...l.split("|")[1].matchAll(/`(<[^`>]+>)`/g)].map((m) => m[1]));
+	return rows.slice(0, end).flatMap((l) => [...l.split("|")[1].matchAll(/`(<[^`>]+>)`/g)].map((m) => m[1]));
 }
 
 const CONTRACT_ARGS = ["--lenses", "code-review Standards and Spec", "--skill", "implement-me-pi", "--setup", "npm ci"];
@@ -826,7 +824,17 @@ function contractable(f: Fixture) {
 	assertOk(f.preflight());
 	f.at("10:01");
 	assertOk(
-		f.run("approve", "--quote", "push 5 and open the PR", "--question", "may 5 push?", "--action", "push", "--tickets", "5"),
+		f.run(
+			"approve",
+			"--quote",
+			"push 5 and open the PR",
+			"--question",
+			"may 5 push?",
+			"--action",
+			"push",
+			"--tickets",
+			"5",
+		),
 	);
 	assertOk(f.run("approve", "--quote", "merge 5", "--action", "merge", "--tickets", "5"));
 	f.at("10:02");
@@ -866,7 +874,11 @@ test("contract fills every table placeholder of CONTRACT.md from the run, keepin
 
 test("contract takes its text only from CONTRACT.md: batch.ts holds no copy of it", () => {
 	const helper = readFileSync(join(SKILL_DIR, "batch.ts"), "utf8");
-	for (const sentence of ["You are the Pi coordinator for one ticket", "Everything else stays the user's", "Cost and wall time"])
+	for (const sentence of [
+		"You are the Pi coordinator for one ticket",
+		"Everything else stays the user's",
+		"Cost and wall time",
+	])
 		assert.ok(CONTRACT_SOURCE.includes(sentence) && !helper.includes(sentence), sentence);
 });
 
