@@ -26,6 +26,7 @@ import {
 	type Result,
 	type Runner,
 	timerDecision,
+	timerPoll,
 } from "../skills/batch-chief/batch.ts";
 
 test("timer decision stops superseded rows, detects overdue or two definite absences, and bounds refusals", () => {
@@ -85,8 +86,16 @@ function fixture(entry = main) {
 		prs: {} as Record<string, object>,
 		/** Per-command-line answers that win over the defaults below. */
 		exec: {} as Record<string, Result | (() => Result)>,
+		timers: [] as { dir: string; ticket: string; deadline: string }[],
+		timerPid: 99999999,
+		timerError: "",
 	};
 	const runner: Runner = {
+		startTimer(dir, ticket, deadline) {
+			state.timers.push({ dir, ticket, deadline });
+			if (state.timerError) throw new Error(state.timerError);
+			return state.timerPid;
+		},
 		now: () => now,
 		exec(cmd, args) {
 			const line = [cmd, ...args].join(" ");
@@ -157,7 +166,7 @@ function fixture(entry = main) {
 		);
 	/** Appends an event the way `gate` or `merge` would, so rows can start GATED without those commands. */
 	const append = (event: object) => appendFileSync(join(runDir(), "events.jsonl"), `${JSON.stringify(event)}\n`);
-	return { dir, repo, run, runDir, events, at, brief, report, preflight, launch, append, calls, state };
+	return { dir, repo, run, runDir, events, at, brief, report, preflight, launch, append, calls, state, runner };
 }
 
 type Fixture = ReturnType<typeof fixture>;
@@ -221,6 +230,78 @@ function readLedger(f: Fixture) {
 	return readFileSync(join(f.runDir(), "ledger.md"), "utf8");
 }
 
+test("timer starts after each running event, status and cleanup report live and stale timers", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.state.timerPid = process.pid;
+	assertOk(f.launch(5));
+	assert.deepEqual(f.state.timers, [{ dir: f.runDir(), ticket: "5", deadline: "2026-11-11T10:20:00.000Z" }]);
+	assert.match(
+		assertOk(f.run("status")),
+		new RegExp(`timer: watching until 2026-11-11T10:20:00.000Z \\(pid ${process.pid}\\)`),
+	);
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "BLOCKED", "10:04")));
+	assertOk(f.run("event", "5", "answer", "--basis", "The test may use a fake clock."));
+	assert.equal(f.state.timers.length, 2);
+	f.at("10:06");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:05")));
+	assertOk(f.run("event", "5", "round", "fix", "--deadline", "10"));
+	assert.equal(f.state.timers.length, 3);
+	assertOk(f.run("event", "5", "drop", "--user", "stop"));
+	pane(f, 5, false);
+	assert.match(
+		assertOk(f.run("cleanup", "--dry-run")),
+		new RegExp(`Resources left:[\\s\\S]*#5 timer[^\\n]*${process.pid}`),
+	);
+	const stale = fixture();
+	assertOk(stale.preflight());
+	stale.state.timerError = "no process";
+	assert.match(
+		assertOk(stale.launch(5)),
+		/timer not started: no process; the deadline is checked only when you run status/,
+	);
+	assert.match(assertOk(stale.run("status")), /timer: none; the deadline is checked only when you run status/);
+	assert.equal(stale.events().at(-1).type, "launch");
+});
+
+test("timer poll refuses an open dialog and never writes events or ledger", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, true);
+	pane(f, 1, true, DIALOG);
+	const before = readFileSync(join(f.runDir(), "events.jsonl"), "utf8");
+	f.at("10:21");
+	const result = timerPoll(f.runDir(), "5", "2026-11-11T10:20:00.000Z", { misses: 0, tries: 0 }, f.runner);
+	assert.equal(result.action, "wait");
+	assert.equal(result.tries, 1);
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /refused/);
+	assert.equal(readFileSync(join(f.runDir(), "events.jsonl"), "utf8"), before);
+	assert.ok(!existsSync(join(f.runDir(), "ledger.md")));
+	assert.ok(!f.calls.some((call) => call.startsWith("herdr agent prompt")));
+});
+
+test("timer poll sends one content-free wake after two absences and exits after report", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, false);
+	pane(f, 1, true);
+	f.state.exec["herdr agent prompt w1:p1 [timer 5] LOOK: run batch.ts status"] = ok();
+	const deadline = "2026-11-11T10:20:00.000Z";
+	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0 }, f.runner);
+	assert.equal(first.action, "wait");
+	const second = timerPoll(f.runDir(), "5", deadline, first, f.runner);
+	assert.equal(second.action, "send");
+	assert.equal(f.calls.filter((c) => c.startsWith("herdr agent prompt")).length, 1);
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /#5 sent/);
+	assert.match(assertOk(f.run("status")), /no Pi in pane w1:p5/);
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
+	assert.equal(timerPoll(f.runDir(), "5", deadline, first, f.runner).action, "exit");
+});
+
 test("launch moves QUEUED to RUNNING(implement) with a deadline", () => {
 	const f = fixture();
 	assertOk(f.preflight());
@@ -261,7 +342,7 @@ test("status records nothing for an ATTEMPT FAILED line in the panes, unlike a r
 	assert.equal(after, before);
 	assert.equal(f.events().length, events, "status recorded an event");
 	assert.match(rowLine(f, 5), /^#5 RUNNING\(implement\)/);
-	assert.ok(!f.calls.slice(calls).some((c) => c.startsWith("herdr ")), "status read a pane");
+	assert.ok(!f.calls.slice(calls).some((c) => c.startsWith("herdr agent read")), "status read pane text");
 });
 
 test("a DONE report moves RUNNING to REPORTED; a BLOCKED one to ASKED(chief)", () => {

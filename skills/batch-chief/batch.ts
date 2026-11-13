@@ -3,7 +3,7 @@
  * `<repo>.worktrees/.batch/<run-id>/` and is rebuilt from it on every command; this module owns the row states
  * and their transition table.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
 	appendFileSync,
 	existsSync,
@@ -29,6 +29,7 @@ export interface Result {
 /** Every external effect goes through here: `git`, `gh`, `herdr` (code 127 when the tool is missing), and the clock. */
 export interface Runner {
 	exec(cmd: string, args: string[], options?: { cwd?: string }): Result;
+	startTimer(dir: string, ticket: string, deadline: string): number;
 	now(): Date;
 }
 
@@ -828,7 +829,18 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 			throw new Error(`event ${type} is in the table but has no parser`);
 	}
 	record(run, e);
-	return `#${row.ticket} is ${label(row)}`;
+	let warning = "";
+	if (e.type === "launch" || e.type === "round" || e.type === "answer") {
+		try {
+			const dir = join(run.dir, "timers");
+			mkdirSync(dir, { recursive: true });
+			const pid = runner.startTimer(run.dir, String(row.ticket), row.deadline!);
+			writeFileSync(timerPath(run.dir, row.ticket, row.deadline!), String(pid));
+		} catch (error) {
+			warning = `\ntimer not started: ${(error as Error).message}; the deadline is checked only when you run status`;
+		}
+	}
+	return `#${row.ticket} is ${label(row)}${warning}`;
 }
 
 function approve(argv: string[], runner: Runner, cwd: string): string {
@@ -985,6 +997,19 @@ function status(argv: string[], runner: Runner, cwd: string): string {
 		out.push(`#${row.ticket} ${label(row)} next: ${next(row)}${deadline ? `, deadline ${deadline}` : ""}`);
 		const l = row.launch;
 		if (l) out.push(`  launched: pane ${l.pane}, worktree ${l.worktree}, branch ${l.branch}, session ${l.session}`);
+		if (row.state === "RUNNING") {
+			const pid = timerPid(run.dir, row.ticket, row.deadline!);
+			out.push(
+				pid
+					? `  timer: watching until ${row.deadline} (pid ${pid})`
+					: "  timer: none; the deadline is checked only when you run status",
+			);
+			try {
+				if (piInPane(runner, l!.pane) === false) out.push(`  no Pi in pane ${l!.pane}`);
+			} catch {
+				/* An unknown pane is not a definite absence. */
+			}
+		}
 		for (const command of allowedCommands(row)) out.push(`  allowed: ${command}`);
 		for (const line of [...details.get(row.ticket)!, ...logLines(row)]) out.push(`  ${line}`);
 	}
@@ -1308,6 +1333,106 @@ function promptBlocker(runner: Runner, pane: string): string | undefined {
 	if (dialogVisible(read.stdout))
 		return `a dialog is visible in pane ${pane}; Enter would answer it: release it with herdr agent send-keys ${pane} esc and take the question to the user`;
 	return undefined;
+}
+
+const timerPath = (dir: string, ticket: RowId, deadline: string) =>
+	join(dir, "timers", `${ticket}-${deadline.replaceAll(":", "-")}.pid`);
+
+function livePid(path: string): number | undefined {
+	try {
+		const text = readFileSync(path, "utf8").trim();
+		if (!/^[1-9]\d*$/.test(text)) return undefined;
+		const pid = Number(text);
+		process.kill(pid, 0);
+		return pid;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EPERM") return Number(readFileSync(path, "utf8").trim());
+		return undefined;
+	}
+}
+
+const timerPid = (dir: string, ticket: RowId, deadline: string) => livePid(timerPath(dir, ticket, deadline));
+function timerPids(dir: string, ticket: RowId): number[] {
+	const timers = join(dir, "timers");
+	if (!existsSync(timers)) return [];
+	return readdirSync(timers)
+		.filter((name) => name.startsWith(`${ticket}-`) && name.endsWith(".pid"))
+		.flatMap((name) => livePid(join(timers, name)) ?? []);
+}
+
+/** Replays the log without reconciling or writing it; only timers.log records watcher effects. */
+export function timerPoll(
+	dir: string,
+	ticket: string,
+	deadline: string,
+	state: { misses: number; tries: number },
+	runner: Runner,
+) {
+	const exit = { ...state, action: "exit" as const };
+	if (!existsSync(dir)) return exit;
+	const run = rebuild(basename(dir), dir);
+	const row = run.rows.get(rowId(ticket, "the row"));
+	if (!row || row.state !== "RUNNING" || row.deadline !== deadline) return exit;
+	let absent = false;
+	try {
+		absent = piInPane(runner, row.launch!.pane) === false;
+	} catch {
+		/* Unknown is not absent. */
+	}
+	const input = {
+		running: true,
+		deadline: Date.parse(row.deadline),
+		expected: Date.parse(deadline),
+		now: runner.now().getTime(),
+		absent,
+		...state,
+		blocker: false,
+	};
+	let decision = timerDecision(input);
+	const log = (what: string) =>
+		appendFileSync(join(dir, "timers.log"), `${runner.now().toISOString()} #${ticket} ${what}\n`);
+	if (decision.action === "send") {
+		let blocker: string | undefined;
+		try {
+			blocker = promptBlocker(runner, run.preflight.chiefPane);
+		} catch (error) {
+			blocker = (error as Error).message;
+		}
+		if (blocker) {
+			decision = timerDecision({ ...input, blocker: true });
+			log(`refused: ${blocker}`);
+			if (decision.action === "give-up") log("give-up after 20 tries");
+		} else {
+			const sent = runner.exec("herdr", [
+				"agent",
+				"prompt",
+				run.preflight.chiefPane,
+				`[timer ${ticket}] LOOK: run batch.ts status`,
+			]);
+			if (sent.code !== 0) throw new Error(`herdr prompt failed: ${(sent.stderr || sent.stdout).trim()}`);
+			log("sent");
+		}
+	}
+	return decision;
+}
+
+async function watch(args: string[], runner: Runner): Promise<void> {
+	const [dir, ticket, deadline] = args;
+	let state = { misses: 0, tries: 0 };
+	try {
+		for (;;) {
+			await new Promise((done) => setTimeout(done, 30_000));
+			const result = timerPoll(dir, ticket, deadline, state, runner);
+			if (result.action !== "wait") return;
+			state = result;
+		}
+	} catch (error) {
+		if (existsSync(dir))
+			appendFileSync(
+				join(dir, "timers.log"),
+				`${runner.now().toISOString()} #${ticket} exit-with-error: ${(error as Error).message}\n`,
+			);
+	}
 }
 
 function prompt(argv: string[], runner: Runner, cwd: string): string {
@@ -1751,6 +1876,9 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 	let unsettled = false;
 	for (const row of run.rows.values()) {
 		if (!row.launch) continue;
+		if (TERMINAL.includes(row.state)) {
+			for (const pid of timerPids(run.dir, row.ticket)) left.push(`#${row.ticket} timer still running (pid ${pid})`);
+		}
 		const resources = `worktree ${row.launch.worktree}, branch ${row.launch.branch}, pane ${row.launch.pane}`;
 		if (!TERMINAL.includes(row.state)) {
 			left.push(`#${row.ticket} ${resources}: the row is ${label(row)}, not terminal`);
@@ -1847,6 +1975,16 @@ export function main(argv: string[], runner: Runner, cwd: string): { code: numbe
 }
 
 const systemRunner: Runner = {
+	startTimer(dir, ticket, deadline) {
+		const child = spawn(process.execPath, [import.meta.filename, "watch", dir, ticket, deadline], {
+			detached: true,
+			stdio: "ignore",
+		});
+		child.on("error", () => {});
+		if (!child.pid) throw new Error("could not spawn watcher");
+		child.unref();
+		return child.pid;
+	},
 	now: () => new Date(),
 	exec(cmd, args, options) {
 		const result = spawnSync(cmd, args, { cwd: options?.cwd, encoding: "utf8" });
@@ -1859,7 +1997,10 @@ const systemRunner: Runner = {
 };
 
 if (import.meta.main) {
-	const result = main(process.argv.slice(2), systemRunner, process.cwd());
-	process.stdout.write(`${result.out}\n`);
-	process.exitCode = result.code;
+	if (process.argv[2] === "watch") void watch(process.argv.slice(3), systemRunner);
+	else {
+		const result = main(process.argv.slice(2), systemRunner, process.cwd());
+		process.stdout.write(`${result.out}\n`);
+		process.exitCode = result.code;
+	}
 }
