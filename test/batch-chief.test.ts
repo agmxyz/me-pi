@@ -1728,7 +1728,13 @@ test("merge is refused when the base rules' merge methods exclude squash", () =>
 	assert.notEqual(f.events().at(-1).type, "merge-intent");
 });
 
-test("contract: the guard's confirm title is a dialog to prompt", async () => {
+test("contract: the guard's confirm title is a dialog to prompt", async (t) => {
+	const before = process.env.ME_PI_UNATTENDED;
+	t.after(() => {
+		if (before === undefined) delete process.env.ME_PI_UNATTENDED;
+		else process.env.ME_PI_UNATTENDED = before;
+	});
+	delete process.env.ME_PI_UNATTENDED;
 	let handler: any;
 	registerGuard({
 		on: (_event: string, h: any) => {

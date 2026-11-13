@@ -942,7 +942,8 @@ function setup() {
 	return { handler, command, events };
 }
 
-test("confirms with UI, blocks without UI or on refusal", async () => {
+test("confirms with UI, blocks without UI or on refusal", async (t) => {
+	setUnattended(t, undefined);
 	const { handler } = setup();
 	const event = { type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command: "git push origin main" } };
 	const cwd = process.cwd();
@@ -975,7 +976,8 @@ const pendingConfirm = () => {
 	return { confirm, entry: entry.promise, answer: answer.resolve };
 };
 
-test("confirm gets the turn's abort signal and an abort while it is open blocks (#133)", async () => {
+test("confirm gets the turn's abort signal and an abort while it is open blocks (#133)", async (t) => {
+	setUnattended(t, undefined);
 	const { handler } = setup();
 	const event = { type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command: "git push origin main" } };
 	const ac = new AbortController();
@@ -990,7 +992,8 @@ test("confirm gets the turn's abort signal and an abort while it is open blocks 
 	assert.equal(outcome?.block, true);
 });
 
-test("a confirm that answers yes after the turn aborted still blocks (#133)", async () => {
+test("a confirm that answers yes after the turn aborted still blocks (#133)", async (t) => {
+	setUnattended(t, undefined);
 	const { handler } = setup();
 	const event = { type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command: "git push origin main" } };
 	const ac = new AbortController();
@@ -1058,7 +1061,8 @@ test("the main session runs history rewrites without asking; a worker still bloc
 	assert.equal(resumed?.block, true);
 });
 
-test("/guard toggles enforcement for the session", async () => {
+test("/guard toggles enforcement for the session", async (t) => {
+	setUnattended(t, undefined);
 	const { handler, command } = setup();
 	const notes = [];
 	const ctx = { cwd: process.cwd(), hasUI: false, ui: { notify: (message) => notes.push(message) } };
