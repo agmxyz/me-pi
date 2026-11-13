@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Entry: `/skill:batch-chief` with a repo and READY tickets, each with its `brief-<n>.md` from `ticket-readiness`. You are the **chief**: one Pi session that supervises one coordinator Pi session per ticket, each in its own git worktree and herdr pane, until every PR is merged or left open by the user.
 
-v1 is **attended**: the user sits at the chief pane, and nothing wakes you on a timer. You wake on a user message or a coordinator line, and a deadline is checked only then.
+v1 is **attended**: the user sits at the chief pane. A `[timer <n>] LOOK` line is a hint to run `status`, never an approval or a fact about the row; `status` may show `OVERDUE` or no Pi in the row's pane. The line arrives in the chief pane, so a chief session that has ended does not see it. A row with `timer: none` needs the user to ask for status.
 
 The helper owns the run's state: `batch.ts <command>` below means `node <skill-dir>/batch.ts <command>`, where `<skill-dir>` holds this file, run from the repo's main checkout. Its `events.jsonl` is the only truth; `ledger.md` is regenerated from it. A `refused:` line names the row's state and what it accepts: act on that. [`CONTRACT.md`](CONTRACT.md) holds the coordinator contract and its `## Report template`.
 

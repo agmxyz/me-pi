@@ -19,7 +19,108 @@ import { join } from "node:path";
 import test from "node:test";
 import { prepare } from "../packages/pi-workers/extensions/delegate-implement.ts";
 import registerGuard from "../packages/pi-workers/extensions/guard.ts";
-import { dialogVisible, implementLock, main, type Result, type Runner } from "../skills/batch-chief/batch.ts";
+import {
+	dialogVisible,
+	implementLock,
+	main,
+	type Result,
+	type Runner,
+	timerDecision,
+	timerPoll,
+	watch,
+} from "../skills/batch-chief/batch.ts";
+
+test("timer decision stops superseded rows, detects overdue or two definite absences, and bounds refusals", () => {
+	const base = {
+		running: true,
+		deadline: 100,
+		expected: 100,
+		now: 50,
+		absent: false,
+		misses: 0,
+		tries: 0,
+		late: false,
+		blocker: false,
+	};
+	assert.equal(timerDecision({ ...base, running: false }).action, "exit");
+	assert.equal(timerDecision({ ...base, deadline: 101 }).action, "exit");
+	assert.deepEqual(timerDecision({ ...base, absent: true }), { action: "wait", misses: 1, tries: 0, late: false });
+	assert.equal(timerDecision({ ...base, absent: true, misses: 1 }).action, "send");
+	assert.equal(timerDecision({ ...base, absent: false, misses: 1 }).misses, 0);
+	assert.equal(timerDecision({ ...base, now: 100 }).action, "send");
+	assert.deepEqual(timerDecision({ ...base, now: 100, blocker: true }), {
+		action: "wait",
+		misses: 0,
+		tries: 1,
+		late: true,
+	});
+	assert.equal(timerDecision({ ...base, now: 100, blocker: true, tries: 19, late: true }).action, "give-up");
+});
+
+test("timer decision starts a fresh budget on crossing the deadline", () => {
+	assert.deepEqual(
+		timerDecision({
+			running: true,
+			deadline: 100,
+			expected: 100,
+			now: 100,
+			absent: true,
+			misses: 1,
+			tries: 19,
+			late: false,
+			blocker: true,
+		}),
+		{ action: "wait", misses: 2, tries: 1, late: true },
+	);
+});
+
+test("timer decision gives up on the twentieth late refusal", () => {
+	assert.deepEqual(
+		timerDecision({
+			running: true,
+			deadline: 100,
+			expected: 100,
+			now: 100,
+			absent: true,
+			misses: 1,
+			tries: 19,
+			late: true,
+			blocker: true,
+		}),
+		{ action: "give-up", misses: 2, tries: 20, late: true },
+	);
+});
+
+test("timer pre-deadline refusal budget resets and preserves deadline budget", () => {
+	const base = {
+		running: true,
+		deadline: 100,
+		expected: 100,
+		now: 50,
+		absent: true,
+		misses: 1,
+		tries: 19,
+		late: false,
+		blocker: true,
+	};
+	assert.deepEqual(timerDecision(base), { action: "wait", misses: 0, tries: 0, late: false });
+	assert.equal(timerDecision({ ...base, now: 100, late: true }).action, "give-up");
+});
+
+test("timer retries after coordinator returns when dialog closes", () => {
+	const base = {
+		running: true,
+		deadline: 100,
+		expected: 100,
+		now: 50,
+		absent: false,
+		misses: 1,
+		tries: 1,
+		late: false,
+		blocker: false,
+	};
+	assert.deepEqual(timerDecision(base), { action: "send", misses: 0, tries: 1, late: false });
+});
 
 // Every effect goes through a fake runner; files live under a temp dir, never the real ~/.pi or this checkout.
 const ROOT = mkdtempSync(join(tmpdir(), "batch-chief-test-"));
@@ -57,8 +158,16 @@ function fixture(entry = main) {
 		prs: {} as Record<string, object>,
 		/** Per-command-line answers that win over the defaults below. */
 		exec: {} as Record<string, Result | (() => Result)>,
+		timers: [] as { dir: string; ticket: string; deadline: string }[],
+		timerPid: 99999999,
+		timerError: "",
 	};
 	const runner: Runner = {
+		startTimer(dir, ticket, deadline) {
+			state.timers.push({ dir, ticket, deadline });
+			if (state.timerError) throw new Error(state.timerError);
+			return state.timerPid;
+		},
 		now: () => now,
 		exec(cmd, args) {
 			const line = [cmd, ...args].join(" ");
@@ -129,7 +238,7 @@ function fixture(entry = main) {
 		);
 	/** Appends an event the way `gate` or `merge` would, so rows can start GATED without those commands. */
 	const append = (event: object) => appendFileSync(join(runDir(), "events.jsonl"), `${JSON.stringify(event)}\n`);
-	return { dir, repo, run, runDir, events, at, brief, report, preflight, launch, append, calls, state };
+	return { dir, repo, run, runDir, events, at, brief, report, preflight, launch, append, calls, state, runner };
 }
 
 type Fixture = ReturnType<typeof fixture>;
@@ -193,6 +302,376 @@ function readLedger(f: Fixture) {
 	return readFileSync(join(f.runDir(), "ledger.md"), "utf8");
 }
 
+test("timer starts after each running event, status and cleanup report live and stale timers", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.state.timerPid = process.pid;
+	const startTimer = f.runner.startTimer;
+	f.runner.startTimer = (...args) => {
+		assert.ok(["launch", "answer", "round"].includes(f.events().at(-1).type));
+		return startTimer(...args);
+	};
+	assertOk(f.launch(5));
+	assert.deepEqual(f.state.timers, [{ dir: f.runDir(), ticket: "5", deadline: "2026-11-11T10:20:00.000Z" }]);
+	assert.match(
+		assertOk(f.run("status")),
+		new RegExp(`timer: watching until 2026-11-11T10:20:00.000Z \\(pid ${process.pid}\\)`),
+	);
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "BLOCKED", "10:04")));
+	assertOk(f.run("event", "5", "answer", "--basis", "The test may use a fake clock."));
+	assert.equal(f.state.timers.length, 2);
+	f.at("10:06");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:05")));
+	assertOk(f.run("event", "5", "round", "fix", "--deadline", "10"));
+	assert.equal(f.state.timers.length, 3);
+	assertOk(f.run("event", "5", "drop", "--user", "stop"));
+	pane(f, 5, false);
+	assert.match(
+		assertOk(f.run("cleanup", "--dry-run")),
+		new RegExp(`Resources left:[\\s\\S]*#5 timer[^\\n]*${process.pid}`),
+	);
+	const stale = fixture();
+	assertOk(stale.preflight());
+	stale.state.timerError = "no process";
+	assert.match(
+		assertOk(stale.launch(5)),
+		/timer not started: no process; the deadline is checked only when you run status/,
+	);
+	assert.match(assertOk(stale.run("status")), /timer: none; the deadline is checked only when you run status/);
+	assert.equal(stale.events().at(-1).type, "launch");
+});
+
+test("timer cleanup distinguishes row prefixes", () => {
+	const f = fixture();
+	assertOk(f.preflight("a,a-b"));
+	f.state.timerError = "no process";
+	assertOk(f.launch("a"));
+	f.state.timerError = "";
+	f.state.timerPid = process.pid;
+	assertOk(f.launch("a-b"));
+	assertOk(f.run("event", "a", "drop", "--user", "stop"));
+	f.state.exec["herdr pane process-info --pane w1:pa"] = ok('{"result":{"process_info":{"foreground_processes":[]}}}');
+	assert.doesNotMatch(assertOk(f.run("cleanup", "--dry-run")), /#a timer still running/);
+});
+
+test("timer distinguishes recording failure from start failure and records event first", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.runner.startTimer = () => {
+		assert.equal(f.events().at(-1).type, "launch");
+		mkdirSync(join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid"));
+		return 123;
+	};
+	assert.match(assertOk(f.launch(5)), /timer started \(pid 123\) but not recorded: .*; status will show timer: none/);
+	const g = fixture();
+	assertOk(g.preflight());
+	g.state.timerError = "no process";
+	assert.match(
+		assertOk(g.launch(5)),
+		/timer not started: no process; the deadline is checked only when you run status/,
+	);
+});
+
+test("timer status reports unknown pane check and dead pid file", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	assert.ok(existsSync(join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid")));
+	const out = assertOk(f.run("status"));
+	assert.match(out, /timer: none; the deadline is checked only when you run status/);
+	assert.match(out, /cannot tell whether Pi runs in pane w1:p5: .*fake runner/);
+});
+
+test("timer watch retries consecutive poll errors and resets after success", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.state.timerPid = process.pid;
+	assertOk(f.launch(5));
+	const pidPath = join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid");
+	const path = join(f.runDir(), "events.jsonl");
+	const original = readFileSync(path, "utf8");
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+		writeFileSync(path, polls === 2 ? original : "broken\n");
+	});
+	assert.equal(polls, 5);
+	const log = readFileSync(join(f.runDir(), "timers.log"), "utf8");
+	assert.equal((log.match(/#5 error:/g) ?? []).length, 3);
+	assert.equal((log.match(/#5 exit-with-error:/g) ?? []).length, 1);
+	assert.ok(!existsSync(pidPath));
+});
+
+test("timer watch retries poll errors even if its log cannot be appended", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	writeFileSync(join(f.runDir(), "events.jsonl"), "broken\n");
+	mkdirSync(join(f.runDir(), "timers.log"));
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+	});
+	assert.equal(polls, 3);
+});
+
+test("timer watch stops after a failed delivery attempt", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, true);
+	pane(f, 1, true);
+	f.at("10:21");
+	f.state.exec["herdr agent prompt w1:p1 [timer 5] LOOK: run batch.ts status"] = {
+		code: 1,
+		stdout: "",
+		stderr: "delivery uncertain",
+	};
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+	});
+	assert.equal(polls, 1);
+	assert.equal(f.calls.filter((c) => c.startsWith("herdr agent prompt")).length, 1);
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /#5 send failed: delivery uncertain/);
+});
+
+test("timer watch stops after delivery even if its log cannot be appended", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, true);
+	pane(f, 1, true);
+	f.at("10:21");
+	f.state.exec["herdr agent prompt w1:p1 [timer 5] LOOK: run batch.ts status"] = ok();
+	mkdirSync(join(f.runDir(), "timers.log"));
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+	});
+	assert.equal(polls, 1);
+	assert.equal(f.calls.filter((c) => c.startsWith("herdr agent prompt")).length, 1);
+});
+
+test("timer watch gives up after 20 dialog refusals", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.state.timerPid = process.pid;
+	assertOk(f.launch(5));
+	pane(f, 5, true);
+	pane(f, 1, true, DIALOG);
+	f.at("10:21");
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+	});
+	assert.equal(polls, 20);
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /give-up after 20 tries/);
+	assert.ok(!existsSync(join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid")));
+	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
+});
+
+test("timer deadline has a fresh refusal budget after earlier refusals", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, false);
+	pane(f, 1, true, DIALOG);
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+		if (polls === 21) f.at("10:20");
+		if (polls > 50) throw new Error("watch did not stop");
+	});
+	assert.equal(polls, 40);
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /give-up after 20 tries/);
+});
+
+test("timer watch gets twenty late refusals when deadline crosses during pane check", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, false);
+	pane(f, 1, true, DIALOG);
+	const paneCheck = f.state.exec["herdr pane process-info --pane w1:p5"] as Result;
+	let polls = 0;
+	f.state.exec["herdr pane process-info --pane w1:p5"] = () => {
+		if (polls === 21) f.at("10:21");
+		return paneCheck;
+	};
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+		if (polls > 50) throw new Error("watch did not stop");
+	});
+	const log = readFileSync(join(f.runDir(), "timers.log"), "utf8");
+	assert.equal(polls, 40);
+	assert.equal((log.match(/refused:/g) ?? []).length, 39);
+	assert.equal((log.match(/give-up after 20 tries/g) ?? []).length, 1);
+	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
+});
+
+test("timer watch removes only its own pid file on exit", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.state.timerPid = process.pid;
+	assertOk(f.launch(5));
+	const path = join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid");
+	assertOk(f.run("event", "5", "drop", "--user", "stop"));
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {});
+	assert.ok(!existsSync(path));
+	writeFileSync(path, "123");
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {});
+	assert.equal(readFileSync(path, "utf8"), "123");
+});
+
+test("timer poll refuses an open dialog and never writes events or ledger", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, true);
+	pane(f, 1, true, DIALOG);
+	const before = readFileSync(join(f.runDir(), "events.jsonl"), "utf8");
+	f.at("10:21");
+	const result = timerPoll(
+		f.runDir(),
+		"5",
+		"2026-11-11T10:20:00.000Z",
+		{ misses: 0, tries: 0, late: false },
+		f.runner,
+	);
+	assert.equal(result.action, "wait");
+	assert.equal(result.tries, 1);
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /refused/);
+	assert.equal(readFileSync(join(f.runDir(), "events.jsonl"), "utf8"), before);
+	assert.ok(!existsSync(join(f.runDir(), "ledger.md")));
+	assert.ok(!f.calls.some((call) => call.startsWith("herdr agent prompt")));
+});
+
+test("timer poll sends one content-free wake after two absences and exits after report", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, false);
+	pane(f, 1, true);
+	f.state.exec["herdr agent prompt w1:p1 [timer 5] LOOK: run batch.ts status"] = ok();
+	const deadline = "2026-11-11T10:20:00.000Z";
+	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0, late: false }, f.runner);
+	assert.equal(first.action, "wait");
+	const second = timerPoll(f.runDir(), "5", deadline, first, f.runner);
+	assert.equal(second.action, "send");
+	assert.equal(f.calls.filter((c) => c.startsWith("herdr agent prompt")).length, 1);
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /#5 sent/);
+	assert.match(assertOk(f.run("status")), /no Pi in pane w1:p5/);
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
+	assert.equal(timerPoll(f.runDir(), "5", deadline, first, f.runner).action, "exit");
+});
+
+test("timer gone pane wakes on second poll", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	f.state.exec["herdr pane process-info --pane w1:p5"] = { code: 1, stdout: "", stderr: "pane_not_found" };
+	pane(f, 1, true);
+	f.state.exec["herdr agent prompt w1:p1 [timer 5] LOOK: run batch.ts status"] = ok();
+	const deadline = "2026-11-11T10:20:00.000Z";
+	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0, late: false }, f.runner);
+	assert.equal(first.action, "wait");
+	assert.equal(timerPoll(f.runDir(), "5", deadline, first, f.runner).action, "send");
+});
+
+test("timer status distinguishes gone pane", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	f.state.exec["herdr pane process-info --pane w1:p5"] = { code: 1, stdout: "", stderr: "pane_not_found" };
+	assert.match(assertOk(f.run("status")), / {2}pane w1:p5 is gone/);
+});
+
+test("timer pre-deadline give-up is logged and continues", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, false);
+	pane(f, 1, true, DIALOG);
+	const result = timerPoll(
+		f.runDir(),
+		"5",
+		"2026-11-11T10:20:00.000Z",
+		{ misses: 1, tries: 19, late: false },
+		f.runner,
+	);
+	assert.deepEqual(result, { action: "wait", misses: 0, tries: 0, late: false });
+	assert.match(
+		readFileSync(join(f.runDir(), "timers.log"), "utf8"),
+		/give-up before deadline after 20 tries; still watching the deadline/,
+	);
+});
+
+test("timer status ignores pid with EPERM", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.state.timerPid = process.pid;
+	assertOk(f.launch(5));
+	const original = process.kill;
+	try {
+		process.kill = (() => {
+			throw Object.assign(new Error("denied"), { code: "EPERM" });
+		}) as typeof process.kill;
+		assert.match(assertOk(f.run("status")), /timer: none/);
+	} finally {
+		process.kill = original;
+	}
+});
+
+test("timer watcher bounds herdr calls and handles timed out checks and delivery", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, true);
+	pane(f, 1, true);
+	const deadline = "2026-11-11T10:20:00.000Z";
+	let timeoutAt = "pane process-info --pane w1:p5";
+	const optionsSeen: number[] = [];
+	const runner: Runner = {
+		...f.runner,
+		exec(cmd, args, options) {
+			if (cmd === "herdr") {
+				optionsSeen.push(options?.timeoutMs ?? 0);
+				if (args.join(" ") === timeoutAt) return { code: 1, stdout: "", stderr: "ETIMEDOUT" };
+			}
+			return f.runner.exec(cmd, args, options);
+		},
+	};
+	let state = timerPoll(f.runDir(), "5", deadline, { misses: 1, tries: 0, late: false }, runner);
+	assert.equal(state.misses, 0);
+	f.at("10:21");
+	timeoutAt = "agent read w1:p1 --source visible";
+	state = timerPoll(f.runDir(), "5", deadline, state, runner);
+	assert.equal(state.action, "wait");
+	assert.equal(state.tries, 1);
+	timeoutAt = "agent prompt w1:p1 [timer 5] LOOK: run batch.ts status";
+	state = timerPoll(f.runDir(), "5", deadline, state, runner);
+	assert.equal(state.action, "send");
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /send failed: ETIMEDOUT/);
+	assert.ok(optionsSeen.length >= 6 && optionsSeen.every((ms) => ms > 0));
+});
+
+test("timer treats missing process information as unknown, not two absences", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	f.state.exec["herdr pane process-info --pane w1:p5"] = ok('{"result":{"process_info":{}}}');
+	pane(f, 1, true);
+	const deadline = "2026-11-11T10:20:00.000Z";
+	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0, late: false }, f.runner);
+	const second = timerPoll(f.runDir(), "5", deadline, first, f.runner);
+	assert.equal(second.action, "wait");
+	assert.equal(second.misses, 0);
+	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
+});
+
 test("launch moves QUEUED to RUNNING(implement) with a deadline", () => {
 	const f = fixture();
 	assertOk(f.preflight());
@@ -233,7 +712,7 @@ test("status records nothing for an ATTEMPT FAILED line in the panes, unlike a r
 	assert.equal(after, before);
 	assert.equal(f.events().length, events, "status recorded an event");
 	assert.match(rowLine(f, 5), /^#5 RUNNING\(implement\)/);
-	assert.ok(!f.calls.slice(calls).some((c) => c.startsWith("herdr ")), "status read a pane");
+	assert.ok(!f.calls.slice(calls).some((c) => c.startsWith("herdr agent read")), "status read pane text");
 });
 
 test("a DONE report moves RUNNING to REPORTED; a BLOCKED one to ASKED(chief)", () => {
