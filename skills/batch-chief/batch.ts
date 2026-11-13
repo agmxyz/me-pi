@@ -49,18 +49,23 @@ export function timerDecision(input: {
 	absent: boolean;
 	misses: number;
 	tries: number;
+	late: boolean;
 	blocker: boolean;
-}): { action: "exit" | "wait" | "send" | "give-up"; misses: number; tries: number } {
+}): { action: "exit" | "wait" | "send" | "give-up"; misses: number; tries: number; late: boolean } {
 	const { running, deadline, expected, now, absent, blocker } = input;
-	let { misses, tries } = input;
-	if (!running || deadline !== expected) return { action: "exit", misses, tries };
+	let { misses, tries, late } = input;
+	if (!running || deadline !== expected) return { action: "exit", misses, tries, late };
+	if (now >= expected && !late) {
+		late = true;
+		tries = 0;
+	}
 	misses = absent ? misses + 1 : 0;
 	// Once refused, send when the dialog closes even if the coordinator returned: the line carries no content.
-	if (now < expected && misses < TIMER_ABSENCES && tries === 0) return { action: "wait", misses, tries };
-	if (!blocker) return { action: "send", misses, tries };
+	if (now < expected && misses < TIMER_ABSENCES && tries === 0) return { action: "wait", misses, tries, late };
+	if (!blocker) return { action: "send", misses, tries, late };
 	tries++;
-	if (tries >= TIMER_MAX_TRIES && now < expected) return { action: "wait", misses: 0, tries: 0 };
-	return { action: tries >= TIMER_MAX_TRIES ? "give-up" : "wait", misses, tries };
+	if (tries >= TIMER_MAX_TRIES && now < expected) return { action: "wait", misses: 0, tries: 0, late };
+	return { action: tries >= TIMER_MAX_TRIES ? "give-up" : "wait", misses, tries, late };
 }
 
 type State = "QUEUED" | "RUNNING" | "ASKED" | "REPORTED" | "GATED" | "MERGED" | "LEFT_OPEN" | "DROPPED";
@@ -1391,7 +1396,7 @@ export function timerPoll(
 	dir: string,
 	ticket: string,
 	deadline: string,
-	state: { misses: number; tries: number },
+	state: { misses: number; tries: number; late: boolean },
 	runner: Runner,
 ) {
 	const exit = { ...state, action: "exit" as const };
@@ -1458,17 +1463,12 @@ export async function watch(
 	wait: () => Promise<void> = () => new Promise((done) => setTimeout(done, TIMER_INTERVAL_MS)),
 ): Promise<void> {
 	const [dir, ticket, deadline] = args;
-	let state = { misses: 0, tries: 0 };
+	let state = { misses: 0, tries: 0, late: false };
 	let errors = 0;
-	let deadlineReached = false;
 	try {
 		for (;;) {
 			await wait();
 			try {
-				if (!deadlineReached && runner.now().getTime() >= Date.parse(deadline)) {
-					deadlineReached = true;
-					state = { misses: 0, tries: 0 };
-				}
 				const result = timerPoll(dir, ticket, deadline, state, runner);
 				errors = 0;
 				if (result.action !== "wait") return;

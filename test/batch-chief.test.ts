@@ -39,16 +39,56 @@ test("timer decision stops superseded rows, detects overdue or two definite abse
 		absent: false,
 		misses: 0,
 		tries: 0,
+		late: false,
 		blocker: false,
 	};
 	assert.equal(timerDecision({ ...base, running: false }).action, "exit");
 	assert.equal(timerDecision({ ...base, deadline: 101 }).action, "exit");
-	assert.deepEqual(timerDecision({ ...base, absent: true }), { action: "wait", misses: 1, tries: 0 });
+	assert.deepEqual(timerDecision({ ...base, absent: true }), { action: "wait", misses: 1, tries: 0, late: false });
 	assert.equal(timerDecision({ ...base, absent: true, misses: 1 }).action, "send");
 	assert.equal(timerDecision({ ...base, absent: false, misses: 1 }).misses, 0);
 	assert.equal(timerDecision({ ...base, now: 100 }).action, "send");
-	assert.deepEqual(timerDecision({ ...base, now: 100, blocker: true }), { action: "wait", misses: 0, tries: 1 });
-	assert.equal(timerDecision({ ...base, now: 100, blocker: true, tries: 19 }).action, "give-up");
+	assert.deepEqual(timerDecision({ ...base, now: 100, blocker: true }), {
+		action: "wait",
+		misses: 0,
+		tries: 1,
+		late: true,
+	});
+	assert.equal(timerDecision({ ...base, now: 100, blocker: true, tries: 19, late: true }).action, "give-up");
+});
+
+test("timer decision starts a fresh budget on crossing the deadline", () => {
+	assert.deepEqual(
+		timerDecision({
+			running: true,
+			deadline: 100,
+			expected: 100,
+			now: 100,
+			absent: true,
+			misses: 1,
+			tries: 19,
+			late: false,
+			blocker: true,
+		}),
+		{ action: "wait", misses: 2, tries: 1, late: true },
+	);
+});
+
+test("timer decision gives up on the twentieth late refusal", () => {
+	assert.deepEqual(
+		timerDecision({
+			running: true,
+			deadline: 100,
+			expected: 100,
+			now: 100,
+			absent: true,
+			misses: 1,
+			tries: 19,
+			late: true,
+			blocker: true,
+		}),
+		{ action: "give-up", misses: 2, tries: 20, late: true },
+	);
 });
 
 test("timer pre-deadline refusal budget resets and preserves deadline budget", () => {
@@ -60,10 +100,11 @@ test("timer pre-deadline refusal budget resets and preserves deadline budget", (
 		absent: true,
 		misses: 1,
 		tries: 19,
+		late: false,
 		blocker: true,
 	};
-	assert.deepEqual(timerDecision(base), { action: "wait", misses: 0, tries: 0 });
-	assert.equal(timerDecision({ ...base, now: 100 }).action, "give-up");
+	assert.deepEqual(timerDecision(base), { action: "wait", misses: 0, tries: 0, late: false });
+	assert.equal(timerDecision({ ...base, now: 100, late: true }).action, "give-up");
 });
 
 test("timer retries after coordinator returns when dialog closes", () => {
@@ -75,9 +116,10 @@ test("timer retries after coordinator returns when dialog closes", () => {
 		absent: false,
 		misses: 1,
 		tries: 1,
+		late: false,
 		blocker: false,
 	};
-	assert.deepEqual(timerDecision(base), { action: "send", misses: 0, tries: 1 });
+	assert.deepEqual(timerDecision(base), { action: "send", misses: 0, tries: 1, late: false });
 });
 
 // Every effect goes through a fake runner; files live under a temp dir, never the real ~/.pi or this checkout.
@@ -446,6 +488,29 @@ test("timer deadline has a fresh refusal budget after earlier refusals", async (
 	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /give-up after 20 tries/);
 });
 
+test("timer watch gets twenty late refusals when deadline crosses during pane check", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, false);
+	pane(f, 1, true, DIALOG);
+	const paneCheck = f.state.exec["herdr pane process-info --pane w1:p5"] as Result;
+	let polls = 0;
+	f.state.exec["herdr pane process-info --pane w1:p5"] = () => {
+		if (polls === 21) f.at("10:21");
+		return paneCheck;
+	};
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+		if (polls > 50) throw new Error("watch did not stop");
+	});
+	const log = readFileSync(join(f.runDir(), "timers.log"), "utf8");
+	assert.equal(polls, 40);
+	assert.equal((log.match(/refused:/g) ?? []).length, 39);
+	assert.equal((log.match(/give-up after 20 tries/g) ?? []).length, 1);
+	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
+});
+
 test("timer watch removes only its own pid file on exit", async () => {
 	const f = fixture();
 	assertOk(f.preflight());
@@ -468,7 +533,13 @@ test("timer poll refuses an open dialog and never writes events or ledger", () =
 	pane(f, 1, true, DIALOG);
 	const before = readFileSync(join(f.runDir(), "events.jsonl"), "utf8");
 	f.at("10:21");
-	const result = timerPoll(f.runDir(), "5", "2026-11-11T10:20:00.000Z", { misses: 0, tries: 0 }, f.runner);
+	const result = timerPoll(
+		f.runDir(),
+		"5",
+		"2026-11-11T10:20:00.000Z",
+		{ misses: 0, tries: 0, late: false },
+		f.runner,
+	);
 	assert.equal(result.action, "wait");
 	assert.equal(result.tries, 1);
 	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /refused/);
@@ -485,7 +556,7 @@ test("timer poll sends one content-free wake after two absences and exits after 
 	pane(f, 1, true);
 	f.state.exec["herdr agent prompt w1:p1 [timer 5] LOOK: run batch.ts status"] = ok();
 	const deadline = "2026-11-11T10:20:00.000Z";
-	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0 }, f.runner);
+	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0, late: false }, f.runner);
 	assert.equal(first.action, "wait");
 	const second = timerPoll(f.runDir(), "5", deadline, first, f.runner);
 	assert.equal(second.action, "send");
@@ -505,7 +576,7 @@ test("timer gone pane wakes on second poll", () => {
 	pane(f, 1, true);
 	f.state.exec["herdr agent prompt w1:p1 [timer 5] LOOK: run batch.ts status"] = ok();
 	const deadline = "2026-11-11T10:20:00.000Z";
-	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0 }, f.runner);
+	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0, late: false }, f.runner);
 	assert.equal(first.action, "wait");
 	assert.equal(timerPoll(f.runDir(), "5", deadline, first, f.runner).action, "send");
 });
@@ -524,8 +595,14 @@ test("timer pre-deadline give-up is logged and continues", () => {
 	assertOk(f.launch(5));
 	pane(f, 5, false);
 	pane(f, 1, true, DIALOG);
-	const result = timerPoll(f.runDir(), "5", "2026-11-11T10:20:00.000Z", { misses: 1, tries: 19 }, f.runner);
-	assert.deepEqual(result, { action: "wait", misses: 0, tries: 0 });
+	const result = timerPoll(
+		f.runDir(),
+		"5",
+		"2026-11-11T10:20:00.000Z",
+		{ misses: 1, tries: 19, late: false },
+		f.runner,
+	);
+	assert.deepEqual(result, { action: "wait", misses: 0, tries: 0, late: false });
 	assert.match(
 		readFileSync(join(f.runDir(), "timers.log"), "utf8"),
 		/give-up before deadline after 20 tries; still watching the deadline/,
@@ -567,7 +644,7 @@ test("timer watcher bounds herdr calls and handles timed out checks and delivery
 			return f.runner.exec(cmd, args, options);
 		},
 	};
-	let state = timerPoll(f.runDir(), "5", deadline, { misses: 1, tries: 0 }, runner);
+	let state = timerPoll(f.runDir(), "5", deadline, { misses: 1, tries: 0, late: false }, runner);
 	assert.equal(state.misses, 0);
 	f.at("10:21");
 	timeoutAt = "agent read w1:p1 --source visible";
@@ -588,7 +665,7 @@ test("timer treats missing process information as unknown, not two absences", ()
 	f.state.exec["herdr pane process-info --pane w1:p5"] = ok('{"result":{"process_info":{}}}');
 	pane(f, 1, true);
 	const deadline = "2026-11-11T10:20:00.000Z";
-	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0 }, f.runner);
+	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0, late: false }, f.runner);
 	const second = timerPoll(f.runDir(), "5", deadline, first, f.runner);
 	assert.equal(second.action, "wait");
 	assert.equal(second.misses, 0);
