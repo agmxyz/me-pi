@@ -1378,6 +1378,131 @@ test("contract fills every table placeholder of CONTRACT.md from the run, keepin
 	assert.ok(!written.includes("| Placeholder |"), "the chief's table was copied into the contract");
 });
 
+test("contract check override is exact, row-local, ephemeral and refused when blank or fixed", () => {
+	const f = fixture();
+	const path = contractable(f);
+	assertOk(f.run("approve", "--quote", "push 6", "--action", "push", "--tickets", "6"));
+	assertOk(f.launch(6));
+	f.state.exec[`git -C ${join(f.dir, "t6")} merge-base HEAD origin/main`] = ok(`${SHA}\n`);
+	const other = join(f.runDir(), "contract-6.md");
+	const log = join(f.runDir(), "events.jsonl");
+	const before = readFileSync(log, "utf8");
+	const generate = (n: string, ...extra: string[]) => {
+		const result = f.run("contract", n, ...CONTRACT_ARGS, ...extra);
+		assert.equal(readFileSync(log, "utf8"), before);
+		return result;
+	};
+	for (const blank of ["", " \t "]) {
+		assertRefused(generate("5", "--check", blank), "check");
+		assert.ok(!existsSync(path));
+	}
+	assertOk(generate("5"));
+	assertOk(generate("6"));
+	const defaultA = readFileSync(path, "utf8");
+	const defaultB = readFileSync(other, "utf8");
+	const command = '  printf "%s" "<review point>" && npm test  ';
+	assertOk(generate("5", "--check", command));
+	const overridden = readFileSync(path, "utf8");
+	assert.equal(
+		overridden.split("\n").find((line) => line.startsWith("- Check:")),
+		`- Check: \`${command}\`. Tell your worker in its brief: run the check alone, with no pipe, chain, redirect or extra flags.`,
+	);
+	assert.equal(readFileSync(other, "utf8"), defaultB);
+	assertOk(generate("6"));
+	assert.equal(readFileSync(other, "utf8"), defaultB);
+	assert.equal(readFileSync(path, "utf8"), overridden);
+	assertOk(generate("5"));
+	assert.equal(readFileSync(path, "utf8"), defaultA);
+	assertOk(generate("5", "--check", command));
+	for (const blank of ["", " \t "]) {
+		assertRefused(generate("5", "--check", blank), "check");
+		assert.equal(readFileSync(path, "utf8"), overridden);
+	}
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
+	const fixedLog = readFileSync(log, "utf8");
+	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS, "--check", "true"), "fixed", "REPORTED");
+	assert.equal(readFileSync(path, "utf8"), overridden);
+	assert.equal(readFileSync(log, "utf8"), fixedLog);
+});
+
+test("contract Ticket line distinguishes the actual numeric issue from a label with no issue", () => {
+	const f = fixture();
+	assertOk(f.preflight("5,release"));
+	assertOk(f.run("approve", "--quote", "push both", "--action", "push", "--tickets", "5,release"));
+	for (const n of ["5", "release"]) {
+		assertOk(f.launch(n));
+		f.state.exec[`git -C ${join(f.dir, `t${n}`)} merge-base HEAD origin/main`] = ok(`${SHA}\n`);
+		assertOk(f.run("contract", n, ...CONTRACT_ARGS));
+		const text = readFileSync(join(f.runDir(), `contract-${n}.md`), "utf8");
+		assert.equal(
+			text.split("\n").find((line) => line.startsWith("- Ticket:")),
+			n === "5" ? "- Ticket: issue #5 of this repo." : "- Ticket: none; release is a label, not an issue.",
+		);
+	}
+});
+
+for (const extra of [[], ["--check", "true"]]) {
+	test(`contract approval and launch refusals preserve files and events ${extra.length ? "with override" : "by default"}`, () => {
+		const f = fixture();
+		assertOk(f.preflight());
+		const log = join(f.runDir(), "events.jsonl");
+		const path = join(f.runDir(), "contract-5.md");
+		const refuse = (...parts: string[]) => {
+			const before = readFileSync(log, "utf8");
+			assertRefused(f.run("contract", "5", ...CONTRACT_ARGS, ...extra), ...parts);
+			assert.equal(readFileSync(log, "utf8"), before);
+			assert.ok(!existsSync(path));
+		};
+		refuse("launch");
+		assertOk(f.launch(5));
+		f.state.exec[`git -C ${join(f.dir, "t5")} merge-base HEAD origin/main`] = ok(`${SHA}\n`);
+		refuse("no approval", "approve");
+		assertOk(f.run("approve", "--quote", "ship all", "--action", "push", "--tickets", "5", "--inferred"));
+		refuse("only an inferred approval", "approve");
+	});
+
+	for (const n of ["5", "release"]) {
+		test(`contract ${extra.length ? "override" : "default"} leaves gate CI and closing rules intact for ${n}`, () => {
+			const f = fixture();
+			assertOk(f.preflight(n));
+			assertOk(f.run("approve", "--quote", "push it", "--action", "push", "--tickets", n));
+			assertOk(f.launch(n));
+			const wt = join(f.dir, `t${n}`);
+			f.state.exec[`git -C ${wt} merge-base HEAD origin/main`] = ok(`${SHA}\n`);
+			assertOk(f.run("contract", n, ...CONTRACT_ARGS, ...extra));
+			f.at("10:05");
+			assertOk(f.run("event", n, "report", "--path", f.report(n, "DONE", "10:04")));
+			f.state.exec[`git -C ${wt} status --porcelain`] = ok();
+			f.state.exec[`git -C ${wt} rev-parse HEAD`] = ok(`${HEAD}\n`);
+			const log = join(f.runDir(), "events.jsonl");
+			for (const [status, conclusion] of [
+				["IN_PROGRESS", ""],
+				["COMPLETED", "FAILURE"],
+			]) {
+				f.state.prs[`feat/t${n}`] = goodPr({
+					body: "no trailer",
+					statusCheckRollup: [{ __typename: "CheckRun", name: "check", status, conclusion }],
+				});
+				const before = readFileSync(log, "utf8");
+				assertRefused(f.run("gate", n, "--judged", "matches"), "required check check has not passed");
+				assert.equal(readFileSync(log, "utf8"), before);
+			}
+			f.state.prs[`feat/t${n}`] = goodPr({ body: "no trailer" });
+			if (n === "5") {
+				const before = readFileSync(log, "utf8");
+				assertRefused(f.run("gate", n, "--judged", "matches"), "body does not close #5");
+				assert.equal(readFileSync(log, "utf8"), before);
+				f.state.prs[`feat/t${n}`] = goodPr();
+			}
+			const out = assertOk(f.run("gate", n, "--judged", "matches"));
+			if (n === "release") assert.match(out, /SKIP: body closing keyword not checked/);
+			assert.equal(f.events().at(-1).type, "gate");
+			assert.equal(f.events().at(-1).sha, HEAD);
+		});
+	}
+}
+
 test("contract takes its text only from CONTRACT.md: batch.ts holds no copy of it", () => {
 	const helper = readFileSync(join(SKILL_DIR, "batch.ts"), "utf8");
 	for (const sentence of [
@@ -1447,6 +1572,56 @@ async function withContract(source: string) {
 	writeFileSync(join(copy, "CONTRACT.md"), source);
 	const copied = await import(join(copy, "batch.ts"));
 	return fixture(copied.main);
+}
+
+test("contract output follows changed task prose and report headings in CONTRACT.md", async () => {
+	const f = await withContract(
+		CONTRACT_SOURCE.replace("It binds you and your implement worker", "Fixture prose binds this worker").replace(
+			"## Acceptance\n",
+			"## Fixture acceptance\n",
+		),
+	);
+	const path = contractable(f);
+	assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+	const written = readFileSync(path, "utf8");
+	assert.ok(written.includes("Fixture prose binds this worker"));
+	assert.ok(written.includes("\n## Fixture acceptance\n"));
+	assert.ok(!written.includes("It binds you and your implement worker"));
+	assert.ok(!written.includes("\n## Acceptance\n"));
+});
+
+for (const version of [1, 2]) {
+	test(`contract default generation preserves eligible version-${version} launch events`, () => {
+		const f = fixture();
+		const path = contractable(f);
+		const log = join(f.runDir(), "events.jsonl");
+		assert.equal(f.events()[0].version, 2, "fresh preflight must remain v2");
+		if (version === 1) {
+			const events = f.events();
+			events[0].version = 1;
+			writeFileSync(log, `${events.map((e) => JSON.stringify(e)).join("\n")}\n`);
+		}
+		const before = readFileSync(log, "utf8");
+		assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+		assert.match(readFileSync(path, "utf8"), /^- Check: `npm test`\./m);
+		assert.equal(readFileSync(log, "utf8"), before);
+	});
+
+	test(`contract override preserves eligible version-${version} launch events`, () => {
+		const f = fixture();
+		const path = contractable(f);
+		const log = join(f.runDir(), "events.jsonl");
+		assert.equal(f.events()[0].version, 2);
+		if (version === 1) {
+			const events = f.events();
+			events[0].version = 1;
+			writeFileSync(log, `${events.map((e) => JSON.stringify(e)).join("\n")}\n`);
+		}
+		const before = readFileSync(log, "utf8");
+		assertOk(f.run("contract", "5", ...CONTRACT_ARGS, "--check", "  npm run special  "));
+		assert.match(readFileSync(path, "utf8"), /^- Check: ` {2}npm run special {2}`\./m);
+		assert.equal(readFileSync(log, "utf8"), before);
+	});
 }
 
 test("contract refuses, naming each, a placeholder in the contract text that neither table declares", async () => {
