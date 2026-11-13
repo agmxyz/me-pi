@@ -41,7 +41,7 @@ You are the Pi coordinator for one ticket. A chief session in herdr pane `<chief
 - Checkout: `<worktree>` (your cwd), branch `<branch>`, created clean from `<base>` at `<base sha>`. `<setup>` has been run.
 - Fixed review point: `<review point>`.
 - Check: `<check>`. Tell your worker in its brief: run the check alone, with no pipe, chain, redirect or extra flags.
-- Read the files needed for the task, subject to the existing secret and approval rules. Write only in your worktree and branch, `<scratch>`, the specified `<report>`, and the specified chief notification. You and your workers must not delete or discard work. A check may clean up only its own temporary fixtures; do not run deletion commands as a substitute.
+- Read the files needed for the task, subject to the existing secret and approval rules. Local writes are limited to your worktree and branch, `<scratch>`, the specified `<report>`, and the specified chief notification. External writes are permitted only where explicitly covered by recorded user approvals in the Authorised section. You and your workers must not delete or discard work. A check may clean up only its own temporary fixtures; do not run deletion commands as a substitute.
 - Other coordinators write in sibling worktrees. For you and your workers, all scratch goes in `<scratch>` and stays there; the chief's cleanup removes it. No `git stash`, no tag move, no change to `<base>`. These boundaries grant no new approval or guard permission.
 - Ticket: <ticket>.
 
