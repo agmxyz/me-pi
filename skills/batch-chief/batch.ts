@@ -74,6 +74,8 @@ interface Row {
 	deadlineMinutes?: number;
 	lastAt: string;
 	launch?: Launch;
+	/** When `launch` was recorded; while it equals `lastAt` the row has not moved since, so its contract may be written. */
+	launchedAt?: string;
 	chiefAnswers: number;
 	/** A merge intent with no observed result yet. */
 	intent?: { sha: string; at: string };
@@ -334,6 +336,7 @@ function apply(row: Row, e: RowEvent): void {
 	switch (e.type) {
 		case "launch":
 			row.launch = e.launch;
+			row.launchedAt = e.at;
 			running(row, ROUNDS[0], e.deadline, e.at);
 			break;
 		case "report":
@@ -1288,11 +1291,151 @@ function prompt(argv: string[], runner: Runner, cwd: string): string {
 	const text = words.join(" ").trim();
 	if (!text) throw new Refusal("prompt needs the text to send");
 	const pane = launched(row).pane;
+	const contractFile = contractPath(run, row);
+	// Only the implement round needs it: later rounds follow a report, which the contract made the coordinator write.
+	if (row.state === "RUNNING" && row.round === "implement" && !existsSync(contractFile))
+		throw new Refusal(
+			`#${row.ticket} has no contract at ${contractFile}; write it before prompting the coordinator: batch.ts ${CONTRACT_USAGE(row.ticket)}`,
+		);
 	const blocker = promptBlocker(runner, pane);
 	if (blocker) throw new Refusal(blocker);
 	const sent = runner.exec("herdr", ["agent", "prompt", pane, text]);
 	if (sent.code !== 0) throw new Refusal(`herdr agent prompt ${pane} failed: ${(sent.stderr || sent.stdout).trim()}`);
 	return `sent to #${row.ticket} in pane ${pane}`;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The coordinator contract: CONTRACT.md beside this file is its only text; `contract` fills the placeholders its
+// table names and holds no copy of it.
+
+const CONTRACT_USAGE = (ticket: RowId) =>
+	`contract ${ticket} [--lenses "<text>"] --skill <name> --setup "<cmd>"`;
+
+const contractPath = (run: Run, row: Row) => join(run.dir, `contract-${row.ticket}.md`);
+
+/** The parts of CONTRACT.md `contract` uses: the placeholder table (first column, value cell) and the two blocks. */
+function contractSource(): { table: Map<string, string>; contract: string; template: string } {
+	const path = join(import.meta.dirname, "CONTRACT.md");
+	const lines = readFileSync(path, "utf8").split("\n");
+	const head = lines.findIndex((l) => /^\|\s*Placeholder\s*\|\s*Value\s*\|$/.test(l));
+	if (head < 0) throw new Error(`${path} has no | Placeholder | Value | table`);
+	const table = new Map<string, string>();
+	for (const line of lines.slice(head + 2)) {
+		if (!line.startsWith("|")) break;
+		const [, names, value] = line.split("|");
+		for (const m of names.matchAll(/`(<[^`>]+>)`/g)) table.set(m[1], value.trim());
+	}
+	/** The fenced markdown block under `heading`, with its fence lines. */
+	const block = (heading: string) => {
+		const at = lines.indexOf(heading);
+		const open = lines.findIndex((l, i) => i > at && l === "```markdown");
+		const close = lines.findIndex((l, i) => i > open && l === "```");
+		if (at < 0 || open < 0 || close < 0) throw new Error(`${path} has no fenced markdown block under ${heading}`);
+		return lines.slice(open, close + 1);
+	};
+	return { table, contract: block("## Contract").slice(1, -1).join("\n"), template: block("## Report template").join("\n") };
+}
+
+/** Replaces each placeholder of `values` in `text` in one pass, so a value (a user's quote) is never filled itself. */
+function fill(text: string, values: Map<string, string>): string {
+	const names = [...values.keys()].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+	return text.replace(new RegExp(names.join("|"), "g"), (name) => values.get(name)!);
+}
+
+/**
+ * `contract <n>` writes `<run dir>/contract-<n>.md` from CONTRACT.md: its contract block, then `## Report template`
+ * with the template block, every placeholder of the table filled from the run, the row's launch and the user's
+ * approvals. It runs only between `launch` and the row's next event, so the coordinator's contract is fixed once the
+ * row has moved; a rerun there rewrites the run's own derived file.
+ */
+function contract(argv: string[], runner: Runner, cwd: string): string {
+	const { values, positionals } = parse(argv, { lenses: "string", skill: "string", setup: "string" });
+	const run = currentRun(runner, cwd);
+	const row = rowOf(run, rowId(positionals[0], "the row"));
+	if (positionals.length !== 1) throw new Refusal(`usage: ${CONTRACT_USAGE(row.ticket)}`);
+	if (!row.launch) throw new Refusal(`contract needs the launch facts: run batch.ts event ${row.ticket} launch first; ${where(row)}`);
+	if (row.state !== "RUNNING" || row.round !== "implement" || row.lastAt !== row.launchedAt)
+		throw new Refusal(
+			`#${row.ticket}'s contract is fixed once the row moves past its launch; send a change with prompt; ${where(row)}`,
+		);
+	const { table, contract: body, template } = contractSource();
+	const p = run.preflight;
+	const l = row.launch;
+	const missing = new Map<string, string>();
+	const filled = new Map<string, string>();
+	const option = (name: string) => {
+		const value = values[name];
+		return typeof value === "string" && value.trim() ? value : undefined;
+	};
+	const cut = gitIn(runner, l.worktree, "merge-base", "HEAD", `origin/${p.base}`);
+	const baseSha = cut.code === 0 && cut.stdout.trim() ? cut.stdout.trim() : undefined;
+	const authorised = authorisedActions(run, row);
+	const sources: Record<string, () => string | undefined> = {
+		"<n>": () => String(row.ticket),
+		"<chief pane>": () => p.chiefPane,
+		"<brief>": () => l.brief,
+		"<worktree>": () => l.worktree,
+		"<branch>": () => l.branch,
+		"<base>": () => p.base,
+		"<base sha>": () => baseSha,
+		"<review point>": () => baseSha,
+		"<check>": () => p.check,
+		"<setup>": () => option("setup"),
+		"<implementation skill>": () => option("skill"),
+		"<lenses>": () => option("lenses") ?? /\bby default (.+)$/.exec(table.get("<lenses>") ?? "")?.[1],
+		"<authorised actions>": () => authorised.lines,
+		"<report>": () => l.report,
+		"<scratch>": () => `${join(run.dir, "scratch", String(row.ticket))}/`,
+	};
+	const why: Record<string, string> = {
+		"<base sha>": `git -C ${l.worktree} merge-base HEAD origin/${p.base} failed: ${cut.stderr.trim() || "no output"}`,
+		"<review point>": "it is <base sha>, which has no value",
+		"<setup>": "--setup is required",
+		"<implementation skill>": "--skill is required",
+		"<lenses>": "--lenses is required: CONTRACT.md's table states no default",
+		"<authorised actions>": authorised.why ?? "",
+	};
+	for (const name of table.keys()) {
+		const source = sources[name];
+		if (!source) {
+			missing.set(name, "this helper has no source for it; give it one in batch.ts contract, or drop it from the table");
+			continue;
+		}
+		const value = source();
+		if (value === undefined) missing.set(name, why[name] ?? "no value");
+		else filled.set(name, value);
+	}
+	if (missing.size)
+		throw new Refusal(
+			`contract for #${row.ticket} not written: ${[...missing].map(([name, reason]) => `${name}: ${reason}`).join("; ")}`,
+		);
+	// The table's default lenses name <review point>: a default taken from the table is filled itself.
+	if (!option("lenses")) filled.set("<lenses>", fill(filled.get("<lenses>")!, filled));
+	const text = `${fill(body, filled)}\n\n## Report template\n\n${fill(template, filled)}\n`;
+	const path = contractPath(run, row);
+	writeFileSync(path, text);
+	return `contract for #${row.ticket} written to ${path}`;
+}
+
+/**
+ * The coordinator's authorised actions: one line per approval recorded without `--inferred` that covers the row,
+ * except `merge`, which stays the chief's. None, or only inferred ones, is a reason to refuse, as `launch` and
+ * `merge` refuse an inferred scope.
+ */
+function authorisedActions(run: Run, row: Row): { lines?: string; why?: string } {
+	const covering = run.approvals.filter((a) => a.action !== "merge" && a.tickets.includes(row.ticket));
+	const confirmed = covering.filter((a) => !a.inferred);
+	if (!confirmed.length)
+		return {
+			why: covering.length
+				? `only an inferred approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`
+				: `no approval covers #${row.ticket} for its coordinator (a merge approval is the chief's); record the user's words with approve --action push`,
+		};
+	const lines = confirmed.map(
+		(a) =>
+			`- ${a.action}, ${a.at}: ${JSON.stringify(a.quote)}${a.question === undefined ? "" : `, answering ${JSON.stringify(a.question)}`}`,
+	);
+	return { lines: lines.join("\n") };
 }
 
 const QUIT_POLLS = 15;
@@ -1590,6 +1733,7 @@ const COMMANDS: Record<string, (argv: string[], runner: Runner, cwd: string) => 
 	gate,
 	merge,
 	live,
+	contract,
 	prompt,
 	cleanup,
 };

@@ -1,21 +1,20 @@
 # Coordinator contract and report template
 
-The chief writes one contract per row in step 3 of [`SKILL.md`](SKILL.md), into `<run dir>/contract-<n>.md`, by filling every `<placeholder>` of the contract below and appending the section `## Report template`. Keep the text between placeholders as it stands; it carries rules the chief relies on. The authorised list quotes the approvals recorded with `batch.ts approve`, never the chief's own words.
+`batch.ts contract <n>` (step 3 of [`SKILL.md`](SKILL.md)) writes `<run dir>/contract-<n>.md` from this file: the block under `## Contract` with every placeholder of the table below filled, then the section `## Report template` with the table's placeholders filled and its own fields left for the coordinator. The command reads the placeholders from the table's first column and refuses while one has no value, naming it; edit the contract text here, and a new placeholder needs its source in that command. The authorised list quotes the approvals recorded with `batch.ts approve`, never the chief's own words.
 
 | Placeholder | Value |
 |---|---|
 | `<n>` | the row: its ticket number, or its label for work without an issue |
 | `<chief pane>` | the chief's herdr pane id, as given to `preflight` |
-| `<brief>` | path of `brief-<n>.md` |
-| `<worktree>`, `<branch>`, `<base>`, `<base sha>` | the row's checkout, its branch (named `<type>/<n>-<slug>`, for example `feat/42-status-panes`), and the base it was cut from |
-| `<review point>` | fixed review SHA, normally `<base sha>` |
-| `<check>` | the repo's check command |
-| `<setup>` | what step 3 ran in the worktree (`npm ci`, or the repo's equivalent) |
-| `<implementation skill>` | the repo's implementation skill, for example `implement-me-pi` |
-| `<lenses>` | the review lenses from intake, each with how to run it; by default the `code-review` skill's Standards and Spec lenses, run against `<review point>` |
-| `<date>`, `<user's words>` | when and how the user authorised the actions |
-| `<authorised actions>` | the actions the recorded approvals cover for this ticket |
-| `<report>` | `<run dir>/report-<n>.md` |
+| `<brief>` | path of `brief-<n>.md`, from `event <n> launch` |
+| `<worktree>`, `<branch>`, `<base>`, `<base sha>` | the row's checkout and its branch (named `<type>/<n>-<slug>`, for example `feat/42-status-panes`), from `event <n> launch`; the base branch from `preflight`, and the commit the worktree was cut from |
+| `<review point>` | fixed review SHA: `<base sha>` |
+| `<check>` | the repo's check command, from `preflight` |
+| `<setup>` | `--setup`: what step 3 ran in the worktree (`npm ci`, or the repo's equivalent) |
+| `<implementation skill>` | `--skill`: the repo's implementation skill, for example `implement-me-pi` |
+| `<lenses>` | `--lenses`: the review lenses from intake, each with how to run it; by default the `code-review` skill's Standards and Spec lenses, run against `<review point>` |
+| `<authorised actions>` | one line per approval recorded without `--inferred` that covers the row, other than `merge` (the chief's): its action, date, the user's words and the question they answered |
+| `<report>` | `<run dir>/report-<n>.md`, from `event <n> launch` |
 | `<scratch>` | `<run dir>/scratch/<n>/`, the row's scratch directory; `batch.ts cleanup` removes it at the end of the run |
 
 `<pr>` and `<one clause>` stay as written, and so does the `<path>` of `git checkout -- <path>`: the coordinator fills the first two (the PR it opens, the failure).
@@ -37,11 +36,11 @@ You are the Pi coordinator for one ticket. A chief session in herdr pane `<chief
 - You and your workers delete nothing: all scratch goes in `<scratch>` and stays there; the chief's cleanup removes it.
 - Ticket: issue #<n> of this repo, or none when `<n>` is a label.
 
-## Authorised (by the user, in the chief session, <date>: "<user's words>")
+## Authorised (by the user, in the chief session)
 
-<authorised actions; for example:>
-- Push `<branch>` to `origin` (ordinary push, no force) and open one PR against `<base>`; for a ticket row its body ends with `Closes #<n>`.
-- Push corrective commits to that branch.
+<authorised actions>
+
+A `push` approval above covers: push `<branch>` to `origin` (ordinary push, no force) and open one PR against `<base>`, whose body ends with `Closes #<n>` for a ticket row; push corrective commits to that branch.
 
 Everything else stays the user's: merging, closing an issue or PR, labels or comments on the tracker, force-push, pushes to any other branch, releases, installs. Your scope ends at "PR open, reviewed, CI green"; the user decides each merge.
 

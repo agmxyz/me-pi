@@ -55,14 +55,14 @@ Then record each approval: `batch.ts approve --quote "<his words>" --question "<
 
 ## 3. Launch
 
-Run at most 4 rows `RUNNING` at once. Tickets that share a file are queued behind each other: launch the second after the first is `MERGED`. Launch each row with separate small commands, in this order:
+Run at most 4 rows `RUNNING` at once. Tickets that share a file are queued behind each other: launch the second after the first is `MERGED`. Before launching a row whose brief was written at an older commit, run `git log --oneline <brief's base>..origin/<base> -- <the brief's files>`; any output means the brief is re-checked against the new base before launch. Launch each row with separate small commands, in this order:
 
 1. `git -C <repo> fetch origin`, then `git -C <repo> worktree add -b <branch> <repo>.worktrees/t<n> origin/<base>`, so the worktree starts from the current base.
 2. Install dependencies in the new worktree: `npm ci --prefix <worktree>`, or the repo's equivalent.
 3. `herdr pane split <chief pane> --direction right --cwd <worktree> --no-focus`; the new pane id is in its output.
 4. `herdr pane run <pane> "export ME_PI_UNATTENDED=1"`, so `guard` in the coordinator refuses instead of opening a dialog; then `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file, which `status` prints from then on with the row's pane, worktree and branch.
-5. Write `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md) with the `write` tool. Its authorised actions quote the approvals recorded in step 2; its report path is `<run dir>/report-<n>.md`.
-6. `batch.ts event <n> launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`. Start with 45 minutes for `implement`.
+5. `batch.ts event <n> launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`, with `--report <run dir>/report-<n>.md`. Start with 45 minutes for `implement`.
+6. `batch.ts contract <n> --lenses "<lenses from intake>" --skill <implementation skill> --setup "<what step 2 ran>"` writes `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md), quoting the approvals recorded in step 2; `prompt` refuses the row until it exists.
 7. `batch.ts prompt <n> "/skill:<implementation skill> Your contract is <contract path>; it answers every question of step 1."`
 
 **Ready:** each launched row is `RUNNING(implement)` in `status`, and its coordinator has started work in its pane (`herdr agent read <pane> --source visible`).

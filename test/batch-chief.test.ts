@@ -39,8 +39,11 @@ const RULES = JSON.stringify([
 
 let fixtures = 0;
 
-/** A run fixture: a repo directory, a fake runner for git, gh and the clock, and the run's files. */
-function fixture() {
+/**
+ * A run fixture: a repo directory, a fake runner for git, gh and the clock, and the run's files. `entry` is the
+ * helper's `main`, or that of a copy of the skill directory.
+ */
+function fixture(entry = main) {
 	const dir = join(ROOT, `f${fixtures++}`);
 	const repo = join(dir, "repo");
 	mkdirSync(repo, { recursive: true });
@@ -80,7 +83,7 @@ function fixture() {
 			return { code: 1, stdout: "", stderr: `fake runner: unexpected ${line}` };
 		},
 	};
-	const run = (...argv: string[]) => main(argv, runner, repo);
+	const run = (...argv: string[]) => entry(argv, runner, repo);
 	const batch = join(`${repo}.worktrees`, ".batch");
 	const runDir = () => join(batch, readFileSync(join(batch, "current"), "utf8").trim());
 	const events = () =>
@@ -765,6 +768,7 @@ test("prompt sends to a live Pi with no dialog", () => {
 	assertOk(f.launch(5));
 	const id = pane(f, 5, true);
 	f.state.exec[`herdr agent prompt ${id} please rebase`] = ok();
+	writeFileSync(join(f.runDir(), "contract-5.md"), "contract");
 	f.calls.length = 0;
 	assertOk(f.run("prompt", "5", "please rebase"));
 	assert.deepEqual(
@@ -782,6 +786,7 @@ test("prompt is refused when a dialog is visible in the pane", () => {
 	assertOk(f.preflight());
 	assertOk(f.launch(5));
 	pane(f, 5, true, DIALOG);
+	writeFileSync(join(f.runDir(), "contract-5.md"), "contract");
 	assertRefused(f.run("prompt", "5", "please rebase"), "dialog is visible", "esc");
 	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
 });
@@ -791,8 +796,173 @@ test("prompt is refused on a dead pane", () => {
 	assertOk(f.preflight());
 	assertOk(f.launch(5));
 	pane(f, 5, false);
+	writeFileSync(join(f.runDir(), "contract-5.md"), "contract");
 	assertRefused(f.run("prompt", "5", "please rebase"), "no live Pi");
 	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The coordinator contract, written by `contract` from CONTRACT.md.
+
+const SKILL_DIR = join(import.meta.dirname, "../skills/batch-chief");
+const CONTRACT_SOURCE = readFileSync(join(SKILL_DIR, "CONTRACT.md"), "utf8");
+
+/** The placeholders of CONTRACT.md's table: every backticked `<...>` in its first column. */
+function tablePlaceholders(source: string): string[] {
+	const lines = source.split("\n");
+	const start = lines.findIndex((l) => /^\| Placeholder \| Value \|$/.test(l));
+	assert.ok(start >= 0, "CONTRACT.md has no placeholder table");
+	const rows = lines.slice(start + 2);
+	const end = rows.findIndex((l) => !l.startsWith("|"));
+	return rows
+		.slice(0, end)
+		.flatMap((l) => [...l.split("|")[1].matchAll(/`(<[^`>]+>)`/g)].map((m) => m[1]));
+}
+
+const CONTRACT_ARGS = ["--lenses", "code-review Standards and Spec", "--skill", "implement-me-pi", "--setup", "npm ci"];
+
+/** Records a push approval for #5 in the user's words, launches #5, and answers its worktree's merge-base. */
+function contractable(f: Fixture) {
+	assertOk(f.preflight());
+	f.at("10:01");
+	assertOk(
+		f.run("approve", "--quote", "push 5 and open the PR", "--question", "may 5 push?", "--action", "push", "--tickets", "5"),
+	);
+	assertOk(f.run("approve", "--quote", "merge 5", "--action", "merge", "--tickets", "5"));
+	f.at("10:02");
+	assertOk(f.launch(5));
+	f.state.exec[`git -C ${join(f.dir, "t5")} merge-base HEAD origin/main`] = ok(`${MOVED}\n`);
+	return join(f.runDir(), "contract-5.md");
+}
+
+test("contract fills every table placeholder of CONTRACT.md from the run, keeping <pr> and the report template's fields", () => {
+	const f = fixture();
+	const path = contractable(f);
+	const out = assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+	assert.ok(out.includes(path), out);
+	const written = readFileSync(path, "utf8");
+	const placeholders = tablePlaceholders(CONTRACT_SOURCE);
+	assert.ok(placeholders.includes("<scratch>") && placeholders.includes("<authorised actions>"), placeholders.join());
+	for (const p of placeholders) assert.ok(!written.includes(p), `${p} left in:\n${written}`);
+	for (const kept of ["<pr>", "<one clause>", "git checkout -- <path>", "<DONE or BLOCKED>", "<URL>", "<criterion>"])
+		assert.ok(written.includes(kept), `${kept} missing from:\n${written}`);
+	assert.match(written, /^# Coordinator contract: 5\n/);
+	assert.match(written, /\n## Report template\n[\s\S]*\n# Report: #5\n/);
+	for (const fact of [
+		"herdr pane `w1:p1`",
+		`Implementer contract: \`${f.brief}\``,
+		`Checkout: \`${join(f.dir, "t5")}\` (your cwd), branch \`feat/t5\`, created clean from \`main\` at \`${MOVED}\`. \`npm ci\` has been run.`,
+		`Fixed review point: \`${MOVED}\``,
+		"Check: `npm test`",
+		"with every lens: code-review Standards and Spec.",
+		`\`${join(f.runDir(), "scratch", "5")}/\``,
+		`Write \`${join(f.dir, "report-5.md")}\``,
+		'- push, 2026-11-11T10:01:00.000Z: "push 5 and open the PR", answering "may 5 push?"',
+	])
+		assert.ok(written.includes(fact), `${fact} missing from:\n${written}`);
+	assert.ok(!written.includes('"merge 5"'), "a merge approval is the chief's, not the coordinator's");
+	assert.ok(!written.includes("| Placeholder |"), "the chief's table was copied into the contract");
+});
+
+test("contract takes its text only from CONTRACT.md: batch.ts holds no copy of it", () => {
+	const helper = readFileSync(join(SKILL_DIR, "batch.ts"), "utf8");
+	for (const sentence of ["You are the Pi coordinator for one ticket", "Everything else stays the user's", "Cost and wall time"])
+		assert.ok(CONTRACT_SOURCE.includes(sentence) && !helper.includes(sentence), sentence);
+});
+
+test("contract without --lenses takes the default stated in CONTRACT.md's table, filled", () => {
+	const f = fixture();
+	const path = contractable(f);
+	assertOk(f.run("contract", "5", "--skill", "implement-me-pi", "--setup", "npm ci"));
+	assert.ok(
+		readFileSync(path, "utf8").includes(
+			`with every lens: the \`code-review\` skill's Standards and Spec lenses, run against \`${MOVED}\`.`,
+		),
+	);
+});
+
+test("contract refuses, naming the placeholder, when a value is missing, and writes nothing", () => {
+	const f = fixture();
+	const path = contractable(f);
+	assertRefused(f.run("contract", "5", "--lenses", "x", "--skill", "implement-me-pi"), "<setup>", "--setup");
+	assertRefused(f.run("contract", "5", "--lenses", "x", "--setup", "npm ci"), "<implementation skill>", "--skill");
+	f.state.exec[`git -C ${join(f.dir, "t5")} merge-base HEAD origin/main`] = { code: 1, stdout: "", stderr: "bad" };
+	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS), "<base sha>", "merge-base");
+	assert.ok(!existsSync(path));
+});
+
+test("contract refuses a row covered by no approval, or only by inferred ones, naming approve", () => {
+	const none = fixture();
+	assertOk(none.preflight());
+	assertOk(none.launch(5));
+	none.state.exec[`git -C ${join(none.dir, "t5")} merge-base HEAD origin/main`] = ok(`${SHA}\n`);
+	assertRefused(none.run("contract", "5", ...CONTRACT_ARGS), "<authorised actions>", "no approval", "approve");
+	assertOk(none.run("approve", "--quote", "merge it", "--action", "merge", "--tickets", "5"));
+	assertRefused(none.run("contract", "5", ...CONTRACT_ARGS), "<authorised actions>", "no approval");
+	assertOk(none.run("approve", "--quote", "ship all", "--action", "release", "--tickets", "5", "--inferred"));
+	assertRefused(
+		none.run("contract", "5", ...CONTRACT_ARGS),
+		"only an inferred approval covers #5",
+		"approve (without --inferred)",
+	);
+	assert.ok(!existsSync(join(none.runDir(), "contract-5.md")));
+});
+
+test("contract is written only between launch and the row's next event, and rewrites its own file there", () => {
+	const f = fixture();
+	const path = contractable(f);
+	assertRefused(f.run("contract", "6", ...CONTRACT_ARGS), "#6 is QUEUED", "event 6 launch");
+	assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+	assertOk(f.run("contract", "5", "--lenses", "evolvability", "--skill", "implement-me-pi", "--setup", "npm ci"));
+	assert.ok(readFileSync(path, "utf8").includes("with every lens: evolvability."));
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
+	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS), "#5 is REPORTED");
+	assert.ok(readFileSync(path, "utf8").includes("with every lens: evolvability."));
+});
+
+test("contract refuses, naming it, a placeholder CONTRACT.md's table gains that it has no source for", async () => {
+	const copy = join(ROOT, "skill-copy");
+	mkdirSync(copy, { recursive: true });
+	writeFileSync(join(copy, "batch.ts"), readFileSync(join(SKILL_DIR, "batch.ts")));
+	const grown = CONTRACT_SOURCE.replace(
+		"| `<check>` |",
+		"| `<ticket title>` | the issue's title |\n| `<check>` |",
+	).replace("# Coordinator contract: <n>", "# Coordinator contract: <n>, <ticket title>");
+	assert.notEqual(grown, CONTRACT_SOURCE);
+	writeFileSync(join(copy, "CONTRACT.md"), grown);
+	const copied = await import(join(copy, "batch.ts"));
+	const f = fixture(copied.main);
+	const path = contractable(f);
+	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS), "<ticket title>");
+	assert.ok(!existsSync(path));
+});
+
+test("prompt refuses a RUNNING(implement) row whose contract is not written, naming the contract command", () => {
+	const f = fixture();
+	const path = contractable(f);
+	const id = pane(f, 5, true);
+	f.state.exec[`herdr agent prompt ${id} start`] = ok();
+	f.calls.length = 0;
+	assertRefused(f.run("prompt", "5", "start"), path, "batch.ts contract 5");
+	assert.ok(!f.calls.some((c) => c.startsWith("herdr")), f.calls.join("\n"));
+	assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+	assertOk(f.run("prompt", "5", "start"));
+});
+
+test("SKILL.md step 3 launches, then writes the contract with the command, then prompts, and re-checks a brief on a moved base", () => {
+	const skill = readFileSync(join(SKILL_DIR, "SKILL.md"), "utf8");
+	const step = skill.slice(skill.indexOf("## 3. Launch"), skill.indexOf("## 4."));
+	const at = (text: string) => {
+		const i = step.indexOf(text);
+		assert.ok(i >= 0, `step 3 lacks ${text}`);
+		return i;
+	};
+	assert.ok(at("batch.ts event <n> launch") < at("batch.ts contract <n>"));
+	assert.ok(at("batch.ts contract <n>") < at("batch.ts prompt <n>"));
+	assert.ok(!step.includes("with the `write` tool"), "step 3 still writes the contract by hand");
+	at("git log --oneline <brief's base>..origin/<base> -- <the brief's files>");
+	assert.ok(skill.split("\n").length < 130, "SKILL.md has 130 lines or more");
 });
 
 /**
