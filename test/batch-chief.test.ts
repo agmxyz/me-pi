@@ -192,6 +192,40 @@ test("launch moves QUEUED to RUNNING(implement) with a deadline", () => {
 	assert.match(rowLine(f, 5), /deadline 2026-11-11T10:20:00\.000Z OVERDUE$/);
 });
 
+test("status prints pane, worktree, branch and session file of each launched row, and none for a queued row", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	const out = assertOk(f.run("status"));
+	const lines = out.split("\n");
+	const at = lines.findIndex((l) => l.startsWith("#5 "));
+	assert.ok(
+		lines.includes(
+			`  launched: pane w1:p5, worktree ${join(f.dir, "t5")}, branch feat/t5, session ${join(f.dir, "s5.jsonl")}`,
+		),
+		out,
+	);
+	assert.ok(lines.findIndex((l) => l.startsWith("  launched:")) > at, out);
+	assert.equal(lines.filter((l) => l.startsWith("  launched:")).length, 1, out);
+});
+
+test("status records nothing for an ATTEMPT FAILED line in the panes, unlike a report", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	f.at("10:05");
+	const before = assertOk(f.run("status"));
+	const events = f.events().length;
+	const line = "[coordinator 5] ATTEMPT FAILED: provider error on the implement job";
+	for (const pane of ["w1:p1", "w1:p5"]) f.state.exec[`herdr agent read ${pane} --source visible`] = ok(`${line}\n> `);
+	const calls = f.calls.length;
+	const after = assertOk(f.run("status"));
+	assert.equal(after, before);
+	assert.equal(f.events().length, events, "status recorded an event");
+	assert.match(rowLine(f, 5), /^#5 RUNNING\(implement\)/);
+	assert.ok(!f.calls.slice(calls).some((c) => c.startsWith("herdr ")), "status read a pane");
+});
+
 test("a DONE report moves RUNNING to REPORTED; a BLOCKED one to ASKED(chief)", () => {
 	const f = fixture();
 	assertOk(f.preflight());
@@ -1024,7 +1058,7 @@ test("a report whose Status line is still the template placeholder is not a repo
 	assertOk(f.run("event", "5", "report", "--path", f.report(5, "**BLOCKED**", "10:04")));
 	assert.match(rowLine(f, 5), /^#5 ASKED\(chief\)/);
 	const template = readFileSync(join(import.meta.dirname, "../skills/batch-chief/CONTRACT.md"), "utf8");
-	assert.match(template, /## Status\n<DONE or BLOCKED>\n/);
+	assert.match(template, /\n## Report template\n[\s\S]*\n## Status\n<DONE or BLOCKED>\n/);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

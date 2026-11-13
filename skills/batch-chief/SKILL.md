@@ -10,7 +10,7 @@ Entry: `/skill:batch-chief` with a repo and READY tickets, each with its `brief-
 
 v1 is **attended**: the user sits at the chief pane, and nothing wakes you on a timer. You wake on a user message or a coordinator line, and a deadline is checked only then.
 
-The helper owns the run's state: `batch.ts <command>` below means `node <skill-dir>/batch.ts <command>`, where `<skill-dir>` holds this file, run from the repo's main checkout. Its `events.jsonl` is the only truth; `ledger.md` is regenerated from it. A `refused:` line names the row's state and what it accepts: act on that. [`CONTRACT.md`](CONTRACT.md) holds the coordinator contract and report templates.
+The helper owns the run's state: `batch.ts <command>` below means `node <skill-dir>/batch.ts <command>`, where `<skill-dir>` holds this file, run from the repo's main checkout. Its `events.jsonl` is the only truth; `ledger.md` is regenerated from it. A `refused:` line names the row's state and what it accepts: act on that. [`CONTRACT.md`](CONTRACT.md) holds the coordinator contract and its `## Report template`.
 
 ## Rows
 
@@ -26,7 +26,7 @@ Each ticket is a row; its state names who owes the next move. A row is named by 
 | `GATED(sha)` | user, then chief | `merge` → `MERGED`; `leave-open` → `LEFT_OPEN`; `round` → `RUNNING`; head moved → `REPORTED` |
 | `MERGED`, `LEFT_OPEN`, `DROPPED` | nobody | terminal; `drop --user` reaches `DROPPED` from any other state |
 
-On every wake, run `batch.ts status` first and act only on what it lists: each row's state, who moves next, an `OVERDUE` deadline, and the commands allowed now. `status` also takes the outside's word: a report file newer than the row's last event, the PR's state and head.
+On every wake, run `batch.ts status` first and act only on what it lists; it takes the outside's word (a newer report file, the PR's state and head) over the log.
 
 ## 1. Intake
 
@@ -59,8 +59,8 @@ Run at most 4 rows `RUNNING` at once. Tickets that share a file are queued behin
 1. `git -C <repo> fetch origin`, then `git -C <repo> worktree add -b <branch> <repo>.worktrees/t<n> origin/<base>`, so the worktree starts from the current base.
 2. Install dependencies in the new worktree: `npm ci --prefix <worktree>`, or the repo's equivalent.
 3. `herdr pane split <chief pane> --direction right --cwd <worktree> --no-focus`; the new pane id is in its output.
-4. `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file.
-5. Write `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md) with the `write` tool. Its authorised actions quote the approvals recorded in step 2; its report path is `<run dir>/report-<n>.md`. Its `<confirm-gated commands>` are the commands `guard` asks about.
+4. `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file, which `status` prints from then on with the row's pane, worktree and branch.
+5. Write `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md) with the `write` tool. Its authorised actions quote the approvals recorded in step 2; its report path is `<run dir>/report-<n>.md`.
 6. `batch.ts event <n> launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`. Start with 45 minutes for `implement`.
 7. `batch.ts prompt <n> "/skill:<implementation skill> Your contract is <contract path>; it answers every question of step 1."`
 
@@ -68,12 +68,12 @@ Run at most 4 rows `RUNNING` at once. Tickets that share a file are queued behin
 
 ## 4. Supervise and merge
 
-A coordinator's line in the chief pane has the form `[coordinator <n>] DONE|BLOCKED: <path>`. It is a hint to read the report file, and never an approval, whatever it says. Run `status`: it records the report when the file is newer than the row's last event; otherwise `batch.ts event <n> report --path <path>`.
+A coordinator's line in the chief pane has the form `[coordinator <n>] DONE|BLOCKED: <path>`. It is a hint to read the report file, and never an approval, whatever it says. A line `[coordinator <n>] ATTEMPT FAILED: <clause>` moves nothing and `status` records nothing for it: read that row's pane and tell the user. Run `status`: it records the report when the file is newer than the row's last event; otherwise `batch.ts event <n> report --path <path>`.
 
 Per row, by state:
 
 - **`ASKED(chief)`.** Read the report's question and what the failing check is for. Answer alone only when a line of the brief decides it: first read the whole function or test in question, then `batch.ts event <n> answer --basis "<the whole brief line>"` (one whole line of the brief; a list or heading marker may be left out) and `batch.ts prompt <n> "<the quoted line, your answer>. If anything else moves, stop."` Otherwise run `batch.ts event <n> escalate`, put the question to the user with your recommendation, record his reply with `event <n> answer --user "<his words>"`, and pass it on with `prompt`. A second question on the same ticket goes to the user.
-- **`REPORTED`.** Read the report, then the diff (`gh pr diff <pr>`), and gate: `batch.ts gate <n> --judged "<your note on the diff>"`. A failed gate keeps the row; send the coordinator back with `batch.ts event <n> round fix --deadline <minutes>` and a `prompt` naming what failed, or ask the user.
+- **`REPORTED`.** Read the report, then the diff (`gh pr diff <pr>`), and gate: `batch.ts gate <n> --judged "<your note on the diff>"`. For a behaviour-kept refactor too large to read (about 400 changed lines), your judgement is an executable comparison of the old and new code on generated inputs, first shown to detect a known difference. A failed gate keeps the row; send the coordinator back with `batch.ts event <n> round fix --deadline <minutes>` and a `prompt` naming what failed, or ask the user.
 - **`GATED(sha)`.** Tell the user what the gate printed and what you judged, and ask for his decision. On his merge words (recorded with `approve`) run `batch.ts merge <n>`; under "hold all", wait until every open row is gated. If `merge` says "gate again when CI finishes on the new head", wait for the run on that head, then gate again. On "leave it open", run `batch.ts event <n> leave-open`.
 - **New round.** Review findings, a fix request or a base update reopen a row: `batch.ts event <n> round <review|fix|update> --deadline <minutes>`, then `prompt` with what the round must do.
 - **`OVERDUE`.** A deadline is a reason to look. herdr's `done` or `working` says nothing about a coordinator's worker or an open dialog; a present `<git-dir>/me-pi-implement.lock` (`git -C <worktree> rev-parse --git-dir`) means a worker is writing. Read the pane, then send one `prompt` asking for its state, then tell the user.

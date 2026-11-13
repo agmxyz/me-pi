@@ -857,6 +857,10 @@ function deadlineText(row: Row, now: Date): string {
 	return `${row.deadline}${now.getTime() > Date.parse(row.deadline) ? " OVERDUE" : ""}`;
 }
 
+/**
+ * Prints the run and each row with its launch facts, allowed commands and observed outside. It reads no pane: a
+ * coordinator line such as `ATTEMPT FAILED` is the chief's to read, and only a report file moves a row.
+ */
 function status(argv: string[], runner: Runner, cwd: string): string {
 	parse(argv, {});
 	const run = currentRun(runner, cwd);
@@ -868,6 +872,8 @@ function status(argv: string[], runner: Runner, cwd: string): string {
 	for (const row of run.rows.values()) {
 		const deadline = deadlineText(row, now);
 		out.push(`#${row.ticket} ${label(row)} next: ${next(row)}${deadline ? `, deadline ${deadline}` : ""}`);
+		const l = row.launch;
+		if (l) out.push(`  launched: pane ${l.pane}, worktree ${l.worktree}, branch ${l.branch}, session ${l.session}`);
 		for (const command of allowedCommands(row)) out.push(`  allowed: ${command}`);
 		for (const line of [...details.get(row.ticket)!, ...logLines(row)]) out.push(`  ${line}`);
 	}
