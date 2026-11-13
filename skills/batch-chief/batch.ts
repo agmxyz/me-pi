@@ -89,6 +89,8 @@ interface ApproveEvent {
 	at: string;
 	type: "approve";
 	quote: string;
+	/** What the user's words answered; optional, so a version-1 log without it stays this version's format. */
+	question?: string;
 	action: string;
 	tickets: RowId[];
 	inferred: boolean;
@@ -669,6 +671,11 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 				report: path("report"),
 			};
 			if (!existsSync(launch.brief)) throw new Refusal(`brief ${launch.brief} does not exist`);
+			const pushes = run.approvals.filter((a) => a.action === "push" && a.tickets.includes(row.ticket));
+			if (pushes.length && !pushes.some((a) => !a.inferred))
+				throw new Refusal(
+					`only an inferred push approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`,
+				);
 			e = { ...base, type, launch, deadline: minutes(values) };
 			break;
 		}
@@ -724,23 +731,61 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 }
 
 function approve(argv: string[], runner: Runner, cwd: string): string {
-	const { values } = parse(argv, { quote: "string", action: "string", tickets: "string", inferred: "boolean" });
+	const { values } = parse(argv, {
+		quote: "string",
+		question: "string",
+		action: "string",
+		tickets: "string",
+		prs: "string",
+		inferred: "boolean",
+	});
 	const run = currentRun(runner, cwd);
 	const action = required(values, "action");
 	if (!/^[a-z][a-z-]*$/.test(action))
 		throw new Refusal(`--action must be a word such as merge, got ${JSON.stringify(action)}`);
-	const tickets = ticketList(required(values, "tickets"), "--tickets");
+	if ((values.tickets === undefined) === (values.prs === undefined))
+		throw new Refusal("name the rows with exactly one of --tickets or --prs");
+	const tickets =
+		values.prs === undefined
+			? ticketList(required(values, "tickets"), "--tickets")
+			: prRows(run, runner, required(values, "prs"));
 	for (const ticket of tickets) rowOf(run, ticket);
+	const question = values.question === undefined ? undefined : required(values, "question");
 	const e: ApproveEvent = {
 		at: runner.now().toISOString(),
 		type: "approve",
 		quote: required(values, "quote"),
+		...(question === undefined ? {} : { question }),
 		action,
 		tickets,
 		inferred: values.inferred === true,
 	};
 	record(run, e);
 	return `approval recorded: ${action} ${tickets.map((t) => `#${t}`).join(", ")}${e.inferred ? " (inferred: confirm with the user before acting)" : ""}`;
+}
+
+/** The rows owning `--prs`, in its order: each launched row's branch is looked up on GitHub for its PR number. */
+function prRows(run: Run, runner: Runner, text: string): RowId[] {
+	const prs = text.split(",").map((p) => p.trim().replace(/^#/, ""));
+	if (prs.some((p) => !/^[1-9]\d*$/.test(p)))
+		throw new Refusal(`--prs must be PR numbers separated by commas, got ${JSON.stringify(text)}`);
+	if (new Set(prs).size !== prs.length) throw new Refusal(`--prs names a PR twice: ${text}`);
+	const owner = new Map<string, RowId>();
+	for (const row of run.rows.values()) {
+		if (!row.launch) continue;
+		const view = runner.exec("gh", ["pr", "view", row.launch.branch, "--json", "number"], {
+			cwd: run.preflight.repo,
+		});
+		if (view.code === 0) owner.set(String(JSON.parse(view.stdout).number), row.ticket);
+		else if (!/no pull requests found/.test(view.stderr))
+			throw new Refusal(`cannot read the PR of ${row.launch.branch}: ${view.stderr.trim()}`);
+	}
+	const missing = prs.find((p) => !owner.has(p));
+	if (missing)
+		throw new Refusal(
+			`PR #${missing} is not the PR of any row; rows' PRs: ${[...owner].map(([pr, t]) => `#${pr} (#${t})`).join(", ") || "none"}`,
+		);
+	return prs.map((p) => owner.get(p)!);
 }
 
 function note(argv: string[], runner: Runner, cwd: string): string {
@@ -870,7 +915,7 @@ function renderLedger(run: Run, by: "status" | "note", now: Date, outside?: Map<
 		...(run.approvals.length
 			? run.approvals.map(
 					(a) =>
-						`- ${a.at} ${a.action} ${a.tickets.map((t) => `#${t}`).join(", ")}: ${JSON.stringify(a.quote)}${a.inferred ? " (inferred)" : ""}`,
+						`- ${a.at} ${a.action} ${a.tickets.map((t) => `#${t}`).join(", ")}: ${JSON.stringify(a.quote)}${a.question === undefined ? "" : ` answering ${JSON.stringify(a.question)}`}${a.inferred ? " (inferred)" : ""}`,
 				)
 			: ["- none"]),
 		"",

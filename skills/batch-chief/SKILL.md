@@ -36,11 +36,9 @@ Collect from the user, in this session:
 - the review lenses each coordinator runs (for example `code-review` Standards and Spec, plus an evolvability review);
 - the repo's check command and its implementation skill (for me-pi, `implement-me-pi`);
 - the merge mode: "as gated" (merge each PR once it is gated and approved) or "hold all" (merge nothing until every row is gated);
-- the user's approvals, in his own words.
+- the user's approvals, in his own words, with the question each answered; step 2 records them.
 
-Approvals are the user's quoted words for a named action and named tickets; record each with `batch.ts approve --quote "<his words>" --action <push|merge|...> --tickets <n,...>`, and add `--inferred` when you read the scope from wider words ("ship them all"). An inferred scope is confirmed with the user before a merge, and the confirming words are recorded without `--inferred`. Each PR stays the user's decision: merge or leave open.
-
-**Ready:** every ticket has a brief path; lenses, check, implementation skill and merge mode are named; every approval is recorded with the user's quoted words.
+**Ready:** every ticket has a brief path; lenses, check, implementation skill and merge mode are named; every approval is quoted in the user's words.
 
 ## 2. Preflight
 
@@ -50,7 +48,9 @@ From the main checkout, on the base branch and clean:
 
 Your pane id is `pane_id` in `herdr pane current`. `preflight` refuses while the previous run has a row that is not terminal. A previous run written by another version of the helper is refused unread: confirm with the user that it is finished and cleaned up, then add `--set-aside-old-run "<his words>"`, quoting his confirmation; the new run records it. Any other command on such a run is refused: finish it with the helper that wrote it. Read the output: base and SHA, missing tools, and the base branch's rules (required checks, up-to-date requirement, merge methods). Rules `unknown` means the read failed; say so to the user, since `gate` then needs at least one passing check on the head and `merge` updates any branch that is behind.
 
-**Ready:** `preflight` printed `run <id> created`, every row is `QUEUED`, and the user has seen any missing tool and the rules line.
+Then record each approval: `batch.ts approve --quote "<his words>" --question "<what they answered>" --action <push|merge|...> --tickets <n,...>` (or `--prs <n,...>` once the rows have PRs); add `--inferred` when you read the scope from wider words ("ship them all"). An inferred scope is confirmed with the user before the first launch and before a merge, recorded without `--inferred`. Each PR stays the user's decision: merge or leave open.
+
+**Ready:** `preflight` printed `run <id> created`, every row is `QUEUED`, the user has seen any missing tool and the rules line, and every approval is recorded.
 
 ## 3. Launch
 
@@ -60,7 +60,7 @@ Run at most 4 rows `RUNNING` at once. Tickets that share a file are queued behin
 2. Install dependencies in the new worktree: `npm ci --prefix <worktree>`, or the repo's equivalent.
 3. `herdr pane split <chief pane> --direction right --cwd <worktree> --no-focus`; the new pane id is in its output.
 4. `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file.
-5. Write `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md) with the `write` tool. Its authorised actions quote the approvals recorded in step 1; its report path is `<run dir>/report-<n>.md`. Its `<confirm-gated commands>` are the commands `guard` asks about.
+5. Write `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md) with the `write` tool. Its authorised actions quote the approvals recorded in step 2; its report path is `<run dir>/report-<n>.md`. Its `<confirm-gated commands>` are the commands `guard` asks about.
 6. `batch.ts event <n> launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`. Start with 45 minutes for `implement`.
 7. `batch.ts prompt <n> "/skill:<implementation skill> Your contract is <contract path>; it answers every question of step 1."`
 
