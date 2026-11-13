@@ -1425,9 +1425,18 @@ export function timerPoll(
 			log(`refused: ${blocker}`);
 			if (decision.action === "give-up") log(`give-up after ${TIMER_MAX_TRIES} tries`);
 		} else {
-			const sent = runner.exec("herdr", ["agent", "prompt", run.preflight.chiefPane, timerWake(ticket)]);
-			if (sent.code !== 0) throw new Error(`herdr prompt failed: ${(sent.stderr || sent.stdout).trim()}`);
-			log("sent");
+			let outcome: string;
+			try {
+				const sent = runner.exec("herdr", ["agent", "prompt", run.preflight.chiefPane, timerWake(ticket)]);
+				outcome = sent.code === 0 ? "sent" : `send failed: ${(sent.stderr || sent.stdout).trim()}`;
+			} catch (error) {
+				outcome = `send failed: ${(error as Error).message}`;
+			}
+			try {
+				log(outcome);
+			} catch {
+				/* Delivery may have occurred; a logging failure must not trigger another attempt. */
+			}
 		}
 	}
 	return decision;
@@ -1452,10 +1461,14 @@ export async function watch(
 			} catch (error) {
 				errors++;
 				const what = errors >= TIMER_MAX_ERRORS ? "exit-with-error" : "error";
-				appendFileSync(
-					join(dir, "timers.log"),
-					`${runner.now().toISOString()} #${ticket} ${what}: ${(error as Error).message}\n`,
-				);
+				try {
+					appendFileSync(
+						join(dir, "timers.log"),
+						`${runner.now().toISOString()} #${ticket} ${what}: ${(error as Error).message}\n`,
+					);
+				} catch {
+					/* A logging failure must not prevent retrying the poll. */
+				}
 				if (errors >= TIMER_MAX_ERRORS) return;
 			}
 		}

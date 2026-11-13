@@ -332,6 +332,57 @@ test("timer watch retries consecutive poll errors and resets after success", asy
 	assert.ok(!existsSync(pidPath));
 });
 
+test("timer watch retries poll errors even if its log cannot be appended", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	writeFileSync(join(f.runDir(), "events.jsonl"), "broken\n");
+	mkdirSync(join(f.runDir(), "timers.log"));
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+	});
+	assert.equal(polls, 3);
+});
+
+test("timer watch stops after a failed delivery attempt", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, true);
+	pane(f, 1, true);
+	f.at("10:21");
+	f.state.exec["herdr agent prompt w1:p1 [timer 5] LOOK: run batch.ts status"] = {
+		code: 1,
+		stdout: "",
+		stderr: "delivery uncertain",
+	};
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+	});
+	assert.equal(polls, 1);
+	assert.equal(f.calls.filter((c) => c.startsWith("herdr agent prompt")).length, 1);
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /#5 send failed: delivery uncertain/);
+});
+
+test("timer watch stops after delivery even if its log cannot be appended", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	pane(f, 5, true);
+	pane(f, 1, true);
+	f.at("10:21");
+	f.state.exec["herdr agent prompt w1:p1 [timer 5] LOOK: run batch.ts status"] = ok();
+	mkdirSync(join(f.runDir(), "timers.log"));
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+	});
+	assert.equal(polls, 1);
+	assert.equal(f.calls.filter((c) => c.startsWith("herdr agent prompt")).length, 1);
+});
+
 test("timer watch gives up after 20 dialog refusals", async () => {
 	const f = fixture();
 	assertOk(f.preflight());
