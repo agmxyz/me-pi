@@ -34,7 +34,8 @@ Collect from the user, in this session:
 
 - the tickets and the path of each `brief-<n>.md`, with the readiness report's order and the files each ticket touches;
 - the review lenses each coordinator runs (for example `code-review` Standards and Spec, plus an evolvability review);
-- the repo's check command and its implementation skill (for me-pi, `implement-me-pi`);
+- the repo's check command, any row-specific contract check, and its implementation skill (for me-pi, `implement-me-pi`);
+- applicable documentation file paths for each implement worker brief: instruct workers to read those files, not load skills they cannot access;
 - the rows that need a live check (one against the running system), each `before-merge` or `after-merge`;
 - the merge mode: "as gated" (merge each PR once it is gated and approved) or "hold all" (merge nothing until every row is gated);
 - the user's approvals, in his own words, with the question each answered; step 2 records them.
@@ -62,7 +63,7 @@ Run at most 4 rows `RUNNING` at once. Tickets that share a file are queued behin
 3. `herdr pane split <chief pane> --direction right --cwd <worktree> --no-focus`; the new pane id is in its output.
 4. `herdr pane run <pane> "export ME_PI_UNATTENDED=1"`, so `guard` in the coordinator refuses instead of opening a dialog; then `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file, which `status` prints from then on with the row's pane, worktree and branch.
 5. `batch.ts event <n> launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`, with `--report <run dir>/report-<n>.md`. Start with 45 minutes for `implement`.
-6. `batch.ts contract <n> [--lenses "<lenses from intake>"] --skill <implementation skill> --setup "<what item 2 ran>"` writes `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md), quoting the approvals recorded in step 2; `prompt` refuses the row until it exists.
+6. `batch.ts contract <n> [--check "<row check>"] [--lenses "<lenses from intake>"] --skill <implementation skill> --setup "<what item 2 ran>"` writes `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md), quoting the approvals recorded in step 2; `prompt` refuses the row until it exists. Omit `--check` to use preflight's check; a supplied value must be nonblank and is preserved exactly for this contract only, without changing preflight, another row, or gate's CI checks. Regeneration before the row moves uses that call's options, not a remembered override; after movement the contract is fixed. Supply the documentation paths from intake in the implement worker brief.
 7. `batch.ts prompt <n> "/skill:<implementation skill> Your contract is <contract path>; it answers every question of step 1."`
 
 **Ready:** each launched row is `RUNNING(implement)` in `status`, and its coordinator has started work in its pane (`herdr agent read <pane> --source visible`).
@@ -82,6 +83,8 @@ Per row, by state:
 - **Dropped by the user.** `batch.ts event <n> drop --user "<his words>"`.
 
 As a row reaches a terminal state, launch the next `QUEUED` row (step 3).
+
+Do not run `/reload` in a coordinator pane while it has active work: it can interrupt the job. Never direct a scratch run's watcher wakes to any live run's chief pane; wake text identifies neither run nor repo.
 
 The chief types into a coordinator's pane only with `batch.ts prompt`. A coordinator stuck at a dialog is released with `herdr agent send-keys <pane> esc`, never Enter, and the dialog's question goes to the user.
 

@@ -1532,7 +1532,8 @@ function prompt(argv: string[], runner: Runner, cwd: string): string {
 // The coordinator contract: CONTRACT.md beside this file is its only text; `contract` fills the placeholders its
 // table names and holds no copy of it.
 
-const CONTRACT_USAGE = (ticket: RowId) => `contract ${ticket} [--lenses "<text>"] --skill <name> --setup "<cmd>"`;
+const CONTRACT_USAGE = (ticket: RowId) =>
+	`contract ${ticket} [--check "<cmd>"] [--lenses "<text>"] --skill <name> --setup "<cmd>"`;
 
 const contractPath = (run: Run, row: Row) => join(run.dir, `contract-${row.ticket}.md`);
 
@@ -1592,7 +1593,10 @@ function fill(text: string, values: Map<string, string>): string {
  * row has moved; a rerun there rewrites the run's own derived file.
  */
 function contract(argv: string[], runner: Runner, cwd: string): string {
-	const { values, positionals } = parse(argv, { lenses: "string", skill: "string", setup: "string" });
+	const { values, positionals } = parse(argv, { check: "string", lenses: "string", skill: "string", setup: "string" });
+	const check = typeof values.check === "string" ? values.check : undefined;
+	if (values.check !== undefined && !check?.trim())
+		throw new Refusal("contract --check must be nonblank; omit it to use the preflight check");
 	const run = currentRun(runner, cwd);
 	const row = rowOf(run, rowId(positionals[0], "the row"));
 	if (positionals.length !== 1) throw new Refusal(`usage: ${CONTRACT_USAGE(row.ticket)}`);
@@ -1618,6 +1622,10 @@ function contract(argv: string[], runner: Runner, cwd: string): string {
 	const authorised = authorisedActions(run, row);
 	const sources: Record<string, () => string | undefined> = {
 		"<n>": () => String(row.ticket),
+		"<ticket>": () =>
+			typeof row.ticket === "number"
+				? `issue #${row.ticket} of this repo`
+				: `none; ${row.ticket} is a label, not an issue`,
 		"<chief pane>": () => p.chiefPane,
 		"<brief>": () => l.brief,
 		"<worktree>": () => l.worktree,
@@ -1625,7 +1633,7 @@ function contract(argv: string[], runner: Runner, cwd: string): string {
 		"<base>": () => p.base,
 		"<base sha>": () => baseSha,
 		"<review point>": () => baseSha,
-		"<check>": () => p.check,
+		"<check>": () => check ?? p.check,
 		"<setup>": () => option("setup"),
 		"<implementation skill>": () => option("skill"),
 		"<lenses>": () => option("lenses") ?? table.get("<lenses>"),

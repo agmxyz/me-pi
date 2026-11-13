@@ -9,7 +9,8 @@
 | `<brief>` | path of `brief-<n>.md`, from `event <n> launch` | |
 | `<worktree>`, `<branch>`, `<base>`, `<base sha>` | the row's checkout and its branch (named `<type>/<n>-<slug>`, for example `feat/42-status-panes`), from `event <n> launch`; the base branch from `preflight`, and the commit the worktree was cut from | |
 | `<review point>` | fixed review SHA: `<base sha>` | |
-| `<check>` | the repo's check command, from `preflight` | |
+| `<check>` | exact `--check` value when supplied (must be nonblank); otherwise the repo's check command from `preflight`. Contract-only: does not change preflight or gate's CI checks | |
+| `<ticket>` | issue number for a numeric row; explicitly no issue for a label row | |
 | `<setup>` | `--setup`: what step 3, item 2 ran in the worktree (`npm ci`, or the repo's equivalent) | |
 | `<implementation skill>` | `--skill`: the repo's implementation skill, for example `implement-me-pi` | |
 | `<lenses>` | `--lenses`: the review lenses from intake, each with how to run it; without it, the default | the `code-review` skill's Standards and Spec lenses, run against `<review point>` |
@@ -36,13 +37,13 @@ You are the Pi coordinator for one ticket. A chief session in herdr pane `<chief
 
 ## Task
 
-- Implementer contract: `<brief>`. It binds you and your implement worker; give the worker that path.
+- Implementer contract: `<brief>`. It binds you and your implement worker; give the worker that path. In the implement worker brief, name each applicable documentation file by path and instruct the worker to read it; do not instruct the worker to load a skill it cannot access.
 - Checkout: `<worktree>` (your cwd), branch `<branch>`, created clean from `<base>` at `<base sha>`. `<setup>` has been run.
 - Fixed review point: `<review point>`.
 - Check: `<check>`. Tell your worker in its brief: run the check alone, with no pipe, chain, redirect or extra flags.
-- Other coordinators write in sibling worktrees. Touch only your worktree, your branch and `<scratch>`: no `git stash`, no tag move, no change to `<base>`.
-- You and your workers delete nothing: all scratch goes in `<scratch>` and stays there; the chief's cleanup removes it.
-- Ticket: issue #<n> of this repo, or none when `<n>` is a label.
+- Read the files needed for the task, subject to the existing secret and approval rules. Local writes are limited to your worktree and branch, `<scratch>`, the specified `<report>`, and the specified chief notification. External writes are permitted only where explicitly covered by recorded user approvals in the Authorised section. You and your workers must not delete or discard work. A check may clean up only its own temporary fixtures; do not run deletion commands as a substitute.
+- Other coordinators write in sibling worktrees. For you and your workers, all scratch goes in `<scratch>` and stays there; the chief's cleanup removes it. No `git stash`, no tag move, no change to `<base>`. These boundaries grant no new approval or guard permission.
+- Ticket: <ticket>.
 
 ## Authorised (by the user, in the chief session)
 
@@ -63,7 +64,7 @@ Everything else stays the user's: merging, closing an issue or PR, labels or com
 
 1. `<implementation skill>`: implement, commit, reconcile.
 2. Push the branch and open the PR.
-3. Review against the fixed review point with every lens: <lenses>. Fix findings of Medium or higher; list the rest.
+3. Review against the fixed review point with every lens: <lenses>. At least one independent reviewer must be from a different provider/model lineage than the implementer, not merely a different model suffix. If identity, family or availability cannot establish independence, report BLOCKED to the user; do not silently substitute. Fix findings of Medium or higher; list the rest.
 4. A commit made after the reviews that changes behaviour (tests included) gets a delta review by an independent read-only worker before you report. A comment-only or rename-only commit needs none.
 5. Wait for the PR's CI: poll `gh pr checks <pr> --json name,state` every 30 seconds until a check is listed and none has state `QUEUED` (the plain output shows a queued check as `pending`, like a running one), then `gh pr checks <pr> --watch` for the result. A check still `QUEUED`, or no check listed, after 5 minutes of polling is BLOCKED: report it, naming the check.
 6. Report, then stop.
@@ -99,6 +100,7 @@ On a `Stop if:` condition of the brief (also one a reviewer says was met, even w
 - <criterion>: <evidence>; for a fix check, whether it went red before the fix
 
 ## Review
+- Implementer: <exact model identity>, family <family>; reviewers: <exact model identity>, family <family>, outcome <outcome>.
 - <lens>: <each finding with its disposition>, or clean
 - Delta review: <commits reviewed after the main review, by whom>, or none needed
 
