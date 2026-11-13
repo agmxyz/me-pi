@@ -59,7 +59,7 @@ Run at most 4 rows `RUNNING` at once. Tickets that share a file are queued behin
 1. `git -C <repo> fetch origin`, then `git -C <repo> worktree add -b <branch> <repo>.worktrees/t<n> origin/<base>`, so the worktree starts from the current base.
 2. Install dependencies in the new worktree: `npm ci --prefix <worktree>`, or the repo's equivalent.
 3. `herdr pane split <chief pane> --direction right --cwd <worktree> --no-focus`; the new pane id is in its output.
-4. `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file, which `status` prints from then on with the row's pane, worktree and branch.
+4. `herdr pane run <pane> "export ME_PI_UNATTENDED=1"`, so `guard` in the coordinator refuses instead of opening a dialog; then `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file, which `status` prints from then on with the row's pane, worktree and branch.
 5. Write `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md) with the `write` tool. Its authorised actions quote the approvals recorded in step 2; its report path is `<run dir>/report-<n>.md`.
 6. `batch.ts event <n> launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`. Start with 45 minutes for `implement`.
 7. `batch.ts prompt <n> "/skill:<implementation skill> Your contract is <contract path>; it answers every question of step 1."`
@@ -85,7 +85,7 @@ The chief types into a coordinator's pane only with `batch.ts prompt`. A coordin
 
 While any coordinator is running, run only commands that `guard` lets through without asking: a coordinator's line arriving in the chief pane would answer the open dialog. A needed gated command waits until every coordinator is stopped, or the user runs it himself.
 
-Coordinators are stopped in order (`/quit`), then the worktree is removed; never `kill -9`. An interrupted coordinator is resumed with `pi --session <session file>` (at its pane's shell prompt: `herdr agent start coordinator-<n> --kind pi --pane <pane> -- --session <session file>`) and told, with `batch.ts prompt`: "You were interrupted. Check the state of the repository before repeating anything, and say which command you were about to run before you run it again."
+Coordinators are stopped in order (`/quit`), then the worktree is removed; never `kill -9`. An interrupted coordinator is resumed with `pi --session <session file>` (at its pane's shell prompt, after the same `export ME_PI_UNATTENDED=1` when the shell is new: `herdr agent start coordinator-<n> --kind pi --pane <pane> -- --session <session file>`) and told, with `batch.ts prompt`: "You were interrupted. Check the state of the repository before repeating anything, and say which command you were about to run before you run it again."
 
 From `launch` on, a worktree belongs to its coordinator: the chief writes only in the main checkout and the run directory, and a change in a worktree goes through its coordinator.
 

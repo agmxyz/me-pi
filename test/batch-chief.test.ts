@@ -1061,6 +1061,18 @@ test("a report whose Status line is still the template placeholder is not a repo
 	assert.match(template, /\n## Report template\n[\s\S]*\n## Status\n<DONE or BLOCKED>\n/);
 });
 
+test("SKILL.md marks a coordinator's pane unattended before it starts Pi there, and CONTRACT.md quotes guard's refusal", () => {
+	const skill = readFileSync(join(import.meta.dirname, "../skills/batch-chief/SKILL.md"), "utf8");
+	const exported = skill.indexOf('herdr pane run <pane> "export ME_PI_UNATTENDED=1"');
+	assert.ok(exported >= 0, "step 3 does not export ME_PI_UNATTENDED=1 into the pane");
+	assert.ok(exported < skill.indexOf("herdr agent start coordinator-<n>"), "the export comes after herdr agent start");
+	const contract = readFileSync(join(import.meta.dirname, "../skills/batch-chief/CONTRACT.md"), "utf8");
+	assert.match(
+		contract,
+		/unattended session, no one can approve`: such a refusal is reported .*never retried or rerouted/,
+	);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // The current run pointer and format versions.
 
