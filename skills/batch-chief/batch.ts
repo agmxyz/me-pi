@@ -32,6 +32,27 @@ export interface Runner {
 	now(): Date;
 }
 
+/** One watcher poll, with consecutive definite absences and failed delivery checks carried between polls. */
+export function timerDecision(input: {
+	running: boolean;
+	deadline: number;
+	expected: number;
+	now: number;
+	absent: boolean;
+	misses: number;
+	tries: number;
+	blocker: boolean;
+}): { action: "exit" | "wait" | "send" | "give-up"; misses: number; tries: number } {
+	const { running, deadline, expected, now, absent, blocker } = input;
+	let { misses, tries } = input;
+	if (!running || deadline !== expected) return { action: "exit", misses, tries };
+	misses = absent ? misses + 1 : 0;
+	if (now < expected && misses < 2 && tries === 0) return { action: "wait", misses, tries };
+	if (!blocker) return { action: "send", misses, tries };
+	tries++;
+	return { action: tries >= 20 ? "give-up" : "wait", misses, tries };
+}
+
 type State = "QUEUED" | "RUNNING" | "ASKED" | "REPORTED" | "GATED" | "MERGED" | "LEFT_OPEN" | "DROPPED";
 /** Coordinator rounds; the first is the one `launch` starts, the rest are what `round` reopens a row with. */
 const ROUNDS = ["implement", "review", "fix", "update"] as const;

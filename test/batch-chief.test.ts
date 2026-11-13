@@ -19,7 +19,35 @@ import { join } from "node:path";
 import test from "node:test";
 import { prepare } from "../packages/pi-workers/extensions/delegate-implement.ts";
 import registerGuard from "../packages/pi-workers/extensions/guard.ts";
-import { dialogVisible, implementLock, main, type Result, type Runner } from "../skills/batch-chief/batch.ts";
+import {
+	dialogVisible,
+	implementLock,
+	main,
+	type Result,
+	type Runner,
+	timerDecision,
+} from "../skills/batch-chief/batch.ts";
+
+test("timer decision stops superseded rows, detects overdue or two definite absences, and bounds refusals", () => {
+	const base = {
+		running: true,
+		deadline: 100,
+		expected: 100,
+		now: 50,
+		absent: false,
+		misses: 0,
+		tries: 0,
+		blocker: false,
+	};
+	assert.equal(timerDecision({ ...base, running: false }).action, "exit");
+	assert.equal(timerDecision({ ...base, deadline: 101 }).action, "exit");
+	assert.deepEqual(timerDecision({ ...base, absent: true }), { action: "wait", misses: 1, tries: 0 });
+	assert.equal(timerDecision({ ...base, absent: true, misses: 1 }).action, "send");
+	assert.equal(timerDecision({ ...base, absent: false, misses: 1 }).misses, 0);
+	assert.equal(timerDecision({ ...base, now: 100 }).action, "send");
+	assert.deepEqual(timerDecision({ ...base, now: 100, blocker: true }), { action: "wait", misses: 0, tries: 1 });
+	assert.equal(timerDecision({ ...base, now: 100, blocker: true, tries: 19 }).action, "give-up");
+});
 
 // Every effect goes through a fake runner; files live under a temp dir, never the real ~/.pi or this checkout.
 const ROOT = mkdtempSync(join(tmpdir(), "batch-chief-test-"));
