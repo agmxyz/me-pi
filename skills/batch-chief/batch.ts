@@ -1085,6 +1085,11 @@ function dirtyLines(runner: Runner, worktree: string): string[] {
 	return out.stdout.split("\n").filter((l) => l.trim());
 }
 
+/** Printed last by a passing `gate`: how the chief puts the gate's decisions to the user. */
+const RECOMMEND_REMINDER = "Put one recommended action beside each decision you put to the user.";
+/** Printed by a passing `gate` and by `merge`, so friction is recorded while it is fresh. */
+const NOTE_REMINDER = 'Record any friction now: batch.ts note --kind <kind> --ticket <n> "<what>".';
+
 function gate(argv: string[], runner: Runner, cwd: string): string {
 	const { values, positionals } = parse(argv, { judged: "string" });
 	const run = currentRun(runner, cwd);
@@ -1137,7 +1142,7 @@ function gate(argv: string[], runner: Runner, cwd: string): string {
 	];
 	if (!passed) throw new Refusal(`gate failed; #${row.ticket} stays ${label(row)}\n${out.join("\n")}`);
 	record(run, { at: runner.now().toISOString(), type: "gate", ticket: row.ticket, sha: pr.headRefOid, judged });
-	return `${out.join("\n")}\n#${row.ticket} is ${label(row)}`;
+	return [...out, `#${row.ticket} is ${label(row)}`, RECOMMEND_REMINDER, NOTE_REMINDER].join("\n");
 }
 
 function merge(argv: string[], runner: Runner, cwd: string): string {
@@ -1199,7 +1204,7 @@ function merge(argv: string[], runner: Runner, cwd: string): string {
 		);
 	const commit = after.mergeCommit?.oid ?? null;
 	record(run, { at: runner.now().toISOString(), type: "merged", ticket: row.ticket, commit });
-	return `#${row.ticket} is MERGED as ${commit}`;
+	return `#${row.ticket} is MERGED as ${commit}\n${NOTE_REMINDER}`;
 }
 
 /**

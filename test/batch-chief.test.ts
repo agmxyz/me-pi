@@ -737,6 +737,27 @@ test("merge records an intent, merges pinned to the head, and records MERGED wit
 	assert.match(rowLine(f, 5), /^#5 MERGED/);
 });
 
+test("a passing gate ends with the recommendation and note reminders; a failed gate does not; merge prints the note reminder", () => {
+	const RECOMMEND = "Put one recommended action beside each decision you put to the user.";
+	const NOTE = 'Record any friction now: batch.ts note --kind <kind> --ticket <n> "<what>".';
+	const failed = fixture();
+	const wt = reported(failed);
+	failed.state.exec[`git -C ${wt} status --porcelain`] = ok(" M src/a.ts\n");
+	const refused = failed.run("gate", "5", "--judged", "looks fine");
+	assertRefused(refused);
+	assert.ok(!refused.out.includes(RECOMMEND) && !refused.out.includes(NOTE), refused.out);
+	const f = fixture();
+	reported(f);
+	assertOk(f.run("approve", "--quote", "merge 5", "--action", "merge", "--tickets", "5"));
+	const gated = f.run("gate", "5", "--judged", "diff matches the brief");
+	assert.deepEqual(assertOk(gated).split("\n").slice(-2), [RECOMMEND, NOTE]);
+	f.state.exec[MERGE_CALL] = () => {
+		f.state.prs["feat/t5"] = goodPr({ state: "MERGED", mergeCommit: { oid: MOVED } });
+		return ok();
+	};
+	assert.ok(assertOk(f.run("merge", "5")).includes(NOTE));
+});
+
 test("merge records no MERGED when GitHub does not say merged, and refuses to repeat a pending intent", () => {
 	const f = fixture();
 	approvedGated(f);
