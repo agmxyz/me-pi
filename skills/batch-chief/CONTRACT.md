@@ -1,27 +1,35 @@
 # Coordinator contract and report template
 
-`batch.ts contract <n>` (step 3 of [`SKILL.md`](SKILL.md)) writes `<run dir>/contract-<n>.md` from this file: the block under `## Contract` with every placeholder of the table below filled, then the section `## Report template` with the table's placeholders filled and its own fields left for the coordinator. The command reads the placeholders from the table's first column and refuses while one has no value, naming it; edit the contract text here, and a new placeholder needs its source in that command. The authorised list quotes the approvals recorded with `batch.ts approve`, never the chief's own words.
+`batch.ts contract <n>` (step 3 of [`SKILL.md`](SKILL.md)) writes `<run dir>/contract-<n>.md` from this file: the block under `## Contract` with every placeholder of the table below filled, then the section `## Report template` with the table's placeholders filled and its own fields left for the coordinator. The command reads the placeholders from the first table's first column and refuses while one has no value, naming it; it also refuses, naming each, a placeholder in the contract text that neither table below declares. Edit the contract text here; a new placeholder needs a row in the first table and its source in that command, or a row in the second. The authorised list quotes the approvals recorded with `batch.ts approve`, never the chief's own words.
 
-| Placeholder | Value |
+| Placeholder | Value | Default |
+|---|---|---|
+| `<n>` | the row: its ticket number, or its label for work without an issue | |
+| `<chief pane>` | the chief's herdr pane id, as given to `preflight` | |
+| `<brief>` | path of `brief-<n>.md`, from `event <n> launch` | |
+| `<worktree>`, `<branch>`, `<base>`, `<base sha>` | the row's checkout and its branch (named `<type>/<n>-<slug>`, for example `feat/42-status-panes`), from `event <n> launch`; the base branch from `preflight`, and the commit the worktree was cut from | |
+| `<review point>` | fixed review SHA: `<base sha>` | |
+| `<check>` | the repo's check command, from `preflight` | |
+| `<setup>` | `--setup`: what step 3, item 2 ran in the worktree (`npm ci`, or the repo's equivalent) | |
+| `<implementation skill>` | `--skill`: the repo's implementation skill, for example `implement-me-pi` | |
+| `<lenses>` | `--lenses`: the review lenses from intake, each with how to run it; without it, the default | the `code-review` skill's Standards and Spec lenses, run against `<review point>` |
+| `<authorised actions>` | one line per approval recorded without `--inferred` that covers the row, other than `merge` (the chief's): its action, date, the user's words and the question they answered | |
+| `<report>` | `<run dir>/report-<n>.md`, from `event <n> launch` | |
+| `<scratch>` | `<run dir>/scratch/<n>/`, the row's scratch directory; `batch.ts cleanup` removes it at the end of the run | |
+
+These stay as written in the contract:
+
+| Kept as written | Filled by |
 |---|---|
-| `<n>` | the row: its ticket number, or its label for work without an issue |
-| `<chief pane>` | the chief's herdr pane id, as given to `preflight` |
-| `<brief>` | path of `brief-<n>.md`, from `event <n> launch` |
-| `<worktree>`, `<branch>`, `<base>`, `<base sha>` | the row's checkout and its branch (named `<type>/<n>-<slug>`, for example `feat/42-status-panes`), from `event <n> launch`; the base branch from `preflight`, and the commit the worktree was cut from |
-| `<review point>` | fixed review SHA: `<base sha>` |
-| `<check>` | the repo's check command, from `preflight` |
-| `<setup>` | `--setup`: what step 3 ran in the worktree (`npm ci`, or the repo's equivalent) |
-| `<implementation skill>` | `--skill`: the repo's implementation skill, for example `implement-me-pi` |
-| `<lenses>` | `--lenses`: the review lenses from intake, each with how to run it; by default the `code-review` skill's Standards and Spec lenses, run against `<review point>` |
-| `<authorised actions>` | one line per approval recorded without `--inferred` that covers the row, other than `merge` (the chief's): its action, date, the user's words and the question they answered |
-| `<report>` | `<run dir>/report-<n>.md`, from `event <n> launch` |
-| `<scratch>` | `<run dir>/scratch/<n>/`, the row's scratch directory; `batch.ts cleanup` removes it at the end of the run |
-
-`<pr>` and `<one clause>` stay as written, and so does the `<path>` of `git checkout -- <path>`: the coordinator fills the first two (the PR it opens, the failure).
+| `<pr>` | the coordinator: the PR it opens |
+| `<one clause>` | the coordinator: the failure |
+| `<path>` | nobody: the path field of `git checkout -- <path>` |
 
 ## Contract
 
-```markdown
+The contract is the block between the four-backtick fences, so it may hold fenced examples of its own.
+
+````markdown
 # Coordinator contract: <n>
 
 You are the Pi coordinator for one ticket. A chief session in herdr pane `<chief pane>` started you on the user's behalf. This file pre-answers everything `<implementation skill>` step 1 would ask the user; nobody watches your pane, so every question goes into your report.
@@ -69,7 +77,7 @@ Then notify the chief with one line and stop:
 `herdr agent prompt <chief pane> "[coordinator <n>] DONE: <report>"`
 
 On a `Stop if:` condition of the brief (also one a reviewer says was met, even when the work is finished), a missing decision, a refused action with no safe alternative, or anything you would ask the user: write the same file with `Status: BLOCKED`, the question, what the failing check or rule is for, and the options you see; notify with `[coordinator <n>] BLOCKED: <report>`; stop. The chief answers by typing into your pane; an answer that quotes a brief line holds only while nothing else moves.
-```
+````
 
 ## Report template
 

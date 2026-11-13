@@ -830,11 +830,11 @@ test("prompt is refused on a dead pane", () => {
 const SKILL_DIR = join(import.meta.dirname, "../skills/batch-chief");
 const CONTRACT_SOURCE = readFileSync(join(SKILL_DIR, "CONTRACT.md"), "utf8");
 
-/** The placeholders of CONTRACT.md's table: every backticked `<...>` in its first column. */
-function tablePlaceholders(source: string): string[] {
+/** The backticked `<...>` tokens in the first column of CONTRACT.md's table headed `| <first> |`. */
+function tablePlaceholders(source: string, first = "Placeholder"): string[] {
 	const lines = source.split("\n");
-	const start = lines.findIndex((l) => /^\| Placeholder \| Value \|$/.test(l));
-	assert.ok(start >= 0, "CONTRACT.md has no placeholder table");
+	const start = lines.findIndex((l) => l.startsWith(`| ${first} |`));
+	assert.ok(start >= 0, `CONTRACT.md has no ${first} table`);
 	const rows = lines.slice(start + 2);
 	const end = rows.findIndex((l) => !l.startsWith("|"));
 	return rows.slice(0, end).flatMap((l) => [...l.split("|")[1].matchAll(/`(<[^`>]+>)`/g)].map((m) => m[1]));
@@ -877,6 +877,10 @@ test("contract fills every table placeholder of CONTRACT.md from the run, keepin
 	for (const p of placeholders) assert.ok(!written.includes(p), `${p} left in:\n${written}`);
 	for (const kept of ["<pr>", "<one clause>", "git checkout -- <path>", "<DONE or BLOCKED>", "<URL>", "<criterion>"])
 		assert.ok(written.includes(kept), `${kept} missing from:\n${written}`);
+	const declared = tablePlaceholders(CONTRACT_SOURCE, "Kept as written");
+	assert.deepEqual([...declared].sort(), ["<one clause>", "<path>", "<pr>"]);
+	const left = new Set(written.slice(0, written.indexOf("\n## Report template\n")).match(/<[^<>\n]+>/g));
+	assert.deepEqual([...left].sort(), [...declared].sort(), "the contract keeps a token CONTRACT.md does not declare");
 	assert.match(written, /^# Coordinator contract: 5\n/);
 	assert.match(written, /\n## Report template\n[\s\S]*\n# Report: #5\n/);
 	for (const fact of [
@@ -956,18 +960,63 @@ test("contract is written only between launch and the row's next event, and rewr
 	assert.ok(readFileSync(path, "utf8").includes("with every lens: evolvability."));
 });
 
-test("contract refuses, naming it, a placeholder CONTRACT.md's table gains that it has no source for", async () => {
-	const copy = join(ROOT, "skill-copy");
-	mkdirSync(copy, { recursive: true });
+/** A fixture whose helper is a copy of batch.ts beside `source` as its CONTRACT.md. */
+async function withContract(source: string) {
+	assert.notEqual(source, CONTRACT_SOURCE, "the copy changes nothing");
+	const copy = mkdtempSync(join(ROOT, "skill-copy-"));
 	writeFileSync(join(copy, "batch.ts"), readFileSync(join(SKILL_DIR, "batch.ts")));
+	writeFileSync(join(copy, "CONTRACT.md"), source);
+	const copied = await import(join(copy, "batch.ts"));
+	return fixture(copied.main);
+}
+
+test("contract refuses, naming each, a placeholder in the contract text that neither table declares", async () => {
+	const f = await withContract(
+		CONTRACT_SOURCE.replace(
+			"# Coordinator contract: <n>",
+			"# Coordinator contract: <n>, <ticket title> (<ticket url>)",
+		),
+	);
+	const path = contractable(f);
+	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS), "<ticket title>", "<ticket url>");
+	assert.ok(!existsSync(path));
+	const dropped = await withContract(CONTRACT_SOURCE.replace(/\n\| `<check>` \|.*/, ""));
+	const droppedPath = contractable(dropped);
+	assertRefused(dropped.run("contract", "5", ...CONTRACT_ARGS), "<check>");
+	assert.ok(!existsSync(droppedPath));
+});
+
+test("contract keeps a fenced example inside the contract text whole", async () => {
+	const f = await withContract(
+		CONTRACT_SOURCE.replace("## Sequence\n", "## Sequence\n\n```bash\ngit log --oneline -1\n```\n"),
+	);
+	const path = contractable(f);
+	assertOk(f.run("contract", "5", ...CONTRACT_ARGS));
+	const written = readFileSync(path, "utf8");
+	assert.ok(written.includes("## Sequence\n\n```bash\ngit log --oneline -1\n```\n"), written);
+	assert.ok(written.includes("[coordinator 5] BLOCKED: "), `the contract was cut short:\n${written}`);
+});
+
+test("contract takes the default lenses from their own cell: text added beside it stays out", async () => {
+	const f = await withContract(
+		CONTRACT_SOURCE.replace(
+			"without it, the default |",
+			"without it, the default. Ask the user when intake named none \\| or one |",
+		),
+	);
+	const path = contractable(f);
+	assertOk(f.run("contract", "5", "--skill", "implement-me-pi", "--setup", "npm ci"));
+	const written = readFileSync(path, "utf8");
+	assert.ok(written.includes(`Standards and Spec lenses, run against \`${MOVED}\`.`), written);
+	assert.ok(!written.includes("Ask the user when intake"), written);
+});
+
+test("contract refuses, naming it, a placeholder CONTRACT.md's table gains that it has no source for", async () => {
 	const grown = CONTRACT_SOURCE.replace(
 		"| `<check>` |",
 		"| `<ticket title>` | the issue's title |\n| `<check>` |",
 	).replace("# Coordinator contract: <n>", "# Coordinator contract: <n>, <ticket title>");
-	assert.notEqual(grown, CONTRACT_SOURCE);
-	writeFileSync(join(copy, "CONTRACT.md"), grown);
-	const copied = await import(join(copy, "batch.ts"));
-	const f = fixture(copied.main);
+	const f = await withContract(grown);
 	const path = contractable(f);
 	assertRefused(f.run("contract", "5", ...CONTRACT_ARGS), "<ticket title>");
 	assert.ok(!existsSync(path));
@@ -998,6 +1047,21 @@ test("SKILL.md step 3 launches, then writes the contract with the command, then 
 	assert.ok(!step.includes("with the `write` tool"), "step 3 still writes the contract by hand");
 	at("git log --oneline <brief's base>..origin/<base> -- <the brief's files>");
 	assert.ok(skill.split("\n").length < 130, "SKILL.md has 130 lines or more");
+	const branch = at("worktree add -b <branch>");
+	assert.ok(at("`<type>/<n>-<slug>`") - branch < 300, "step 3 item 1 does not name the branch rule");
+	at('--setup "<what item 2 ran>"');
+	assert.ok(CONTRACT_SOURCE.includes("what step 3, item 2 ran"), "CONTRACT.md's <setup> names another step");
+});
+
+test("SKILL.md step 4 writes a live check's result into the PR body before or after the merge, by its row", () => {
+	const skill = readFileSync(join(SKILL_DIR, "SKILL.md"), "utf8");
+	const bullet = skill.split("\n").find((l) => l.startsWith("- **Live check.**"));
+	assert.ok(bullet, "step 4 has no Live check bullet");
+	assert.match(bullet, /PR body before merging for `before-merge`, after the merge for `after-merge`/);
+	assert.ok(
+		bullet.split(/\. (?=[A-Z`])/).length <= 4,
+		`the Live check bullet has more than four sentences: ${bullet}`,
+	);
 });
 
 /**
@@ -1271,15 +1335,44 @@ test("a report whose Status line is still the template placeholder is not a repo
 	assert.match(template, /\n## Report template\n[\s\S]*\n## Status\n<DONE or BLOCKED>\n/);
 });
 
-test("SKILL.md marks a coordinator's pane unattended before it starts Pi there, and CONTRACT.md quotes guard's refusal", () => {
+test("SKILL.md marks a coordinator's pane unattended before it starts Pi there, and CONTRACT.md quotes guard's refusal", async () => {
 	const skill = readFileSync(join(import.meta.dirname, "../skills/batch-chief/SKILL.md"), "utf8");
 	const exported = skill.indexOf('herdr pane run <pane> "export ME_PI_UNATTENDED=1"');
 	assert.ok(exported >= 0, "step 3 does not export ME_PI_UNATTENDED=1 into the pane");
 	assert.ok(exported < skill.indexOf("herdr agent start coordinator-<n>"), "the export comes after herdr agent start");
 	const contract = readFileSync(join(import.meta.dirname, "../skills/batch-chief/CONTRACT.md"), "utf8");
+	let handler: any;
+	registerGuard({
+		on: (_event: string, h: any) => {
+			handler = h;
+		},
+		registerCommand: () => {},
+		events: { emit: () => {} },
+	} as any);
+	const before = process.env.ME_PI_UNATTENDED;
+	process.env.ME_PI_UNATTENDED = "1";
+	let result: { block?: boolean; reason?: string } | undefined;
+	try {
+		result = await handler(
+			{ type: "tool_call", toolCallId: "c1", toolName: "bash", input: { command: "git push origin main" } },
+			{ cwd: mkdtempSync(join(ROOT, "guard-")), hasUI: true, ui: { confirm: async () => assert.fail("confirm") } },
+		);
+	} finally {
+		if (before === undefined) delete process.env.ME_PI_UNATTENDED;
+		else process.env.ME_PI_UNATTENDED = before;
+	}
+	assert.equal(result?.block, true, "guard did not refuse in an unattended session");
+	// CONTRACT.md quotes the refusal up to its first sentence's end, with the risk elided.
+	const refusal = result!.reason!.replace(/^Blocked \([^)]*\)/, "Blocked (...)");
+	const quoted = refusal.slice(0, refusal.indexOf(". "));
+	assert.ok(quoted.startsWith("Blocked (...): "), refusal);
+	assert.ok(
+		contract.includes(`\`${quoted}\`: such a refusal is reported`),
+		`CONTRACT.md does not quote guard's refusal ${JSON.stringify(quoted)}`,
+	);
 	assert.match(
 		contract,
-		/unattended session, no one can approve`: such a refusal is reported .*never retried or rerouted/,
+		/such a refusal is reported .*never retried or rerouted through another tool, worker or path/,
 	);
 });
 

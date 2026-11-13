@@ -1318,28 +1318,44 @@ const CONTRACT_USAGE = (ticket: RowId) => `contract ${ticket} [--lenses "<text>"
 
 const contractPath = (run: Run, row: Row) => join(run.dir, `contract-${row.ticket}.md`);
 
-/** The parts of CONTRACT.md `contract` uses: the placeholder table (first column, value cell) and the two blocks. */
-function contractSource(): { table: Map<string, string>; contract: string; template: string } {
+/**
+ * The parts of CONTRACT.md `contract` uses: the placeholder table (first column to its default cell), the
+ * placeholders it declares kept as written, and the two blocks.
+ */
+function contractSource(): {
+	table: Map<string, string | undefined>;
+	kept: Set<string>;
+	contract: string;
+	template: string;
+} {
 	const path = join(import.meta.dirname, "CONTRACT.md");
 	const lines = readFileSync(path, "utf8").split("\n");
-	const head = lines.findIndex((l) => /^\|\s*Placeholder\s*\|\s*Value\s*\|$/.test(l));
-	if (head < 0) throw new Error(`${path} has no | Placeholder | Value | table`);
-	const table = new Map<string, string>();
-	for (const line of lines.slice(head + 2)) {
-		if (!line.startsWith("|")) break;
-		const [, names, value] = line.split("|");
-		for (const m of names.matchAll(/`(<[^`>]+>)`/g)) table.set(m[1], value.trim());
-	}
-	/** The fenced markdown block under `heading`, with its fence lines. */
+	/** The cells of each row of the table whose header starts with `| <first> |`; `\|` is a pipe inside a cell. */
+	const rows = (first: string) => {
+		const head = lines.findIndex((l) => new RegExp(`^\\|\\s*${first}\\s*\\|`).test(l));
+		if (head < 0) throw new Error(`${path} has no | ${first} | table`);
+		const end = lines.findIndex((l, i) => i > head && !l.startsWith("|"));
+		return lines
+			.slice(head + 2, end < 0 ? undefined : end)
+			.map((l) => l.split(/(?<!\\)\|/).map((cell) => cell.replaceAll("\\|", "|").trim()));
+	};
+	const names = (cell: string) => [...cell.matchAll(/`(<[^`>]+>)`/g)].map((m) => m[1]);
+	const table = new Map<string, string | undefined>();
+	for (const [, first, , fallback] of rows("Placeholder"))
+		for (const name of names(first)) table.set(name, fallback || undefined);
+	const kept = new Set(rows("Kept as written").flatMap(([, first]) => names(first)));
+	/** The fenced markdown block under `heading`, with its fence lines; it closes at its own fence's length. */
 	const block = (heading: string) => {
 		const at = lines.indexOf(heading);
-		const open = lines.findIndex((l, i) => i > at && l === "```markdown");
-		const close = lines.findIndex((l, i) => i > open && l === "```");
+		const open = lines.findIndex((l, i) => i > at && /^`{3,}markdown$/.test(l));
+		const fence = open < 0 ? "" : lines[open].slice(0, -"markdown".length);
+		const close = lines.findIndex((l, i) => i > open && l === fence);
 		if (at < 0 || open < 0 || close < 0) throw new Error(`${path} has no fenced markdown block under ${heading}`);
 		return lines.slice(open, close + 1);
 	};
 	return {
 		table,
+		kept,
 		contract: block("## Contract").slice(1, -1).join("\n"),
 		template: block("## Report template").join("\n"),
 	};
@@ -1370,7 +1386,7 @@ function contract(argv: string[], runner: Runner, cwd: string): string {
 		throw new Refusal(
 			`#${row.ticket}'s contract is fixed once the row moves past its launch; send a change with prompt; ${where(row)}`,
 		);
-	const { table, contract: body, template } = contractSource();
+	const { table, kept, contract: body, template } = contractSource();
 	const p = run.preflight;
 	const l = row.launch;
 	const missing = new Map<string, string>();
@@ -1394,7 +1410,7 @@ function contract(argv: string[], runner: Runner, cwd: string): string {
 		"<check>": () => p.check,
 		"<setup>": () => option("setup"),
 		"<implementation skill>": () => option("skill"),
-		"<lenses>": () => option("lenses") ?? /\bby default (.+)$/.exec(table.get("<lenses>") ?? "")?.[1],
+		"<lenses>": () => option("lenses") ?? table.get("<lenses>"),
 		"<authorised actions>": () => authorised.lines,
 		"<report>": () => l.report,
 		"<scratch>": () => `${join(run.dir, "scratch", String(row.ticket))}/`,
@@ -1426,6 +1442,15 @@ function contract(argv: string[], runner: Runner, cwd: string): string {
 		);
 	// The table's default lenses name <review point>: a default taken from the table is filled itself.
 	if (!option("lenses")) filled.set("<lenses>", fill(filled.get("<lenses>")!, filled));
+	// A placeholder in the text that neither table declares would reach the coordinator unfilled. The unfilled text
+	// is read, so a user's quote holding `<...>` is not taken for one.
+	const left = new Set(
+		[...body.matchAll(/<[^<>\n]+>/g)].map((m) => m[0]).filter((name) => !table.has(name) && !kept.has(name)),
+	);
+	if (left.size)
+		throw new Refusal(
+			`contract for #${row.ticket} not written: ${[...left].join(", ")} in CONTRACT.md's contract text, declared by neither table; add each to the placeholder table with its source in batch.ts contract, or to the kept-as-written table`,
+		);
 	const text = `${fill(body, filled)}\n\n## Report template\n\n${fill(template, filled)}\n`;
 	const path = contractPath(run, row);
 	writeFileSync(path, text);
