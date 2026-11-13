@@ -302,6 +302,20 @@ test("timer poll sends one content-free wake after two absences and exits after 
 	assert.equal(timerPoll(f.runDir(), "5", deadline, first, f.runner).action, "exit");
 });
 
+test("timer treats missing process information as unknown, not two absences", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	f.state.exec["herdr pane process-info --pane w1:p5"] = ok('{"result":{"process_info":{}}}');
+	pane(f, 1, true);
+	const deadline = "2026-11-11T10:20:00.000Z";
+	const first = timerPoll(f.runDir(), "5", deadline, { misses: 0, tries: 0 }, f.runner);
+	const second = timerPoll(f.runDir(), "5", deadline, first, f.runner);
+	assert.equal(second.action, "wait");
+	assert.equal(second.misses, 0);
+	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
+});
+
 test("launch moves QUEUED to RUNNING(implement) with a deadline", () => {
 	const f = fixture();
 	assertOk(f.preflight());

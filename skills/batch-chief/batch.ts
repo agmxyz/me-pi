@@ -1314,7 +1314,9 @@ function piInPane(runner: Runner, pane: string): boolean | undefined {
 		if (/pane_not_found/.test(info.stdout + info.stderr)) return undefined;
 		throw new Refusal(`cannot read the processes of pane ${pane}: ${(info.stderr || info.stdout).trim()}`);
 	}
-	const procs = JSON.parse(info.stdout)?.result?.process_info?.foreground_processes ?? [];
+	const procs = JSON.parse(info.stdout)?.result?.process_info?.foreground_processes;
+	if (!Array.isArray(procs))
+		throw new Refusal(`cannot read the processes of pane ${pane}: missing foreground processes`);
 	return procs.some((p: any) => /(^|\/)pi$/.test(p?.argv0 ?? ""));
 }
 
