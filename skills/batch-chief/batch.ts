@@ -33,6 +33,12 @@ export interface Runner {
 	now(): Date;
 }
 
+const TIMER_INTERVAL_MS = 30_000;
+const TIMER_MAX_TRIES = 20;
+const TIMER_ABSENCES = 2;
+const TIMER_MAX_ERRORS = 3;
+const timerWake = (ticket: string) => `[timer ${ticket}] LOOK: run batch.ts status`;
+
 /** One watcher poll, with consecutive definite absences and failed delivery checks carried between polls. */
 export function timerDecision(input: {
 	running: boolean;
@@ -48,10 +54,10 @@ export function timerDecision(input: {
 	let { misses, tries } = input;
 	if (!running || deadline !== expected) return { action: "exit", misses, tries };
 	misses = absent ? misses + 1 : 0;
-	if (now < expected && misses < 2 && tries === 0) return { action: "wait", misses, tries };
+	if (now < expected && misses < TIMER_ABSENCES && tries === 0) return { action: "wait", misses, tries };
 	if (!blocker) return { action: "send", misses, tries };
 	tries++;
-	return { action: tries >= 20 ? "give-up" : "wait", misses, tries };
+	return { action: tries >= TIMER_MAX_TRIES ? "give-up" : "wait", misses, tries };
 }
 
 type State = "QUEUED" | "RUNNING" | "ASKED" | "REPORTED" | "GATED" | "MERGED" | "LEFT_OPEN" | "DROPPED";
@@ -831,13 +837,17 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 	record(run, e);
 	let warning = "";
 	if (e.type === "launch" || e.type === "round" || e.type === "answer") {
+		let pid: number | undefined;
 		try {
 			const dir = join(run.dir, "timers");
 			mkdirSync(dir, { recursive: true });
-			const pid = runner.startTimer(run.dir, String(row.ticket), row.deadline!);
+			pid = runner.startTimer(run.dir, String(row.ticket), row.deadline!);
 			writeFileSync(timerPath(run.dir, row.ticket, row.deadline!), String(pid));
 		} catch (error) {
-			warning = `\ntimer not started: ${(error as Error).message}; the deadline is checked only when you run status`;
+			warning =
+				pid === undefined
+					? `\ntimer not started: ${(error as Error).message}; the deadline is checked only when you run status`
+					: `\ntimer started (pid ${pid}) but not recorded: ${(error as Error).message}; status will show timer: none`;
 		}
 	}
 	return `#${row.ticket} is ${label(row)}${warning}`;
@@ -1006,8 +1016,8 @@ function status(argv: string[], runner: Runner, cwd: string): string {
 			);
 			try {
 				if (piInPane(runner, l!.pane) === false) out.push(`  no Pi in pane ${l!.pane}`);
-			} catch {
-				/* An unknown pane is not a definite absence. */
+			} catch (error) {
+				out.push(`  cannot tell whether Pi runs in pane ${l!.pane}: ${(error as Error).message}`);
 			}
 		}
 		for (const command of allowedCommands(row)) out.push(`  allowed: ${command}`);
@@ -1337,6 +1347,10 @@ function promptBlocker(runner: Runner, pane: string): string | undefined {
 	return undefined;
 }
 
+// Watcher protocol, outside the events.jsonl format version: `watch <run dir> <n> <deadline ISO>`;
+// pid file `timers/<n>-<deadline ISO with colons replaced by hyphens>.pid`; log lines
+// `<time ISO> #<n> <what>` in timers.log. Identity is row and deadline. Changes to any of these
+// must keep working for watchers already running, each living at most until its deadline plus 20 polls.
 const timerPath = (dir: string, ticket: RowId, deadline: string) =>
 	join(dir, "timers", `${ticket}-${deadline.replaceAll(":", "-")}.pid`);
 
@@ -1358,7 +1372,13 @@ function timerPids(dir: string, ticket: RowId): number[] {
 	const timers = join(dir, "timers");
 	if (!existsSync(timers)) return [];
 	return readdirSync(timers)
-		.filter((name) => name.startsWith(`${ticket}-`) && name.endsWith(".pid"))
+		.filter(
+			(name) =>
+				name.startsWith(`${ticket}-`) &&
+				/^(?:\d{4}|[+-]\d{6})-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z\.pid$/.test(
+					name.slice(String(ticket).length + 1),
+				),
+		)
 		.flatMap((name) => livePid(join(timers, name)) ?? []);
 }
 
@@ -1403,14 +1423,9 @@ export function timerPoll(
 		if (blocker) {
 			decision = timerDecision({ ...input, blocker: true });
 			log(`refused: ${blocker}`);
-			if (decision.action === "give-up") log("give-up after 20 tries");
+			if (decision.action === "give-up") log(`give-up after ${TIMER_MAX_TRIES} tries`);
 		} else {
-			const sent = runner.exec("herdr", [
-				"agent",
-				"prompt",
-				run.preflight.chiefPane,
-				`[timer ${ticket}] LOOK: run batch.ts status`,
-			]);
+			const sent = runner.exec("herdr", ["agent", "prompt", run.preflight.chiefPane, timerWake(ticket)]);
 			if (sent.code !== 0) throw new Error(`herdr prompt failed: ${(sent.stderr || sent.stdout).trim()}`);
 			log("sent");
 		}
@@ -1418,22 +1433,49 @@ export function timerPoll(
 	return decision;
 }
 
-async function watch(args: string[], runner: Runner): Promise<void> {
+export async function watch(
+	args: string[],
+	runner: Runner,
+	wait: () => Promise<void> = () => new Promise((done) => setTimeout(done, TIMER_INTERVAL_MS)),
+): Promise<void> {
 	const [dir, ticket, deadline] = args;
 	let state = { misses: 0, tries: 0 };
+	let errors = 0;
 	try {
 		for (;;) {
-			await new Promise((done) => setTimeout(done, 30_000));
-			const result = timerPoll(dir, ticket, deadline, state, runner);
-			if (result.action !== "wait") return;
-			state = result;
+			await wait();
+			try {
+				const result = timerPoll(dir, ticket, deadline, state, runner);
+				errors = 0;
+				if (result.action !== "wait") return;
+				state = result;
+			} catch (error) {
+				errors++;
+				const what = errors >= TIMER_MAX_ERRORS ? "exit-with-error" : "error";
+				appendFileSync(
+					join(dir, "timers.log"),
+					`${runner.now().toISOString()} #${ticket} ${what}: ${(error as Error).message}\n`,
+				);
+				if (errors >= TIMER_MAX_ERRORS) return;
+			}
 		}
 	} catch (error) {
-		if (existsSync(dir))
-			appendFileSync(
-				join(dir, "timers.log"),
-				`${runner.now().toISOString()} #${ticket} exit-with-error: ${(error as Error).message}\n`,
-			);
+		try {
+			if (existsSync(dir))
+				appendFileSync(
+					join(dir, "timers.log"),
+					`${runner.now().toISOString()} #${ticket} exit-with-error: ${(error as Error).message}\n`,
+				);
+		} catch {
+			/* Logging cannot prevent cleanup. */
+		}
+	} finally {
+		try {
+			const path = timerPath(dir, ticket, deadline);
+			if (readFileSync(path, "utf8").trim() === String(process.pid)) unlinkSync(path);
+		} catch {
+			/* Missing or unremovable pid files do not warrant a log line. */
+		}
 	}
 }
 
@@ -1982,7 +2024,16 @@ const systemRunner: Runner = {
 			detached: true,
 			stdio: "ignore",
 		});
-		child.on("error", () => {});
+		child.on("error", (error) => {
+			try {
+				appendFileSync(
+					join(dir, "timers.log"),
+					`${new Date().toISOString()} #${ticket} exit-with-error: spawn: ${error.message}\n`,
+				);
+			} catch {
+				/* The spawn failure cannot be logged. */
+			}
+		});
 		if (!child.pid) throw new Error("could not spawn watcher");
 		child.unref();
 		return child.pid;

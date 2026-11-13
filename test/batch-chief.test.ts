@@ -27,6 +27,7 @@ import {
 	type Runner,
 	timerDecision,
 	timerPoll,
+	watch,
 } from "../skills/batch-chief/batch.ts";
 
 test("timer decision stops superseded rows, detects overdue or two definite absences, and bounds refusals", () => {
@@ -234,6 +235,11 @@ test("timer starts after each running event, status and cleanup report live and 
 	const f = fixture();
 	assertOk(f.preflight());
 	f.state.timerPid = process.pid;
+	const startTimer = f.runner.startTimer;
+	f.runner.startTimer = (...args) => {
+		assert.ok(["launch", "answer", "round"].includes(f.events().at(-1).type));
+		return startTimer(...args);
+	};
 	assertOk(f.launch(5));
 	assert.deepEqual(f.state.timers, [{ dir: f.runDir(), ticket: "5", deadline: "2026-11-11T10:20:00.000Z" }]);
 	assert.match(
@@ -263,6 +269,99 @@ test("timer starts after each running event, status and cleanup report live and 
 	);
 	assert.match(assertOk(stale.run("status")), /timer: none; the deadline is checked only when you run status/);
 	assert.equal(stale.events().at(-1).type, "launch");
+});
+
+test("timer cleanup distinguishes row prefixes", () => {
+	const f = fixture();
+	assertOk(f.preflight("a,a-b"));
+	f.state.timerError = "no process";
+	assertOk(f.launch("a"));
+	f.state.timerError = "";
+	f.state.timerPid = process.pid;
+	assertOk(f.launch("a-b"));
+	assertOk(f.run("event", "a", "drop", "--user", "stop"));
+	f.state.exec["herdr pane process-info --pane w1:pa"] = ok('{"result":{"process_info":{"foreground_processes":[]}}}');
+	assert.doesNotMatch(assertOk(f.run("cleanup", "--dry-run")), /#a timer still running/);
+});
+
+test("timer distinguishes recording failure from start failure and records event first", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.runner.startTimer = () => {
+		assert.equal(f.events().at(-1).type, "launch");
+		mkdirSync(join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid"));
+		return 123;
+	};
+	assert.match(assertOk(f.launch(5)), /timer started \(pid 123\) but not recorded: .*; status will show timer: none/);
+	const g = fixture();
+	assertOk(g.preflight());
+	g.state.timerError = "no process";
+	assert.match(
+		assertOk(g.launch(5)),
+		/timer not started: no process; the deadline is checked only when you run status/,
+	);
+});
+
+test("timer status reports unknown pane check and dead pid file", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	assertOk(f.launch(5));
+	assert.ok(existsSync(join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid")));
+	const out = assertOk(f.run("status"));
+	assert.match(out, /timer: none; the deadline is checked only when you run status/);
+	assert.match(out, /cannot tell whether Pi runs in pane w1:p5: .*fake runner/);
+});
+
+test("timer watch retries consecutive poll errors and resets after success", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.state.timerPid = process.pid;
+	assertOk(f.launch(5));
+	const pidPath = join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid");
+	const path = join(f.runDir(), "events.jsonl");
+	const original = readFileSync(path, "utf8");
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+		writeFileSync(path, polls === 2 ? original : "broken\n");
+	});
+	assert.equal(polls, 5);
+	const log = readFileSync(join(f.runDir(), "timers.log"), "utf8");
+	assert.equal((log.match(/#5 error:/g) ?? []).length, 3);
+	assert.equal((log.match(/#5 exit-with-error:/g) ?? []).length, 1);
+	assert.ok(!existsSync(pidPath));
+});
+
+test("timer watch gives up after 20 dialog refusals", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.state.timerPid = process.pid;
+	assertOk(f.launch(5));
+	pane(f, 5, true);
+	pane(f, 1, true, DIALOG);
+	f.at("10:21");
+	let polls = 0;
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {
+		polls++;
+	});
+	assert.equal(polls, 20);
+	assert.match(readFileSync(join(f.runDir(), "timers.log"), "utf8"), /give-up after 20 tries/);
+	assert.ok(!existsSync(join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid")));
+	assert.ok(!f.calls.some((c) => c.startsWith("herdr agent prompt")));
+});
+
+test("timer watch removes only its own pid file on exit", async () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	f.state.timerPid = process.pid;
+	assertOk(f.launch(5));
+	const path = join(f.runDir(), "timers", "5-2026-11-11T10-20-00.000Z.pid");
+	assertOk(f.run("event", "5", "drop", "--user", "stop"));
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {});
+	assert.ok(!existsSync(path));
+	writeFileSync(path, "123");
+	await watch([f.runDir(), "5", "2026-11-11T10:20:00.000Z"], f.runner, async () => {});
+	assert.equal(readFileSync(path, "utf8"), "123");
 });
 
 test("timer poll refuses an open dialog and never writes events or ledger", () => {
