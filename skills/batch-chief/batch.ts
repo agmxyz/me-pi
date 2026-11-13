@@ -37,12 +37,19 @@ type State = "QUEUED" | "RUNNING" | "ASKED" | "REPORTED" | "GATED" | "MERGED" | 
 const ROUNDS = ["implement", "review", "fix", "update"] as const;
 type Round = (typeof ROUNDS)[number];
 const LATER_ROUNDS = ROUNDS.filter((r) => r !== "implement");
-/** The events.jsonl format this helper writes; a run with a version outside `READS` is refused. */
+/**
+ * The events.jsonl format this helper writes; a run with a version outside `READS` is refused. Bump it when an older
+ * helper would ignore a new field or event that changes a refusal or an effect (as `live` changes what `merge` allows);
+ * an optional field that only adds display text (as `approve`'s `question`) needs none. A run keeps its preflight's
+ * version: this helper appends to an older run only events and fields that version has, which holds for version 1
+ * because `live` and `live-result` exist only on a row its preflight named with `live`.
+ */
 const VERSION = 2;
 /**
- * The versions this helper reads: a version-1 log is a version-2 log without live checks (no `live` field, no
- * `live-result` event), so it replays unchanged. Version 2 exists so a version-1 helper refuses a run with live checks
- * instead of ignoring the `live` field and merging a `before-merge` row without its pass.
+ * The versions this helper reads. `1` is kept for runs the version-1 helper started that are still open (their
+ * `current` pointer is set) when the skill updates: such a log is a version-2 log without live checks, so it replays
+ * unchanged. Drop `1` from `READS`, with `v1-events.jsonl` and its tests, once no version-1 run can be open: the
+ * first release after every user has ended or set aside their version-1 runs.
  */
 const READS = [1, VERSION];
 const LIVE_MODES = ["before-merge", "after-merge"] as const;
@@ -115,7 +122,7 @@ interface ApproveEvent {
 	at: string;
 	type: "approve";
 	quote: string;
-	/** What the user's words answered; optional, so a version-1 log without it stays this version's format. */
+	/** What the user's words answered; optional display text, so no version bump (see `VERSION`). */
 	question?: string;
 	action: string;
 	tickets: RowId[];
@@ -747,11 +754,8 @@ function event(argv: string[], runner: Runner, cwd: string): string {
 				report: path("report"),
 			};
 			if (!existsSync(launch.brief)) throw new Refusal(`brief ${launch.brief} does not exist`);
-			const pushes = run.approvals.filter((a) => a.action === "push" && a.tickets.includes(row.ticket));
-			if (pushes.length && !pushes.some((a) => !a.inferred))
-				throw new Refusal(
-					`only an inferred push approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`,
-				);
+			const pushes = confirmedApprovals(run, row, "push", (a) => a.action === "push");
+			if (pushes.why) throw new Refusal(pushes.why);
 			e = { ...base, type, launch, deadline: minutes(values) };
 			break;
 		}
@@ -1154,13 +1158,10 @@ function merge(argv: string[], runner: Runner, cwd: string): string {
 		throw new Refusal(
 			`a merge intent for #${row.ticket} at ${row.intent.sha} is pending since ${row.intent.at}; run status to reconcile it before anything else`,
 		);
-	const covering = run.approvals.filter((a) => a.action === "merge" && a.tickets.includes(row.ticket));
-	if (!covering.some((a) => !a.inferred))
-		throw new Refusal(
-			covering.length
-				? `only an inferred merge approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`
-				: `no merge approval covers #${row.ticket}; record the user's words with approve --action merge`,
-		);
+	const approvals = confirmedApprovals(run, row, "merge", (a) => a.action === "merge");
+	if (approvals.why) throw new Refusal(approvals.why);
+	if (!approvals.confirmed.length)
+		throw new Refusal(`no merge approval covers #${row.ticket}; record the user's words with approve --action merge`);
 	const rules = run.preflight.rules;
 	if (rules !== "unknown" && rules.mergeMethods && !rules.mergeMethods.includes("squash"))
 		throw new Refusal(`the base rules allow ${rules.mergeMethods.join(", ")}, not squash`);
@@ -1432,18 +1433,37 @@ function contract(argv: string[], runner: Runner, cwd: string): string {
 }
 
 /**
+ * The approvals of `run` matching `matches` that cover `row` and were recorded without `--inferred`. When some cover it
+ * but every one is inferred, `why` is the refusal: an inferred scope never authorises an action until the user confirms
+ * it. `what` names the action in that refusal.
+ */
+function confirmedApprovals(
+	run: Run,
+	row: Row,
+	what: string | undefined,
+	matches: (a: ApproveEvent) => boolean,
+): { confirmed: ApproveEvent[]; why?: string } {
+	const covering = run.approvals.filter((a) => matches(a) && a.tickets.includes(row.ticket));
+	const confirmed = covering.filter((a) => !a.inferred);
+	if (covering.length && !confirmed.length)
+		return {
+			confirmed,
+			why: `only an inferred ${what ? `${what} ` : ""}approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`,
+		};
+	return { confirmed };
+}
+
+/**
  * The coordinator's authorised actions: one line per approval recorded without `--inferred` that covers the row,
  * except `merge`, which stays the chief's. None, or only inferred ones, is a reason to refuse, as `launch` and
  * `merge` refuse an inferred scope.
  */
 function authorisedActions(run: Run, row: Row): { lines?: string; why?: string } {
-	const covering = run.approvals.filter((a) => a.action !== "merge" && a.tickets.includes(row.ticket));
-	const confirmed = covering.filter((a) => !a.inferred);
+	const { confirmed, why } = confirmedApprovals(run, row, undefined, (a) => a.action !== "merge");
+	if (why) return { why };
 	if (!confirmed.length)
 		return {
-			why: covering.length
-				? `only an inferred approval covers #${row.ticket}; confirm it with the user and record their words with approve (without --inferred)`
-				: `no approval covers #${row.ticket} for its coordinator (a merge approval is the chief's); record the user's words with approve --action push`,
+			why: `no approval covers #${row.ticket} for its coordinator (a merge approval is the chief's); record the user's words with approve --action push`,
 		};
 	const lines = confirmed.map(
 		(a) =>
@@ -1522,6 +1542,8 @@ function cleanRow(
 
 /** The run's own directories that `cleanup` removes once every coordinator has quit; nothing else is ever removed. */
 const DISPOSABLE = ["scratch", "live"];
+/** The first format version whose contract made `DISPOSABLE` the run's: an older run's are listed, never removed. */
+const DISPOSABLE_SINCE = 2;
 
 /**
  * The run directory as a real path, refused unless it is a real directory directly inside the real batch directory:
@@ -1595,7 +1617,10 @@ function removeDisposable(
 			kind = st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "directory" : "file";
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-			throw error;
+			// The coordinators are already gone: report what is left rather than lose the outcome.
+			lines.push(`  left: ${shown}: ${(error as Error).message}`);
+			left.push(`${shown}: not checked: ${(error as Error).message}`);
+			continue;
 		}
 		const what = kind === "symlink" ? "unlink symlink" : "remove";
 		if (dryRun) {
@@ -1700,12 +1725,22 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 	for (const row of owed)
 		left.push(`#${row.ticket} live check (after-merge) owed: run it, then batch.ts ${liveResultUsage(row.ticket)}`);
 	out.push("Run directory:");
+	// Like `handOver`'s items, listed for the user and no reason to keep the run: this run's contract never gave them away.
+	const notOwned: string[] = [];
 	if (owed.length) {
 		// The owed check runs from its clone: live stays, scratch goes once the coordinators are gone.
 		const root = join(run.dir, "live");
 		if (existsSync(root) || isLink(root)) out.push(`  kept: ${root}: a live check is owed`);
 	}
-	if (unsettled) {
+	if (run.preflight.version < DISPOSABLE_SINCE) {
+		for (const name of DISPOSABLE) {
+			const root = join(run.dir, name);
+			if (!existsSync(root) && !isLink(root)) continue;
+			const why = `not removed: run ${run.id} was started by the version-${run.preflight.version} helper, whose contract never made it disposable`;
+			out.push(`  ${why}: ${root}`);
+			notOwned.push(`${root}: ${why}`);
+		}
+	} else if (unsettled) {
 		for (const name of owed.length ? ["scratch"] : DISPOSABLE) {
 			const root = join(run.dir, name);
 			if (!existsSync(root) && !isLink(root)) continue;
@@ -1718,7 +1753,7 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 		left.push(...removed.left);
 	}
 	// Listed for the user, never removed, and no reason to keep the run: the helper does not own them.
-	const handed = handOver(run, runner);
+	const handed = [...notOwned, ...handOver(run, runner)];
 	out.push(
 		"Notes:",
 		...(run.notes.length ? run.notes.map((n) => `- ${n.kind} #${n.ticket}: ${n.text}`) : ["- none"]),

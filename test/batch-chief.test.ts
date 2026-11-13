@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
 	appendFileSync,
+	chmodSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	symlinkSync,
 	utimesSync,
@@ -1493,13 +1495,19 @@ test("a cleanup whose current pointer cannot be removed still returns its output
 	assert.ok(existsSync(currentPointer(f)));
 });
 
+/** Makes the frozen `fixtures/batch-chief/<name>.jsonl` the current run `golden-<name>`; returns its text and batch dir. */
+function goldenRun(f: Fixture, name: string) {
+	const golden = readFileSync(join(import.meta.dirname, `fixtures/batch-chief/${name}.jsonl`), "utf8");
+	const batch = join(`${f.repo}.worktrees`, ".batch");
+	mkdirSync(join(batch, `golden-${name}`), { recursive: true });
+	writeFileSync(join(batch, `golden-${name}`, "events.jsonl"), golden);
+	writeFileSync(join(batch, "current"), `golden-${name}\n`);
+	return { golden, batch };
+}
+
 test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => {
 	const f = fixture();
-	const golden = readFileSync(join(import.meta.dirname, "fixtures/batch-chief/v1-events.jsonl"), "utf8");
-	const batch = join(`${f.repo}.worktrees`, ".batch");
-	mkdirSync(join(batch, "golden-v1"), { recursive: true });
-	writeFileSync(join(batch, "golden-v1", "events.jsonl"), golden);
-	writeFileSync(join(batch, "current"), "golden-v1\n");
+	const { golden, batch } = goldenRun(f, "v1-events");
 	f.at("10:55");
 	const out = assertOk(f.run("status"));
 	const rows = out.split("\n").filter((l) => /^(#| {2}allowed:)/.test(l));
@@ -1511,8 +1519,12 @@ test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => 
 		"  allowed: event 8 report --path /golden/report-8.md",
 		'  allowed: event 8 drop --user "<user\'s words>"',
 	]);
-	assert.equal(readFileSync(join(batch, "golden-v1", "events.jsonl"), "utf8"), golden, "status recorded an event");
-	const ledger = readFileSync(join(batch, "golden-v1", "ledger.md"), "utf8");
+	assert.equal(
+		readFileSync(join(batch, "golden-v1-events", "events.jsonl"), "utf8"),
+		golden,
+		"status recorded an event",
+	);
+	const ledger = readFileSync(join(batch, "golden-v1-events", "ledger.md"), "utf8");
 	for (const line of [
 		"| #5 | MERGED | nobody |  | feat/t5 | 2026-11-11T10:23:00.000Z |  |",
 		"| #release | LEFT_OPEN | nobody |  | feat/trelease | 2026-11-11T10:45:00.000Z |  |",
@@ -1525,6 +1537,47 @@ test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => 
 	])
 		assert.ok(ledger.includes(line), `ledger lacks ${line}:\n${ledger}`);
 	assert.ok(ledger.includes("`/golden/repo`, base `main` at `1111111111111111111111111111111111111111`"), ledger);
+});
+
+// Generated once by running preflight --live, launch, report, an appended gate, approve --question, live --result and
+// merge through this file's fake runner, with the fixture dir replaced by /golden; frozen since.
+test("golden: a frozen version-2 events.jsonl with live checks rebuilds to the same rows", () => {
+	const f = fixture();
+	const { golden, batch } = goldenRun(f, "v2-events");
+	f.at("10:55");
+	const out = assertOk(f.run("status"));
+	const rows = out.split("\n").filter((l) => /^(#| {2}(allowed|live check):)/.test(l));
+	const result = `pass at ${HEAD}: curl showed the new header`;
+	const owed = `OWED: run it, then batch.ts live 6 --result <pass|fail> --evidence "<text or path>"`;
+	assert.deepEqual(rows, [
+		"#5 MERGED next: nobody",
+		`  live check: before-merge, ${result}`,
+		"#6 MERGED next: nobody",
+		'  allowed: live 6 --result <pass|fail> --evidence "<text or path>"',
+		`  live check: after-merge, ${owed}`,
+	]);
+	assert.equal(
+		readFileSync(join(batch, "golden-v2-events", "events.jsonl"), "utf8"),
+		golden,
+		"status recorded an event",
+	);
+	const ledger = readFileSync(join(batch, "golden-v2-events", "ledger.md"), "utf8");
+	for (const line of [
+		`| #5 | MERGED | nobody |  | feat/t5 | 2026-11-11T10:16:00.000Z | live check: before-merge, ${result} |`,
+		`| #6 | MERGED | nobody |  | feat/t6 | 2026-11-11T10:17:00.000Z | live check: after-merge, ${owed.replace("|", "\\|")} |`,
+		'- 2026-11-11T10:14:00.000Z merge #5, #6: "yes, merge both" answering "Merge #5 and #6?"',
+	])
+		assert.ok(ledger.includes(line), `ledger lacks ${line}:\n${ledger}`);
+	assert.ok(ledger.includes("`/golden/repo`, base `main` at `1111111111111111111111111111111111111111`"), ledger);
+	assertRefused(f.preflight(), "still owes a live check: #6");
+});
+
+test("a version-1 run has no live check: live commands refuse and record nothing", () => {
+	const f = fixture();
+	const { golden, batch } = goldenRun(f, "v1-events");
+	assertRefused(f.run("live", "8", "--result", "pass", "--evidence", "x"), "#8 has no live check");
+	assertRefused(f.run("live", "5", "start"), "#5 has no live check");
+	assert.equal(readFileSync(join(batch, "golden-v1-events", "events.jsonl"), "utf8"), golden);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1650,6 +1703,79 @@ test("cleanup keeps scratch and live while a coordinator still runs or a row is 
 	const kept = put(join(running.runDir(), "live", "5", "x"));
 	assertOk(running.run("cleanup"));
 	assert.ok(existsSync(kept));
+});
+
+test("cleanup of a run the version-1 helper started keeps scratch and live, lists them, and still ends the run", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const [first, ...rest] = f.events();
+	writeFileSync(
+		join(dir, "events.jsonl"),
+		[{ ...first, version: 1 }, ...rest].map((e) => `${JSON.stringify(e)}\n`).join(""),
+	);
+	const files = [put(join(dir, "scratch", "5", "notes.txt")), put(join(dir, "live", "5", "README.md"))];
+	for (const argv of [["cleanup", "--dry-run"], ["cleanup"]]) {
+		const out = assertOk(f.run(...argv));
+		for (const file of files) assert.ok(existsSync(file), `${file} was removed:\n${out}`);
+		const left = out.slice(out.indexOf("Resources left:"));
+		for (const name of ["scratch", "live"]) assert.ok(left.includes(`- ${join(dir, name)}: not removed: run`), out);
+		assert.ok(!out.includes("would remove"), out);
+		if (argv.length === 1) assert.match(out.split("\n").at(-1)!, /current run cleared/);
+	}
+});
+
+test("cleanup that cannot read scratch after the coordinators quit reports the partial outcome under Resources left", () => {
+	const f = finishable();
+	const [, r6] = f.rows;
+	const dir = f.runDir();
+	put(join(dir, "scratch", "5", "notes.txt"));
+	// The last effect of the last row: from here on the run directory cannot be searched.
+	f.state.exec[`herdr pane close ${r6.id}`] = () => {
+		chmodSync(dir, 0o600);
+		return ok();
+	};
+	try {
+		const out = assertOk(f.run("cleanup"));
+		assert.ok(out.includes(`ran: herdr pane close ${r6.id}`), out);
+		const left = out.slice(out.indexOf("Resources left:"));
+		assert.match(left, new RegExp(`- ${join(dir, "scratch")}: [^\\n]*EACCES`), out);
+		assert.ok(!out.includes("current run cleared"), out);
+	} finally {
+		chmodSync(dir, 0o755);
+	}
+	assert.ok(existsSync(currentPointer(f)));
+});
+
+test("cleanup whose removal fails partway lists the root as partly removed or kept and keeps current", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const locked = join(dir, "scratch", "5", "locked");
+	const stuck = put(join(locked, "file.txt"));
+	put(join(dir, "live", "5", "README.md"));
+	chmodSync(locked, 0o500);
+	try {
+		const out = assertOk(f.run("cleanup"));
+		assert.ok(existsSync(stuck), out);
+		assert.ok(gone(join(dir, "live")), out);
+		assert.match(out, new RegExp(`- ${join(dir, "scratch")}: partly removed or kept: [^\\n]*EACCES`));
+		assert.ok(!out.includes("current run cleared"), out);
+	} finally {
+		chmodSync(locked, 0o755);
+	}
+	assert.ok(existsSync(currentPointer(f)));
+});
+
+test("cleanup refuses to remove anything when the run directory is a symlink, and lists why", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const file = put(join(dir, "scratch", "5", "notes.txt"));
+	const real = join(f.dir, "elsewhere");
+	renameSync(dir, real);
+	symlinkSync(real, dir);
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(existsSync(join(real, "scratch", "5", "notes.txt")) && existsSync(file), out);
+	assert.match(out, /- scratch and live not removed: run directory [^\n]* is not a real directory inside/);
+	assert.ok(!out.includes("current run cleared"), out);
 });
 
 test("cleanup lists a merged row's remote branch that still exists and a main checkout behind origin, removing neither", () => {
