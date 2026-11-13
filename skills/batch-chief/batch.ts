@@ -28,12 +28,13 @@ export interface Result {
 
 /** Every external effect goes through here: `git`, `gh`, `herdr` (code 127 when the tool is missing), and the clock. */
 export interface Runner {
-	exec(cmd: string, args: string[], options?: { cwd?: string }): Result;
+	exec(cmd: string, args: string[], options?: { cwd?: string; timeoutMs?: number }): Result;
 	startTimer(dir: string, ticket: string, deadline: string): number;
 	now(): Date;
 }
 
 const TIMER_INTERVAL_MS = 30_000;
+const TIMER_CALL_TIMEOUT_MS = 10_000;
 const TIMER_MAX_TRIES = 20;
 const TIMER_ABSENCES = 2;
 const TIMER_MAX_ERRORS = 3;
@@ -54,9 +55,11 @@ export function timerDecision(input: {
 	let { misses, tries } = input;
 	if (!running || deadline !== expected) return { action: "exit", misses, tries };
 	misses = absent ? misses + 1 : 0;
+	// Once refused, send when the dialog closes even if the coordinator returned: the line carries no content.
 	if (now < expected && misses < TIMER_ABSENCES && tries === 0) return { action: "wait", misses, tries };
 	if (!blocker) return { action: "send", misses, tries };
 	tries++;
+	if (tries >= TIMER_MAX_TRIES && now < expected) return { action: "wait", misses: 0, tries: 0 };
 	return { action: tries >= TIMER_MAX_TRIES ? "give-up" : "wait", misses, tries };
 }
 
@@ -991,8 +994,8 @@ function deadlineText(row: Row, now: Date): string {
 }
 
 /**
- * Prints the run and each row with its launch facts, allowed commands and observed outside. It reads no pane: a
- * coordinator line such as `ATTEMPT FAILED` is the chief's to read, and only a report file moves a row.
+ * Prints the run and each row with its launch facts, allowed commands and observed outside. It checks pane processes;
+ * a coordinator line such as `ATTEMPT FAILED` is the chief's to read, and only a report file moves a row.
  */
 function status(argv: string[], runner: Runner, cwd: string): string {
 	parse(argv, {});
@@ -1015,7 +1018,9 @@ function status(argv: string[], runner: Runner, cwd: string): string {
 					: "  timer: none; the deadline is checked only when you run status",
 			);
 			try {
-				if (piInPane(runner, l!.pane) === false) out.push(`  no Pi in pane ${l!.pane}`);
+				const live = piInPane(runner, l!.pane);
+				if (live === undefined) out.push(`  pane ${l!.pane} is gone`);
+				else if (!live) out.push(`  no Pi in pane ${l!.pane}`);
 			} catch (error) {
 				out.push(`  cannot tell whether Pi runs in pane ${l!.pane}: ${(error as Error).message}`);
 			}
@@ -1361,8 +1366,7 @@ function livePid(path: string): number | undefined {
 		const pid = Number(text);
 		process.kill(pid, 0);
 		return pid;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EPERM") return Number(readFileSync(path, "utf8").trim());
+	} catch {
 		return undefined;
 	}
 }
@@ -1391,13 +1395,17 @@ export function timerPoll(
 	runner: Runner,
 ) {
 	const exit = { ...state, action: "exit" as const };
+	const watcherRunner: Runner = {
+		...runner,
+		exec: (cmd, args, options) => runner.exec(cmd, args, { ...options, timeoutMs: TIMER_CALL_TIMEOUT_MS }),
+	};
 	if (!existsSync(dir)) return exit;
 	const run = rebuild(basename(dir), dir);
 	const row = run.rows.get(rowId(ticket, "the row"));
 	if (!row || row.state !== "RUNNING" || row.deadline !== deadline) return exit;
 	let absent = false;
 	try {
-		absent = piInPane(runner, row.launch!.pane) === false;
+		absent = piInPane(watcherRunner, row.launch!.pane) !== true;
 	} catch {
 		/* Unknown is not absent. */
 	}
@@ -1416,7 +1424,7 @@ export function timerPoll(
 	if (decision.action === "send") {
 		let blocker: string | undefined;
 		try {
-			blocker = promptBlocker(runner, run.preflight.chiefPane);
+			blocker = promptBlocker(watcherRunner, run.preflight.chiefPane);
 		} catch (error) {
 			blocker = (error as Error).message;
 		}
@@ -1424,10 +1432,12 @@ export function timerPoll(
 			decision = timerDecision({ ...input, blocker: true });
 			log(`refused: ${blocker}`);
 			if (decision.action === "give-up") log(`give-up after ${TIMER_MAX_TRIES} tries`);
+			else if (input.tries + 1 >= TIMER_MAX_TRIES && input.now < input.expected)
+				log(`give-up before deadline after ${TIMER_MAX_TRIES} tries; still watching the deadline`);
 		} else {
 			let outcome: string;
 			try {
-				const sent = runner.exec("herdr", ["agent", "prompt", run.preflight.chiefPane, timerWake(ticket)]);
+				const sent = watcherRunner.exec("herdr", ["agent", "prompt", run.preflight.chiefPane, timerWake(ticket)]);
 				outcome = sent.code === 0 ? "sent" : `send failed: ${(sent.stderr || sent.stdout).trim()}`;
 			} catch (error) {
 				outcome = `send failed: ${(error as Error).message}`;
@@ -1450,10 +1460,15 @@ export async function watch(
 	const [dir, ticket, deadline] = args;
 	let state = { misses: 0, tries: 0 };
 	let errors = 0;
+	let deadlineReached = false;
 	try {
 		for (;;) {
 			await wait();
 			try {
+				if (!deadlineReached && runner.now().getTime() >= Date.parse(deadline)) {
+					deadlineReached = true;
+					state = { misses: 0, tries: 0 };
+				}
 				const result = timerPoll(dir, ticket, deadline, state, runner);
 				errors = 0;
 				if (result.action !== "wait") return;
@@ -2053,7 +2068,7 @@ const systemRunner: Runner = {
 	},
 	now: () => new Date(),
 	exec(cmd, args, options) {
-		const result = spawnSync(cmd, args, { cwd: options?.cwd, encoding: "utf8" });
+		const result = spawnSync(cmd, args, { cwd: options?.cwd, timeout: options?.timeoutMs, encoding: "utf8" });
 		if (result.error) {
 			const missing = (result.error as NodeJS.ErrnoException).code === "ENOENT";
 			return { code: missing ? 127 : 1, stdout: "", stderr: result.error.message };
