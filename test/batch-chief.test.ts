@@ -3,10 +3,12 @@ import { execFileSync } from "node:child_process";
 import {
 	appendFileSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -65,6 +67,9 @@ function fixture() {
 			if (line === "git status --porcelain") return ok("");
 			if (args[0] === "--version") return ok(`${cmd} 1.0\n`);
 			if (line === "gh api repos/{owner}/{repo}/rules/branches/main") return state.rules;
+			// origin's base is where the main checkout is, and no other remote branch is left.
+			if (line === "git ls-remote origin refs/heads/main") return ok(`${SHA}\trefs/heads/main\n`);
+			if (/^git ls-remote origin refs\/heads\/\S+$/.test(line)) return ok("");
 			const view = /^gh pr view (\S+) --json /.exec(line);
 			if (view) {
 				const pr = state.prs[view[1]];
@@ -1317,4 +1322,148 @@ test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => 
 	])
 		assert.ok(ledger.includes(line), `ledger lacks ${line}:\n${ledger}`);
 	assert.ok(ledger.includes("`/golden/repo`, base `main` at `1111111111111111111111111111111111111111`"), ledger);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Cleanup of the run's scratch and live clones, and what it lists for the user.
+
+/** A `cleanable` fixture whose #6 branch is already gone, so cleanup leaves no resource and the run can end. */
+function finishable() {
+	const f = fixture();
+	const rows = cleanable(f);
+	f.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = { code: 1, stdout: "", stderr: "" };
+	return Object.assign(f, { rows });
+}
+
+/** Writes `text` at `path`, creating its directories. */
+function put(path: string, text = "x") {
+	mkdirSync(join(path, ".."), { recursive: true });
+	writeFileSync(path, text);
+	return path;
+}
+
+const gone = (path: string) => {
+	try {
+		lstatSync(path);
+		return false;
+	} catch {
+		return true;
+	}
+};
+
+test("cleanup removes the run's scratch and live directories after the coordinators quit, and keeps the run's records", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	put(join(dir, "scratch", "5", "notes.txt"));
+	put(join(dir, "scratch", "6", "deep", "repro.ts"));
+	put(join(dir, "live", "5", ".git", "HEAD"));
+	const kept = ["contract-5.md", "report-5.md"].map((name) => put(join(dir, name)));
+	assertOk(f.run("status"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(gone(join(dir, "scratch")) && gone(join(dir, "live")), out);
+	for (const path of [...kept, join(dir, "events.jsonl"), join(dir, "ledger.md")])
+		assert.ok(existsSync(path), `${path} was removed`);
+	assert.ok(out.includes(`removed: ${join(dir, "scratch")}`), out);
+	assert.ok(out.includes(`removed: ${join(dir, "live")}`), out);
+	assert.match(out.split("\n").at(-1)!, /current run cleared/);
+});
+
+test("cleanup unlinks a symlink inside scratch or live and never touches its target outside the run", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const outsideDir = join(f.dir, "outside");
+	const outsideFile = put(join(outsideDir, "keep.txt"), "keep");
+	const loneFile = put(join(f.dir, "lone.txt"), "lone");
+	mkdirSync(join(dir, "scratch", "5"), { recursive: true });
+	mkdirSync(join(dir, "live"), { recursive: true });
+	symlinkSync(outsideDir, join(dir, "scratch", "5", "to-dir"));
+	symlinkSync(loneFile, join(dir, "scratch", "5", "to-file"));
+	symlinkSync(outsideDir, join(dir, "live", "5"));
+	symlinkSync(join(f.dir, "missing"), join(dir, "scratch", "dangling"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(gone(join(dir, "scratch")) && gone(join(dir, "live")), out);
+	assert.equal(readFileSync(outsideFile, "utf8"), "keep");
+	assert.equal(readFileSync(loneFile, "utf8"), "lone");
+	assert.ok(lstatSync(outsideDir).isDirectory());
+});
+
+test("cleanup unlinks a scratch directory that is itself a symlink out of the run, leaving the target and its files", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const victim = join(f.dir, "victim");
+	const file = put(join(victim, "sub", "data.txt"), "data");
+	symlinkSync(victim, join(dir, "scratch"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(gone(join(dir, "scratch")), out);
+	assert.equal(readFileSync(file, "utf8"), "data");
+	assert.ok(out.includes(`unlinked symlink: ${join(dir, "scratch")}`), out);
+});
+
+test("cleanup lists a report's Scratch paths left, including .. and absolute paths, and removes none of them", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const relative = put(join(dir, "..", "..", "victim", "file.txt"), "rel");
+	const absolute = put(join(f.dir, "abs-victim", "file.txt"), "abs");
+	writeFileSync(
+		join(f.dir, "report-5.md"),
+		`# Report: #5\n\n## Status\nDONE\n\n## Scratch paths left\n- ../../victim\n- ${join(f.dir, "abs-victim")}\n\n## Not verified\n- none\n`,
+	);
+	writeFileSync(join(f.dir, "report-6.md"), "# Report: #6\n\n## Scratch paths left\n- none\n");
+	for (const argv of [["cleanup", "--dry-run"], ["cleanup"]]) {
+		const out = assertOk(f.run(...argv));
+		assert.ok(out.includes(`- #5 scratch path left (from ${join(f.dir, "report-5.md")}): ../../victim`), out);
+		assert.ok(
+			out.includes(`- #5 scratch path left (from ${join(f.dir, "report-5.md")}): ${join(f.dir, "abs-victim")}`),
+			out,
+		);
+		assert.ok(!out.includes("#6 scratch path left"), out);
+	}
+	assert.equal(readFileSync(relative, "utf8"), "rel");
+	assert.equal(readFileSync(absolute, "utf8"), "abs");
+});
+
+test("cleanup --dry-run lists the scratch and live directories it would remove and removes nothing", () => {
+	const f = finishable();
+	const dir = f.runDir();
+	const file = put(join(dir, "scratch", "5", "notes.txt"));
+	const clone = put(join(dir, "live", "5", "README.md"));
+	const out = assertOk(f.run("cleanup", "--dry-run"));
+	assert.ok(existsSync(file) && existsSync(clone), out);
+	assert.ok(out.includes(`would remove: ${join(dir, "scratch")}`), out);
+	assert.ok(out.includes(`would remove: ${join(dir, "live")}`), out);
+});
+
+test("cleanup keeps scratch and live while a coordinator still runs or a row is not terminal", () => {
+	const f = finishable();
+	const [r5] = f.rows;
+	f.state.exec[`herdr agent prompt ${r5.id} /quit`] = ok();
+	const file = put(join(f.runDir(), "scratch", "5", "notes.txt"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(existsSync(file), out);
+	assert.ok(out.includes(`kept: ${join(f.runDir(), "scratch")}`), out);
+	const running = fixture();
+	assertOk(running.preflight());
+	assertOk(running.launch(5));
+	const kept = put(join(running.runDir(), "live", "5", "x"));
+	assertOk(running.run("cleanup"));
+	assert.ok(existsSync(kept));
+});
+
+test("cleanup lists a merged row's remote branch that still exists and a main checkout behind origin, removing neither", () => {
+	const f = finishable();
+	f.state.exec["git ls-remote origin refs/heads/feat/t5"] = ok(`${HEAD}\trefs/heads/feat/t5\n`);
+	f.state.exec["git ls-remote origin refs/heads/main"] = ok(`${MOVED}\trefs/heads/main\n`);
+	f.state.exec[`git merge-base --is-ancestor ${MOVED} HEAD`] = { code: 1, stdout: "", stderr: "" };
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(out.includes("- #5 remote branch feat/t5 still exists on origin"), out);
+	assert.ok(out.includes(`- main checkout ${f.repo} is behind origin/main (${MOVED})`), out);
+	assert.ok(!f.calls.some((c) => /push|ls-remote origin refs\/heads\/feat\/t6/.test(c)), f.calls.join("\n"));
+	assert.match(out.split("\n").at(-1)!, /current run cleared/);
+});
+
+test("CONTRACT.md puts all scratch in <scratch>, a placeholder of the table, and lists only paths outside it", () => {
+	const contract = readFileSync(join(import.meta.dirname, "../skills/batch-chief/CONTRACT.md"), "utf8");
+	assert.match(contract, /\n\| `<scratch>` \| `<run dir>\/scratch\/<n>\/`/);
+	assert.match(contract, /all scratch goes in `<scratch>` and stays there/);
+	assert.match(contract, /## Scratch paths left\n- <path outside `<scratch>`>, or none/);
 });

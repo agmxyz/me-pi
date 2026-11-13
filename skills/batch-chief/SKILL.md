@@ -97,7 +97,7 @@ Record friction as it happens: `batch.ts note --kind <manual-fix|chief-answer|wr
 
 ## 5. Cleanup and notes
 
-Run `batch.ts cleanup --dry-run`, then `batch.ts cleanup`. Per terminal row it quits the coordinator through the same dialog check, confirms no Pi remains in the pane and the lock is absent, confirms the worktree is clean, removes it, deletes the local branch only when merged, and closes the pane. A resource that fails a check is left and listed, and so is the local branch of a row left open or dropped; hand each one to the user. When every row is terminal and no resource or local branch is left, `cleanup` ends the run (`current run cleared`; if the pointer cannot be removed it says `current run not cleared` and why), and the next batch starts with `preflight`.
+Run `batch.ts cleanup --dry-run`, then `batch.ts cleanup`. Per terminal row it quits the coordinator through the same dialog check, removes a clean worktree, deletes the local branch only when merged, and closes the pane; once every coordinator is confirmed gone it removes `<run dir>/scratch/` and `<run dir>/live/`, and the run's events, ledger, contracts and reports stay. What it leaves or does not own is listed under "Resources left" (a remote branch, a report's scratch path, a main checkout behind `origin/<base>`): hand each one to the user. When nothing it owns is left, `cleanup` ends the run (`current run cleared`), and the next batch starts with `preflight`.
 
 `cleanup` ends with the notes. Route each to the lowest layer that can own it: code or package first, then the upstream skill (`ticket-readiness`, the implementation skill), then the coordinator contract, this skill last. Propose each to the user as a ticket or a PR; this skill changes only through that PR.
 

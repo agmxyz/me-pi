@@ -16,6 +16,7 @@ The chief writes one contract per row in step 3 of [`SKILL.md`](SKILL.md), into 
 | `<date>`, `<user's words>` | when and how the user authorised the actions |
 | `<authorised actions>` | the actions the recorded approvals cover for this ticket |
 | `<report>` | `<run dir>/report-<n>.md` |
+| `<scratch>` | `<run dir>/scratch/<n>/`, the row's scratch directory; `batch.ts cleanup` removes it at the end of the run |
 
 `<pr>` and `<one clause>` stay as written, and so does the `<path>` of `git checkout -- <path>`: the coordinator fills the first two (the PR it opens, the failure).
 
@@ -32,7 +33,8 @@ You are the Pi coordinator for one ticket. A chief session in herdr pane `<chief
 - Checkout: `<worktree>` (your cwd), branch `<branch>`, created clean from `<base>` at `<base sha>`. `<setup>` has been run.
 - Fixed review point: `<review point>`.
 - Check: `<check>`. Tell your worker in its brief: run the check alone, with no pipe, chain, redirect or extra flags.
-- Other coordinators write in sibling worktrees. Touch only your worktree and branch: no `git stash`, no tag move, no change to `<base>`.
+- Other coordinators write in sibling worktrees. Touch only your worktree, your branch and `<scratch>`: no `git stash`, no tag move, no change to `<base>`.
+- You and your workers delete nothing: all scratch goes in `<scratch>` and stays there; the chief's cleanup removes it.
 - Ticket: issue #<n> of this repo, or none when `<n>` is a label.
 
 ## Authorised (by the user, in the chief session, <date>: "<user's words>")
@@ -103,7 +105,7 @@ On a `Stop if:` condition of the brief (also one a reviewer says was met, even w
 - <call>: <what replaced it>, or none
 
 ## Scratch paths left
-- <path>, or none
+- <path outside `<scratch>`>, or none
 
 ## Not verified
 - <claim or check not run>

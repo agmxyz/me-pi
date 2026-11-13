@@ -4,8 +4,20 @@
  * and their transition table.
  */
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+	appendFileSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmdirSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 
 export interface Result {
@@ -1222,17 +1234,166 @@ function cleanRow(
 	return { lines, kept };
 }
 
+/** The run's own directories that `cleanup` removes once every coordinator has quit; nothing else is ever removed. */
+const DISPOSABLE = ["scratch", "live"];
+
+/**
+ * The run directory as a real path, refused unless it is a real directory directly inside the real batch directory:
+ * the deletion roots are built from it alone, never from report, event or command-line text.
+ */
+function realRunDir(run: Run): string {
+	const batch = realpathSync(dirname(run.dir));
+	if (basename(run.dir) !== run.id || ["", ".", ".."].includes(run.id) || run.id.includes(sep))
+		throw new Refusal(`run id ${JSON.stringify(run.id)} is not a plain directory name`);
+	const dir = join(batch, run.id);
+	if (!lstatSync(dir).isDirectory() || realpathSync(dir) !== dir)
+		throw new Refusal(`run directory ${run.dir} is not a real directory inside ${batch}`);
+	return dir;
+}
+
+/** Whether `path` is a symlink, dangling or not (`existsSync` follows links and misses a dangling one). */
+function isLink(path: string): boolean {
+	try {
+		return lstatSync(path).isSymbolicLink();
+	} catch {
+		return false;
+	}
+}
+
+/** Throws unless `path` lies strictly inside `root` and its parent is the real, unlinked directory `parent`. */
+function assertInside(root: string, parent: string, path: string): void {
+	if (!path.startsWith(`${root}${sep}`) || dirname(path) !== parent || realpathSync(parent) !== parent)
+		throw new Error(`${path} does not resolve inside ${root}; nothing more is removed`);
+}
+
+/**
+ * Removes everything below the real directory `dir` bottom-up. Each entry is read with `lstat`, so a symlink is
+ * unlinked as a file and never followed; containment is checked again right before each removal.
+ */
+function removeBelow(root: string, dir: string): void {
+	for (const name of readdirSync(dir)) {
+		const path = join(dir, name);
+		assertInside(root, dir, path);
+		if (lstatSync(path).isDirectory()) {
+			removeBelow(root, path);
+			assertInside(root, dir, path);
+			rmdirSync(path);
+		} else unlinkSync(path);
+	}
+}
+
+/**
+ * Removes the run's `scratch/` and `live/` (or lists them on a dry run): a root that is a symlink is unlinked, a
+ * directory is emptied with `removeBelow` and removed. Returns the lines to print and the roots it could not remove.
+ */
+function removeDisposable(run: Run, dryRun: boolean): { lines: string[]; left: string[] } {
+	const lines: string[] = [];
+	const left: string[] = [];
+	let dir: string;
+	try {
+		dir = realRunDir(run);
+	} catch (error) {
+		const why = `scratch and live not removed: ${(error as Error).message}`;
+		return { lines: [`  left: ${why}`], left: [why] };
+	}
+	for (const name of DISPOSABLE) {
+		const root = join(dir, name);
+		const shown = join(run.dir, name);
+		let kind: "symlink" | "directory" | "file";
+		try {
+			const st = lstatSync(root);
+			kind = st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "directory" : "file";
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw error;
+		}
+		const what = kind === "symlink" ? "unlink symlink" : "remove";
+		if (dryRun) {
+			lines.push(`  would ${what}: ${shown}`);
+			continue;
+		}
+		try {
+			if (kind === "directory") {
+				removeBelow(root, root);
+				assertInside(dir, dir, root);
+				rmdirSync(root);
+			} else {
+				assertInside(dir, dir, root);
+				unlinkSync(root);
+			}
+			lines.push(`  ${kind === "symlink" ? "unlinked symlink" : "removed"}: ${shown}`);
+		} catch (error) {
+			lines.push(`  left: ${shown}: ${(error as Error).message}`);
+			left.push(`${shown}: partly removed or kept: ${(error as Error).message}`);
+		}
+	}
+	return { lines, left };
+}
+
+/** The entries of a report's `## Scratch paths left` section as written, without `none`; read, never resolved. */
+function scratchPathsLeft(path: string): string[] {
+	if (!existsSync(path)) return [];
+	const lines = readFileSync(path, "utf8").split("\n");
+	const start = lines.findIndex((l) => /^#+\s*Scratch paths left\s*$/i.test(l.trim()));
+	if (start < 0) return [];
+	const end = lines.findIndex((l, i) => i > start && /^#+\s/.test(l.trim()));
+	return lines
+		.slice(start + 1, end < 0 ? undefined : end)
+		.flatMap((l) => /^[-*+]\s+(.*)$/.exec(l.trim())?.[1].trim() ?? [])
+		.filter((entry) => entry && !/^none\.?$/i.test(entry));
+}
+
+/** What `cleanup` hands to the user without touching it: remote branches of merged rows, scratch paths, a behind base. */
+function handOver(run: Run, runner: Runner): string[] {
+	const repo = run.preflight.repo;
+	const base = run.preflight.base;
+	const items: string[] = [];
+	const remoteHead = (branch: string) =>
+		runner.exec("git", ["ls-remote", "origin", `refs/heads/${branch}`], { cwd: repo });
+	for (const row of run.rows.values()) {
+		if (!row.launch) continue;
+		if (row.state === "MERGED") {
+			const remote = remoteHead(row.launch.branch);
+			if (remote.code !== 0)
+				items.push(`#${row.ticket} cannot check remote branch ${row.launch.branch}: ${remote.stderr.trim()}`);
+			else if (remote.stdout.trim())
+				items.push(`#${row.ticket} remote branch ${row.launch.branch} still exists on origin; not deleted`);
+		}
+		for (const entry of scratchPathsLeft(row.launch.report))
+			items.push(`#${row.ticket} scratch path left (from ${row.launch.report}): ${entry}`);
+	}
+	const remote = remoteHead(base);
+	const head = runner.exec("git", ["rev-parse", "HEAD"], { cwd: repo });
+	const sha = remote.stdout.split(/\s/)[0];
+	if (remote.code !== 0 || head.code !== 0 || !sha)
+		items.push(
+			`cannot tell whether main checkout ${repo} is behind origin/${base}: ${(remote.stderr || head.stderr).trim() || "no remote head"}`,
+		);
+	else if (sha !== head.stdout.trim()) {
+		const ancestor = runner.exec("git", ["merge-base", "--is-ancestor", sha, "HEAD"], { cwd: repo });
+		// Exit 1: origin's head is not in HEAD; "not a valid commit": origin has a commit this checkout never fetched.
+		if (ancestor.code === 1 || /not a valid (commit|object)/i.test(ancestor.stderr))
+			items.push(`main checkout ${repo} is behind origin/${base} (${sha}); pull it before the next batch`);
+		else if (ancestor.code !== 0)
+			items.push(`cannot tell whether main checkout ${repo} is behind origin/${base}: ${ancestor.stderr.trim()}`);
+	}
+	return items;
+}
+
 function cleanup(argv: string[], runner: Runner, cwd: string): string {
 	const { values } = parse(argv, { "dry-run": "boolean" });
 	const dryRun = values["dry-run"] === true;
 	const run = currentRun(runner, cwd);
 	const out: string[] = [dryRun ? "cleanup --dry-run: nothing is changed" : "cleanup"];
 	const left: string[] = [];
+	/** Rows whose coordinator was not confirmed gone, or whose resources failed a check: scratch and live stay. */
+	let unsettled = false;
 	for (const row of run.rows.values()) {
 		if (!row.launch) continue;
 		const resources = `worktree ${row.launch.worktree}, branch ${row.launch.branch}, pane ${row.launch.pane}`;
 		if (!TERMINAL.includes(row.state)) {
 			left.push(`#${row.ticket} ${resources}: the row is ${label(row)}, not terminal`);
+			unsettled = true;
 			continue;
 		}
 		out.push(`#${row.ticket} ${label(row)}:`);
@@ -1241,13 +1402,30 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 		if (result.left) {
 			out.push(`  left: ${result.left}`);
 			left.push(`#${row.ticket} ${resources}: ${result.left}`);
+			unsettled = true;
 		} else if (result.kept) left.push(`#${row.ticket} branch ${result.kept}: kept, the PR is not merged`);
 	}
+	unsettled ||= [...run.rows.values()].some((r) => !TERMINAL.includes(r.state));
+	out.push("Run directory:");
+	if (unsettled) {
+		for (const name of DISPOSABLE) {
+			const root = join(run.dir, name);
+			if (!existsSync(root) && !isLink(root)) continue;
+			out.push(`  kept: ${root}: a row is not terminal or its coordinator is not confirmed gone`);
+			left.push(`${root}: kept until every coordinator has quit`);
+		}
+	} else {
+		const removed = removeDisposable(run, dryRun);
+		out.push(...removed.lines);
+		left.push(...removed.left);
+	}
+	// Listed for the user, never removed, and no reason to keep the run: the helper does not own them.
+	const handed = handOver(run, runner);
 	out.push(
 		"Notes:",
 		...(run.notes.length ? run.notes.map((n) => `- ${n.kind} #${n.ticket}: ${n.text}`) : ["- none"]),
 		"Resources left:",
-		...(left.length ? left.map((l) => `- ${l}`) : ["- none"]),
+		...(left.length || handed.length ? [...left, ...handed].map((l) => `- ${l}`) : ["- none"]),
 	);
 	const finished = !left.length && [...run.rows.values()].every((r) => TERMINAL.includes(r.state));
 	if (finished && !dryRun) {
