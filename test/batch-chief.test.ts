@@ -100,8 +100,8 @@ function fixture() {
 		utimesSync(path, date, date);
 		return path;
 	};
-	const preflight = (tickets = "5,6") =>
-		run("preflight", "--repo", repo, "--tickets", tickets, "--check", "npm test", "--chief-pane", "w1:p1");
+	const preflight = (tickets = "5,6", ...extra: string[]) =>
+		run("preflight", "--repo", repo, "--tickets", tickets, "--check", "npm test", "--chief-pane", "w1:p1", ...extra);
 	const launch = (n: number | string) =>
 		run(
 			"event",
@@ -148,8 +148,8 @@ function rowLine(f: Fixture, n: number | string) {
 }
 
 /** Launches #5, reports it DONE at 10:05 and gates it at HEAD via an appended `gate` event. */
-function gated(f: Fixture) {
-	assertOk(f.preflight());
+function gated(f: Fixture, ...preflightExtra: string[]) {
+	assertOk(f.preflight("5,6", ...preflightExtra));
 	assertOk(f.launch(5));
 	f.at("10:05");
 	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
@@ -651,8 +651,8 @@ test("gate on a label row skips the closing-keyword check and says so", () => {
 });
 
 /** A gated #5 with a merge approval in the user's words. */
-function approvedGated(f: Fixture) {
-	gated(f);
+function approvedGated(f: Fixture, ...preflightExtra: string[]) {
+	gated(f, ...preflightExtra);
 	f.state.prs["feat/t5"] = goodPr();
 	assertOk(f.run("approve", "--quote", "merge 5", "--action", "merge", "--tickets", "5"));
 }
@@ -799,8 +799,8 @@ test("prompt is refused on a dead pane", () => {
  * A MERGED #5 and a launched, then DROPPED #6, each with a worktree and git dir on disk and a pane that runs Pi
  * until `/quit` is sent. Clears the recorded calls.
  */
-function cleanable(f: Fixture) {
-	approvedGated(f);
+function cleanable(f: Fixture, ...preflightExtra: string[]) {
+	approvedGated(f, ...preflightExtra);
 	assertOk(f.launch(6));
 	assertOk(f.run("event", "6", "drop", "--user", "not now"));
 	f.state.prs["feat/t5"] = goodPr({ state: "MERGED", mergeCommit: { oid: MOVED } });
@@ -1147,12 +1147,12 @@ test("preflight refuses a current run of another version, finished or not, and n
 		const f = fixture();
 		assertOk(f.preflight());
 		const old = f.runDir();
-		otherVersion(f, 2, rest);
+		otherVersion(f, 3, rest);
 		f.at("11:00");
 		assertRefused(
 			f.preflight(),
 			"written by another version of the helper",
-			"version 2",
+			"version 3",
 			"preflight again with --set-aside-old-run",
 		);
 		assert.equal(f.runDir(), old, "a refused preflight moved current");
@@ -1164,7 +1164,7 @@ test("preflight --set-aside-old-run starts a new run and leaves the other versio
 		const f = fixture();
 		assertOk(f.preflight());
 		const old = f.runDir();
-		const before = otherVersion(f, 2, rest);
+		const before = otherVersion(f, 3, rest);
 		f.at("11:00");
 		const out = assertOk(
 			f.run(
@@ -1175,7 +1175,7 @@ test("preflight --set-aside-old-run starts a new run and leaves the other versio
 			),
 		);
 		assert.ok(
-			out.includes(`set aside run ${old.split("/").at(-1)} (version 2), not checked; it stays in ${old}`),
+			out.includes(`set aside run ${old.split("/").at(-1)} (version 3), not checked; it stays in ${old}`),
 			out,
 		);
 		assert.notEqual(f.runDir(), old);
@@ -1214,7 +1214,7 @@ test("preflight --set-aside-old-run takes the user's words and records them with
 	const f = fixture();
 	assertOk(f.preflight());
 	const old = f.runDir();
-	otherVersion(f, 2, []);
+	otherVersion(f, 3, []);
 	f.at("11:00");
 	for (const words of ["", "   "])
 		assertRefused(f.run("preflight", ...preflightArgs(f), "--set-aside-old-run", words), "--set-aside-old-run");
@@ -1223,9 +1223,9 @@ test("preflight --set-aside-old-run takes the user's words and records them with
 	const words = "the old batch is merged and cleaned up";
 	assertOk(f.run("preflight", ...preflightArgs(f), "--set-aside-old-run", words));
 	const id = old.split("/").at(-1);
-	assert.deepEqual(f.events()[0].setAside, { run: id, version: 2, user: words });
+	assert.deepEqual(f.events()[0].setAside, { run: id, version: 3, user: words });
 	assert.ok(
-		readLedger(f).includes(`- Set aside: run ${id} (version 2), not checked: ${JSON.stringify(words)}`),
+		readLedger(f).includes(`- Set aside: run ${id} (version 3), not checked: ${JSON.stringify(words)}`),
 		readLedger(f),
 	);
 });
@@ -1233,7 +1233,7 @@ test("preflight --set-aside-old-run takes the user's words and records them with
 test("only preflight's refusal of another version names --set-aside-old-run, after the user confirms", () => {
 	const f = fixture();
 	assertOk(f.preflight());
-	otherVersion(f, 2, []);
+	otherVersion(f, 3, []);
 	f.at("11:00");
 	assertRefused(
 		f.preflight(),
@@ -1328,9 +1328,9 @@ test("golden: a frozen version-1 events.jsonl rebuilds to the same rows", () => 
 // Cleanup of the run's scratch and live clones, and what it lists for the user.
 
 /** A `cleanable` fixture whose #6 branch is already gone, so cleanup leaves no resource and the run can end. */
-function finishable() {
+function finishable(...preflightExtra: string[]) {
 	const f = fixture();
-	const rows = cleanable(f);
+	const rows = cleanable(f, ...preflightExtra);
 	f.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = { code: 1, stdout: "", stderr: "" };
 	return Object.assign(f, { rows });
 }
@@ -1466,4 +1466,221 @@ test("CONTRACT.md puts all scratch in <scratch>, a placeholder of the table, and
 	assert.match(contract, /\n\| `<scratch>` \| `<run dir>\/scratch\/<n>\/`/);
 	assert.match(contract, /all scratch goes in `<scratch>` and stays there/);
 	assert.match(contract, /## Scratch paths left\n- <path outside `<scratch>`>, or none/);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Live checks: declared at preflight, run by the chief from a clone, recorded against the gated SHA.
+
+const LIVE_PASS = ["live", "5", "--result", "pass", "--evidence", "curl showed the new header"];
+
+/** The status lines under row `n`, up to the next row. */
+function rowDetails(f: Fixture, n: number | string) {
+	const lines = assertOk(f.run("status")).split("\n");
+	const at = lines.findIndex((l) => l.startsWith(`#${n} `));
+	const end = lines.findIndex((l, i) => i > at && !l.startsWith("  "));
+	return lines.slice(at + 1, end);
+}
+
+test("preflight --live records each named row's live check, and status and the ledger show it per row", () => {
+	const f = fixture();
+	assertOk(f.preflight("5,6,release", "--live", "5:before-merge,release:after-merge"));
+	assert.equal(f.events()[0].version, 2);
+	assert.deepEqual(f.events()[0].live, [
+		{ ticket: 5, mode: "before-merge" },
+		{ ticket: "release", mode: "after-merge" },
+	]);
+	assert.ok(rowDetails(f, 5).includes("  live check: before-merge, no result recorded"), rowDetails(f, 5).join("\n"));
+	assert.ok(rowDetails(f, "release").includes("  live check: after-merge, no result recorded"));
+	assert.ok(!rowDetails(f, 6).some((l) => l.includes("live check")), rowDetails(f, 6).join("\n"));
+	const ledger = readLedger(f);
+	assert.match(ledger, /\| #5 \| QUEUED \|.*live check: before-merge, no result recorded \|/);
+	assert.match(ledger, /\| #6 \| QUEUED \|[^\n]*\| {2}\|\n/);
+});
+
+test("preflight --live refuses an unknown row, an unknown mode, a duplicate row and a malformed entry", () => {
+	for (const [live, part] of [
+		["7:before-merge", "#7, which is not a row"],
+		["5:during-merge", "before-merge or after-merge"],
+		["5:before-merge,5:after-merge", "names #5 twice"],
+		["5", "<n>:<before-merge|after-merge>"],
+	]) {
+		const f = fixture();
+		assertRefused(f.preflight("5,6", "--live", live), "--live", part);
+		assert.ok(!existsSync(currentPointer(f)), `a refused preflight --live ${live} created a run`);
+	}
+});
+
+const DETACH = (path: string, sha: string) => `git -C ${path} checkout --detach ${sha}`;
+
+test("live <n> start clones the main checkout into the run's live/<n>/ and detaches it at the gated SHA", () => {
+	const f = fixture();
+	gated(f, "--live", "5:before-merge");
+	const path = join(f.runDir(), "live", "5");
+	f.state.exec[`git clone ${f.repo} ${path}`] = ok();
+	f.state.exec[DETACH(path, HEAD)] = ok();
+	f.calls.length = 0;
+	const out = assertOk(f.run("live", "5", "start"));
+	assert.deepEqual(
+		f.calls.filter((c) => c.startsWith("git ") && !c.startsWith("git rev-parse --path-format")),
+		[`git clone ${f.repo} ${path}`, DETACH(path, HEAD)],
+	);
+	assert.ok(out.includes(path), out);
+	assert.ok(out.includes(`batch.ts live 5 --result <pass|fail> --evidence "<text or path>"`), out);
+});
+
+test("live <n> start is refused outside GATED, on a row without a live check, and when a step fails", () => {
+	const f = fixture();
+	assertOk(f.preflight("5,6", "--live", "5:before-merge"));
+	assertOk(f.launch(5));
+	assertRefused(f.run("live", "5", "start"), "live start needs a GATED row", "#5 is RUNNING(implement)");
+	f.at("10:05");
+	assertOk(f.run("event", "5", "report", "--path", f.report(5, "DONE", "10:04")));
+	assertRefused(f.run("live", "5", "start"), "#5 is REPORTED");
+	assert.ok(!f.calls.some((c) => c.startsWith("git clone")), f.calls.join("\n"));
+	const plain = fixture();
+	gated(plain);
+	assertRefused(plain.run("live", "5", "start"), "#5 has no live check", "preflight --live");
+	const failing = fixture();
+	gated(failing, "--live", "5:before-merge");
+	const path = join(failing.runDir(), "live", "5");
+	failing.state.exec[`git clone ${failing.repo} ${path}`] = { code: 128, stdout: "", stderr: "fatal: no space" };
+	assertRefused(failing.run("live", "5", "start"), "git clone", "fatal: no space");
+	assert.ok(!failing.calls.some((c) => c.includes("--detach")));
+});
+
+test("live <n> start on an existing clone fetches and detaches it at the gated SHA, deleting nothing; a dirty one is refused", () => {
+	const f = fixture();
+	gated(f, "--live", "5:before-merge");
+	const path = join(f.runDir(), "live", "5");
+	const file = put(join(path, "result.log"), "earlier run");
+	f.state.exec[`git -C ${path} status --porcelain`] = ok();
+	f.state.exec[`git -C ${path} fetch origin`] = ok();
+	f.state.exec[DETACH(path, HEAD)] = ok();
+	f.calls.length = 0;
+	const out = assertOk(f.run("live", "5", "start"));
+	assert.deepEqual(
+		f.calls.filter((c) => c.startsWith(`git -C ${path}`) || c.startsWith("git clone")),
+		[`git -C ${path} status --porcelain`, `git -C ${path} fetch origin`, DETACH(path, HEAD)],
+	);
+	assert.ok(out.includes(`reused the clone at ${path}`), out);
+	assert.equal(readFileSync(file, "utf8"), "earlier run");
+	f.state.exec[`git -C ${path} status --porcelain`] = ok(" M src/a.ts\n");
+	f.calls.length = 0;
+	assertRefused(f.run("live", "5", "start"), `${path} exists and is not clean`, "M src/a.ts");
+	assert.ok(!f.calls.some((c) => c.includes("--detach")), f.calls.join("\n"));
+});
+
+test("live <n> --result records pass or fail against the gated SHA and is refused where it does not apply", () => {
+	const f = fixture();
+	gated(f, "--live", "5:before-merge");
+	assertRefused(f.run("live", "5", "--result", "maybe", "--evidence", "x"), "--result must be pass or fail");
+	assertRefused(f.run("live", "5", "--result", "pass"), "--evidence is required");
+	assertRefused(f.run("event", "5", "live-result"), "not recorded through event", "live command");
+	assertOk(f.run(...LIVE_PASS));
+	const last = f.events().at(-1);
+	assert.deepEqual([last.type, last.sha, last.result, last.evidence], ["live-result", HEAD, "pass", LIVE_PASS[5]]);
+	assert.ok(rowDetails(f, 5).includes(`  live check: before-merge, pass at ${HEAD}: ${LIVE_PASS[5]}`));
+	assertRefused(f.run("live", "6", "--result", "pass", "--evidence", "x"), "#6 has no live check");
+	const queued = fixture();
+	assertOk(queued.preflight("5,6", "--live", "5:before-merge"));
+	assertRefused(queued.run(...LIVE_PASS), "#5 is QUEUED");
+});
+
+test("merge refuses a before-merge row without a recorded pass at the SHA it merges, naming the command", () => {
+	const f = fixture();
+	approvedGated(f, "--live", "5:before-merge");
+	f.state.exec[MERGE_CALL] = () => {
+		f.state.prs["feat/t5"] = goodPr({ state: "MERGED", mergeCommit: { oid: MOVED } });
+		return ok();
+	};
+	assertRefused(
+		f.run("merge", "5"),
+		`#5 has a before-merge live check and no recorded pass at ${HEAD}`,
+		`batch.ts live 5 --result pass --evidence "<text or path>"`,
+	);
+	assertOk(f.run("live", "5", "--result", "fail", "--evidence", "still 500"));
+	assertRefused(f.run("merge", "5"), "no recorded pass", "the last result at it is fail");
+	assert.deepEqual(mergeCalls(f), []);
+	assertOk(f.run(...LIVE_PASS));
+	assertOk(f.run("merge", "5"));
+	assert.deepEqual(mergeCalls(f), [MERGE_CALL]);
+});
+
+test("a head move makes a live pass stale: after a re-gate at the new SHA merge refuses until a pass is recorded for it", () => {
+	const f = fixture();
+	approvedGated(f, "--live", "5:before-merge");
+	assertOk(f.run(...LIVE_PASS));
+	f.state.prs["feat/t5"] = goodPr({ headRefOid: MOVED });
+	assert.match(rowLine(f, 5), /^#5 REPORTED/);
+	assert.ok(rowDetails(f, 5).includes("  live check: before-merge, no result recorded"));
+	f.append({ at: "2026-11-11T10:07:00.000Z", type: "gate", ticket: 5, sha: MOVED, judged: "re-read" });
+	const moved = `gh pr merge 12 --squash --match-head-commit ${MOVED}`;
+	f.state.exec[moved] = () => {
+		f.state.prs["feat/t5"] = goodPr({ headRefOid: MOVED, state: "MERGED", mergeCommit: { oid: SHA } });
+		return ok();
+	};
+	assertRefused(f.run("merge", "5"), `no recorded pass at ${MOVED}`);
+	assert.deepEqual(mergeCalls(f), []);
+	assertOk(f.run(...LIVE_PASS));
+	assert.equal(f.events().at(-1).sha, MOVED);
+	assertOk(f.run("merge", "5"));
+	assert.deepEqual(mergeCalls(f), [moved]);
+});
+
+test("an after-merge row merges, then status lists its live check as owed until a result is recorded at the merged head", () => {
+	const f = fixture();
+	approvedGated(f, "--live", "5:after-merge");
+	f.state.exec[MERGE_CALL] = () => {
+		f.state.prs["feat/t5"] = goodPr({ state: "MERGED", mergeCommit: { oid: MOVED } });
+		return ok();
+	};
+	assertOk(f.run("merge", "5"));
+	const owed = `  live check: after-merge, OWED: run it, then batch.ts live 5 --result <pass|fail> --evidence "<text or path>"`;
+	assert.ok(rowDetails(f, 5).includes(owed), rowDetails(f, 5).join("\n"));
+	assert.match(readLedger(f), /\| #5 \| MERGED \|.*after-merge, OWED/);
+	assertRefused(f.run("live", "5", "start"), "live start needs a GATED row", "#5 is MERGED");
+	assertOk(f.run(...LIVE_PASS));
+	assert.equal(f.events().at(-1).sha, HEAD);
+	assert.ok(rowDetails(f, 5).includes(`  live check: after-merge, pass at ${HEAD}: ${LIVE_PASS[5]}`));
+	assert.ok(!assertOk(f.run("status")).includes("OWED"));
+});
+
+test("cleanup lists an owed live check under Resources left, keeps live/ and the run, and a recorded result clears it", () => {
+	const f = finishable("--live", "5:after-merge");
+	const clone = put(join(f.runDir(), "live", "5", "README.md"));
+	const scratch = put(join(f.runDir(), "scratch", "5", "notes.txt"));
+	const out = assertOk(f.run("cleanup"));
+	assert.ok(
+		out.includes(
+			`- #5 live check (after-merge) owed: run it, then batch.ts live 5 --result <pass|fail> --evidence "<text or path>"`,
+		),
+		out,
+	);
+	assert.ok(out.includes(`kept: ${join(f.runDir(), "live")}: a live check is owed`), out);
+	assert.ok(existsSync(clone) && !existsSync(scratch), out);
+	assert.ok(existsSync(currentPointer(f)), `current removed while a live check is owed:\n${out}`);
+	assertOk(f.run("live", "5", "--result", "fail", "--evidence", "header missing in production"));
+	const again = assertOk(f.run("cleanup"));
+	assert.ok(!again.includes("owed"), again);
+	assert.ok(!existsSync(clone), again);
+	assert.match(again.split("\n").at(-1)!, /current run cleared/);
+});
+
+test("preflight writes version 2, reads a finished version-1 run, and refuses a run that still owes a live check", () => {
+	const f = fixture();
+	assertOk(f.preflight());
+	const old = f.runDir();
+	otherVersion(f, 1, [
+		{ at: "2026-11-11T10:01:00.000Z", type: "drop", ticket: 5, user: "no" },
+		{ at: "2026-11-11T10:01:00.000Z", type: "drop", ticket: 6, user: "no" },
+	]);
+	assert.match(rowLine(f, 5), /^#5 DROPPED/);
+	f.at("11:00");
+	assertOk(f.preflight());
+	assert.notEqual(f.runDir(), old);
+	assert.equal(f.events()[0].version, 2);
+	const owing = finishable("--live", "5:after-merge");
+	owing.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = { code: 1, stdout: "", stderr: "" };
+	owing.at("11:00");
+	assertRefused(owing.preflight(), "still owes a live check: #5", "batch.ts live 5 --result");
 });

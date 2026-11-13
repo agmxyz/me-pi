@@ -35,6 +35,7 @@ Collect from the user, in this session:
 - the tickets and the path of each `brief-<n>.md`, with the readiness report's order and the files each ticket touches;
 - the review lenses each coordinator runs (for example `code-review` Standards and Spec, plus an evolvability review);
 - the repo's check command and its implementation skill (for me-pi, `implement-me-pi`);
+- the rows that need a live check (one against the running system), each `before-merge` or `after-merge`;
 - the merge mode: "as gated" (merge each PR once it is gated and approved) or "hold all" (merge nothing until every row is gated);
 - the user's approvals, in his own words, with the question each answered; step 2 records them.
 
@@ -44,7 +45,7 @@ Collect from the user, in this session:
 
 From the main checkout, on the base branch and clean:
 
-`batch.ts preflight --repo <path> --tickets <n,...> --check "<cmd>" --chief-pane <your pane id>`
+`batch.ts preflight --repo <path> --tickets <n,...> --check "<cmd>" --chief-pane <your pane id> [--live <n>:<before-merge|after-merge>,...]`
 
 Your pane id is `pane_id` in `herdr pane current`. `preflight` refuses while the previous run has a row that is not terminal. A previous run written by another version of the helper is refused unread: confirm with the user that it is finished and cleaned up, then add `--set-aside-old-run "<his words>"`, quoting his confirmation; the new run records it. Any other command on such a run is refused: finish it with the helper that wrote it. Read the output: base and SHA, missing tools, and the base branch's rules (required checks, up-to-date requirement, merge methods). Rules `unknown` means the read failed; say so to the user, since `gate` then needs at least one passing check on the head and `merge` updates any branch that is behind.
 
@@ -74,6 +75,7 @@ Per row, by state:
 
 - **`ASKED(chief)`.** Read the report's question and what the failing check is for. Answer alone only when a line of the brief decides it: first read the whole function or test in question, then `batch.ts event <n> answer --basis "<the whole brief line>"` (one whole line of the brief; a list or heading marker may be left out) and `batch.ts prompt <n> "<the quoted line, your answer>. If anything else moves, stop."` Otherwise run `batch.ts event <n> escalate`, put the question to the user with your recommendation, record his reply with `event <n> answer --user "<his words>"`, and pass it on with `prompt`. A second question on the same ticket goes to the user.
 - **`REPORTED`.** Read the report, then the diff (`gh pr diff <pr>`), and gate: `batch.ts gate <n> --judged "<your note on the diff>"`. For a behaviour-kept refactor too large to read (about 400 changed lines), your judgement is an executable comparison of the old and new code on generated inputs, first shown to detect a known difference. A failed gate keeps the row; send the coordinator back with `batch.ts event <n> round fix --deadline <minutes>` and a `prompt` naming what failed, or ask the user.
+- **Live check.** On a `GATED` row with one, run `batch.ts live <n> start` and run the check yourself from the clone it prints, plus a control: the same check on the base, expected to fail or differ, so that a pass means something. Record it with `batch.ts live <n> --result <pass|fail> --evidence "<text or path>"`, and write the result into the PR body before merging. `merge` refuses a `before-merge` row without a pass at the gated SHA; an `after-merge` row's check is owed after its merge, and the run stays open until it is recorded.
 - **`GATED(sha)`.** Tell the user what the gate printed and what you judged, and ask for his decision. On his merge words (recorded with `approve`) run `batch.ts merge <n>`; under "hold all", wait until every open row is gated. If `merge` says "gate again when CI finishes on the new head", wait for the run on that head, then gate again. On "leave it open", run `batch.ts event <n> leave-open`.
 - **New round.** Review findings, a fix request or a base update reopen a row: `batch.ts event <n> round <review|fix|update> --deadline <minutes>`, then `prompt` with what the round must do.
 - **`OVERDUE`.** A deadline is a reason to look. herdr's `done` or `working` says nothing about a coordinator's worker or an open dialog; a present `<git-dir>/me-pi-implement.lock` (`git -C <worktree> rev-parse --git-dir`) means a worker is writing. Read the pane, then send one `prompt` asking for its state, then tell the user.
@@ -97,7 +99,7 @@ Record friction as it happens: `batch.ts note --kind <manual-fix|chief-answer|wr
 
 ## 5. Cleanup and notes
 
-Run `batch.ts cleanup --dry-run`, then `batch.ts cleanup`. Per terminal row it quits the coordinator through the same dialog check, removes a clean worktree, deletes the local branch only when merged, and closes the pane; once every coordinator is confirmed gone it removes `<run dir>/scratch/` and `<run dir>/live/`, and the run's events, ledger, contracts and reports stay. What it leaves or does not own is listed under "Resources left" (a remote branch, a report's scratch path, a main checkout behind `origin/<base>`): hand each one to the user. When nothing it owns is left, `cleanup` ends the run (`current run cleared`), and the next batch starts with `preflight`.
+Run `batch.ts cleanup --dry-run`, then `batch.ts cleanup`. Per terminal row it quits the coordinator through the same dialog check, removes a clean worktree, deletes the local branch only when merged, and closes the pane; once every coordinator is confirmed gone it removes `<run dir>/scratch/` and `<run dir>/live/`, and the run's events, ledger, contracts and reports stay. What it leaves or does not own is listed under "Resources left" (an owed live check, a remote branch, a report's scratch path, a main checkout behind `origin/<base>`): hand each one to the user. When nothing it owns is left, `cleanup` ends the run (`current run cleared`), and the next batch starts with `preflight`.
 
 `cleanup` ends with the notes. Route each to the lowest layer that can own it: code or package first, then the upstream skill (`ticket-readiness`, the implementation skill), then the coordinator contract, this skill last. Propose each to the user as a ticket or a PR; this skill changes only through that PR.
 

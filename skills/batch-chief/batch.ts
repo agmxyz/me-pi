@@ -37,8 +37,16 @@ type State = "QUEUED" | "RUNNING" | "ASKED" | "REPORTED" | "GATED" | "MERGED" | 
 const ROUNDS = ["implement", "review", "fix", "update"] as const;
 type Round = (typeof ROUNDS)[number];
 const LATER_ROUNDS = ROUNDS.filter((r) => r !== "implement");
-/** The events.jsonl format this helper writes and reads; a run with another version is refused. */
-const VERSION = 1;
+/** The events.jsonl format this helper writes; a run with a version outside `READS` is refused. */
+const VERSION = 2;
+/**
+ * The versions this helper reads: a version-1 log is a version-2 log without live checks (no `live` field, no
+ * `live-result` event), so it replays unchanged. Version 2 exists so a version-1 helper refuses a run with live checks
+ * instead of ignoring the `live` field and merging a `before-merge` row without its pass.
+ */
+const READS = [1, VERSION];
+const LIVE_MODES = ["before-merge", "after-merge"] as const;
+type LiveMode = (typeof LIVE_MODES)[number];
 const TERMINAL: State[] = ["MERGED", "LEFT_OPEN", "DROPPED"];
 const NOTE_KINDS = ["manual-fix", "chief-answer", "wrong-instruction", "gate-miss", "user-friction"];
 const TOOLS = ["git", "gh", "herdr"];
@@ -70,6 +78,8 @@ interface Row {
 	/** A merge intent with no observed result yet. */
 	intent?: { sha: string; at: string };
 	commit?: string | null;
+	/** The row's live check, named at preflight; `result` holds only a result at the row's current `sha`. */
+	live?: { mode: LiveMode; result?: { sha: string; result: "pass" | "fail"; evidence: string; at: string } };
 }
 
 interface Rules {
@@ -93,6 +103,8 @@ interface PreflightEvent {
 	check: string;
 	chiefPane: string;
 	tickets: RowId[];
+	/** The rows with a live check and when it runs; rows not named have none. */
+	live?: { ticket: RowId; mode: LiveMode }[];
 	/** The run of another version this preflight set aside, with the user's words that it is finished and cleaned up. */
 	setAside?: { run: string; version: unknown; user: string };
 }
@@ -130,6 +142,8 @@ type RowEvent = { at: string; ticket: RowId } & (
 	| { type: "merge-intent"; sha: string }
 	| { type: "merged"; commit: string | null }
 	| { type: "leave-open" }
+	/** A live check's result, against the row's gated SHA (for a merged row, the SHA it was gated and merged at). */
+	| { type: "live-result"; sha: string; result: "pass" | "fail"; evidence: string }
 	| { type: "drop"; user: string }
 );
 
@@ -219,6 +233,11 @@ const TRANSITIONS: Record<RowEventType, Transition> = {
 		usage: (r) => `event ${r.ticket} leave-open`,
 		recordedBy: null,
 	},
+	"live-result": {
+		accepts: (r) => !!r.live && (r.state === "GATED" || (r.state === "MERGED" && r.live.mode === "after-merge")),
+		usage: (r) => liveResultUsage(r.ticket),
+		recordedBy: "the live command records it",
+	},
 	drop: {
 		accepts: (r) => !TERMINAL.includes(r.state),
 		usage: (r) => `event ${r.ticket} drop --user "<user's words>"`,
@@ -227,6 +246,13 @@ const TRANSITIONS: Record<RowEventType, Transition> = {
 };
 
 const ROW_EVENTS = Object.keys(TRANSITIONS) as RowEventType[];
+
+function liveResultUsage(ticket: RowId, result = "<pass|fail>"): string {
+	return `live ${ticket} --result ${result} --evidence "<text or path>"`;
+}
+
+/** Whether a merged `after-merge` row still owes its live check result; it keeps the run open. */
+const liveOwed = (row: Row) => row.state === "MERGED" && row.live?.mode === "after-merge" && !row.live.result;
 
 const isRowEvent = (type: string): type is RowEventType => Object.hasOwn(TRANSITIONS, type);
 
@@ -348,6 +374,9 @@ function apply(row: Row, e: RowEvent): void {
 		case "leave-open":
 			row.state = "LEFT_OPEN";
 			break;
+		case "live-result":
+			row.live!.result = { sha: e.sha, result: e.result, evidence: e.evidence, at: e.at };
+			break;
 		case "drop":
 			row.state = "DROPPED";
 			row.deadline = undefined;
@@ -355,6 +384,8 @@ function apply(row: Row, e: RowEvent): void {
 		default:
 			unreachable(e);
 	}
+	// A live result goes stale exactly as the gate does: whatever clears or moves the gated SHA clears it.
+	if (row.live?.result && row.live.result.sha !== row.sha) row.live.result = undefined;
 	row.lastAt = e.at;
 }
 
@@ -399,10 +430,11 @@ function rebuild(id: string, dir: string): Run {
 	const [first, ...rest] = readEvents(dir) as Event[];
 	if (first?.type !== "preflight") throw new Error(`${dir}/events.jsonl does not start with a preflight event`);
 	const preflight = first;
-	if (preflight.version !== VERSION) throw new Refusal(otherVersion(id, preflight.version));
+	if (!READS.includes(preflight.version)) throw new Refusal(otherVersion(id, preflight.version));
 	const run: Run = { id, dir, preflight, rows: new Map(), approvals: [], notes: [] };
 	for (const ticket of preflight.tickets)
 		run.rows.set(ticket, { ticket, state: "QUEUED", lastAt: preflight.at, chiefAnswers: 0 });
+	for (const { ticket, mode } of preflight.live ?? []) rowOf(run, ticket).live = { mode };
 	for (const e of rest) {
 		try {
 			fold(run, e);
@@ -416,7 +448,7 @@ function rebuild(id: string, dir: string): Run {
 }
 
 function otherVersion(id: string, version: unknown): string {
-	return `run ${id} was written by another version of the helper: its events.jsonl has version ${version ?? "none"}; this helper writes version ${VERSION}. Finish that run with the helper that wrote it`;
+	return `run ${id} was written by another version of the helper: its events.jsonl has version ${version ?? "none"}; this helper writes version ${VERSION} and reads ${READS.join(", ")}. Finish that run with the helper that wrote it`;
 }
 
 /** The format version a run's first event carries, read without replaying the run's events. */
@@ -481,6 +513,26 @@ function ticketList(text: string | undefined, what: string): RowId[] {
 	return tickets;
 }
 
+/** `--live <n>:<before-merge|after-merge>[,...]`: each entry names a row of `tickets` once. */
+function liveList(text: string, tickets: RowId[]): { ticket: RowId; mode: LiveMode }[] {
+	const entries = text.split(",").map((entry) => {
+		const match = /^([^:]+):(.*)$/.exec(entry.trim());
+		if (!match) throw new Refusal(`--live entries are <n>:<${LIVE_MODES.join("|")}>, got ${JSON.stringify(entry)}`);
+		const ticket = rowId(match[1], "--live");
+		if (!tickets.includes(ticket)) throw new Refusal(`--live names #${ticket}, which is not a row of --tickets`);
+		const mode = LIVE_MODES.find((m) => m === match[2]);
+		if (!mode)
+			throw new Refusal(
+				`--live mode of #${ticket} must be before-merge or after-merge, got ${JSON.stringify(match[2])}`,
+			);
+		return { ticket, mode };
+	});
+	const named = entries.map((e) => e.ticket);
+	const twice = named.find((t, i) => named.indexOf(t) !== i);
+	if (twice !== undefined) throw new Refusal(`--live names #${twice} twice: ${text}`);
+	return entries;
+}
+
 function required(values: Record<string, unknown>, name: string): string {
 	const value = values[name];
 	if (typeof value !== "string" || !value.trim()) throw new Refusal(`--${name} is required`);
@@ -529,6 +581,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		tickets: "string",
 		check: "string",
 		"chief-pane": "string",
+		live: "string",
 		"set-aside-old-run": "string",
 	});
 	const setAsideWords = values["set-aside-old-run"];
@@ -536,6 +589,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		throw new Refusal(`--set-aside-old-run needs the user's words confirming the old run is finished and cleaned up`);
 	const repo = mainCheckout(runner, resolve(cwd, required(values, "repo")));
 	const tickets = ticketList(required(values, "tickets"), "--tickets");
+	const live = values.live === undefined ? undefined : liveList(required(values, "live"), tickets);
 	const git = (...args: string[]) => {
 		const out = runner.exec("git", args, { cwd: repo });
 		if (out.code !== 0) throw new Error(`git ${args.join(" ")} failed in ${repo}: ${out.stderr.trim()}`);
@@ -553,7 +607,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		const id = readFileSync(pointer, "utf8").trim();
 		const old = join(batch, id);
 		const version = logVersion(old);
-		if (version !== VERSION) {
+		if (!READS.includes(version as number)) {
 			// Another version's events are never replayed through this table; the user vouches the run is finished.
 			if (typeof setAsideWords !== "string")
 				throw new Refusal(
@@ -562,10 +616,16 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 			setAside = { run: id, version: version ?? null, user: setAsideWords };
 			setAsideText = `set aside run ${id} (version ${version ?? "none"}), not checked; it stays in ${old}, and any worktree, branch or pane it left is not cleaned up; the user's words: ${JSON.stringify(setAsideWords)}`;
 		} else {
-			const open = [...rebuild(id, old).rows.values()].filter((r) => !TERMINAL.includes(r.state));
+			const rows = [...rebuild(id, old).rows.values()];
+			const open = rows.filter((r) => !TERMINAL.includes(r.state));
 			if (open.length)
 				throw new Refusal(
 					`run ${id} still has rows that are not terminal: ${open.map((r) => `#${r.ticket}`).join(", ")}`,
+				);
+			const owed = rows.filter(liveOwed);
+			if (owed.length)
+				throw new Refusal(
+					`run ${id} still owes a live check: ${owed.map((r) => `#${r.ticket} (batch.ts ${liveResultUsage(r.ticket)})`).join(", ")}`,
 				);
 		}
 	}
@@ -601,6 +661,7 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		check: required(values, "check"),
 		chiefPane: required(values, "chief-pane"),
 		tickets,
+		...(live ? { live } : {}),
 		...(setAside ? { setAside } : {}),
 	};
 	mkdirSync(dir, { recursive: true });
@@ -851,7 +912,17 @@ function reconcile(run: Run, row: Row, runner: Runner): string[] {
 
 /** The lines under a row that the event log alone determines, shown by both `status` and the ledger. */
 function logLines(row: Row): string[] {
-	return row.intent ? [`merge intent at ${row.intent.sha} pending since ${row.intent.at}: the PR is not merged`] : [];
+	const lines = row.intent
+		? [`merge intent at ${row.intent.sha} pending since ${row.intent.at}: the PR is not merged`]
+		: [];
+	if (row.live) lines.push(`live check: ${row.live.mode}, ${liveText(row)}`);
+	return lines;
+}
+
+function liveText(row: Row): string {
+	const result = row.live?.result;
+	if (result) return `${result.result} at ${result.sha}: ${result.evidence}`;
+	return liveOwed(row) ? `OWED: run it, then batch.ts ${liveResultUsage(row.ticket)}` : "no result recorded";
 }
 
 function rulesText(preflight: PreflightEvent): string {
@@ -1093,6 +1164,11 @@ function merge(argv: string[], runner: Runner, cwd: string): string {
 		);
 	const failures = checkFailures(pr, rules);
 	if (failures.length) throw new Refusal(failures.join("; "));
+	const result = row.live?.result;
+	if (row.live?.mode === "before-merge" && result?.result !== "pass")
+		throw new Refusal(
+			`#${row.ticket} has a before-merge live check and no recorded pass at ${row.sha}${result ? ` (the last result at it is ${result.result})` : ""}; run it from the clone (batch.ts live ${row.ticket} start), then record the pass with batch.ts ${liveResultUsage(row.ticket, "pass")}`,
+		);
 	const repo = run.preflight.repo;
 	if (pr.mergeStateStatus === "BEHIND" && (rules === "unknown" || rules.upToDate)) {
 		const update = runner.exec("gh", ["pr", "update-branch", String(pr.number)], { cwd: repo });
@@ -1121,6 +1197,59 @@ function merge(argv: string[], runner: Runner, cwd: string): string {
 	const commit = after.mergeCommit?.oid ?? null;
 	record(run, { at: runner.now().toISOString(), type: "merged", ticket: row.ticket, commit });
 	return `#${row.ticket} is MERGED as ${commit}`;
+}
+
+/**
+ * `live <n> start` puts a clone of the main checkout at the gated SHA in `<run dir>/live/<n>/` (a clone, not a
+ * worktree, so no other checkout's lock holds it up); an existing clean clone is fetched and reused, nothing is
+ * deleted. `live <n> --result <pass|fail> --evidence <text>` records the result against the row's gated SHA.
+ */
+function live(argv: string[], runner: Runner, cwd: string): string {
+	const { values, positionals } = parse(argv, { result: "string", evidence: "string" });
+	const run = currentRun(runner, cwd);
+	const row = rowOf(run, rowId(positionals[0], "the row"));
+	if (!row.live)
+		throw new Refusal(`#${row.ticket} has no live check; a row gets one only at preflight --live <n>:<mode>`);
+	if (positionals[1] === "start" && positionals.length === 2 && values.result === undefined) {
+		if (row.state !== "GATED") throw new Refusal(`live start needs a GATED row; ${where(row)}`);
+		return liveStart(run, row, runner);
+	}
+	if (positionals.length !== 1)
+		throw new Refusal(`usage: live ${row.ticket} start, or ${liveResultUsage(row.ticket)}`);
+	const result = required(values, "result");
+	if (result !== "pass" && result !== "fail") throw new Refusal(`--result must be pass or fail, got ${result}`);
+	const evidence = required(values, "evidence");
+	check(row, "live-result");
+	const sha = row.sha!;
+	record(run, { at: runner.now().toISOString(), type: "live-result", ticket: row.ticket, sha, result, evidence });
+	return `#${row.ticket} live check ${result} recorded at ${sha}`;
+}
+
+function liveStart(run: Run, row: Row, runner: Runner): string {
+	const path = join(run.dir, "live", String(row.ticket));
+	const sha = row.sha!;
+	const step = (args: string[]) => {
+		const out = runner.exec("git", args);
+		if (out.code !== 0) throw new Refusal(`git ${args.join(" ")} failed: ${out.stderr.trim()}`);
+	};
+	let how: string;
+	if (isLink(path) || isLink(dirname(path)))
+		throw new Refusal(`${path} or its parent is a symlink; the clone goes only into the run's own live directory`);
+	if (existsSync(path)) {
+		const dirty = dirtyLines(runner, path);
+		if (dirty.length)
+			throw new Refusal(`${path} exists and is not clean: ${dirty.join("; ")}; nothing was changed in it`);
+		step(["-C", path, "fetch", "origin"]);
+		how = `reused the clone at ${path}`;
+	} else {
+		step(["clone", run.preflight.repo, path]);
+		how = `cloned ${run.preflight.repo} into ${path}`;
+	}
+	step(["-C", path, "checkout", "--detach", sha]);
+	return [
+		`${how}, detached at ${sha}`,
+		`run #${row.ticket}'s ${row.live!.mode} live check there, and the same check on the base as a control; then batch.ts ${liveResultUsage(row.ticket)}`,
+	].join("\n");
 }
 
 /** Whether a live Pi runs in the pane; `undefined` when the pane is gone. */
@@ -1286,7 +1415,11 @@ function removeBelow(root: string, dir: string): void {
  * Removes the run's `scratch/` and `live/` (or lists them on a dry run): a root that is a symlink is unlinked, a
  * directory is emptied with `removeBelow` and removed. Returns the lines to print and the roots it could not remove.
  */
-function removeDisposable(run: Run, dryRun: boolean): { lines: string[]; left: string[] } {
+function removeDisposable(
+	run: Run,
+	dryRun: boolean,
+	names: readonly string[] = DISPOSABLE,
+): { lines: string[]; left: string[] } {
 	const lines: string[] = [];
 	const left: string[] = [];
 	let dir: string;
@@ -1296,7 +1429,7 @@ function removeDisposable(run: Run, dryRun: boolean): { lines: string[]; left: s
 		const why = `scratch and live not removed: ${(error as Error).message}`;
 		return { lines: [`  left: ${why}`], left: [why] };
 	}
-	for (const name of DISPOSABLE) {
+	for (const name of names) {
 		const root = join(dir, name);
 		const shown = join(run.dir, name);
 		let kind: "symlink" | "directory" | "file";
@@ -1406,16 +1539,24 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 		} else if (result.kept) left.push(`#${row.ticket} branch ${result.kept}: kept, the PR is not merged`);
 	}
 	unsettled ||= [...run.rows.values()].some((r) => !TERMINAL.includes(r.state));
+	const owed = [...run.rows.values()].filter(liveOwed);
+	for (const row of owed)
+		left.push(`#${row.ticket} live check (after-merge) owed: run it, then batch.ts ${liveResultUsage(row.ticket)}`);
 	out.push("Run directory:");
+	if (owed.length) {
+		// The owed check runs from its clone: live stays, scratch goes once the coordinators are gone.
+		const root = join(run.dir, "live");
+		if (existsSync(root) || isLink(root)) out.push(`  kept: ${root}: a live check is owed`);
+	}
 	if (unsettled) {
-		for (const name of DISPOSABLE) {
+		for (const name of owed.length ? ["scratch"] : DISPOSABLE) {
 			const root = join(run.dir, name);
 			if (!existsSync(root) && !isLink(root)) continue;
 			out.push(`  kept: ${root}: a row is not terminal or its coordinator is not confirmed gone`);
 			left.push(`${root}: kept until every coordinator has quit`);
 		}
 	} else {
-		const removed = removeDisposable(run, dryRun);
+		const removed = removeDisposable(run, dryRun, owed.length ? ["scratch"] : DISPOSABLE);
 		out.push(...removed.lines);
 		left.push(...removed.left);
 	}
@@ -1448,6 +1589,7 @@ const COMMANDS: Record<string, (argv: string[], runner: Runner, cwd: string) => 
 	status,
 	gate,
 	merge,
+	live,
 	prompt,
 	cleanup,
 };
