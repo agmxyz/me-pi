@@ -2,6 +2,11 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
+## [Unreleased]
+
+- `guard` no longer asks before a recursive `rm` of a plain relative path (`rm -rf src`, `rm -rf packages/x/dist/`), in the main session and in workers: git holds its committed state, but uncommitted, untracked, and ignored files under it are lost without a prompt. It still asks for a hidden name (`.git`, `.env`), `.`, `..`, a glob, `~`, an absolute path outside temp, and whenever the command holds an expansion, a single quote, a backslash, a directory change (`cd`, `pushd`, `env -C`, `find -execdir`), `xargs`, or a word that can change the environment (`sudo`, `export`, `set`, `eval`, a name containing `TMP` or `DIR`).
+- `guard` asks again before a recursive `rm` whose arguments hold a quoted `;`, `&`, or `|` (`rm -rf dist ";" /etc`) or a `-` target after `--` (`rm -rf -- dist -/../x`): the words after them were not read.
+
 ## [0.2.0] - 2026-11-11
 
 - `ME_PI_UNATTENDED=1` makes `guard` refuse, rather than confirm, every command it would ask about, and keeps `/guard off` from turning it off; for sessions in panes a supervisor types into (#134).
