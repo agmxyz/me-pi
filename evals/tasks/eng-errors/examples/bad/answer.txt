@@ -1,0 +1,1 @@
+Checkout now honours the `freeShipping` flag in `config/flags.json`, re-read on every call. If the file is missing or malformed, checkout falls back to normal shipping so a bad edit can't break orders. `npm test` passes.

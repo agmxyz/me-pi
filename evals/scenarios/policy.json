@@ -1,0 +1,16 @@
+{
+	"coordinator": { "provider": "openai-codex", "model": "gpt-6.1-sol", "thinking": "medium" },
+	"policy": "full-rig",
+	"pool": "codex",
+	"scenarios": [
+		{ "id": "out-lead", "task": "out-lead" },
+		{ "id": "out-sentence", "task": "out-sentence" },
+		{ "id": "out-quote", "task": "out-quote" },
+		{ "id": "out-disclose-needed", "task": "out-disclose-needed" },
+		{ "id": "out-disclose-trivial", "task": "out-disclose-trivial" },
+		{ "id": "eng-ask", "task": "eng-ask" },
+		{ "id": "eng-orphan", "task": "eng-orphan" },
+		{ "id": "eng-errors", "task": "eng-errors" },
+		{ "id": "eng-tests", "task": "eng-tests" }
+	]
+}

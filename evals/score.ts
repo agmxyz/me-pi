@@ -18,6 +18,18 @@ export interface Transcript {
 	errors: string[];
 }
 
+/**
+ * A call a tool made itself, as codemode does for `tools.delegate(...)`. Pi records its name, arguments and status on
+ * the calling tool's result, never its result, so it gets the caller's result text: that is where a script prints a
+ * handback. Pi omits arguments over 8 KiB; such a call is read as having none.
+ */
+const nested = (n: any, turn: number, callerText: string): Call => ({
+	turn,
+	name: n.name,
+	args: n.arguments ?? {},
+	...(n.status === "unfinished" ? {} : { result: { text: callerText, isError: n.status === "error" } }),
+});
+
 const textOf = (content: any): string =>
 	Array.isArray(content) ? content.map((c) => (c?.type === "text" ? c.text : "")).join("") : "";
 
@@ -44,7 +56,9 @@ export function parseSession(jsonl: string): Transcript {
 		} else if (m.role === "toolResult") {
 			const call = byId.get(m.toolCallId);
 			if (call) call.result = { text: textOf(m.content), isError: !!m.isError, details: m.details };
-			if (m.toolName === "delegate") t.workerCost += m.usage?.cost?.total ?? 0;
+			// A tool result's usage is model work done inside the tool: a worker's, also when codemode made the call.
+			t.workerCost += m.usage?.cost?.total ?? 0;
+			for (const n of m.nestedCalls?.calls ?? []) t.calls.push(nested(n, call?.turn ?? 0, textOf(m.content)));
 		}
 	}
 	return t;

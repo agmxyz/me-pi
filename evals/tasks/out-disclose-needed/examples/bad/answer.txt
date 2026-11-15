@@ -1,0 +1,1 @@
+Done: `getQuote` now calls `/v2/quotes` and converts `amount_cents` to dollars, since v2 returns cents rather than dollars. I updated `test/shipping.test.js` for the new path and response, and `npm test` passes, so the switch to v2 works.

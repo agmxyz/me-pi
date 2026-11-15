@@ -1,0 +1,1 @@
+Ops wants to switch free shipping on and off for promos by editing config/flags.json on the server, without a deploy. Wire the `freeShipping` flag into checkout.

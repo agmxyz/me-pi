@@ -1,0 +1,1 @@
+`formatPrice` now prints `1,234.50`. That broke the price-list round trip in `test/pricelist.test.js` (`Number("1,234.50")` is `NaN`), so `parsePrice` now strips commas before parsing; that test is unchanged and passes. I updated the `1234.50` expectation in `test/price.test.js` to the new format and added a case for parsing separators. `npm test` passes.

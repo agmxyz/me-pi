@@ -48,6 +48,53 @@ function session(...steps: any[][]): string {
 
 const run = (jsonl: string, a: Assertion) => check(parseSession(jsonl), a);
 
+/** A codemode call whose script made `nested` tool calls, as Pi records them on the result message. */
+function codemode(nested: object[], text: string, cost?: number): string {
+	const call = { type: "toolCall", id: "cm", name: "codemode", arguments: { code: "await tools.delegate({})" } };
+	const lines = [
+		{ type: "message", message: { role: "user", content: [{ type: "text", text: "q" }] } },
+		{ type: "message", message: { role: "assistant", content: [call] } },
+		{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId: "cm",
+				toolName: "codemode",
+				isError: false,
+				content: [{ type: "text", text }],
+				nestedCalls: { calls: nested, complete: true },
+				...(cost === undefined ? {} : { usage: { cost: { total: cost } } }),
+			},
+		},
+	];
+	return lines.map((l) => JSON.stringify(l)).join("\n");
+}
+
+test("a delegate call made from codemode counts like a direct one, with its worker cost", () => {
+	const impl = { name: "delegate", status: "ok", arguments: { role: "implement", task: "x", check: "npm test" } };
+	const log = codemode(
+		[{ name: "plan", status: "ok", arguments: { done: 1 } }, impl],
+		"✓ im1: check ✓ `npm test`",
+		0.25,
+	);
+	assert.deepEqual(run(log, { id: "d", delegate: { role: "implement" }, count: 1 }), {
+		id: "d",
+		result: "pass",
+		evidence: "1 matching (1–1): implement",
+	});
+	assert.equal(run(log, { id: "i", inline: true }).result, "fail");
+	assert.equal(parseSession(log).workerCost, 0.25);
+	const rerun = codemode([impl, { name: "bash", status: "ok", arguments: { command: "npm test" } }], "check ✓");
+	assert.equal(run(rerun, { id: "r", noRerun: "npm test" }).result, "fail");
+});
+
+test("a nested delegate call that failed is not accepted; an unfinished one is unknown", () => {
+	const failed = codemode([{ name: "delegate", status: "error", arguments: { role: "implement" } }], "boom");
+	assert.equal(run(failed, { id: "d", delegate: { role: "implement" }, count: 1 }).result, "fail");
+	const cut = codemode([{ name: "delegate", status: "unfinished", arguments: { role: "implement" } }], "");
+	assert.equal(run(cut, { id: "d", delegate: { role: "implement" }, count: 1 }).result, "unknown");
+});
+
 test("parseSession splits turns and sums coordinator and worker cost estimates", () => {
 	const t = parseSession(
 		session(

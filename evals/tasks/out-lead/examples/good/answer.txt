@@ -1,0 +1,3 @@
+Fixed: `parsePrice` in `src/price.js` used `parseInt`, which dropped the cents; it now uses `Number.parseFloat`, so `total(["12.50", "0.50"])` returns 13.
+
+`npm test` passes.

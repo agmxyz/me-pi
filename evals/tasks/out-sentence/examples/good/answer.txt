@@ -1,0 +1,1 @@
+8.25% (`TAX_RATE` in `src/tax.js`), applied after the coupon: `checkout` discounts the subtotal first, then `addTax` taxes the discounted amount and rounds to cents.
