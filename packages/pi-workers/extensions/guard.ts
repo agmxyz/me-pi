@@ -59,9 +59,9 @@ const DISPOSABLE = new RegExp(
 // A plain relative path (`src`, `./packages/x/dist/`) that recursive `rm` may also remove without asking, since git
 // holds its committed state: no hidden or `..` segment, glob, expansion, `~`, or absolute path. Only in a command that
 // can't run it elsewhere: plain by the `${TMPDIR:?}` rule below (`c${U}d ~`, a sourced heredoc, `sudo -D/`) and with no
-// directory change or hidden targets (`cd`, `env -C`, `find -execdir`, `xargs`).
+// directory change, other host or session, or hidden targets (`cd`, `env -C`, `find -execdir`, `ssh`, `tmux`, `xargs`).
 const RELATIVE = /^(?:\.\/)?[A-Za-z0-9_][\w.-]*(?:\/[A-Za-z0-9_][\w.-]*)*\/?$/;
-const CHANGES_DIR = /(?<![\w-])(?:cd|pushd|popd|xargs)(?![\w-])|chdir|execdir|\s-C\b/;
+const CHANGES_DIR = /(?<![\w-])(?:cd|pushd|popd|xargs|ssh|tmux|screen|chroot)(?![\w-])|chdir|execdir|\s-C\b/;
 // `${TMPDIR:?}` is the session's temp dir only if the command can't rebind TMPDIR first (`TMPDIR=/ rm …`,
 // `export TMPDIR=/;`, `sudo`, `z=TMP; z+=DIR=/; ((z))`, `bash -c '…'` reading rc files). Fail closed: outside those
 // expansions, the command must be plain characters (no expansion, assignment, arithmetic, brace, glob, escape, or single
@@ -460,7 +460,6 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 	// An open quote means a quoted `;`, `&`, or `|` ended the match early (`rm -rf src ";" /etc`): the rest is unseen.
 	if ((args.match(/"/g)?.length ?? 0) % 2 || (args.match(/'/g)?.length ?? 0) % 2)
 		return { recursive: true, targets: undefined };
-	const options = raw.indexOf("--");
 	const recursive = hasShort(wordsOf(args), "[rR]", "--recursive");
 	const targets: string[] = [];
 	for (const [i, w] of raw.entries()) {
@@ -469,9 +468,9 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 		if (cut >= 0 && quoted) return { recursive, targets: undefined };
 		for (const part of cut > 0 ? [w.slice(0, cut), w] : [w]) {
 			const word = part.replace(/["'()\x60]/g, "");
-			// After `--`, a word starting with `-` is a target (`rm -rf -- -/../../x`).
-			const option = word.startsWith("-") && (options < 0 || i <= options);
-			if (word && !option && word !== "{}" && word !== "\\") targets.push(word);
+			// A `-` word with a path is a target after `--` or, for BSD rm, after the first target (`rm -rf src -/../x`).
+			if (word.startsWith("-") && word.includes("/")) return { recursive, targets: undefined };
+			if (word && !word.startsWith("-") && word !== "{}" && word !== "\\") targets.push(word);
 		}
 	}
 	return { recursive, targets };
