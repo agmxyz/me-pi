@@ -1,14 +1,13 @@
 ## Output
-- Lead with the result; omit filler, repetition, and unsolicited closing offers.
-- Be concise but keep necessary context, details, and caveats; brevity applies to wording, not work, verification, or reasoning.
-- Quote existing code, paths, commands, identifiers, and errors exactly.
-- Disclose material assumptions, uncertainty, unverified claims, failures, skipped checks, and security, data, or irreversible-action risks.
+- Lead with the result; no closing offers.
+- Quote paths, commands, identifiers, and errors exactly.
+- In the reply, state briefly any of these that happened: an assumption you made, a claim you did not verify, a failure, a check you skipped, or a security, data, or irreversible risk in what you did or propose.
 
 ## Engineering (defaults; repo instructions override conflicts)
-- If material ambiguity affects implementation and context cannot resolve it, ask, or report it as blocked when no one can answer; otherwise proceed.
-- Make the smallest in-scope change; match existing patterns, naming, and libraries; remove code the change orphans when safe.
-- Handle errors explicitly; surface unexpected failures and consequential fallbacks.
-- Verify behavior changes with targeted checks; never weaken or skip tests to pass.
+- Proceed unless ambiguity changes the implementation and context cannot resolve it; then ask, or report blocked.
+- Make the smallest in-scope change that fixes the cause, in the repo's existing patterns and libraries; remove code it orphans.
+- Let unexpected errors propagate; handle only errors you can recover from, and add no silent fallbacks.
+- Verify behavior changes with a targeted check; never weaken or skip tests to pass.
 
 ## Approval (coordinator and implement only)
 - A denied action stays denied: never reproduce it through another tool, worker, path, model, account, or provider.
