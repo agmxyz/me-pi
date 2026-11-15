@@ -6,6 +6,7 @@
  * `--upload-pack`, `submodule foreach`, `GIT_SSH_COMMAND`, `GIT_PAGER`, `git config core.pager …`).
  * `/guard on|off` toggles it for the current session, except that an unattended session refuses `off`; every session
  * starts on.
+ * A recursive rm asks unless every target is a plain relative path, a build directory, or a temp entry.
  * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
  * misses commands it can't read (interpreter code, a non-recursive rm).
  */
@@ -55,6 +56,12 @@ const TEMP_ENTRY = String.raw`[^/*?\s]+(?:/\S*)?$`;
 const DISPOSABLE = new RegExp(
 	String.raw`^(?:(?:\./)?(?:node_modules|dist|build|out|target|coverage|\.cache|\.next|\.turbo|tmp)(?:/|$)|(?:/private)?/tmp/${TEMP_ENTRY}|/var/folders/[^/*?\s]+/[^/*?\s]+/[^/*?\s]+/${TEMP_ENTRY}|\$\{TMPDIR:\?\}/${TEMP_ENTRY})`,
 );
+// A plain relative path (`src`, `./packages/x/dist/`) that recursive `rm` may also remove without asking, since git
+// holds its committed state: no hidden or `..` segment, glob, expansion, `~`, or absolute path. Only in a command that
+// can't run it elsewhere: plain by the `${TMPDIR:?}` rule below (`c${U}d ~`, a sourced heredoc, `sudo -D/`) and with no
+// directory change, other host or session, or hidden targets (`cd`, `env -C`, `find -execdir`, `ssh`, `tmux`, `xargs`).
+const RELATIVE = /^(?:\.\/)?[A-Za-z0-9_][\w.-]*(?:\/[A-Za-z0-9_][\w.-]*)*\/?$/;
+const CHANGES_DIR = /(?<![\w-])(?:cd|pushd|popd|xargs|ssh|tmux|screen|chroot)(?![\w-])|chdir|execdir|\s-C\b/;
 // `${TMPDIR:?}` is the session's temp dir only if the command can't rebind TMPDIR first (`TMPDIR=/ rm …`,
 // `export TMPDIR=/;`, `sudo`, `z=TMP; z+=DIR=/; ((z))`, `bash -c '…'` reading rc files). Fail closed: outside those
 // expansions, the command must be plain characters (no expansion, assignment, arithmetic, brace, glob, escape, or single
@@ -450,6 +457,9 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 	const quoted = /["'\\]/.test(args);
 	const raw = args.split(/\s+/).filter(Boolean);
 	if (raw.some((w) => /^["'\\]*-/.test(w) && /[<>&|]/.test(w))) return { recursive: true, targets: undefined };
+	// An open quote means a quoted `;`, `&`, or `|` ended the match early (`rm -rf src ";" /etc`): the rest is unseen.
+	if ((args.match(/"/g)?.length ?? 0) % 2 || (args.match(/'/g)?.length ?? 0) % 2)
+		return { recursive: true, targets: undefined };
 	const recursive = hasShort(wordsOf(args), "[rR]", "--recursive");
 	const targets: string[] = [];
 	for (const [i, w] of raw.entries()) {
@@ -458,6 +468,8 @@ function rmArgs(args: string): { recursive: boolean; targets: string[] | undefin
 		if (cut >= 0 && quoted) return { recursive, targets: undefined };
 		for (const part of cut > 0 ? [w.slice(0, cut), w] : [w]) {
 			const word = part.replace(/["'()\x60]/g, "");
+			// A `-` word with a path is a target after `--` or, for BSD rm, after the first target (`rm -rf src -/../x`).
+			if (word.startsWith("-") && word.includes("/")) return { recursive, targets: undefined };
 			if (word && !word.startsWith("-") && word !== "{}" && word !== "\\") targets.push(word);
 		}
 	}
@@ -479,6 +491,7 @@ export function classify(
 ): string | undefined {
 	// Unstripped: a dropped message or heredoc body could hide a rebinding.
 	const tmpdirUnsafe = tmpdirMayChange(command);
+	const relativeOk = !tmpdirUnsafe && !CHANGES_DIR.test(command.replace(/"/g, ""));
 	command = withoutMessages(command);
 	const gitCommands = [...command.matchAll(GIT_COMMAND)];
 	// In a fresh temp repo, only the checks for git running a command apply.
@@ -508,7 +521,9 @@ export function classify(
 			targets !== undefined &&
 			targets.length > 0 &&
 			targets.every(
-				(t) => DISPOSABLE.test(t) && !/(?:^|\/)\.\.(?:\/|$)/.test(t) && !(t.startsWith(TMPDIR_REF) && tmpdirUnsafe),
+				(t) =>
+					(relativeOk && RELATIVE.test(t)) ||
+					(DISPOSABLE.test(t) && !/(?:^|\/)\.\.(?:\/|$)/.test(t) && !(t.startsWith(TMPDIR_REF) && tmpdirUnsafe)),
 			);
 		if (!disposable) return "recursive rm";
 	}
