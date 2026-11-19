@@ -192,9 +192,13 @@ const coordinatorEnv = (a: Attempt) => ({
 	ME_PI_SPEND_BUDGET_USD: String(cap),
 });
 
+// The target is a remote-less clone the coordinator works in, so its project resources (e.g. `.agents/skills`) load as in
+// the live rig, where the user trusts the repo; without this, Pi stops at the project-trust prompt nobody answers.
+const coordinatorCommand = (a: Attempt) => [...piCommand(pi, a.sandbox, coordinatorEnv(a), a.sessions), "--approve"];
+
 async function dryRun(arm: Arm): Promise<boolean> {
 	const a = await prepare(arm, 0);
-	const cmd = piCommand(pi, a.sandbox, coordinatorEnv(a), a.sessions);
+	const cmd = coordinatorCommand(a);
 	const { stdout: target } = await piLive(a.sandbox, "start", a.worktree, "--", ...cmd);
 	let screen = "";
 	try {
@@ -292,7 +296,7 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 	}, WATCH_MS);
 	const deadline = setTimeout(() => void stop("timeout", `${timeoutMs / 60_000} min`), timeoutMs);
 	try {
-		const cmd = piCommand(pi, a.sandbox, coordinatorEnv(a), a.sessions);
+		const cmd = coordinatorCommand(a);
 		target = (await piLive(a.sandbox, "start", a.worktree, "--", ...cmd)).stdout.trim();
 		await piLive(a.sandbox, "ask", target, promptOf(a.arm, a.contract));
 		await quiet(a, target, () => state !== "completed");
