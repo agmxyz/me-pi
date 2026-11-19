@@ -451,6 +451,8 @@ test("a failure is one line plus a bounded partial answer; stderr stays out of t
 		task: "x",
 	});
 	assert.match(text(missing), /^✗ could not start pi: spawn .*no-such-pi ENOENT/);
+	// Pi's footer reads usage.cost.total from every tool result that has a usage, so a worker that reported none has no usage.
+	assert.equal("usage" in missing, false);
 });
 
 test("only the latest reply decides success; an empty or errored run fails", async (t) => {

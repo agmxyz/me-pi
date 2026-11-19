@@ -4,6 +4,7 @@ Pi shows new entries here after an update. Versions follow [semver](https://semv
 
 ## [Unreleased]
 
+- `delegate` no longer crashes the Pi session when every worker of a call dies before its first reply (for example, an extension that fails to load): the tool result carried an empty `usage`, and Pi's footer failed on it with `Cannot read properties of undefined (reading 'total')` on every render, including after reopening the session.
 - `guard` no longer asks before a recursive `rm` of a plain relative path (`rm -rf src`, `rm -rf packages/x/dist/`), in the main session and in workers: git holds its committed state, but uncommitted, untracked, and ignored files under it are lost without a prompt. It still asks for a hidden name (`.git`, `.env`), `.`, `..`, a glob, `~`, an absolute path outside temp, and whenever the command holds an expansion, a single quote, a backslash, a directory change (`cd`, `pushd`, `env -C`, `find -execdir`), `ssh`, `tmux`, `screen`, `chroot`, `xargs`, or a word that can change the environment (`sudo`, `export`, `set`, `eval`, a name containing `TMP` or `DIR`).
 - `guard` asks again before a recursive `rm` whose arguments hold a quoted `;`, `&`, or `|` (`rm -rf dist ";" /etc`) or a `-` word with a path (`rm -rf dist -/../x`): those targets were not read.
 
