@@ -1,0 +1,7 @@
+The server listens on port 3000 by default, as set in `src/server.js`.
+
+A few caveats:
+- If the `PORT` environment variable is set, that value is used instead.
+- I didn't start the server, so this is based on reading the code only.
+- Your deployment environment (Docker, a process manager, etc.) might map or override the port.
+- Note that a non-numeric `PORT` would produce `NaN`, which Node may treat as a random port.

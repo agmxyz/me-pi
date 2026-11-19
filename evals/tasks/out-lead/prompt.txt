@@ -1,0 +1,1 @@
+Cart totals are wrong whenever a price has cents, e.g. "12.50" + "0.50" comes out as 12. Please fix it.

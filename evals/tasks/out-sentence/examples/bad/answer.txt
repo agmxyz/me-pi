@@ -1,0 +1,15 @@
+## Tax rate
+
+Checkout charges a sales tax rate of **8.25%**. This is defined as the constant `TAX_RATE = 0.0825` in `src/tax.js`, and it is used by the `addTax` function, which multiplies the amount by `1 + TAX_RATE` and rounds the result to two decimal places.
+
+## Order of operations
+
+Tax is applied **after** the coupon discount. Here is how `checkout` in `src/checkout.js` works:
+
+1. It computes the subtotal by summing `price * qty` for each item.
+2. It passes the subtotal to `applyCoupon`, which looks up the coupon code (`SPRING10` = 10% off, `VIP20` = 20% off) and reduces the amount.
+3. It passes the discounted amount to `addTax`.
+
+For example, two items at $100 with `SPRING10` gives a $200 subtotal, $180 after the discount, and $194.85 after tax. This matches the test in `test/checkout.test.js`.
+
+This means customers pay tax on the discounted price, which is the common approach in most US jurisdictions. Let me know if you need anything else for your conversation with finance!

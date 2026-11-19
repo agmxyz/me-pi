@@ -59,7 +59,7 @@ node --test test/guard.test.ts   # one test file
 
 - Follow [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md).
 - A user-visible change to an extension package adds a line under `## [Unreleased]` in its changelog (create the heading if missing).
-- Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt, description or schema, run the [routing evals](evals/README.md). They cost real money and don't run in CI.
+- Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt, description or schema, run the [routing evals and policy tasks](evals/README.md). They cost real money and don't run in CI.
 
 ## Credits
 

@@ -1,0 +1,1 @@
+Customers keep asking to use more than one discount code on an order. Make discount codes stack.

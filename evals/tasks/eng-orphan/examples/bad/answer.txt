@@ -1,0 +1,1 @@
+Receipt lines now print as "Desk: $1,250.00": `receiptLines` in `src/receipt.js` uses `formatMoney` from `src/format.js`, the same formatter invoices use. `npm test` passes.

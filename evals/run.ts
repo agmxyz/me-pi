@@ -1,5 +1,6 @@
 /**
- * Manual routing evals: each attempt is a natural request in a fresh, isolated Pi, scored from its session log.
+ * Manual evals of the always-loaded text: each attempt is a natural request in a fresh, isolated Pi. A routing scenario
+ * is scored from its session log; a policy task also from its work directory, by the task's own scorer.
  * Real model calls and real spend; never part of `npm run check`. See evals/README.md.
  */
 import { execFile as execFileCb, execFileSync, spawnSync } from "node:child_process";
@@ -20,6 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs, promisify } from "node:util";
 import { cloneAt, createSandbox, fixtureRepo, type Policy, type Sandbox } from "./sandbox.ts";
 import { type Assertion, check, parseSession, type Verdict } from "./score.ts";
+import { scoreTask, TASKS, taskFixture, taskPrompt, taskScorer } from "./task.ts";
 
 const execFile = promisify(execFileCb);
 const HERE = dirname(new URL(import.meta.url).pathname);
@@ -31,12 +33,22 @@ interface Scenario {
 	cwd: "repo" | string;
 	turns: { prompt: string; afterSeconds?: number }[];
 	expect: Assertion[];
+	/** A directory under `tasks/`: it supplies the fixture, the prompt, and a scorer run on the work directory. */
+	task?: string;
+}
+
+/** A task scenario may be written as `{ id, task }`; its prompt has one source, the task's `prompt.txt`. */
+function withTask(s: Partial<Scenario> & { id: string }): Scenario {
+	if (!s.task) return s as Scenario;
+	const dir = join(TASKS, s.task);
+	return { cwd: s.task, expect: [], ...s, turns: s.turns ?? [{ prompt: taskPrompt(dir) }] };
 }
 
 const { values: opt } = parseArgs({
 	options: {
 		scenarios: { type: "string", default: join(HERE, "scenarios", "routing.json") },
 		only: { type: "string" },
+		coordinator: { type: "string" },
 		ref: { type: "string", multiple: true },
 		n: { type: "string", default: "1" },
 		jobs: { type: "string", default: "4" },
@@ -56,8 +68,16 @@ const { values: opt } = parseArgs({
 const realHome = homedir();
 const repo = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: HERE, encoding: "utf8" }).trim();
 const spec = JSON.parse(readFileSync(resolve(opt.scenarios!), "utf8"));
+// --coordinator provider/model[:thinking] replaces the scenario file's coordinator, to compare models.
+if (opt.coordinator) {
+	const m = /^([^/]+)\/([^:]+)(?::(\w+))?$/.exec(opt.coordinator);
+	if (!m) throw new Error(`--coordinator wants provider/model[:thinking], got ${opt.coordinator}`);
+	spec.coordinator = { provider: m[1], model: m[2], thinking: m[3] ?? spec.coordinator.thinking };
+}
 const wanted = opt.only?.split(",");
-const scenarios: Scenario[] = spec.scenarios.filter((s: Scenario) => (wanted ? wanted.includes(s.id) : !s.optIn));
+const scenarios: Scenario[] = spec.scenarios
+	.filter((s: Scenario) => (wanted ? wanted.includes(s.id) : !s.optIn))
+	.map(withTask);
 if (wanted && scenarios.length !== wanted.length) throw new Error(`unknown scenario in --only ${opt.only}`);
 const pi = opt.pi ?? execFileSync("sh", ["-c", "command -v pi"], { encoding: "utf8" }).trim();
 const piVersion = execFileSync(pi, ["--version"], { encoding: "utf8" }).trim().split(/\s+/).pop()!;
@@ -98,7 +118,8 @@ const piLive = (sandbox: Sandbox, ...args: string[]) =>
 
 function piCommand(sandbox: Sandbox, extra: Record<string, string>, sessionDir: string): string[] {
 	const env = Object.entries({ ...sandbox.env, ...extra }).map(([k, v]) => `${k}=${v}`);
-	return ["env", "-i", ...env, pi, "--session-dir", sessionDir];
+	// --approve: the work directory is the run's own clone or fixture; without it Pi stops at its trust dialog.
+	return ["env", "-i", ...env, pi, "--approve", "--session-dir", sessionDir];
 }
 
 function sandboxFor(ref: string): Sandbox {
@@ -153,8 +174,10 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 	const status = join(a.sandbox.root, "status", `${id}.log`);
 	mkdirSync(sessions, { recursive: true });
 	mkdirSync(dirname(status), { recursive: true });
-	const fixture =
-		a.scenario.cwd === "repo"
+	const taskDir = a.scenario.task && join(TASKS, a.scenario.task);
+	const fixture = taskDir
+		? fixtureRepo(taskFixture(taskDir), work, a.sandbox.env)
+		: a.scenario.cwd === "repo"
 			? cloneAt(a.sandbox.src, a.sandbox.commit, work)
 			: fixtureRepo(join(HERE, "fixtures", a.scenario.cwd), work, a.sandbox.env);
 	const started = Date.now();
@@ -184,6 +207,10 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 	if (file) {
 		const t = parseSession(readFileSync(join(sessions, file), "utf8"));
 		verdicts = a.scenario.expect.map((e) => check(t, e));
+		// A provider error leaves no reply to score: that is an unfinished attempt, not a failed task.
+		if (taskDir && t.errors.length) [state, note] = ["incomplete", `provider: ${t.errors[0]}`.slice(0, 160)];
+		else if (taskDir)
+			verdicts.push(scoreTask(taskDir, work, t.turns.at(-1)?.replies.at(-1) ?? "", a.sandbox.tmp, a.sandbox.env));
 		cost = { coordinator: t.coordinatorCost, worker: t.workerCost, source: "pi-estimate" };
 		calls = t.calls.length;
 	} else if (state === "completed") [state, note] = ["incomplete", "no session log"];
@@ -223,7 +250,7 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		policy: spec.policy,
 		hashes: {
 			prompts: sha(JSON.stringify(a.scenario.turns)),
-			expect: sha(JSON.stringify(a.scenario.expect)),
+			expect: sha(JSON.stringify(a.scenario.expect) + (taskDir ? taskScorer(taskDir) : "")),
 			fixture,
 			pool: sha(JSON.stringify(pool)),
 			extensions: extensionsTree(),

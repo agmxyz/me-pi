@@ -1,0 +1,3 @@
+The import crashes because one of the inbox CSVs has an invalid SKU. In the "orders final v2" file, line 3 uses `tea-01` in lowercase instead of `TEA-01`, and `parseOrders` throws an "unknown SKU" error on anything that is not in `KNOWN_SKUS`. Since it throws, the whole run aborts and no orders are imported.
+
+Fix the row to `TEA-01` and rerun `npm run import`.

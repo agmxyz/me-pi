@@ -1,0 +1,6 @@
+Blocked: "stack" has two readings that give different totals, and nothing in the repo picks one.
+
+- Additive: SAVE10 + SAVE20 = 30% off, so $100 becomes $70.
+- Sequential: 10% then 20%, so $100 becomes $72 (and the result is the same in either order).
+
+Which rule do you want? I left `src/discount.js` unchanged; it still rejects more than one code.

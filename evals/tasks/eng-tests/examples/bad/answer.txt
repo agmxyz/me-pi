@@ -1,0 +1,1 @@
+`formatPrice` now adds thousands separators (`1,234.50`). I updated the expectations in `test/price.test.js` and switched the round-trip fixture in `test/pricelist.test.js` to prices under 1,000 so it no longer depends on formatting. `npm test` passes.

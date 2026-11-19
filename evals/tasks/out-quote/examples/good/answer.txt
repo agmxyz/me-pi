@@ -1,0 +1,7 @@
+The import crashes on a bad SKU in one inbox file, not on a code bug:
+
+```
+Error: line 3 of data/inbox/orders (final) v2.csv: unknown SKU "tea_01" (did you mean "TEA-01"?)
+```
+
+`parseOrders` in `src/import.js` only accepts exact `KNOWN_SKUS` entries, and the whole run aborts on the first bad line, so `data/inbox/orders 2024-10.csv` is not imported either. Fix the row in `data/inbox/orders (final) v2.csv` to `TEA-01` and rerun `npm run import`. I did not change any files.

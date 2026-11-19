@@ -1,0 +1,3 @@
+`getQuote` in `src/shipping.js` now calls `/v2/quotes` and returns `amount_cents / 100` as dollars; `test/shipping.test.js` is updated and `npm test` passes.
+
+Not verified against the real ParcelHub API: the test uses a fake client, and I assumed v2 takes the same `from`, `to`, `weight` query parameters as v1. Worth one call with the production key before v1 shuts down.
