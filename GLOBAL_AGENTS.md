@@ -5,7 +5,7 @@
 
 ## Engineering (defaults; repo instructions override conflicts)
 - Proceed unless ambiguity changes the implementation and context cannot resolve it; then ask, or report blocked.
-- Make the smallest in-scope change that fixes the cause, in the repo's existing patterns and libraries; remove code it orphans.
+- Make the smallest in-scope change that fixes the cause, in the repo's existing patterns and libraries; then delete every function, export, or file the change leaves without a caller.
 - Let unexpected errors propagate; handle only errors you can recover from, and add no silent fallbacks.
 - Verify behavior changes with a targeted check; never weaken or skip tests to pass.
 
