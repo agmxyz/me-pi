@@ -1051,7 +1051,7 @@ export default function (pi: ExtensionAPI) {
 						}),
 					});
 					if (history.length > HISTORY_SIZE) history.shift();
-					const usage = {};
+					const usage: Record<string, any> = {};
 					for (const r of all) addUsage(usage, r.usage);
 					const footer =
 						all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
@@ -1089,7 +1089,8 @@ export default function (pi: ExtensionAPI) {
 							view,
 							...(facts && { implement: facts }),
 						},
-						usage: usage as any,
+						// A worker that died before its first reply reported no usage; Pi reads cost.total from any usage it is given.
+						...(usage.cost && { usage: usage as any }),
 						isError: failed,
 					};
 				} finally {
