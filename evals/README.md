@@ -2,6 +2,8 @@
 
 Manual checks that the always-loaded text (`GLOBAL_AGENTS.md`, `PROMPT_GUIDELINES`, the delegate tool's description and schema) still routes natural requests the way it should. Each attempt is one request in a fresh Pi, scored from that Pi's session log. They make real model calls and spend real money, so they never run in `npm run check` or CI; only the scorer and sandbox have hermetic tests there. Tracked in #56.
 
+For comparing a coordinator that uses the `implement` worker against one that edits directly on a real task, see [`ab/README.md`](ab/README.md).
+
 Run them before merging any change to that text. A 3–12-word edit has flipped routing before (#58: the job id dropped from check 7, check 12 went from inline to `implement`).
 
 ## Isolation

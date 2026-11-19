@@ -50,6 +50,64 @@ export function parseSession(jsonl: string): Transcript {
 	return t;
 }
 
+export interface WorkerSpend {
+	/** Pi-estimated worker spend: the sum of `details.view.runs[].cost` over every finished delegate job, each counted once. */
+	cost: number;
+	/** Per role (`general` when the call names none): delegate calls made and the worker cost of those that finished. */
+	byRole: Record<string, { calls: number; cost: number }>;
+}
+
+const viewCost = (details: any): number =>
+	(details?.view?.runs ?? []).reduce((sum: number, r: any) => sum + (Number(r?.cost) || 0), 0);
+const plainText = (content: any): string => (typeof content === "string" ? content : textOf(content));
+
+/**
+ * Sums worker cost from a coordinator session. Delegate results carry no `usage`; the cost is in the view: on the
+ * `delegate` toolResult for a foreground call, and on the later `custom_message` (customType `delegate`) for a
+ * background job, which is matched to its call through the job id (`Started background job bgN`).
+ */
+export function workerSpend(jsonl: string): WorkerSpend {
+	const spend: WorkerSpend = { cost: 0, byRole: {} };
+	const roleOfCall = new Map<string, string>();
+	const roleOfJob = new Map<string, string>();
+	const counted = new Set<string>();
+	const add = (role: string, cost: number) => {
+		spend.cost += cost;
+		spend.byRole[role].cost += cost;
+	};
+	const slot = (role: string) => {
+		spend.byRole[role] ??= { calls: 0, cost: 0 };
+		return role;
+	};
+	for (const line of jsonl.split("\n")) {
+		if (!line.trim()) continue;
+		const entry = JSON.parse(line);
+		if (entry.type === "custom_message" && entry.customType === "delegate") {
+			const job = /^Background delegate job (bg\d+)/.exec(plainText(entry.content))?.[1];
+			if (!job || counted.has(job)) continue;
+			counted.add(job);
+			add(slot(roleOfJob.get(job) ?? "unknown"), viewCost(entry.details));
+			continue;
+		}
+		if (entry.type !== "message") continue;
+		const m = entry.message;
+		if (m.role === "assistant")
+			for (const c of m.content ?? [])
+				if (c.type === "toolCall" && c.name === "delegate" && !roleOfCall.has(c.id)) {
+					const role = slot(c.arguments?.role ?? "general");
+					roleOfCall.set(c.id, role);
+					spend.byRole[role].calls++;
+				}
+		if (m.role !== "toolResult" || m.toolName !== "delegate" || counted.has(m.toolCallId)) continue;
+		counted.add(m.toolCallId);
+		const role = slot(roleOfCall.get(m.toolCallId) ?? "unknown");
+		const job = /^Started background job (bg\d+)/.exec(textOf(m.content))?.[1];
+		if (job) roleOfJob.set(job, role);
+		else add(role, viewCost(m.details));
+	}
+	return spend;
+}
+
 export interface DelegateMatch {
 	role?: string;
 	web?: boolean;
