@@ -396,7 +396,7 @@ test("a finished call folds to its first line once a later step follows, and fol
 
 test("a failure, an edit's changed lines and the last step before the reply keep their lines", () => {
 	const s = session();
-	s.step([ran("npm test", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+	s.step([ran("npm run lint", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
 	s.step([
 		[
 			"edit",
@@ -407,7 +407,7 @@ test("a failure, an edit's changed lines and the last step before the reply keep
 	s.step([ran("npm test", "ok")]);
 	const settled = [
 		"",
-		"✗ $ npm test · exit 1",
+		"✗ $ npm run lint · exit 1",
 		"Error: boom",
 		"",
 		"✓ edit a.ts · +1 -1",
@@ -466,4 +466,92 @@ test("a resumed session folds the rows it draws from its history", () => {
 		component.render(80).map((line: string) => stripVTControlCharacters(line).trim()),
 		["", "✓ $ ls · 2 lines"],
 	);
+});
+
+test("a failed command folds once the same command passes on a later run", () => {
+	const s = session();
+	const failure = "Error: boom\n\nCommand exited with code 1";
+	s.step([ran("npm test", failure, { isError: true })]);
+	s.step([ran("ls", "a")]);
+	assert.deepEqual(s.screen().slice(0, 3), ["", "✗ $ npm test · exit 1", "Error: boom"], "still open");
+	s.step([ran("npm test", failure, { isError: true })]);
+	s.step([ran("npm test", "ok")]);
+	s.step([ran("true", "")]);
+	assert.deepEqual(s.screen(), [
+		"",
+		"✗ $ npm test · exit 1 · passed later",
+		"✓ $ ls · 1 line",
+		"✗ $ npm test · exit 1 · passed later",
+		"✓ $ npm test · 1 line",
+		"",
+		"✓ $ true",
+	]);
+});
+
+test("a folded row is dim when its call only looked something up", () => {
+	handlers.session_start({}, { sessionManager: { getBranch: () => [] } });
+	handlers.message_start({ message: { role: "user" } });
+	const commands = [
+		"rg -n foo src | head -5",
+		"git status --short && git log --oneline -3",
+		"npm test",
+		"ls > out.txt",
+		"rm -rf build",
+	];
+	const rows = commands.map((command, i) => {
+		const message = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: `dim-${i}`, name: "bash", arguments: { command } }],
+		};
+		handlers.message_start({ message });
+		handlers.message_end({ message });
+		const component = new ToolExecutionComponent(
+			"bash",
+			`dim-${i}`,
+			{ command },
+			{},
+			resolver("bash", () => PI.bash),
+			UI,
+			ROOT,
+		);
+		component.updateResult({ content: text("x"), details: {}, isError: false }, false);
+		return component;
+	});
+	// Folded rows close up: the last of them draws the whole run, one line per call.
+	const drawn = rows
+		.flatMap((component) => component.render(80))
+		.filter((line: string) => stripVTControlCharacters(line).trim());
+	assert.deepEqual(
+		drawn.map((line: string) => line.includes("\x1b[1m")),
+		[false, false, true, true, true, false],
+		"the two lookups are dim; the last row is the newest step, with its output line",
+	);
+});
+
+test("when the agent stops, one line sums up the run: open failures, files changed, calls, time", (t) => {
+	t.mock.timers.enable({ apis: ["Date"] });
+	const widgets: (string[] | undefined)[] = [];
+	const theme = { fg: (_role: string, value: string) => value };
+	const ctx = { hasUI: true, ui: { theme, setWidget: (_key: string, content: any) => widgets.push(content) } };
+	const call = (id: string, toolName: string, args: any, isError = false) => {
+		handlers.tool_execution_start({ toolCallId: id, toolName, args });
+		handlers.tool_execution_end({ toolCallId: id, toolName, isError });
+	};
+	const shown = () => widgets.at(-1)?.map((line) => stripVTControlCharacters(line).trim());
+
+	handlers.agent_start({}, ctx);
+	assert.equal(widgets.at(-1), undefined, "a new run clears the last receipt");
+	handlers.agent_end({}, ctx);
+	assert.equal(widgets.at(-1), undefined, "a run without a call has no receipt");
+
+	handlers.agent_start({}, ctx);
+	call("1", "bash", { command: "npm test" }, true);
+	call("2", "edit", { path: "a.ts" });
+	call("3", "edit", { path: "a.ts" });
+	call("4", "write", { path: "b.ts" });
+	call("5", "bash", { command: "npm run lint" }, true);
+	call("6", "bash", { command: "npm test" });
+	t.mock.timers.tick(72_000);
+	handlers.agent_end({}, ctx);
+	assert.deepEqual(shown(), ["✗ 1 failure open · 2 files changed · 6 calls · 1m 12s"]);
 });

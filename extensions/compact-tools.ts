@@ -9,6 +9,11 @@
  * the row folds to its first line, and folded rows that follow each other close up into one block. Failures, the
  * changed lines of an edit, and the last step before a reply stay: that step is usually the check the reply
  * rests on, and folding it later would redraw a screen the reader has already scrolled past.
+ *
+ * A folded row is dim when the call only looked something up, so the rows left at full weight are the ones that
+ * changed something. A failed command folds too, and dims, once the same command passes later.
+ *
+ * When the agent stops, one line above the editor sums up the run: failures still open, files changed, calls, time.
  */
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,6 +62,10 @@ interface Summary {
 	count?: number;
 	/** The body is what the call did, not what it printed: it stays when the row folds. */
 	keep?: boolean;
+	/** The call only looked something up: its folded row is dim. */
+	lookup?: boolean;
+	/** Set on a folded row that no longer needs attention: the whole line is dim. */
+	quiet?: boolean;
 }
 type Summarize = (args: any, result: Result | undefined, theme: Theme, context: Context) => Summary;
 
@@ -71,6 +80,10 @@ interface RowState {
 	startedAt?: number;
 	clock?: ReturnType<typeof setInterval>;
 	expanded?: boolean;
+	/** The row's summary and its drawn first line, kept until Pi next updates the row: Pi draws every row on every frame. */
+	summary?: Summary;
+	headLine?: { key: string; rows: string[] };
+	bodyLines?: { key: string; rows: string[] };
 }
 
 /** Where a call sits in the transcript. */
@@ -89,6 +102,8 @@ interface Row {
 	/** True when the row is one folded line, so it can close up with the rows around it. */
 	folded: () => boolean;
 	head: (width: number) => string[];
+	/** The command a `bash` row ran: a failure is settled once the same command passes. */
+	command?: string;
 }
 /**
  * The calls of the current session in transcript order, kept from Pi's message events: a row cannot see its
@@ -97,8 +112,10 @@ interface Row {
 const transcript = {
 	calls: new Map<string, Call>(),
 	order: [] as Call[],
-	/** Rows by call id. A row can draw before its call is known here: a resumed session draws first. */
+	/** Rows by call id. A row can draw before its call is known here, so a new session does not clear them. */
 	rows: new Map<string, Row>(),
+	/** The calls that ran each command and passed. */
+	passed: new Map<string, Set<string>>(),
 	turn: 0,
 	block: 0,
 	run: 0,
@@ -108,7 +125,6 @@ const transcript = {
 };
 function resetTranscript(): void {
 	transcript.calls.clear();
-	transcript.rows.clear();
 	transcript.newest.clear();
 	Object.assign(transcript, { order: [], turn: 0, block: 0, run: 0, textSeen: false });
 }
@@ -141,6 +157,15 @@ function noteMessage(message: any): void {
 function superseded(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	return call !== undefined && call.turn < (transcript.newest.get(call.run) ?? 0);
+}
+/** True for a failed command that a later call ran again and passed. */
+function passedLater(toolCallId: string): boolean {
+	const call = transcript.calls.get(toolCallId);
+	const command = transcript.rows.get(toolCallId)?.command;
+	if (!call || command === undefined) return false;
+	for (const id of transcript.passed.get(command) ?? [])
+		if ((transcript.calls.get(id)?.index ?? -1) > call.index) return true;
+	return false;
 }
 const foldedRow = (call: Call | undefined) => (call && transcript.rows.get(call.id)?.folded() ? call : undefined);
 const closesUp = (call: Call, other: Call | undefined) => other?.block === call.block && foldedRow(other) !== undefined;
@@ -191,12 +216,49 @@ function filePath(args: any, theme: Theme, cwd: string): string {
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 const title = (theme: Theme, text: string) => theme.fg("toolTitle", theme.bold(text));
 
+/** What one run did, from the prompt to the agent stopping. */
+interface Run {
+	startedAt: number;
+	calls: number;
+	changed: Set<string>;
+	/** Failed calls by what they tried, dropped when the same thing later succeeds. */
+	open: Set<string>;
+	tried: Map<string, string>;
+}
+const RECEIPT = "compact-tools-receipt";
+const newRun = (): Run => ({ startedAt: Date.now(), calls: 0, changed: new Set(), open: new Set(), tried: new Map() });
+/** What a call tried: a command, or a tool on a file. A retry of the same thing settles an earlier failure. */
+function attempt(toolName: string, args: any): string {
+	const target = toolName === "bash" ? String(args?.command ?? "").trim() : (args?.path ?? args?.file_path ?? "");
+	return `${toolName} ${target}`;
+}
+/** The run in one line, what needs attention first; nothing for a run that called no tool. */
+function receipt(run: Run, theme: Theme): string | undefined {
+	if (run.calls === 0) return undefined;
+	const facts = [
+		...(run.open.size > 0 ? [theme.fg("error", `✗ ${plural(run.open.size, "failure")} open`)] : []),
+		...(run.changed.size > 0 ? [theme.fg("muted", `${plural(run.changed.size, "file")} changed`)] : []),
+		theme.fg("dim", plural(run.calls, "call")),
+		theme.fg("dim", formatDuration(Date.now() - run.startedAt)),
+	];
+	return ` ${facts.join(theme.fg("dim", " · "))}`;
+}
+
 /** `cd <dir>` in front of a command says where it ran, not what it did. */
 const CD_PREFIX = /^cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;|\n)\s*/;
 /** Plumbing that shapes a command's output for the model and tells a reader nothing about what ran. */
 const SHELL_OPTIONS = /^set\s+[-+][a-z]+(?:\s+pipefail)?\s*(?:&&|;|\n)\s*/;
 const STDERR_MERGE = /\s+2>&1(?=\s|$)/g;
 const OUTPUT_CAP = /\s*\|\s*(?:tail|head)(?:\s+-n?\s*\d+)?\s*$/;
+
+/** Commands that read and change nothing; a command line made only of these is a lookup. */
+const READS =
+	/^(?:command\s+)?(?:rg|grep|ls|cat|head|tail|sed\s+-n|find|fd|wc|tree|stat|file|which|pwd|echo|sort|uniq|cut|tr|column|jq|nl|du|diff|git\s+(?:status|log|diff|show|branch|rev-parse|ls-files|blame|grep))(?:\s|$)/;
+const WRITES = />(?!&|\s*\/dev\/null)|\s-(?:delete|exec)\b|\$\(|`/;
+function isLookup(command: string): boolean {
+	if (command.includes("\n") || WRITES.test(command)) return false;
+	return command.split(/&&|\|\||[;|]/).every((part) => READS.test(part.trim()));
+}
 
 /** `src/a.ts:12` or `src/a.ts:12:5` in output: a place in a file, which a terminal can open. */
 const FILE_REFERENCE = /(?<![\w/.-])((?:\.{0,2}\/)?(?:[\w@.-]+\/)*[\w@-][\w@.-]*\.[a-z]{1,5}):(\d+)(?::\d+)?/g;
@@ -272,6 +334,7 @@ const SUMMARIES: Record<string, Summarize> = {
 			title(theme, middleCut(first, room - 2 - visibleWidth(more))) +
 			theme.fg("muted", more);
 		if (!result) return { head, meta };
+		const lookup = isLookup(command);
 		const output = outputLines(result);
 		// Pi ends a failed command's output with this line; the head line carries the code instead.
 		const exit = context.isError ? output.at(-1)?.match(/^Command exited with code (\d+)$/)?.[1] : undefined;
@@ -290,7 +353,7 @@ const SUMMARIES: Record<string, Summarize> = {
 			...(hidden > 0 ? [theme.fg("muted", `⋮ ${plural(hidden, "more line")}`)] : []),
 			...shown(tailCount > 0 ? output.slice(-tailCount) : []),
 		];
-		return { head, meta, body, count: output.length };
+		return { head, meta, body, count: output.length, lookup };
 	},
 	read(args, result, theme, context) {
 		const head = `${title(theme, "read")} ${filePath(args, theme, context.cwd)}${theme.fg("warning", lineRange(args))}`;
@@ -304,7 +367,7 @@ const SUMMARIES: Record<string, Summarize> = {
 			.replace(/\n+\[[^\n]*\]\s*$/, "")
 			.trimEnd()
 			.split("\n").length;
-		return { head, meta: [theme.fg("muted", plural(count, "line"))] };
+		return { head, meta: [theme.fg("muted", plural(count, "line"))], lookup: true };
 	},
 	write(args, _result, theme, context) {
 		const content = typeof args?.content === "string" ? args.content.trimEnd() : "";
@@ -388,7 +451,8 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 		const meta = facts.join(sep);
 		const room = Math.max(8, width - context.outputPad * 2 - 2 - (meta ? visibleWidth(meta) + 3 : 0));
 		const head = typeof summary.head === "function" ? summary.head(room) : truncateToWidth(summary.head, room, "…");
-		return [`${pad}${glyph(state, theme)} ${head}${meta ? sep : ""}${meta}`];
+		const line = `${pad}${glyph(state, theme)} ${head}${meta ? sep : ""}${meta}`;
+		return [summary.quiet ? theme.fg("dim", stripVTControlCharacters(line)) : line];
 	});
 }
 /** A line cut to one row, or to two when it reads like an error: the message is usually at its end. */
@@ -448,18 +512,33 @@ function compactRenderers(
 	const framed = pi?.renderShell !== "self";
 	const showsPi = (context: Context) => context.expanded || (context.isError && PI_DRAWS_FAILURE.has(toolName));
 	const fallback = summarize ?? plainSummary(toolName);
-	/** The row's summary: without its output once a later step followed a call that succeeded. */
+	/**
+	 * The row's summary: without its output once a later step followed a call that succeeded, or a failed
+	 * command passed on a later run.
+	 */
 	const summary = (args: any, state: RowState, theme: Theme, context: Context): Summary => {
-		const full = fallback(args, state.result, theme, context);
-		const folds = state.result && !state.failed && !full.keep && superseded(context.toolCallId);
-		return folds ? { ...full, body: [] } : full;
+		if (!state.result) return fallback(args, undefined, theme, context);
+		state.summary ??= fallback(args, state.result, theme, context);
+		const full = state.summary;
+		if (state.failed) {
+			if (!passedLater(context.toolCallId)) return full;
+			return { ...full, body: [], meta: [...(full.meta ?? []), "passed later"], count: 0, quiet: true };
+		}
+		return !full.keep && superseded(context.toolCallId) ? { ...full, body: [], quiet: full.lookup } : full;
+	};
+	/** Pi updated the row: what was kept from its last state is stale. */
+	const refresh = (state: RowState, context: Context) => {
+		state.summary = undefined;
+		state.headLine = undefined;
+		state.bodyLines = undefined;
+		state.expanded = context.expanded;
+		keepTime(state, context);
 	};
 	return {
 		renderShell: "self",
 		renderCall(args, theme, context) {
 			const state = rowState(context);
-			state.expanded = context.expanded;
-			keepTime(state, context);
+			refresh(state, context);
 			state.piCall = pi?.renderCall?.(args, theme, { ...context, lastComponent: state.piCall });
 			if (showsPi(context)) {
 				const full =
@@ -473,11 +552,18 @@ function compactRenderers(
 				return framed ? piShell(full, theme, context, "top") : full;
 			}
 			if (!summarize && state.piCall) return glyphed(state.piCall, state, theme, context);
-			const head = (width: number) =>
-				headLine(summary(args, state, theme, context), state, theme, context).render(width);
+			const head = (width: number) => {
+				const drawn = summary(args, state, theme, context);
+				if (!state.result) return headLine(drawn, state, theme, context).render(width);
+				const key = `${width} ${drawn.body?.length ?? 0} ${drawn.quiet} ${drawn.meta?.length}`;
+				if (state.headLine?.key !== key)
+					state.headLine = { key, rows: headLine(drawn, state, theme, context).render(width) };
+				return state.headLine.rows;
+			};
 			const id = context.toolCallId;
 			transcript.rows.set(id, {
 				head,
+				command: toolName === "bash" ? String((args as any)?.command ?? "").trim() : undefined,
 				folded: () =>
 					!state.expanded &&
 					state.result !== undefined &&
@@ -492,8 +578,12 @@ function compactRenderers(
 			state.result = options.isPartial ? undefined : result;
 			state.failed = context.isError;
 			state.durationMs = context.durationMs;
-			state.expanded = context.expanded;
-			keepTime(state, context);
+			refresh(state, context);
+			const command = transcript.rows.get(context.toolCallId)?.command;
+			if (command !== undefined && state.result && !state.failed) {
+				const passed = transcript.passed.get(command) ?? new Set();
+				transcript.passed.set(command, passed.add(context.toolCallId));
+			}
 			state.piResult = pi?.renderResult?.(result, options, theme, { ...context, lastComponent: state.piResult });
 			if (showsPi(context)) {
 				const full =
@@ -511,9 +601,14 @@ function compactRenderers(
 			// Running output, and the result of a tool that draws its own, are Pi's lines without the box.
 			if (state.piResult && (options.isPartial || !summarize))
 				return indented(state.piResult, state, theme, context);
-			return lines((width) =>
-				indented(summary(context.args, state, theme, context).body ?? [], state, theme, context).render(width),
-			);
+			return lines((width) => {
+				const body = summary(context.args, state, theme, context).body ?? [];
+				if (body.length === 0) return [];
+				const key = `${width} ${body.length}`;
+				if (state.bodyLines?.key !== key)
+					state.bodyLines = { key, rows: indented(body, state, theme, context).render(width) };
+				return state.bodyLines.rows;
+			});
 		},
 	};
 }
@@ -526,6 +621,12 @@ export default function (pi: ExtensionAPI) {
 			startMessage(entry.message);
 			noteMessage(entry.message);
 		}
+		// Rows of the session that was left are dropped; rows this session drew before the event are kept.
+		for (const id of transcript.rows.keys()) if (!transcript.calls.has(id)) transcript.rows.delete(id);
+		for (const [command, ids] of transcript.passed) {
+			for (const id of ids) if (!transcript.calls.has(id)) ids.delete(id);
+			if (ids.size === 0) transcript.passed.delete(command);
+		}
 	};
 	pi.on("session_start", reload);
 	pi.on("session_tree", reload);
@@ -533,6 +634,30 @@ export default function (pi: ExtensionAPI) {
 	pi.on("message_start", (event) => startMessage(event.message));
 	pi.on("message_update", (event) => noteMessage(event.message));
 	pi.on("message_end", (event) => noteMessage(event.message));
+
+	let run = newRun();
+	pi.on("agent_start", (_event, ctx) => {
+		run = newRun();
+		if (ctx.hasUI) ctx.ui.setWidget(RECEIPT, undefined);
+	});
+	pi.on("tool_execution_start", (event) => {
+		run.tried.set(event.toolCallId, attempt(event.toolName, event.args));
+		if (!event.parentToolCallId) run.calls++;
+	});
+	pi.on("tool_execution_end", (event) => {
+		const tried = run.tried.get(event.toolCallId) ?? event.toolCallId;
+		if (event.isError) {
+			run.open.add(tried);
+			return;
+		}
+		run.open.delete(tried);
+		if (event.toolName === "edit" || event.toolName === "write") run.changed.add(tried.slice(tried.indexOf(" ") + 1));
+	});
+	pi.on("agent_end", (_event, ctx) => {
+		if (!ctx.hasUI) return;
+		const line = receipt(run, ctx.ui.theme);
+		ctx.ui.setWidget(RECEIPT, line ? [line] : undefined);
+	});
 	pi.registerToolRenderer((toolName, next) => {
 		const renderers = next();
 		// A tool that draws its own shell keeps it, unless its row has a summary here.
