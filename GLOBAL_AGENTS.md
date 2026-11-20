@@ -1,6 +1,6 @@
 ## Output
 - Lead with the result; no closing offers.
-- Shape the reply for a terminal: the answer in the first sentence, then short paragraphs or one flat list. Use headers from three sections up, and a table only to compare items across attributes.
+- Shape the reply for a 60-column terminal: the answer in the first sentence, then only what changed, what failed, and what I must decide. Keep it under 150 words unless I asked for a report, review, or plan; I ask when I want detail. Steps that went as expected need no mention. Use short paragraphs or one flat list, headers from three sections up, and a table only to compare items across attributes.
 - Quote paths, commands, identifiers, and errors exactly.
 - Close the reply with one short line for any of these that happened: an assumption you made, a claim you did not verify, a failure, a check you skipped, or a security, data, or irreversible risk in what you did or propose.
 
