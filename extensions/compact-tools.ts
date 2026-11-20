@@ -340,16 +340,18 @@ const OUTPUT_CAP = /\s*\|\s*(?:tail|head)(?:\s+-n?\s*\d+)?\s*$/;
 /** Programs that read, wait or report, and checks: test runs, linters, type checks. None leaves a change behind. */
 const CHANGES_NOTHING = new RegExp(
 	`^(?:${[
-		"rg|grep|ls|cat|head|tail|sed\\s+-n|find|fd|wc|tree|stat|file|which|pwd|echo|printf|sort|uniq|cut|tr|column",
+		"rg|grep|ls|cat|head|tail|sed\\s+-n(?!.*\\s-(?:[a-zA-Z]*i|-in-place))|find|fd|wc|tree(?!.*\\s-o)|stat|file|which|pwd",
+		"echo|printf|sort(?!.*\\s-o)|uniq(?:\\s+-\\w+)*\\s*$|cut|tr|column",
 		"jq|nl|du|df|diff|cmp|awk|seq|date|sleep|true|false|ps|pgrep|basename|dirname|realpath|shasum|whoami|uname",
-		"cd|test|\\[|exit|break|continue|wait|read|type|env|printenv|export|set|xargs\\s+(?:rg|grep|ls|cat|wc|head|tail)",
-		"git\\s+(?:status|log|diff|show|rev-parse|rev-list|ls-files|ls-tree|ls-remote|blame|grep|describe|merge-base|merge-tree|cat-file|reflog|shortlog|fetch|check-ignore|config\\s+--get)",
-		"git\\s+(?:branch|tag|remote|stash\\s+list|worktree\\s+list)(?:\\s+-(?!d\\b|D\\b|m\\b|M\\b|-delete)[\\w-]+)*\\s*$",
+		"cd|test|\\[|exit|break|continue|wait|read|type|env\\s*$|printenv|export|set|xargs\\s+(?:rg|grep|ls|cat|wc|head|tail)",
+		"git\\s+(?:status|log|diff|show|rev-parse|rev-list|ls-files|ls-tree|ls-remote|blame|grep|describe|merge-base|merge-tree|cat-file|reflog(?!\\s+(?:expire|delete|drop))|shortlog|check-ignore|config\\s+--get)",
+		"git\\s+(?:branch|tag|remote|stash\\s+list|worktree\\s+list)(?:\\s+(?:-[arvl]+|--(?:list|show-current|all|remotes|verbose|merged|no-merged|porcelain|sort|format)(?:=\\S+)?))*\\s*$",
 		"gh\\s+(?:pr|issue|run|release|repo|workflow|search)\\s+(?:view|list|checks|diff|status|watch|prs|issues|code)",
-		"gh\\s+api(?!.*\\s(?:-X|--method|-f|-F|--field|--input)\\b)",
+		"gh\\s+api(?!.*\\s(?:-X|--method|-f|-F|--raw-field|--field|--input))",
 		"herdr\\s+(?:pane\\s+(?:read|get|list)|agent\\s+(?:list|get|status|read|wait)|workspace\\s+list)",
-		"npm\\s+(?:test|ls|view|outdated|run\\s+(?:check|test|lint|typecheck))",
-		"node\\s+--test|npx\\s+(?:tsc|vitest|jest|biome\\s+(?:check|lint)(?!.*--(?:write|fix)))|tsc|pytest",
+		"npm\\s+(?:test|ls|view|outdated|run\\s+(?:check|test|lint|typecheck))(?!.*\\s(?:-u|--update)\\b)",
+		"node\\s+--test|(?:npx\\s+)?tsc(?=.*\\s--noEmit\\b)|npx\\s+(?:vitest|jest)(?!.*\\s(?:-u|--update)\\b)|pytest",
+		"npx\\s+biome\\s+(?:check|lint)(?!.*--(?:write|fix))",
 		"uv\\s+run\\s+(?:pytest|ruff\\s+check(?!.*--fix)|mypy|pyright)|ruff\\s+check(?!.*--fix)|mypy|pyright",
 		"cargo\\s+(?:test|check|clippy)|go\\s+(?:test|vet)",
 		"[\\w.-]+(?:\\s+[\\w-]+)*\\s+--(?:help|version)\\s*$",
@@ -361,8 +363,11 @@ const SHELL_WORD = /^(?:(?:(?:do|then|else|elif|if|while|until|command|time)\b|[
 const RUNS_NOTHING = /^(?:done|fi|do|then|else|[{}()]|for\s+\w+\s+in\b.*|\w+=\S*|#.*)?$/;
 /** `git -C <dir>` runs a subcommand elsewhere; where does not decide whether it changes anything. */
 const GIT_DIR = /^git\s+-C\s+\S+\s+/;
-/** A redirect to a file, or a `find` that deletes files or runs a program. */
-const MAY_CHANGE = /(?<![0-9&])>(?!&)(?!\s*\/dev\/null)|[0-9]>(?!&|\s*\/dev\/null)|\s-(?:delete|exec)\b/;
+/** A redirect to a file, an option that names an output file, or a `find` that deletes, writes or runs a program. */
+const MAY_CHANGE =
+	/(?<![0-9])>(?!&)(?!\s*\/dev\/null)|[0-9]>(?!&|\s*\/dev\/null)|\s--output\b|\s-(?:delete|exec\w*|ok\w*|fprint\w*|fls)\b/;
+/** An `awk` program that may write a file or run a command; it sits in quotes, so it is looked for in the command as typed. */
+const AWK_CHANGES = /\bawk\b[^|;&\n]*(?:>|\|\s*"|system\(|-i\s+inplace)/;
 /** A script for an interpreter: on standard input from a here-document, or as an argument. */
 const HERE_DOCUMENT = /<<-?\s*(['"]?)(\w+)\1([^\n]*)\n([\s\S]*?)\n[ \t]*\2(?=\n|$)/;
 const INLINE_SCRIPT = /\b(?:python3?|node|ruby|perl)\s+-[ce]\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/;
@@ -390,6 +395,7 @@ function takeOut(
  * something: a program this list does not name counts as one that did.
  */
 function changesNothing(command: string): boolean {
+	if (AWK_CHANGES.test(command)) return false;
 	const scripts: string[] = [];
 	const ran: string[] = [];
 	// A here-document is text for the program in front of it: its body is no command.
@@ -399,11 +405,12 @@ function changesNothing(command: string): boolean {
 	});
 	rest = takeOut(rest, INLINE_SCRIPT, (match) => (SCRIPT_CHANGES.test(match[1] ?? match[2]) ? undefined : "true"));
 	// Nothing runs inside single quotes; a substitution runs a command of its own; double quotes are then text.
+	// A process substitution is not looked into: such a command keeps its line.
 	rest = takeOut(rest?.replace(/'[^']*'/g, "q"), /\$\(([^()`]*)\)|`([^`]*)`/, (match) => {
 		ran.push(match[1] ?? match[2]);
 		return "q";
 	})?.replace(/"(?:[^"\\]|\\.)*"/g, "q");
-	if (rest === undefined || /\$\(|`|<</.test(rest) || MAY_CHANGE.test(rest)) return false;
+	if (rest === undefined || /\$\(|`|<<|<\(/.test(rest) || MAY_CHANGE.test(rest)) return false;
 	const parts = rest.split(/&&|\|\||[;|\n]/).map((part) =>
 		part
 			.trim()

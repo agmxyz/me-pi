@@ -432,6 +432,13 @@ test("only a command made of programs known to change nothing loses its line", (
 		"git branch --show-current",
 		"gh pr view 12 --json state",
 		"pi --help",
+		"sed -n 3,9p a.ts",
+		"npx tsc --noEmit -p .",
+		"git branch -a --sort=-committerdate",
+		"git reflog -5",
+		"gh api repos/o/r/pulls/3 --jq .state",
+		"ls &>/dev/null",
+		"awk '{print $1}' a.txt | sort -u",
 	];
 	const changes = [
 		"npm install",
@@ -447,6 +454,23 @@ test("only a command made of programs known to change nothing loses its line", (
 		"python3 - <<'EOF'\nopen('a.txt', 'w').write('x')\nEOF",
 		"cat > a.txt <<'EOF'\nhello\nEOF",
 		"npx biome check --write .",
+		"env rm -rf build",
+		"sed -n -i s/a/b/p a.ts",
+		"find . -execdir rm {} +",
+		"find . -fprint out.txt",
+		"git fetch --prune",
+		"git reflog expire --expire=now --all",
+		"git branch --unset-upstream",
+		"git log --output=log.txt",
+		"gh api repos/o/r/issues -XPOST",
+		"gh api repos/o/r/issues --raw-field title=x",
+		"cat <(rm -rf x)",
+		"ls &> out.txt",
+		"sort -o out.txt in.txt",
+		"uniq in.txt out.txt",
+		"awk '{print > \"out.txt\"}' in.txt",
+		"npx tsc -p .",
+		"npm test -- -u",
 	];
 	assert.deepEqual(nothing.filter(kept), [], "these change nothing");
 	assert.deepEqual(
