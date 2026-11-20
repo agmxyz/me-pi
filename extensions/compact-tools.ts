@@ -1,28 +1,26 @@
 /**
- * Short rows for finished tool calls while tool output is collapsed. A row is one line (a status glyph, what ran,
- * then facts about the result) and a few indented output lines, with no background box.
+ * Short rows for tool calls while tool output is collapsed. The transcript shows what was done, not what came
+ * back: a row is one line with a status glyph, what ran, and facts about the result such as its line count.
+ * Only a failure shows output, the end of it, because that is what the reader has to act on.
  *
- * The numbers below were picked by replaying 40 past sessions through Pi's row component and by checking which
- * lines a reader needs: the first output line often carries the answer or a table header, the last ones the result.
+ * A live area above the editor holds what is happening now. While the agent works, a call shows only there,
+ * with the time a running one has taken and the end of its output; it leaves the area when its row enters the
+ * transcript. A row enters the transcript once the next step shows what became of it:
  *
- * The transcript holds what a reader needs later; a live area above the editor holds what is happening now.
- * While the agent works, a call shows only in the live area, with the time a running one has taken and the end
- * of its output; it leaves the area when its row enters the transcript. A row enters the transcript once the next step shows what became of it:
+ * - Followed by another step, a call known to change nothing (a lookup, or a check that passed) keeps no line;
+ *   those that open a stretch of work are one count. Any other call keeps its line.
+ * - Followed by text, a call keeps its line, also a lookup: it is usually the check the reply rests on. It
+ *   loses the line as above if another step follows the text after all.
+ * - A failure, a write and an edit show as soon as the call ends, and stay. A failed command loses its output,
+ *   and dims, once the same command passes later.
  *
- * - Followed by another step, a command keeps one line, without its output. A call known to change nothing
- *   (a lookup, or a check that passed) keeps no line; those that open a stretch of work are one count.
- * - Followed by text, a call shows with its output, and keeps it when that text is the reply: it is usually
- *   the check the reply rests on. It folds as above if another step follows the text after all.
- * - A failure, a write and the changed lines of an edit show as soon as the call ends, and stay. A failed
- *   command folds, and dims, only once the same command passes later.
- *
- * Folded rows that follow each other close up into one block. When the agent stops, the live area becomes one
+ * One-line rows that follow each other close up into one block. When the agent stops, the live area becomes one
  * line that sums up the run: failures still open, files changed, calls, time.
  */
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import { type ExtensionAPI, renderDiff, type Theme, type ToolRenderers } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	getCapabilities,
@@ -32,31 +30,20 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 
-/** Output this short is shown whole. */
-const WHOLE_LINES = 6;
-/** Longer output keeps its first line and its last three. */
-const HEAD_LINES = 1;
-const TAIL_LINES = 3;
 /** A failed call keeps its end from the first line that reads like an error, looking this far back. */
 const FAILED_LINES = 20;
 /** A failed call with no such line keeps this many, which is also the least a failed call keeps. */
 const FAILED_MIN_LINES = 5;
 const ERROR_LIKE =
 	/error|fail|✖|✗|not found|no such|denied|cannot|exception|traceback|fatal|panic|refused|invalid|unexpected/i;
-/** The shape of an error message itself, not just a line that mentions one: `TypeError:`, `error TS2322`, `fatal:`. */
-const ERROR_SHAPE =
-	/\w*(Error|Exception):|\berror[ :[(]+[A-Z]+\d+|^\s*(fatal|panic|error)\b[:!]|\b(FAIL|FAILED|Traceback)\b|✖|✗/;
 /** A cut in the middle of a command must save at least this many columns over a cut at its end. */
 const MIDDLE_CUT_MIN = 8;
 /** A command that ran this long shows its duration as a warning. */
 const SLOW_MS = 30_000;
-/** Changed lines an edit shows before it counts the rest. */
-const EDIT_LINES = 4;
-
 type Context = Parameters<NonNullable<ToolRenderers["renderCall"]>>[2];
 type Result = Parameters<NonNullable<ToolRenderers["renderResult"]>>[0];
 
-/** One collapsed row: `head` after the status glyph, `meta` at the end of that line, `body` lines below. */
+/** One collapsed row: `head` after the status glyph, `meta` at the end of that line, `body` lines below a failure. */
 interface Summary {
 	/** A function gets the columns it may fill, for a head that shortens itself. */
 	head: string | ((room: number) => string);
@@ -64,7 +51,7 @@ interface Summary {
 	body?: string[];
 	/** Lines of output the call returned: a row that shows none of them says how many there were. */
 	count?: number;
-	/** The body is what the call did, not what it printed: it stays when the row folds. */
+	/** The call changed a file: its row shows as soon as the call ends. */
 	keep?: boolean;
 	/** The call is known to change nothing: once folded it keeps no line of its own. */
 	silent?: boolean;
@@ -82,7 +69,6 @@ interface RowState {
 	durationMs?: number;
 	/** When the call started running; set for a call in the live area, which shows the time it has taken. */
 	startedAt?: number;
-	expanded?: boolean;
 	/** The row's summary and its drawn first line, kept until Pi next updates the row: Pi draws every row on every frame. */
 	summary?: Summary;
 	headLine?: { key: string; rows: string[] };
@@ -102,9 +88,9 @@ interface Call {
 }
 /** What a drawn row tells its neighbours. */
 interface Row {
-	/** True when the row is folded to its first line or to nothing, so it can close up with the rows around it. */
+	/** True when the row is one line or none, so it can close up with the rows around it. */
 	folded: () => boolean;
-	/** True when the folded row keeps no line: it is counted with the silent rows next to it. */
+	/** True when the row keeps no line: it is counted with the silent rows next to it. */
 	silent: () => boolean;
 	head: (width: number) => string[];
 	/** The command a `bash` row ran: a failure is settled once the same command passes. */
@@ -305,9 +291,9 @@ function liveArea(run: Run, theme: Theme, cwd: string, width: number): string[] 
 		const summary = summarize(call.args, call.result, theme, context);
 		// A failure, a write and an edit are in the transcript as soon as they end.
 		if (call.result && (call.failed || summary.keep)) continue;
-		const head = headLine({ ...summary, body: [] }, call, theme, context).render(width);
-		// A read's result is the file, not something the call printed.
-		rows.unshift({ head, call, context, printed: !call.result || (summary.body?.length ?? 0) > 0 });
+		const head = headLine(summary, call, theme, context).render(width);
+		// A read's result is the file, not something the call printed: it has no count.
+		rows.unshift({ head, call, context, printed: !call.result || (summary.count ?? 0) > 0 });
 	}
 	const newest = rows.at(-1);
 	const room = AREA_LINES - rows.length;
@@ -492,19 +478,15 @@ const SUMMARIES: Record<string, Summarize> = {
 		if (exit) output.pop();
 		// Pi's stand-in for a command that printed nothing is not a line of output.
 		if (output.length === 1 && output[0] === "(no output)") output.pop();
-		const whole = !context.isError && output.length <= WHOLE_LINES;
-		const headCount = whole ? output.length : context.isError ? 0 : HEAD_LINES;
-		const tailCount = whole ? 0 : context.isError ? failedTail(output) : TAIL_LINES;
-		const hidden = output.length - headCount - tailCount;
 		if (exit) meta.push(theme.fg("error", `exit ${exit}`));
 		const ms = rowState(context).durationMs ?? 0;
 		if (ms >= 1000) meta.push(theme.fg(ms >= SLOW_MS ? "warning" : "muted", formatDuration(ms)));
-		const shown = (rows: string[]) => rows.map((line) => outputLine(line, theme, context));
+		if (!context.isError) return { head, meta, count: output.length, silent };
+		const kept = failedTail(output);
 		// The count of skipped lines sits where they were skipped.
 		const body = [
-			...shown(output.slice(0, headCount)),
-			...(hidden > 0 ? [theme.fg("muted", `⋮ ${plural(hidden, "more line")}`)] : []),
-			...shown(tailCount > 0 ? output.slice(-tailCount) : []),
+			...(output.length > kept ? [theme.fg("muted", `⋮ ${plural(output.length - kept, "more line")}`)] : []),
+			...output.slice(output.length - kept).map((line) => outputLine(line, theme, context)),
 		];
 		return { head, meta, body, count: output.length, silent };
 	},
@@ -537,12 +519,7 @@ const SUMMARIES: Record<string, Summarize> = {
 		const meta = [
 			`${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${changed.length - added}`)}`,
 		];
-		// Pi's diff colours the lines and, where one line replaces one, inverts the words that changed.
-		const shown = changed.slice(0, EDIT_LINES);
-		const body = shown.length > 0 ? renderDiff(shown.join("\n")).split("\n") : [];
-		if (changed.length > shown.length && shown.length > 0)
-			body.push(theme.fg("muted", `… +${plural(changed.length - shown.length, "changed line")}`));
-		return { head, meta, body, keep: true };
+		return { head, meta, keep: true };
 	},
 };
 /** Tools whose failure Pi draws: it shows what the call tried to change. */
@@ -556,11 +533,9 @@ const plainSummary =
 			([key, value]) => `${key}=${typeof value === "string" ? value.split("\n")[0] : JSON.stringify(value)}`,
 		);
 		const output = outputLines(result);
-		// A long result of an unknown tool is counted, not sampled: it is usually a document or JSON.
-		const kept = context.isError ? FAILED_LINES : output.length <= WHOLE_LINES ? WHOLE_LINES : 0;
 		return {
 			head: `${title(theme, toolName)} ${theme.fg("muted", pairs.join(" "))}`,
-			body: kept > 0 ? output.slice(-kept).map((line) => theme.fg("toolOutput", line)) : [],
+			body: context.isError ? output.slice(-FAILED_LINES).map((line) => theme.fg("toolOutput", line)) : [],
 			count: output.length,
 		};
 	};
@@ -597,23 +572,16 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 		return [summary.quiet ? theme.fg("dim", stripVTControlCharacters(line)) : line];
 	});
 }
-/** A line cut to one row, or to two when it reads like an error: the message is usually at its end. */
-function fitted(line: string, room: number): string[] {
-	if (visibleWidth(line) <= room || !ERROR_SHAPE.test(stripVTControlCharacters(line)))
-		return [truncateToWidth(line, room, "…")];
-	const [first, ...rest] = wrapTextWithAnsi(line, room);
-	return [first, truncateToWidth(rest.join(" "), room, "…")];
-}
 /**
  * A component's lines under the head line, behind a bar in the glyph's column: red when the call failed.
- * A failure's lines wrap, so no part of an error is cut off.
+ * A failure's lines wrap, so no part of an error is cut off; any other line is cut to one row.
  */
 function indented(child: Component | string[], state: RowState, theme: Theme, context: Context): Component {
 	return lines((width) => {
 		const indent = `${" ".repeat(context.outputPad)}${theme.fg(state.failed ? "error" : "dim", "│")} `;
 		const room = Math.max(8, width - visibleWidth(indent) - context.outputPad);
 		const rows = Array.isArray(child)
-			? child.flatMap((line) => (state.failed ? wrapTextWithAnsi(line, room) : fitted(line, room)))
+			? child.flatMap((line) => (state.failed ? wrapTextWithAnsi(line, room) : [truncateToWidth(line, room, "…")]))
 			: child.render(room).filter((line) => stripVTControlCharacters(line).trim());
 		return rows.map((line) => indent + line);
 	});
@@ -656,19 +624,13 @@ function compactRenderers(
 	// A tool that draws its own call is left on screen while it runs: it may show progress no summary has.
 	const drawsOwn = !summarize && pi?.renderCall !== undefined;
 	if (drawsOwn) drawsOwnRow.add(toolName);
-	/**
-	 * The row's summary: without its output once a later step followed a call that succeeded, or a failed
-	 * command passed on a later run.
-	 */
+	/** The row's summary: a failed command loses its output once the same command passed on a later run. */
 	const summary = (args: any, state: RowState, theme: Theme, context: Context): Summary => {
 		if (!state.result) return fallback(args, undefined, theme, context);
 		state.summary ??= fallback(args, state.result, theme, context);
 		const full = state.summary;
-		if (state.failed) {
-			if (!passedLater(context.toolCallId)) return full;
-			return { ...full, body: [], meta: [...(full.meta ?? []), "passed later"], count: 0, quiet: true };
-		}
-		return !full.keep && superseded(context.toolCallId) ? { ...full, body: [] } : full;
+		if (!state.failed || !passedLater(context.toolCallId)) return full;
+		return { ...full, body: [], meta: [...(full.meta ?? []), "passed later"], count: 0, quiet: true };
 	};
 	/**
 	 * True while the call shows only in the live area: nothing has followed its step yet. A failure, a write and
@@ -683,7 +645,6 @@ function compactRenderers(
 		state.summary = undefined;
 		state.headLine = undefined;
 		state.bodyLines = undefined;
-		state.expanded = context.expanded;
 	};
 	return {
 		renderShell: "self",
@@ -713,16 +674,16 @@ function compactRenderers(
 			};
 			const id = context.toolCallId;
 			const folded = () =>
-				!state.expanded &&
+				!showsPi(context) &&
 				state.result !== undefined &&
+				!held(args, state, theme, context) &&
 				!state.result.content?.some((block) => block.type === "image") &&
-				!summary(args, state, theme, context).body?.length &&
-				superseded(id);
+				!summary(args, state, theme, context).body?.length;
 			transcript.rows.set(id, {
 				head,
 				command: toolName === "bash" ? String((args as any)?.command ?? "").trim() : undefined,
 				folded,
-				silent: () => folded() && summary(args, state, theme, context).silent === true,
+				silent: () => folded() && superseded(id) && summary(args, state, theme, context).silent === true,
 			});
 			const tally = (count: number) =>
 				`${" ".repeat(context.outputPad)}${theme.fg("dim", `⋮ ${plural(count, "call")}`)}`;

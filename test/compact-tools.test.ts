@@ -78,18 +78,17 @@ function row(...args: Parameters<typeof rawRow>): string[] {
 	return rawRow(...args).map((line) => line.replace(/^\s*│ ?/, "").trim());
 }
 
-test("a finished bash call is one line of facts, then its first output line and its last three", () => {
+test("a finished bash call is one line: what ran, how many lines it printed, how long it took", () => {
 	const lines = row("bash", { command: "npm test\necho done" }, { content: text(numbered(40)), durationMs: 4200 });
-	assert.deepEqual(lines, ["✓ $ npm test ⏎1 · 4.2s", "line 1", "⋮ 36 more lines", "line 38", "line 39", "line 40"]);
-	const raw = rawRow("bash", { command: "npm test" }, { content: text("one\ntwo") });
-	assert.deepEqual(raw, [" ✓ $ npm test", " │ one", " │ two"], "output sits behind a bar in the glyph's column");
-});
-
-test("a short bash call shows its whole output, without blank lines or a duration under a second", () => {
+	assert.deepEqual(lines, ["✓ $ npm test ⏎1 · 40 lines · 4.2s"]);
 	assert.deepEqual(row("bash", { command: "pwd" }, { content: text("/work\n"), durationMs: 20 }), [
-		"✓ $ pwd",
-		"/work",
+		"✓ $ pwd · 1 line",
 	]);
+	assert.deepEqual(
+		row("bash", { command: "ls" }, { content: text("a\n\nb\n") }),
+		["✓ $ ls · 2 lines"],
+		"blank lines do not count",
+	);
 	assert.deepEqual(row("bash", { command: "true" }, { content: text(""), durationMs: 20 }), ["✓ $ true"]);
 	assert.deepEqual(
 		row("bash", { command: "cp a b" }, { content: text("(no output)") }),
@@ -102,8 +101,16 @@ test("a short bash call shows its whole output, without blank lines or a duratio
 		{ content: text("(no output)\n\nCommand exited with code 1"), isError: true },
 	);
 	assert.deepEqual(failed, ["✗ $ false · exit 1"]);
-	const six = row("bash", { command: "ls" }, { content: text("a\n\nb\nc\n\nd\ne\nf\n") });
-	assert.deepEqual(six, ["✓ $ ls", "a", "b", "c", "d", "e", "f"]);
+	const raw = rawRow(
+		"bash",
+		{ command: "make" },
+		{ content: text("Error: boom\n\nCommand exited with code 2"), isError: true },
+	);
+	assert.deepEqual(
+		raw,
+		[" ✗ $ make · exit 2", " │ Error: boom"],
+		"a failure's output sits behind a bar in the glyph's column",
+	);
 });
 
 test("a leading cd is taken off the command and named only when it leaves the working directory", () => {
@@ -179,7 +186,7 @@ test("bash shows Pi's output preview while it runs, and Pi's rendering when expa
 	assert.ok(failed.includes("Command exited with code 1"));
 });
 
-test("colour marks what needs attention: error lines of a failed call, a slow run, the words an edit changed", () => {
+test("colour marks what needs attention: the error lines of a failed call and a slow run", () => {
 	const paint = (name: string, args: any, result: any) => {
 		const component = new ToolExecutionComponent(
 			name,
@@ -203,31 +210,10 @@ test("colour marks what needs attention: error lines of a failed call, a slow ru
 	const output = "compiling\nError: boom\n\nCommand exited with code 1";
 	const failed = paint("bash", { command: "make" }, { content: text(output), isError: true });
 	assert.notEqual(colourOf(failed[2], "Error"), colourOf(failed[1], "compiling"), "the error line stands out");
-	const passed = paint("bash", { command: "rg Error" }, { content: text("compiling\nError: boom") });
-	assert.equal(colourOf(passed[2], "Error"), colourOf(passed[1], "compiling"), "not in a passing call");
 	const cut = paint("bash", { command: `grep ${"x".repeat(200)} file | sort -u` }, { content: text("") })[0];
 	assert.ok(!cut.slice(0, cut.indexOf("sort -u")).includes("\x1b[0m"), "the end of a cut command keeps its style");
 	const time = (durationMs: number) => paint("bash", { command: "make" }, { content: text(""), durationMs })[0];
 	assert.notEqual(colourOf(time(45_000), "45.0s"), colourOf(time(5_000), "5.0s"));
-	const details = { diff: "-2 limit: 256m\n+2 limit: 1g", patch: "" };
-	const edit = paint("edit", { path: "a.yml", edits: [] }, { content: text("ok"), details });
-	assert.match(edit[1], /\x1b\[7m256m/, "the changed word is inverted");
-});
-
-test("an output line too long for the row is cut, unless it reads like an error: then it gets a second row", () => {
-	const plain = row("bash", { command: "cat log" }, { content: text(`ok ${"x".repeat(200)}`) });
-	assert.equal(plain.length, 2);
-	assert.ok(plain[1].endsWith("…"));
-	const output = `2026-11-19T09:36:02Z ${"step ".repeat(12)} ReferenceError: TOUR is not defined ${"y".repeat(200)}`;
-	const error = row("bash", { command: "cat log" }, { content: text(output) });
-	assert.equal(error.length, 3);
-	assert.ok(error[2].includes("ReferenceError: TOUR is not defined") && error[2].endsWith("…"));
-	const mention = row(
-		"bash",
-		{ command: "git log" },
-		{ content: text(`c8f482c feat: a row for long error lines ${"z".repeat(200)}`) },
-	);
-	assert.equal(mention.length, 2, "a line that only mentions an error stays one row");
 });
 
 test("a read shows its path, range and line count, and its error when it failed", () => {
@@ -251,36 +237,22 @@ test("a write shows its path and line count; a failed write shows the error", ()
 	assert.ok(row("write", args, { content: text("ok") }, { expanded: true }).includes("line 40"));
 });
 
-test("an edit shows its path, its counts and its first four changed lines; failed it shows Pi's rendering", () => {
+test("an edit shows its path and its counts of added and removed lines; failed it shows Pi's rendering", () => {
 	const args = { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] };
 	const details = { diff: " 1 same\n-2 old\n+2 new\n+3 added\n 4 same", patch: "" };
 	assert.deepEqual(row("edit", args), ["● edit src/a.ts"]);
-	assert.deepEqual(row("edit", args, { content: text("ok"), details }), [
-		"✓ edit src/a.ts · +2 -1",
-		"-2 old",
-		"+2 new",
-		"+3 added",
-	]);
-	const big = { diff: Array.from({ length: 9 }, (_, i) => `+${i + 1} new`).join("\n"), patch: "" };
-	assert.deepEqual(row("edit", args, { content: text("ok"), details: big }).slice(4), [
-		"+4 new",
-		"… +5 changed lines",
-	]);
+	assert.deepEqual(row("edit", args, { content: text("ok"), details }), ["✓ edit src/a.ts · +2 -1"]);
 	assert.ok(
 		row("edit", args, { content: text("ok"), details }, { expanded: true }).some((line) => line.includes("same")),
+		"expanded, the changed lines are there",
 	);
 	const failed = row("edit", args, { content: text("oldText not found"), isError: true });
 	assert.ok(failed.includes("oldText not found"));
 });
 
-test("a tool without renderers shows its arguments and a line count, short output whole, a failure's end", () => {
+test("a tool without renderers shows its arguments and a line count, and the end of a failure", () => {
 	assert.deepEqual(row("mcp__x__y", { key: "WEB-88" }, { content: text(numbered(40)) }), [
 		"✓ mcp__x__y key=WEB-88 · 40 lines",
-	]);
-	assert.deepEqual(row("mcp__x__y", { key: "WEB-88" }, { content: text("one\ntwo") }), [
-		"✓ mcp__x__y key=WEB-88",
-		"one",
-		"two",
 	]);
 	const expanded = row("mcp__x__y", { key: "WEB-88" }, { content: text(numbered(40)) }, { expanded: true });
 	assert.ok(expanded.includes("line 1") && expanded.includes("line 40"));
@@ -376,7 +348,11 @@ test("a call stays out of the transcript until the next step shows what became o
 	s.step([ran("npm run build", "built")]);
 	assert.deepEqual(s.screen(), ["", "✓ $ npm install left-pad · 1 line"], "followed by a step: one line");
 	s.reply("Built.");
-	assert.deepEqual(s.screen(), ["", "✓ $ npm install left-pad · 1 line", "", "✓ $ npm run build", "built"]);
+	assert.deepEqual(
+		s.screen(),
+		["", "✓ $ npm install left-pad · 1 line", "✓ $ npm run build · 1 line"],
+		"the last step shows when the reply starts, without its output",
+	);
 });
 
 test("a failure, a write and an edit show as soon as they end, and stay", () => {
@@ -384,24 +360,14 @@ test("a failure, a write and an edit show as soon as they end, and stay", () => 
 	s.step([ran("npm run lint", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
 	assert.deepEqual(s.screen(), ["", "✗ $ npm run lint · exit 1", "Error: boom"]);
 	s.step([edited, ["write", { path: "b.ts", content: "one\ntwo\n" }, { content: text("ok") }]]);
-	const kept = [
-		"",
-		"✗ $ npm run lint · exit 1",
-		"Error: boom",
-		"",
-		"✓ edit a.ts · +1 -1",
-		"-1 a",
-		"+1 b",
-		"",
-		"✓ write b.ts · 2 lines",
-	];
+	const kept = ["", "✗ $ npm run lint · exit 1", "Error: boom", "", "✓ edit a.ts · +1 -1", "✓ write b.ts · 2 lines"];
 	assert.deepEqual(s.screen(), kept);
 	s.step([ran("make", "ok")]);
 	s.stop();
-	assert.deepEqual(s.screen(), [...kept, "", "✓ $ make", "ok"], "a stopped run shows its last step");
+	assert.deepEqual(s.screen(), [...kept, "✓ $ make · 1 line"], "a stopped run shows its last step");
 	handlers.message_start({ message: { role: "user" } });
 	s.reply("Done.");
-	assert.deepEqual(s.screen(), [...kept, "", "✓ $ make", "ok"], "the next prompt changes nothing above it");
+	assert.deepEqual(s.screen(), [...kept, "✓ $ make · 1 line"], "the next prompt changes nothing above it");
 });
 
 test("a call that changes nothing keeps no line once a step follows; a stretch that opens with such calls counts them", () => {
@@ -419,8 +385,8 @@ test("a call that changes nothing keeps no line once a step follows; a stretch t
 	s.reply("Found it.");
 	assert.deepEqual(
 		s.screen(),
-		["", "⋮ 3 calls", "✓ $ make · 1 line", "", "✓ $ rg -n foo src", "src/a.ts:1:foo"],
-		"the last step before the reply keeps its output",
+		["", "⋮ 3 calls", "✓ $ make · 1 line", "", "✓ $ rg -n foo src · 1 line"],
+		"the last step before the reply keeps its line, also a lookup",
 	);
 });
 
@@ -503,7 +469,11 @@ test("a resumed session folds the rows it draws from its history", () => {
 	};
 	handlers.session_start({}, { isIdle: () => true, sessionManager: { getBranch: () => branch } });
 	assert.deepEqual(drawn("old-1", "make"), ["", "✓ $ make · 2 lines"]);
-	assert.deepEqual(drawn("old-2", "make test"), ["", "✓ $ make test", "│ a", "│ b"], "the last step is shown");
+	assert.deepEqual(
+		drawn("old-2", "make test"),
+		["", "✓ $ make · 2 lines", "✓ $ make test · 2 lines"],
+		"the last step is shown",
+	);
 	handlers.session_start({}, { isIdle: () => false, sessionManager: { getBranch: () => branch } });
 	assert.deepEqual(drawn("old-2", "make test"), [], "with a run under way, its last step is still held back");
 });
