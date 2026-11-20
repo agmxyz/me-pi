@@ -355,6 +355,27 @@ test("a call stays out of the transcript until the next step shows what became o
 	);
 });
 
+test("a command names its directory only when it differs from the command row above", () => {
+	const s = session();
+	s.step([ran("cd /srv/app && make", "ok")]);
+	s.step([ran("cd /srv/app && rg foo", "a.ts:1:foo")]);
+	s.step([ran("cd /srv/app && make install", "ok")]);
+	s.step([edited]);
+	s.step([ran("cd /srv/app && make clean", "ok")]);
+	s.step([ran("make", "ok")]);
+	s.step([ran("cd /srv/web && make", "ok")]);
+	s.reply("Done.");
+	assert.deepEqual(s.screen(), [
+		"",
+		"✓ $ make · 1 line · in /srv/app",
+		"✓ $ make install · 1 line",
+		"✓ edit a.ts · +1 -1",
+		"✓ $ make clean · 1 line",
+		"✓ $ make · 1 line · in .",
+		"✓ $ make · 1 line · in /srv/web",
+	]);
+});
+
 test("a failure, a write and an edit show as soon as they end, and stay", () => {
 	const s = session();
 	s.step([ran("npm run lint", "Error: boom\n\nCommand exited with code 1", { isError: true })]);

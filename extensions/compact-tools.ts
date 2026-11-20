@@ -49,6 +49,8 @@ interface Summary {
 	head: string | ((room: number) => string);
 	meta?: string[];
 	body?: string[];
+	/** The directory a command ran in, short; unset for the working directory. */
+	place?: string;
 	/** Lines of output the call returned: a row that shows none of them says how many there were. */
 	count?: number;
 	/** The call changed a file: its row shows as soon as the call ends. */
@@ -86,6 +88,8 @@ interface Call {
 	/** Calls with no text between their rows; folded rows of one block close up. */
 	block: number;
 }
+/** The working directory, as a row names it. */
+const HERE = ".";
 /** What a drawn row tells its neighbours. */
 interface Row {
 	/** True when the row is one line or none, so it can close up with the rows around it. */
@@ -95,6 +99,8 @@ interface Row {
 	head: (width: number) => string[];
 	/** The command a `bash` row ran: a failure is settled once the same command passes. */
 	command?: string;
+	/** Where that command ran, as the row names it. */
+	place: () => string;
 }
 /**
  * The calls of the current session in transcript order, kept from Pi's message events: a row cannot see its
@@ -172,6 +178,23 @@ function passedLater(toolCallId: string): boolean {
 	for (const id of transcript.passed.get(command) ?? [])
 		if ((transcript.calls.get(id)?.index ?? -1) > call.index) return true;
 	return false;
+}
+/**
+ * The directory a command row names: none when the command row above it ran in the same place. The first
+ * command row of a run names any directory but the working one.
+ */
+function placeNamed(toolCallId: string): string | undefined {
+	const call = transcript.calls.get(toolCallId);
+	const row = transcript.rows.get(toolCallId);
+	if (row?.command === undefined) return undefined;
+	const place = row.place();
+	if (!call) return place === HERE ? undefined : place;
+	for (let at = call.index - 1; at >= 0 && transcript.order[at].run === call.run; at--) {
+		const above = transcript.rows.get(transcript.order[at].id);
+		if (above?.command === undefined || above.silent()) continue;
+		return above.place() === place ? undefined : place;
+	}
+	return place === HERE ? undefined : place;
 }
 const foldedRow = (call: Call | undefined) => (call && transcript.rows.get(call.id)?.folded() ? call : undefined);
 const closesUp = (call: Call, other: Call | undefined) => other?.block === call.block && foldedRow(other) !== undefined;
@@ -453,13 +476,14 @@ const SUMMARIES: Record<string, Summarize> = {
 	bash(args, result, theme, context) {
 		let command = String(args?.command ?? "...").trim();
 		const meta: string[] = [];
+		let place: string | undefined;
 		const options = command.match(SHELL_OPTIONS);
 		if (options && command.length > options[0].length) command = command.slice(options[0].length);
 		const cd = command.match(CD_PREFIX);
 		if (cd && command.length > cd[0].length) {
 			command = command.slice(cd[0].length);
 			const dir = shortPath(cd[1].replace(/^["']|["']$/g, "").replace(/\/$/, ""), context.cwd);
-			if (dir !== ".") meta.push(theme.fg("muted", `in ${dir}`));
+			if (dir !== HERE) place = dir;
 		}
 		const [firstLine, ...rest] = command.split("\n");
 		const merged = firstLine.replace(STDERR_MERGE, "");
@@ -470,7 +494,7 @@ const SUMMARIES: Record<string, Summarize> = {
 			theme.fg("dim", "$ ") +
 			title(theme, middleCut(first, room - 2 - visibleWidth(more))) +
 			theme.fg("muted", more);
-		if (!result) return { head, meta };
+		if (!result) return { head, meta, place };
 		const silent = !context.isError && changesNothing(command);
 		const output = outputLines(result);
 		// Pi ends a failed command's output with this line; the head line carries the code instead.
@@ -481,14 +505,14 @@ const SUMMARIES: Record<string, Summarize> = {
 		if (exit) meta.push(theme.fg("error", `exit ${exit}`));
 		const ms = rowState(context).durationMs ?? 0;
 		if (ms >= 1000) meta.push(theme.fg(ms >= SLOW_MS ? "warning" : "muted", formatDuration(ms)));
-		if (!context.isError) return { head, meta, count: output.length, silent };
+		if (!context.isError) return { head, meta, place, count: output.length, silent };
 		const kept = failedTail(output);
 		// The count of skipped lines sits where they were skipped.
 		const body = [
 			...(output.length > kept ? [theme.fg("muted", `⋮ ${plural(output.length - kept, "more line")}`)] : []),
 			...output.slice(output.length - kept).map((line) => outputLine(line, theme, context)),
 		];
-		return { head, meta, body, count: output.length, silent };
+		return { head, meta, place, body, count: output.length, silent };
 	},
 	read(args, result, theme, context) {
 		const head = `${title(theme, "read")} ${filePath(args, theme, context.cwd)}${theme.fg("warning", lineRange(args))}`;
@@ -562,6 +586,7 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 		const unseen = summary.body?.length ? 0 : (summary.count ?? 0);
 		const facts = [
 			...(unseen > 0 ? [theme.fg("muted", plural(unseen, "line"))] : []),
+			...(summary.place ? [theme.fg("muted", `in ${summary.place}`)] : []),
 			...(summary.meta ?? []),
 			...(running ? [theme.fg("muted", running)] : []),
 		];
@@ -664,15 +689,15 @@ function compactRenderers(
 				return framed ? piShell(full, theme, context, "top") : full;
 			}
 			if (!summarize && state.piCall) return glyphed(state.piCall, state, theme, context);
+			const id = context.toolCallId;
 			const head = (width: number) => {
-				const drawn = summary(args, state, theme, context);
+				const drawn = { ...summary(args, state, theme, context), place: placeNamed(id) };
 				if (!state.result) return headLine(drawn, state, theme, context).render(width);
-				const key = `${width} ${drawn.body?.length ?? 0} ${drawn.quiet} ${drawn.meta?.length}`;
+				const key = `${width} ${drawn.body?.length ?? 0} ${drawn.quiet} ${drawn.meta?.length} ${drawn.place}`;
 				if (state.headLine?.key !== key)
 					state.headLine = { key, rows: headLine(drawn, state, theme, context).render(width) };
 				return state.headLine.rows;
 			};
-			const id = context.toolCallId;
 			const folded = () =>
 				!showsPi(context) &&
 				state.result !== undefined &&
@@ -684,6 +709,7 @@ function compactRenderers(
 				command: toolName === "bash" ? String((args as any)?.command ?? "").trim() : undefined,
 				folded,
 				silent: () => folded() && superseded(id) && summary(args, state, theme, context).silent === true,
+				place: () => summary(args, state, theme, context).place ?? HERE,
 			});
 			const tally = (count: number) =>
 				`${" ".repeat(context.outputPad)}${theme.fg("dim", `⋮ ${plural(count, "call")}`)}`;
