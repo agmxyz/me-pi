@@ -10,7 +10,7 @@ const root = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)
 const workers = JSON.parse(readFileSync(new URL("../packages/pi-workers/package.json", import.meta.url), "utf8"));
 const workerExtensions = ["extensions/delegate.ts", "extensions/guard.ts", "extensions/skill.ts"];
 // Rig-only extensions: the root package loads them; pi-workers does not publish them.
-const rigExtensions = ["extensions/steps.ts", "extensions/minimal-footer.ts"];
+const rigExtensions = ["extensions/steps.ts", "extensions/minimal-footer.ts", "extensions/compact-tools.ts"];
 const compatibility = JSON.parse(readFileSync(new URL("../extensions/package.json", import.meta.url), "utf8"));
 
 test("the root manifest is the private setup and loads the pi-workers and rig extensions", () => {

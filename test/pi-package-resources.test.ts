@@ -16,6 +16,7 @@ const expectedFull = [
 	join(root, "extensions/skill.ts"),
 	join(root, "extensions/steps.ts"),
 	join(root, "extensions/minimal-footer.ts"),
+	join(root, "extensions/compact-tools.ts"),
 ];
 
 async function createPackageFixture(parent) {
@@ -38,7 +39,7 @@ test("Pi discovers only the root package extensions and honors package filtering
 			name: "full local source",
 			mode: "full",
 			expected: expectedFull,
-			tools: [["delegate"], [], ["Skill"], [], []],
+			tools: [["delegate"], [], ["Skill"], [], [], []],
 			assertion: "assert-delegate",
 		},
 		{
@@ -123,8 +124,9 @@ test(
 						join(packageRoot, "extensions/skill.ts"),
 						join(packageRoot, "extensions/steps.ts"),
 						join(packageRoot, "extensions/minimal-footer.ts"),
+						join(packageRoot, "extensions/compact-tools.ts"),
 					],
-					tools: [["delegate"], [], ["Skill"], [], []],
+					tools: [["delegate"], [], ["Skill"], [], [], []],
 					assertion: "assert-delegate",
 				},
 				{
