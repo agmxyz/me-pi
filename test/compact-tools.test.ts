@@ -393,20 +393,22 @@ test("a failure, a write and an edit show as soon as they end, and stay", () => 
 	assert.deepEqual(s.screen(), [...kept, "", "✓ $ make", "ok"], "the next prompt changes nothing above it");
 });
 
-test("a call that changes nothing keeps no line once a step follows; a stretch of only such calls is a count", () => {
+test("a call that changes nothing keeps no line once a step follows; a stretch that opens with such calls counts them", () => {
 	const s = session();
 	s.step([ran("ls", "a\nb"), ["read", { path: "a.ts" }, { content: text("one\ntwo") }]]);
 	s.step([ran("npm test", "ok")]);
 	assert.deepEqual(s.screen(), ["", "⋮ 2 calls"]);
 	s.step([ran("make", "ok")]);
-	assert.deepEqual(s.screen(), ["", "⋮ 3 calls"]);
+	assert.deepEqual(s.screen(), ["", "⋮ 3 calls"], "a passing check changes nothing either");
 	s.step([ran("git status --short", "")]);
-	assert.deepEqual(s.screen(), ["", "✓ $ make · 1 line"], "beside a row that keeps its line there is no count");
+	assert.deepEqual(s.screen(), ["", "⋮ 3 calls", "✓ $ make · 1 line"], "the count stays above later rows");
+	s.step([ran("ls", "a")]);
+	assert.deepEqual(s.screen(), ["", "⋮ 3 calls", "✓ $ make · 1 line"], "after a row with a line there is no count");
 	s.step([ran("rg -n foo src", "src/a.ts:1:foo")], "Now the search.");
 	s.reply("Found it.");
 	assert.deepEqual(
 		s.screen(),
-		["", "✓ $ make · 1 line", "", "✓ $ rg -n foo src", "src/a.ts:1:foo"],
+		["", "⋮ 3 calls", "✓ $ make · 1 line", "", "✓ $ rg -n foo src", "src/a.ts:1:foo"],
 		"the last step before the reply keeps its output",
 	);
 });
@@ -553,26 +555,49 @@ test("while the agent works, three lines above the editor show its last calls an
 	handlers.tool_execution_update({ toolCallId: "1", partialResult: { content: text("step 1\nstep 2\nstep 3") } });
 	assert.deepEqual(slot.lines(), [" ● $ make · 12s", " │ step 2", " │ step 3"], "with the end of its output");
 	end("1", "bash", "step 1\nstep 2\nstep 3", { durationMs: 12_300 });
-	assert.deepEqual(slot.lines(), ["", "", " ✓ $ make · 3 lines · 12.3s"]);
+	assert.deepEqual(
+		slot.lines(),
+		[" ✓ $ make · 3 lines · 12.3s", " │ step 2", " │ step 3"],
+		"the newest call keeps the end of its output once it is done",
+	);
 
 	start("2", "read", { path: join(ROOT, "a.ts") });
 	start("3", "bash", { command: "npm test" });
 	start("nested", "bash", { command: "ls" }, { parentToolCallId: "3" });
 	end("2", "read", "one\ntwo");
-	end("3", "bash", "Error: boom\n\nCommand exited with code 1", { isError: true });
 	assert.deepEqual(
 		slot.lines(),
-		[" ✓ $ make · 3 lines · 12.3s", " ✓ read a.ts · 2 lines", " ✗ $ npm test · 1 line · exit 1"],
+		[" ✓ $ make · 3 lines · 12.3s", " ✓ read a.ts · 2 lines", " ● $ npm test"],
 		"a call made by another tool is left out",
 	);
-	start("4", "bash", { command: "git status" });
-	assert.deepEqual(slot.lines(), [" ✓ read a.ts · 2 lines", " ✗ $ npm test · 1 line · exit 1", " ● $ git status"]);
+	end("3", "bash", "Error: boom\n\nCommand exited with code 1", { isError: true });
+	start("4", "edit", { path: join(ROOT, "a.ts") });
+	end("4", "edit", "ok");
+	assert.deepEqual(
+		slot.lines(),
+		["", " ✓ $ make · 3 lines · 12.3s", " ✓ read a.ts · 2 lines"],
+		"a failure and an edit are in the transcript once they end",
+	);
+	// The next message starts: the transcript now has the rows of the step before it.
+	const calls = ["1", "2", "3", "4"].map((id) => ({ type: "toolCall", id, name: "bash", arguments: {} }));
+	const next = { type: "toolCall", id: "5", name: "bash", arguments: { command: "git status" } };
+	handlers.session_start({}, IDLE);
+	for (const content of [calls, [next]]) {
+		handlers.message_start({ message: { role: "assistant", content } });
+		handlers.message_end({ message: { role: "assistant", content } });
+	}
+	start("5", "bash", { command: "git status" });
+	assert.deepEqual(slot.lines(), ["", "", " ● $ git status"], "a call leaves the area when its row is drawn");
 
 	const before = slot.redraws();
 	handlers.agent_end({}, slot.ctx);
 	t.mock.timers.tick(5_000);
 	assert.equal(slot.redraws(), before, "the stopped area no longer redraws");
-	assert.deepEqual(slot.lines(), ["✗ 1 failure open · 4 calls · 12.0s"], "the receipt takes its place");
+	assert.deepEqual(
+		slot.lines(),
+		["✗ 1 failure open · 1 file changed · 5 calls · 12.0s"],
+		"the receipt takes its place",
+	);
 	handlers.agent_start({}, slot.ctx);
 	assert.equal(slot.lines(), undefined, "a new run clears the receipt");
 });

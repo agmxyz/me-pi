@@ -6,11 +6,11 @@
  * lines a reader needs: the first output line often carries the answer or a table header, the last ones the result.
  *
  * The transcript holds what a reader needs later; a live area above the editor holds what is happening now.
- * While the agent works, a call shows only in the live area: the last three calls, with the time a running one
- * has taken and its last output line. A row enters the transcript once the next step shows what became of it:
+ * While the agent works, a call shows only in the live area, with the time a running one has taken and the end
+ * of its output; it leaves the area when its row enters the transcript. A row enters the transcript once the next step shows what became of it:
  *
  * - Followed by another step, a command keeps one line, without its output. A call known to change nothing
- *   (a lookup, or a check that passed) keeps no line; a stretch of work made only of such calls is one count.
+ *   (a lookup, or a check that passed) keeps no line; those that open a stretch of work are one count.
  * - Followed by text, a call shows with its output, and keeps it when that text is the reply: it is usually
  *   the check the reply rests on. It folds as above if another step follows the text after all.
  * - A failure, a write and the changed lines of an edit show as soon as the call ends, and stay. A failed
@@ -190,16 +190,19 @@ function passedLater(toolCallId: string): boolean {
 const foldedRow = (call: Call | undefined) => (call && transcript.rows.get(call.id)?.folded() ? call : undefined);
 const closesUp = (call: Call, other: Call | undefined) => other?.block === call.block && foldedRow(other) !== undefined;
 /**
- * The lines of the run of folded rows that ends with this one: a line for each row that keeps one. A run that
- * opens its block and keeps no line is one count instead, so a stretch of work always leaves a trace.
+ * The lines of the run of folded rows that ends with this one: a line for each row that keeps one. Rows that
+ * keep none are one count when they open their block, so a stretch of work always leaves a trace, and the count
+ * stays when rows with lines follow it.
  */
 function foldedRun(call: Call, width: number, tally: (count: number) => string): string[] {
 	let first = call.index;
 	while (first > 0 && closesUp(call, transcript.order[first - 1])) first--;
 	const rows = transcript.order.slice(first, call.index + 1).map(({ id }) => transcript.rows.get(id));
-	const drawn = rows.flatMap((row) => (row?.silent() ? [] : (row?.head(width) ?? [])));
 	const opensBlock = transcript.order[first - 1]?.block !== call.block;
-	return drawn.length === 0 && opensBlock ? [tally(rows.length)] : drawn;
+	const firstKept = rows.findIndex((row) => !row?.silent());
+	const leading = opensBlock ? (firstKept < 0 ? rows.length : firstKept) : 0;
+	const drawn = rows.flatMap((row) => (row?.silent() ? [] : (row?.head(width) ?? [])));
+	return leading > 0 ? [tally(leading), ...drawn] : drawn;
 }
 
 function rowState(context: Context): RowState {
@@ -288,30 +291,34 @@ function receipt(run: Run, theme: Theme): string | undefined {
 	return facts.join(theme.fg("dim", " · "));
 }
 /**
- * The live area: one line for each of the run's last calls, newest last. The newest call, while it runs, also
- * shows the end of its output. Blank lines above keep the height fixed.
+ * The live area: one line for each call the transcript does not show yet, newest last, at most three. Lines
+ * left over show the end of the newest call's output, so a result can be read before its row is drawn. Blank
+ * lines above keep the height fixed.
  */
 function liveArea(run: Run, theme: Theme, cwd: string, width: number): string[] {
-	const shown = [...run.shown.values()].filter((call) => !drawsOwnRow.has(call.toolName));
-	const drawn: string[] = [];
-	for (const [back, call] of shown.toReversed().entries()) {
-		if (drawn.length >= AREA_LINES) break;
-		const state: RowState = call;
-		const context = { cwd, isError: call.failed === true, outputPad: 1, state: { compactTools: state } } as Context;
+	const rows: { head: string[]; call: Shown; context: Context; printed: boolean }[] = [];
+	for (const [id, call] of [...run.shown].toReversed()) {
+		if (rows.length >= AREA_LINES) break;
+		if (drawsOwnRow.has(call.toolName) || (transcript.calls.has(id) && !unsettled(id))) continue;
+		const context = { cwd, isError: call.failed === true, outputPad: 1, state: { compactTools: call } } as Context;
 		const summarize = SUMMARIES[call.toolName] ?? plainSummary(call.toolName);
-		const summary = { ...summarize(call.args, call.result, theme, context), body: [] };
-		const output = back === 0 && !call.result ? call.output.slice(1 - AREA_LINES) : [];
-		drawn.unshift(
-			...headLine(summary, state, theme, context).render(width),
-			...indented(
-				output.map((line) => theme.fg("toolOutput", line)),
-				state,
-				theme,
-				context,
-			).render(width),
-		);
+		const summary = summarize(call.args, call.result, theme, context);
+		// A failure, a write and an edit are in the transcript as soon as they end.
+		if (call.result && (call.failed || summary.keep)) continue;
+		const head = headLine({ ...summary, body: [] }, call, theme, context).render(width);
+		// A read's result is the file, not something the call printed.
+		rows.unshift({ head, call, context, printed: !call.result || (summary.body?.length ?? 0) > 0 });
 	}
-	return [...Array(Math.max(0, AREA_LINES - drawn.length)).fill(""), ...drawn.slice(-AREA_LINES)];
+	const newest = rows.at(-1);
+	const room = AREA_LINES - rows.length;
+	const output =
+		newest?.printed && room > 0 ? (newest.call.result ? outputLines(newest.call.result) : newest.call.output) : [];
+	const end = output.slice(-room).map((line) => theme.fg("toolOutput", line));
+	const drawn = [
+		...rows.flatMap((row) => row.head),
+		...(newest && end.length > 0 ? indented(end, newest.call, theme, newest.context).render(width) : []),
+	];
+	return [...Array(Math.max(0, AREA_LINES - drawn.length)).fill(""), ...drawn];
 }
 
 /** `cd <dir>` in front of a command says where it ran, not what it did. */
