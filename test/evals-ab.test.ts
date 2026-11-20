@@ -5,14 +5,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+	attemptQueue,
 	coordinatorEnv,
 	costMedian,
 	finalState,
+	isAccepted,
+	isWipSubject,
 	promptOf,
 	renderContract,
 	reportStatus,
+	type SummaryRecord,
 	sessionFacts,
+	summaryTable,
 	type Task,
+	tick,
 	validateTask,
 } from "../evals/ab-task.ts";
 import { piCommand, processesWith, sweepProcesses } from "../evals/live.ts";
@@ -202,7 +208,7 @@ test("sweepProcesses kills a detached process whose argv names the root, and ret
 	const gone = exited(child);
 	await new Promise((r) => setTimeout(r, 200));
 	assert.deepEqual(await processesWith(root), [child.pid]);
-	assert.equal(await sweepProcesses(root, [], { graceMs: 300, termMs: 2_000, pollMs: 50 }), 1);
+	assert.equal(await sweepProcesses([root], [], { graceMs: 300, termMs: 2_000, pollMs: 50 }), 1);
 	assert.equal(await gone, "SIGTERM");
 	assert.deepEqual(await processesWith(root), []);
 });
@@ -216,13 +222,13 @@ test("sweepProcesses SIGKILLs a process that ignores SIGTERM, and waits for one 
 	t.after(() => stubborn.kill("SIGKILL"));
 	const gone = exited(stubborn);
 	await new Promise((r) => setTimeout(r, 200));
-	assert.equal(await sweepProcesses(root, [], { graceMs: 200, termMs: 500, pollMs: 50 }), 1);
+	assert.equal(await sweepProcesses([root], [], { graceMs: 200, termMs: 500, pollMs: 50 }), 1);
 	assert.equal(await gone, "SIGKILL");
 
 	const polite = spawn("sleep", ["0.3"], { argv0: join(root, "polite"), stdio: "ignore" });
 	const done = exited(polite);
 	await new Promise((r) => setTimeout(r, 100));
-	assert.equal(await sweepProcesses(root, [], { graceMs: 5_000, termMs: 500, pollMs: 50 }), 0);
+	assert.equal(await sweepProcesses([root], [], { graceMs: 5_000, termMs: 500, pollMs: 50 }), 0);
 	assert.equal(await done, null);
 });
 
@@ -236,8 +242,26 @@ test("sweepProcesses finds a detached process by its working directory alone, as
 	const gone = exited(child);
 	await new Promise((r) => setTimeout(r, 200));
 	assert.deepEqual(await processesWith(root), [child.pid]);
-	assert.equal(await sweepProcesses(root, [], { graceMs: 200, termMs: 2_000, pollMs: 50 }), 1);
+	assert.equal(await sweepProcesses([root], [], { graceMs: 200, termMs: 2_000, pollMs: 50 }), 1);
 	assert.equal(await gone, "SIGTERM");
+});
+
+test("sweepProcesses sweeps every marker, as a sandbox's root and its separate TMPDIR", async (t) => {
+	const root = scratch(t);
+	const tmp = join(root, "elsewhere");
+	mkdirSync(tmp);
+	const a = spawn("sleep", ["300"], { argv0: join(root, "a"), detached: true, stdio: "ignore" });
+	const b = spawn("sleep", ["300"], { cwd: tmp, detached: true, stdio: "ignore" });
+	t.after(() => {
+		a.kill("SIGKILL");
+		b.kill("SIGKILL");
+	});
+	const gone = Promise.all([exited(a), exited(b)]);
+	await new Promise((r) => setTimeout(r, 200));
+	// `tmp` is separate from `root` for the cwd match: nothing outside it counts.
+	assert.deepEqual(await processesWith(tmp), [b.pid]);
+	assert.equal(await sweepProcesses([join(root, "a"), tmp], [], { graceMs: 200, termMs: 2_000, pollMs: 50 }), 2);
+	assert.deepEqual(await gone, ["SIGTERM", "SIGTERM"]);
 });
 
 test("sweepProcesses also waits for a listed pid whose argv does not name the root", async (t) => {
@@ -246,7 +270,7 @@ test("sweepProcesses also waits for a listed pid whose argv does not name the ro
 	t.after(() => child.kill("SIGKILL"));
 	const gone = exited(child);
 	await new Promise((r) => setTimeout(r, 100));
-	assert.equal(await sweepProcesses(root, [child.pid!], { graceMs: 200, termMs: 2_000, pollMs: 50 }), 1);
+	assert.equal(await sweepProcesses([root], [child.pid!], { graceMs: 200, termMs: 2_000, pollMs: 50 }), 1);
 	assert.equal(await gone, "SIGTERM");
 });
 
@@ -326,4 +350,105 @@ test("sessionFacts counts compactions and blocked or denied tool results", () =>
 		{ type: "compaction", summary: "s", firstKeptEntryId: "b" },
 	);
 	assert.deepEqual(sessionFacts(log), { compactions: 2, blocked: 2 });
+});
+
+test("tick counts a gap over 60 s between watchdog ticks as suspended and moves the deadline by it", () => {
+	const start = { last: 0, deadline: 120_000, suspendedMs: 0 };
+	const awake = tick(start, 20_000);
+	assert.deepEqual(awake, { last: 20_000, deadline: 120_000, suspendedMs: 0 });
+	// A tick 60 s late is still active time.
+	assert.deepEqual(tick(awake, 80_000), { last: 80_000, deadline: 120_000, suspendedMs: 0 });
+	const slept = tick(awake, 20_000 + 3_600_000);
+	assert.deepEqual(slept, { last: 3_620_000, deadline: 3_720_000, suspendedMs: 3_600_000 });
+	assert.deepEqual(tick(slept, 3_620_000 + 90_000), {
+		last: 3_710_000,
+		deadline: 3_810_000,
+		suspendedMs: 3_690_000,
+	});
+});
+
+const record = (over: Partial<SummaryRecord> & Record<string, unknown> = {}) => ({
+	task: "t1",
+	arm: "A",
+	n: 1,
+	state: "completed",
+	wallMs: 60_000,
+	compactions: 0,
+	checkFresh: { exit: 0, timedOut: false },
+	cost: { source: "pi-estimate", total: 4 },
+	report: { status: "DONE" as string | null },
+	headIsWip: false,
+	accepted: true,
+	...over,
+});
+
+test("accepted needs DONE, a green fresh check, a non-WIP HEAD, and a completed state", () => {
+	assert.equal(isWipSubject("WIP(implement): unfinished work at shutdown"), true);
+	assert.equal(isWipSubject("feat: WIP(implement) mentioned later"), false);
+	assert.equal(isAccepted(record()), true);
+	assert.equal(isAccepted(record({ headIsWip: true })), false);
+	assert.equal(isAccepted(record({ report: { status: "BLOCKED" } })), false);
+	assert.equal(isAccepted(record({ report: { status: null } })), false);
+	assert.equal(isAccepted(record({ checkFresh: { exit: 1, timedOut: false } })), false);
+	assert.equal(isAccepted(record({ state: "capped" })), false);
+});
+
+test("summaryTable counts green and accepted apart, per task and arm, with a total per arm", () => {
+	const lines = summaryTable(
+		[
+			record(),
+			// Green but a WIP HEAD: not accepted.
+			record({ n: 2, headIsWip: true, accepted: false }),
+			record({ arm: "B", accepted: false, checkFresh: { exit: 1, timedOut: false } }),
+			record({ task: "t2", accepted: true }),
+			record({ task: "t2", arm: "B", n: 1, state: "timeout", accepted: false }),
+			// A resumed attempt replaces the record before it.
+			record({ task: "t2", arm: "B", n: 1, accepted: true, cost: { source: "pi-estimate", total: 2 } }),
+			record({ task: "other" }),
+		],
+		["t1", "t2"],
+		["A", "B"],
+	);
+	assert.match(lines[0], /\| task \| arm \| attempts \| completed \| check green \(fresh clone\) \| accepted \|/);
+	assert.deepEqual(
+		lines.slice(2).map((l) => l.split(" | ").slice(0, 6).join(" | ")),
+		[
+			"| t1 | A | 2 | 2 | 2 | 1",
+			"| t1 | B | 1 | 1 | 0 | 0",
+			"| t2 | A | 1 | 1 | 1 | 1",
+			"| t2 | B | 1 | 1 | 1 | 1",
+			"| total | A | 3 | 3 | 3 | 2",
+			"| total | B | 2 | 2 | 1 | 1",
+		],
+	);
+	assert.match(lines.at(-1)!, /\$3\.00 \(0 excluded\)/);
+	assert.equal(summaryTable([record()], ["t1"], ["A"]).length, 3);
+});
+
+test("attemptQueue interleaves n, task, arm and skips settled records on resume, not timeouts", () => {
+	const ids = (q: ReturnType<typeof attemptQueue>) => q.map((x) => `${x.task}-${x.arm}${x.n}`);
+	assert.deepEqual(ids(attemptQueue(["t1", "t2"], ["A", "B"], 2)), [
+		"t1-A1",
+		"t1-B1",
+		"t2-A1",
+		"t2-B1",
+		"t1-A2",
+		"t1-B2",
+		"t2-A2",
+		"t2-B2",
+	]);
+	const done = [
+		{ task: "t1", arm: "A", n: 1, state: "completed" },
+		{ task: "t1", arm: "B", n: 1, state: "capped" },
+		{ task: "t2", arm: "A", n: 1, state: "void" },
+		{ task: "t2", arm: "B", n: 1, state: "timeout" },
+		{ task: "t1", arm: "A", n: 2, state: "incomplete" },
+	];
+	assert.deepEqual(ids(attemptQueue(["t1", "t2"], ["A", "B"], 2, done)), [
+		"t2-B1",
+		"t1-A2",
+		"t1-B2",
+		"t2-A2",
+		"t2-B2",
+	]);
 });

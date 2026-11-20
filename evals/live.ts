@@ -108,17 +108,19 @@ const signal = (pids: number[], sig: NodeJS.Signals) => {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Makes sure nothing started for an attempt survives: waits up to `graceMs` for every process whose command line
- * contains `marker` (the sandbox root; delegate workers run in their own process groups, but their args and paths name
- * it) and every pid in `pids` to exit, then SIGTERMs the rest, then SIGKILLs what still lives. Returns how many had to
+ * Makes sure nothing started for an attempt survives: waits up to `graceMs` for every process tied to one of `markers`
+ * (the sandbox's directories, by command line or working directory; delegate workers run in their own process groups,
+ * but their args and paths name them) and every pid in `pids` to exit, then SIGTERMs the rest, then SIGKILLs what still lives. Returns how many had to
  * be signalled; throws when any survive SIGKILL.
  */
 export async function sweepProcesses(
-	marker: string,
+	markers: string[],
 	pids: number[] = [],
 	{ graceMs = 20_000, termMs = 3_000, pollMs = 250 } = {},
 ): Promise<number> {
-	const left = async () => [...new Set([...(await processesWith(marker)), ...pids.filter(alive)])];
+	const left = async () => [
+		...new Set([...(await Promise.all(markers.map(processesWith))).flat(), ...pids.filter(alive)]),
+	];
 	const until = async (ms: number) => {
 		const end = Date.now() + ms;
 		let now = await left();

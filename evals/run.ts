@@ -8,7 +8,7 @@ import { homedir, platform, release } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { piCommand as command, piLive, sha, liveSnapshot as snapshot, socketOf } from "./live.ts";
-import { cloneAt, createSandbox, fixtureRepo, type Policy, type Sandbox } from "./sandbox.ts";
+import { cloneAt, createSandbox, fixtureRepo, type Policy, removeSandbox, type Sandbox } from "./sandbox.ts";
 import { type Assertion, check, parseSession, type Verdict } from "./score.ts";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
@@ -250,8 +250,8 @@ async function main() {
 		if (changed.length)
 			console.error(`⚠ live ~/.pi/agent changed during the run (yours or the run's?): ${changed.join(", ")}`);
 		for (const s of sandboxes.values()) rmSync(socketOf(s), { force: true });
-		if (!opt.keep) for (const s of sandboxes.values()) rmSync(s.root, { recursive: true, force: true });
-		else for (const s of sandboxes.values()) console.log(`kept ${s.root}`);
+		if (!opt.keep) for (const s of sandboxes.values()) removeSandbox(s);
+		else for (const s of sandboxes.values()) console.log(`kept ${s.root} (TMPDIR ${s.tmp})`);
 	}
 }
 

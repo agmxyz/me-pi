@@ -164,3 +164,128 @@ export function median(xs: number[]): number | undefined {
 	const mid = Math.floor(s.length / 2);
 	return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
+
+/** A watchdog tick further than this after the previous one means the machine slept in between. */
+export const SUSPEND_GAP_MS = 60_000;
+
+export interface ActiveClock {
+	/** When the watchdog last ticked. */
+	last: number;
+	/** When the attempt times out, moved later by every suspension. */
+	deadline: number;
+	suspendedMs: number;
+}
+
+/**
+ * Advances the attempt's clock to `now`, so the timeout counts active time only: a gap between ticks longer than
+ * `SUSPEND_GAP_MS` (the machine slept, so timers did not fire) is counted as suspended and extends the deadline.
+ */
+export function tick(clock: ActiveClock, now: number): ActiveClock {
+	const gap = now - clock.last;
+	if (gap <= SUSPEND_GAP_MS) return { ...clock, last: now };
+	return { last: now, deadline: clock.deadline + gap, suspendedMs: clock.suspendedMs + gap };
+}
+
+/** An implement worker's shutdown commit (`WIP(<role>): …`) holds unfinished work, not a delivery. */
+export const isWipSubject = (subject: string) => subject.startsWith("WIP(");
+
+/**
+ * Delivered: the run completed, the report says DONE, the check passes in a fresh clone of HEAD, and HEAD is not a WIP
+ * commit. A green check alone is not delivery: a WIP commit or a BLOCKED report can still pass it.
+ */
+export function isAccepted(r: {
+	state: string;
+	report: { status: string | null };
+	checkFresh: { exit: number | null };
+	headIsWip: boolean;
+}): boolean {
+	return r.state === "completed" && r.report.status === "DONE" && r.checkFresh.exit === 0 && !r.headIsWip;
+}
+
+/** States a resumed sweep keeps; a `timeout` or `incomplete` attempt is run again. */
+const SETTLED: readonly AttemptState[] = ["completed", "capped", "void"];
+const keyOf = (task: string, arm: string, n: number) => `${task}\0${arm}\0${n}`;
+
+export interface QueuedAttempt {
+	task: string;
+	arm: Arm;
+	n: number;
+}
+
+/**
+ * The attempts to run, interleaved (for each n, each task, each arm) so provider drift during the sweep hits each arm
+ * and task alike, less those `done` already holds a settled record for.
+ */
+export function attemptQueue(
+	tasks: string[],
+	arms: readonly Arm[],
+	runs: number,
+	done: { task: string; arm: string; n: number; state: string }[] = [],
+): QueuedAttempt[] {
+	const settled = new Set(
+		done.filter((r) => SETTLED.includes(r.state as AttemptState)).map((r) => keyOf(r.task, r.arm, r.n)),
+	);
+	const queue: QueuedAttempt[] = [];
+	for (let n = 1; n <= runs; n++)
+		for (const task of tasks)
+			for (const arm of arms) if (!settled.has(keyOf(task, arm, n))) queue.push({ task, arm, n });
+	return queue;
+}
+
+/** What the summary reads from a record. */
+export interface SummaryRecord {
+	task: string;
+	arm: string;
+	n: number;
+	state: string;
+	accepted?: boolean;
+	wallMs: number;
+	compactions: number | null;
+	checkFresh: { exit: number | null; timedOut: boolean };
+	cost: { source: string; total: number };
+}
+
+const fmt = (x: number | undefined, f: (v: number) => string) => (x === undefined ? "–" : f(x));
+
+/**
+ * The summary table: one row per task and arm, then a total per arm. Only the last record of each (task, arm, n)
+ * counts, so a resumed attempt replaces the timed-out one before it. Records of other tasks or arms are left out.
+ */
+export function summaryTable(records: SummaryRecord[], tasks: string[], arms: readonly Arm[]): string[] {
+	const latest = new Map<string, SummaryRecord>();
+	for (const r of records) if (tasks.includes(r.task)) latest.set(keyOf(r.task, r.arm, r.n), r);
+	const kept = [...latest.values()];
+	const row = (task: string, arm: string, r: SummaryRecord[]) => {
+		const green = r.filter((x) => x.checkFresh.exit === 0 && !x.checkFresh.timedOut).length;
+		const cost = costMedian(r);
+		return `| ${task} | ${arm} | ${r.length} | ${r.filter((x) => x.state === "completed").length} | ${green} | ${
+			r.filter((x) => x.accepted === true).length
+		} | ${fmt(cost.median, (v) => `$${v.toFixed(2)}`)} (${cost.excluded} excluded) | ${fmt(
+			median(r.map((x) => x.wallMs)),
+			(v) => `${(v / 60_000).toFixed(1)} min`,
+		)} | ${fmt(median(r.filter((x) => x.compactions !== null).map((x) => x.compactions as number)), String)} |`;
+	};
+	const lines = [
+		"| task | arm | attempts | completed | check green (fresh clone) | accepted | median cost (n excluded) | median wall | median compactions |",
+		"|---|---|---|---|---|---|---|---|---|",
+	];
+	for (const task of tasks)
+		for (const arm of arms)
+			lines.push(
+				row(
+					task,
+					arm,
+					kept.filter((x) => x.task === task && x.arm === arm),
+				),
+			);
+	if (tasks.length > 1)
+		for (const arm of arms)
+			lines.push(
+				row(
+					"total",
+					arm,
+					kept.filter((x) => x.arm === arm),
+				),
+			);
+	return lines;
+}

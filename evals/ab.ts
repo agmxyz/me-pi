@@ -1,5 +1,5 @@
 /**
- * Manual A/B eval: one real implementation task, run by a coordinator with the `implement` worker (arm A) and by one
+ * Manual A/B eval: real implementation tasks, each run by a coordinator with the `implement` worker (arm A) and by one
  * that edits directly (arm B), each in a fresh isolated Pi. Outcomes are measured from the worktree, not the agent's
  * report. Real model calls and real spend; never part of `npm run check`. See evals/ab/README.md.
  */
@@ -18,22 +18,28 @@ import { homedir, platform, release } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
+	type ActiveClock,
 	ARMS,
 	type Arm,
 	type AttemptState,
+	attemptQueue,
 	coordinatorEnv,
-	costMedian,
 	finalState,
-	median,
+	isAccepted,
+	isWipSubject,
 	promptOf,
 	renderContract,
 	reportStatus,
+	type SummaryRecord,
 	sessionFacts,
 	skillOf,
+	summaryTable,
+	type Task,
+	tick,
 	validateTask,
 } from "./ab-task.ts";
 import { liveSnapshot, panePid, piCommand, piLive, sha, socketOf, sweepProcesses } from "./live.ts";
-import { cloneAt, createSandbox, type Sandbox } from "./sandbox.ts";
+import { cloneAt, createSandbox, removeSandbox, type Sandbox, sandboxDirs } from "./sandbox.ts";
 import { sessionSpend } from "./score.ts";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
@@ -43,7 +49,7 @@ const NO_LOG_MS = 3 * 60_000;
 
 const { values: opt } = parseArgs({
 	options: {
-		task: { type: "string" },
+		task: { type: "string", multiple: true },
 		arm: { type: "string", multiple: true },
 		n: { type: "string", default: "1" },
 		jobs: { type: "string", default: "1" },
@@ -54,6 +60,7 @@ const { values: opt } = parseArgs({
 		cap: { type: "string", default: "25" },
 		"timeout-min": { type: "string", default: "120" },
 		out: { type: "string" },
+		resume: { type: "string" },
 		root: { type: "string" },
 		pi: { type: "string" },
 		keep: { type: "boolean", default: false },
@@ -61,7 +68,9 @@ const { values: opt } = parseArgs({
 	},
 });
 
-if (!opt.task) throw new Error("--task <file.json> is required");
+if (!opt.task?.length) throw new Error("--task <file.json> is required");
+if (opt.resume && opt.out && resolve(opt.out) !== resolve(opt.resume))
+	throw new Error("--resume appends to its own file; drop --out or give the same path");
 const arms = (opt.arm?.length ? opt.arm : [...ARMS]) as Arm[];
 for (const a of arms) if (!ARMS.includes(a)) throw new Error(`--arm must be A or B, got ${a}`);
 const positive = (name: string, v: string) => {
@@ -76,7 +85,11 @@ const timeoutMs = positive("timeout-min", opt["timeout-min"]!) * 60_000;
 if (!opt["dry-run"] && !opt.auth)
 	throw new Error("--auth <eval auth.json> is required for a real run; use --dry-run without one");
 
-const task = validateTask(JSON.parse(readFileSync(resolve(opt.task), "utf8")));
+const tasks = opt.task.map((f) => validateTask(JSON.parse(readFileSync(resolve(f), "utf8"))));
+const taskIds = tasks.map((t) => t.id);
+const dup = taskIds.find((id, i) => taskIds.indexOf(id) !== i);
+if (dup) throw new Error(`--task: task id ${dup} given twice`);
+const taskById = new Map(tasks.map((t) => [t.id, t]));
 const template = readFileSync(join(HERE, "ab", "contract.md"), "utf8");
 const directSkill = join(HERE, "ab", "skills", "implement-direct");
 const realHome = homedir();
@@ -84,9 +97,15 @@ const repo = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: HERE, 
 const pi = opt.pi ?? execFileSync("sh", ["-c", "command -v pi"], { encoding: "utf8" }).trim();
 const piVersion = execFileSync(pi, ["--version"], { encoding: "utf8" }).trim().split(/\s+/).pop()!;
 const sweep = new Date().toISOString().replace(/[:.]/g, "-");
-const out =
-	opt.out ??
-	join(process.env.XDG_STATE_HOME ?? join(realHome, ".local", "state"), "me-pi-evals", `ab-${task.id}-${sweep}.jsonl`);
+const out = resolve(
+	opt.resume ??
+		opt.out ??
+		join(
+			process.env.XDG_STATE_HOME ?? join(realHome, ".local", "state"),
+			"me-pi-evals",
+			tasks.length > 1 ? `ab-multi-${sweep}.jsonl` : `ab-${tasks[0].id}-${sweep}.jsonl`,
+		),
+);
 const artifacts = out.replace(/\.jsonl$/, "");
 // pi-live.sh reads its settle timeout from the env it inherits; the runner's own timer stops Pi at the same bound.
 process.env.PI_LIVE_TIMEOUT = String(Math.ceil(timeoutMs / 1000));
@@ -146,7 +165,7 @@ async function startTarget(sandbox: Sandbox, cwd: string, cmd: string[]) {
 	const target = (await piLive(sandbox, "start", cwd, "--", ...cmd)).stdout.trim();
 	const pid = await panePid(sandbox, target).catch(async (err) => {
 		await piLive(sandbox, "stop", target).catch(() => {});
-		await sweepProcesses(sandbox.root).catch((sweepErr) => {
+		await sweepProcesses(sandboxDirs(sandbox)).catch((sweepErr) => {
 			survived.add(sandbox.root);
 			throw sweepErr;
 		});
@@ -157,7 +176,7 @@ async function startTarget(sandbox: Sandbox, cwd: string, cmd: string[]) {
 		halted ??= (async () => {
 			await piLive(sandbox, "stop", target).catch(() => {});
 			try {
-				return await sweepProcesses(sandbox.root, [pid]);
+				return await sweepProcesses(sandboxDirs(sandbox), [pid]);
 			} catch (err) {
 				survived.add(sandbox.root);
 				throw err;
@@ -184,11 +203,11 @@ async function cleanup() {
 	for (const s of roots) rmSync(socketOf(s), { force: true });
 	for (const s of roots)
 		if (survived.has(s.root)) console.error(`⚠ kept ${s.root}: a process of it survived SIGKILL`);
-		else if (!opt.keep) rmSync(s.root, { recursive: true, force: true });
-		else console.log(`kept ${s.root}`);
+		else if (!opt.keep) removeSandbox(s);
+		else console.log(`kept ${s.root} (TMPDIR ${s.tmp})`);
 }
 
-function sandboxFor(arm: Arm): Sandbox {
+function sandboxFor(task: Task, arm: Arm): Sandbox {
 	return createSandbox({
 		repo,
 		ref: "HEAD",
@@ -208,6 +227,7 @@ function sandboxFor(arm: Arm): Sandbox {
 
 interface Attempt {
 	id: string;
+	task: Task;
 	arm: Arm;
 	n: number;
 	sandbox: Sandbox;
@@ -220,13 +240,14 @@ interface Attempt {
 }
 
 /** Clones the target at its base with no remote, creates the branch, runs setup, and writes the brief and contract. */
-async function prepare(arm: Arm, n: number): Promise<Attempt> {
-	const sandbox = sandboxFor(arm);
+async function prepare(task: Task, arm: Arm, n: number): Promise<Attempt> {
+	const sandbox = sandboxFor(task, arm);
 	roots.push(sandbox);
 	const id = `${task.id}-${arm}${n}`;
 	const dir = join(sandbox.root, "attempt");
 	const a: Attempt = {
 		id,
+		task,
 		arm,
 		n,
 		sandbox,
@@ -258,8 +279,8 @@ const coordinatorCommand = (a: Attempt) => [
 	"--approve",
 ];
 
-async function dryRun(arm: Arm): Promise<boolean> {
-	const a = await prepare(arm, 0);
+async function dryRun(task: Task, arm: Arm): Promise<boolean> {
+	const a = await prepare(task, arm, 0);
 	const cmd = coordinatorCommand(a);
 	const { target, halt } = await startTarget(a.sandbox, a.worktree, cmd);
 	let screen = "";
@@ -272,10 +293,10 @@ async function dryRun(arm: Arm): Promise<boolean> {
 	console.log(screen);
 	console.log(
 		missing.length
-			? `✗ dry run arm ${arm}: not loaded: ${missing.join(", ")}`
-			: `✓ dry run arm ${arm}: Pi started with ${skillOf(arm)} and delegate.ts`,
+			? `✗ dry run ${task.id} arm ${arm}: not loaded: ${missing.join(", ")}`
+			: `✓ dry run ${task.id} arm ${arm}: Pi started with ${skillOf(arm)} and delegate.ts`,
 	);
-	console.log(`contract ${arm}: ${a.contract}`);
+	console.log(`contract ${task.id} ${arm}: ${a.contract}`);
 	return missing.length === 0;
 }
 
@@ -295,11 +316,11 @@ function numstat(cwd: string, env: Record<string, string>, from: string, to: str
 
 /** Runs `setup` then the check in `cwd`; a failed setup command is reported instead of the check. */
 async function setupAndCheck(a: Attempt, cwd: string) {
-	for (const command of task.setup) {
+	for (const command of a.task.setup) {
 		const r = await shell(command, cwd, a.sandbox.env, timeoutMs);
 		if (r.exit !== 0) return { setupFailed: command, ...r };
 	}
-	return shell(task.check, cwd, a.sandbox.env, timeoutMs);
+	return shell(a.task.check, cwd, a.sandbox.env, timeoutMs);
 }
 
 /**
@@ -307,12 +328,13 @@ async function setupAndCheck(a: Attempt, cwd: string) {
  * HEAD after `setup`, so ignored build output the agent left behind cannot make it pass.
  */
 async function recheck(a: Attempt, head: string) {
-	const inWorktree = await shell(task.check, a.worktree, a.sandbox.env, timeoutMs);
+	const inWorktree = await shell(a.task.check, a.worktree, a.sandbox.env, timeoutMs);
 	const fresh = join(a.dir, "fresh");
 	cloneAt(a.worktree, head, fresh);
 	return { inWorktree, fresh: await setupAndCheck(a, fresh) };
 }
 function diffVsReference(a: Attempt, head: string) {
+	const { task } = a;
 	if (!task.reference) return undefined;
 	const env = a.sandbox.env;
 	try {
@@ -340,7 +362,9 @@ async function quiet(a: Attempt, target: string, stopped: () => boolean) {
 }
 
 async function runAttempt(a: Attempt): Promise<Record<string, any>> {
+	const { task } = a;
 	const started = Date.now();
+	let clock: ActiveClock = { last: started, deadline: started + timeoutMs, suspendedMs: 0 };
 	let state: AttemptState = "completed";
 	let note = "";
 	let halt: (() => Promise<number>) | undefined;
@@ -350,7 +374,10 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		[state, note] = [why, detail];
 		void halt?.().catch(() => {});
 	};
+	// The timeout counts active time: a tick that finds the machine slept moves the deadline by the gap.
 	const watchdog = setInterval(() => {
+		clock = tick(clock, Date.now());
+		if (Date.now() >= clock.deadline) stop("timeout", `${timeoutMs / 60_000} min`);
 		const log = sessionLog(a);
 		if (!log) {
 			if (askedAt !== undefined && Date.now() - askedAt >= NO_LOG_MS) stop("incomplete", "no session log");
@@ -359,7 +386,6 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		const { total } = sessionSpend(log);
 		if (total >= cap) stop("capped", `$${total.toFixed(2)} ≥ cap $${cap}`);
 	}, WATCH_MS);
-	const deadline = setTimeout(() => stop("timeout", `${timeoutMs / 60_000} min`), timeoutMs);
 	let orphansKilled = 0;
 	try {
 		const t = await startTarget(a.sandbox, a.worktree, coordinatorCommand(a));
@@ -378,7 +404,6 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		}
 	} finally {
 		clearInterval(watchdog);
-		clearTimeout(deadline);
 		// Nothing of the attempt may run past here: an implement worker's shutdown WIP commit would race the measurement.
 		if (halt) orphansKilled = await halt();
 	}
@@ -396,6 +421,7 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 
 	const env = a.sandbox.env;
 	const head = git(a.worktree, env, "rev-parse", "HEAD");
+	const headIsWip = isWipSubject(git(a.worktree, env, "log", "-1", "--format=%s", head));
 	const clean = git(a.worktree, env, "status", "--porcelain") === "";
 	const patch = git(a.worktree, env, "diff", "--binary", task.base, head);
 	const dir = join(artifacts, a.id);
@@ -408,6 +434,11 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 
 	const facts = log ? sessionFacts(log) : undefined;
 	const byRole = spend?.byRole ?? {};
+	const report = {
+		exists: reportExists,
+		status: reportExists ? reportStatus(readFileSync(a.report, "utf8")) : null,
+	};
+	const checkFresh = { command: task.check, ...check.fresh };
 	return {
 		sweep,
 		attempt: a.id,
@@ -437,16 +468,19 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		timeoutMin: timeoutMs / 60_000,
 		state,
 		note,
+		accepted: isAccepted({ state, report, checkFresh, headIsWip }),
 		wallMs,
+		suspendedMs: clock.suspendedMs,
 		head,
+		headIsWip,
 		commits: Number(git(a.worktree, env, "rev-list", "--count", `${task.base}..${head}`)),
 		clean,
 		ignoredLeftovers,
 		checkInWorktree: { command: task.check, ...check.inWorktree },
-		checkFresh: { command: task.check, ...check.fresh },
+		checkFresh,
 		diffstat: numstat(a.worktree, env, task.base, head),
 		diffVsReference: diffVsReference(a, head),
-		report: { exists: reportExists, status: reportExists ? reportStatus(readFileSync(a.report, "utf8")) : null },
+		report,
 		cost: spend
 			? {
 					coordinator: spend.coordinator,
@@ -466,35 +500,15 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 	};
 }
 
-const fmt = (x: number | undefined, f: (v: number) => string) => (x === undefined ? "–" : f(x));
-
-function summary(records: Record<string, any>[]) {
-	console.log(
-		"| arm | attempts | completed | check green (fresh clone) | median cost (n excluded) | median wall | median compactions |",
-	);
-	console.log("|---|---|---|---|---|---|---|");
-	for (const arm of arms) {
-		const r = records.filter((x) => x.arm === arm);
-		const green = r.filter((x) => x.checkFresh.exit === 0 && !x.checkFresh.timedOut).length;
-		const cost = costMedian(r as Parameters<typeof costMedian>[0]);
-		console.log(
-			`| ${arm} | ${r.length} | ${r.filter((x) => x.state === "completed").length} | ${green} | ${fmt(
-				cost.median,
-				(v) => `$${v.toFixed(2)}`,
-			)} (${cost.excluded} excluded) | ${fmt(
-				median(r.map((x) => x.wallMs)),
-				(v) => `${(v / 60_000).toFixed(1)} min`,
-			)} | ${fmt(median(r.filter((x) => x.compactions !== null).map((x) => x.compactions)), String)} |`,
-		);
-	}
-}
-
 const before = liveSnapshot(realHome);
+/** Stops the `caffeinate` started by `main`, if any. */
+let wake: (() => boolean) | undefined;
 let cleaned: Promise<void> | undefined;
 /** Runs once, from the normal end or a signal: nothing is removed until every started target is halted. */
 function finish() {
 	cleaned ??= (async () => {
 		await cleanup();
+		wake?.();
 		const after = liveSnapshot(realHome);
 		const changed = Object.keys(before).filter((k) => before[k] !== after[k]);
 		if (changed.length)
@@ -519,38 +533,76 @@ for (const [sig, code] of [
 		);
 	});
 
+/** The records already in the `--resume` file; a line that is not a record with task, arm, n, and state is an error. */
+function resumed(file: string): SummaryRecord[] {
+	if (!existsSync(file)) throw new Error(`--resume: no such file ${file}`);
+	return readFileSync(file, "utf8")
+		.split("\n")
+		.filter((l) => l.trim())
+		.map((l, i) => {
+			const r = JSON.parse(l);
+			if (typeof r?.task !== "string" || typeof r.arm !== "string" || typeof r.n !== "number" || !r.state)
+				throw new Error(`--resume: line ${i + 1} of ${file} is not an attempt record`);
+			return r;
+		});
+}
+
+/**
+ * Keeps the Mac awake (`caffeinate -i`) while the runner lives: `-w` ends it with this process, and `finish` kills it.
+ * Without caffeinate the run goes on, and the timeout still counts only active time.
+ */
+function stayAwake(): (() => boolean) | undefined {
+	try {
+		execFileSync("sh", ["-c", "command -v caffeinate"], { stdio: "ignore" });
+	} catch {
+		console.error("⚠ caffeinate not found: the machine may sleep during the sweep");
+		return undefined;
+	}
+	const child = spawn("caffeinate", ["-i", "-w", String(process.pid)], { stdio: "ignore" });
+	child.on("error", (err) => console.error(`⚠ caffeinate failed: ${err.message}`));
+	return () => child.kill();
+}
+
 async function main() {
+	wake = stayAwake();
 	try {
 		if (opt["dry-run"]) {
 			const ok: boolean[] = [];
-			for (const arm of arms) ok.push(await dryRun(arm));
+			for (const task of tasks) for (const arm of arms) ok.push(await dryRun(task, arm));
 			process.exitCode = ok.every(Boolean) ? 0 : 1;
 			return;
 		}
-		// Interleave arms (A1, B1, A2, B2…) so provider drift during the sweep hits each arm alike.
-		const queue: { arm: Arm; n: number }[] = [];
-		for (let n = 1; n <= runs; n++) for (const arm of arms) queue.push({ arm, n });
+		const prior = opt.resume ? resumed(out) : [];
+		// Interleave tasks and arms (t1 A1, t1 B1, t2 A1, t2 B1, t1 A2…) so provider drift hits each alike.
+		const queue = attemptQueue(taskIds, arms, runs, prior);
+		if (opt.resume) console.log(`resume: ${queue.length} attempt(s) left to run in ${out}`);
 		mkdirSync(dirname(out), { recursive: true });
 		const records: Record<string, any>[] = [];
-		let authChecked: Promise<void> | undefined;
+		const authChecked = new Map<string, Promise<void>>();
 		let stopped = "";
 		const worker = async () => {
 			for (let q = queue.shift(); q && !stopped; q = queue.shift()) {
+				const task = taskById.get(q.task)!;
 				try {
-					const a = await prepare(q.arm, q.n);
-					// One serial check refreshes the shared eval login before parallel attempts could race to rotate it.
-					authChecked ??= Promise.resolve().then(() => {
-						execFileSync(pi, ["auth", "check", "--provider", task.coordinator.provider], {
-							env: a.sandbox.env,
-							stdio: "inherit",
-						});
-					});
-					await authChecked;
+					const a = await prepare(task, q.arm, q.n);
+					// One serial check per provider refreshes the shared eval login before parallel attempts could race to rotate it.
+					const provider = task.coordinator.provider;
+					if (!authChecked.has(provider))
+						authChecked.set(
+							provider,
+							Promise.resolve().then(() => {
+								execFileSync(pi, ["auth", "check", "--provider", provider], {
+									env: a.sandbox.env,
+									stdio: "inherit",
+								});
+							}),
+						);
+					await authChecked.get(provider);
 					const record = await runAttempt(a);
 					records.push(record);
 					appendFileSync(out, `${JSON.stringify(record)}\n`, { mode: 0o600 });
 					console.log(
-						`${record.attempt}: ${record.state} check ${record.checkFresh.exit === 0 ? "✓" : "✗"} $${record.cost.total.toFixed(2)}${record.cost.source === "partial" ? "+ (partial)" : ""}`,
+						`${record.attempt}: ${record.state} check ${record.checkFresh.exit === 0 ? "✓" : "✗"}${record.accepted ? " accepted" : ""}${record.headIsWip ? " (HEAD is WIP)" : ""} $${record.cost.total.toFixed(2)}${record.cost.source === "partial" ? "+ (partial)" : ""}`,
 					);
 					if (record.note === "account") stopped = "account error";
 				} catch (err) {
@@ -562,7 +614,7 @@ async function main() {
 		};
 		const ended = await Promise.allSettled(Array.from({ length: jobs }, worker));
 		console.log(`\nrecords: ${out}\npatches: ${artifacts}${stopped ? `\n✗ stopped: ${stopped}` : ""}\n`);
-		summary(records);
+		for (const line of summaryTable([...prior, ...(records as SummaryRecord[])], taskIds, arms)) console.log(line);
 		const failed = ended.filter((e): e is PromiseRejectedResult => e.status === "rejected");
 		if (failed.length)
 			throw new AggregateError(
