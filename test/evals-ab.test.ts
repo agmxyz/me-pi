@@ -152,7 +152,7 @@ test("costMedian leaves out unknown, partial, and non-completed costs instead of
 	assert.deepEqual(costMedian([r("timeout", "unavailable", 0)]), { median: undefined, excluded: 1 });
 });
 
-test("the coordinator command carries no GitHub token and pins git's ssh to no identity", () => {
+test("the coordinator command carries no GitHub token, refuses git's ssh transport, and sets no GIT_SSH_COMMAND", () => {
 	const sandbox = { env: { HOME: "/s/home", PATH: "/usr/bin" } } as unknown as Sandbox;
 	const saved = { GH_TOKEN: process.env.GH_TOKEN, GITHUB_TOKEN: process.env.GITHUB_TOKEN };
 	Object.assign(process.env, { GH_TOKEN: "x", GITHUB_TOKEN: "y" });
@@ -163,10 +163,12 @@ test("the coordinator command carries no GitHub token and pins git's ssh to no i
 			cmd.some((a) => /^(GH_TOKEN|GITHUB_TOKEN)=/.test(a)),
 			false,
 		);
-		assert.ok(
-			cmd.includes(
-				"GIT_SSH_COMMAND=ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes",
-			),
+		for (const pair of ["GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=protocol.ssh.allow", "GIT_CONFIG_VALUE_0=never"])
+			assert.ok(cmd.includes(pair), pair);
+		// A target's tests may assert GIT_SSH_COMMAND is unset (piops does for local clones).
+		assert.equal(
+			cmd.some((a) => a.startsWith("GIT_SSH_COMMAND=")),
+			false,
 		);
 		assert.ok(cmd.includes("GIT_TERMINAL_PROMPT=0"));
 		assert.ok(cmd.includes("ME_PI_UNATTENDED=1"));

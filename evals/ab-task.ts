@@ -113,15 +113,18 @@ export function sessionFacts(jsonl: string): { compactions: number; blocked: num
 
 /**
  * What the coordinator gets on top of the sandbox env. Pi runs under `env -i`, so no GitHub token is inherited.
- * OpenSSH reads `~/.ssh` from the passwd home, not `$HOME`, so git's ssh gets no config, no identity, and no prompt:
- * the agent cannot push with the user's keys.
+ * OpenSSH reads `~/.ssh` from the passwd home, not `$HOME`, so git refuses the ssh transport outright through
+ * `protocol.ssh.allow=never` and cannot prompt: the agent cannot push with the user's keys. A `GIT_SSH_COMMAND` would
+ * do the same but leaks into the target's own tests (piops asserts it is unset for local clones), failing their check.
  */
 export const coordinatorEnv = (statusLog: string, capUsd: number): Record<string, string> => ({
 	// Both arms run unattended: nobody answers a dialog, so guard refuses instead of waiting.
 	ME_PI_UNATTENDED: "1",
 	ME_PI_STATUS_LOG: statusLog,
 	ME_PI_SPEND_BUDGET_USD: String(capUsd),
-	GIT_SSH_COMMAND: "ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes",
+	GIT_CONFIG_COUNT: "1",
+	GIT_CONFIG_KEY_0: "protocol.ssh.allow",
+	GIT_CONFIG_VALUE_0: "never",
 	GIT_TERMINAL_PROMPT: "0",
 });
 

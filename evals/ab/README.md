@@ -61,7 +61,7 @@ node evals/ab.ts --task <t1> --task <t2> --auth <file> --skill <dir> --n 2 --res
 
 Both arms' coordinators run with `ME_PI_UNATTENDED=1`. Nobody answers a dialog, so guard refuses risky commands instead of waiting.
 
-**Credentials in the sandbox.** Pi runs under `env -i` with the sandbox env, so it inherits no `GH_TOKEN` or `GITHUB_TOKEN`. OpenSSH reads `~/.ssh` from the passwd home, not `$HOME`. So the coordinator gets `GIT_SSH_COMMAND=ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes` and `GIT_TERMINAL_PROMPT=0`: git can reach no remote with your keys and cannot prompt.
+**Credentials in the sandbox.** Pi runs under `env -i` with the sandbox env, so it inherits no `GH_TOKEN` or `GITHUB_TOKEN`. OpenSSH reads `~/.ssh` from the passwd home, not `$HOME`. So the coordinator gets `protocol.ssh.allow=never` (through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`) and `GIT_TERMINAL_PROMPT=0`: git refuses every ssh remote (`fatal: transport 'ssh' not allowed`) and cannot prompt. The runner sets no `GIT_SSH_COMMAND`: a target's own tests may assert it is unset, and piops' did, failing its check in every attempt of the first multi-task sweep.
 
 **The cap is the runner's.** Every 20 s the runner parses the session log for coordinator cost plus worker cost. When the total reaches `--cap`, it stops Pi and marks the attempt `capped`. Costs are Pi's estimates, not the provider's counter. A worker's cost reaches the log only when its job finishes, so one running job can overshoot the cap. If no session log exists 3 minutes after the prompt, the cap would be blind, so the runner stops the attempt as `incomplete` (`no session log`).
 
