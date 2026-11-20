@@ -30,7 +30,6 @@ test("the root manifest is the private setup and loads the pi-workers and rig ex
 	assert.deepEqual(root.pi, {
 		extensions: [...workerExtensions, ...rigExtensions],
 		skills: [],
-		themes: ["themes/me.json"],
 		changelogPath: "packages/pi-workers/CHANGELOG.md",
 	});
 	assert.ok(existsSync(new URL(`../${root.pi.changelogPath}`, import.meta.url)));

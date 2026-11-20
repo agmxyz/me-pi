@@ -27,9 +27,6 @@
       "extensions/hide-thinking-label.ts"
     ],
     "skills": [],
-    "themes": [
-      "themes/me.json"
-    ],
     "changelogPath": "packages/pi-workers/CHANGELOG.md"
   },
   "peerDependencies": {

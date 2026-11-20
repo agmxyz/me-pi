@@ -39,8 +39,6 @@ To install any of them, add this repo to `packages` in `~/.pi/agent/settings.jso
 
 Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all four plus the pi-workers extensions.
 
-The package also carries the [`me`](themes/me.json) theme: Pi's dark theme with tool output, facts, hints, and the `Thinking...` label each a step dimmer than the last, quieter borders, and headings in blue so yellow is left for warnings. Select it under **Theme** in `/settings`.
-
 ## Setup
 
 My personal setup; it runs this checkout's working tree. You don't need it to use an extension.

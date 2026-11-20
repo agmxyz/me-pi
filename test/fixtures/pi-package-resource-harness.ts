@@ -27,7 +27,6 @@ const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManage
 await resourceLoader.reload();
 const result = resourceLoader.getExtensions();
 const skillResult = resourceLoader.getSkills();
-const themeResult = resourceLoader.getThemes();
 if (assertion === "assert-delegate") {
 	if (process.env.ME_PI_RUN === "1") {
 		throw new Error("delegate tool registration probe must run outside worker mode");
@@ -46,7 +45,5 @@ console.log(
 		warnings: result.warnings ?? [],
 		skills: skillResult.skills.map((skill) => ({ name: skill.name, path: skill.filePath })),
 		skillDiagnostics: skillResult.diagnostics,
-		themes: themeResult.themes.map((theme) => theme.name),
-		themeDiagnostics: themeResult.diagnostics,
 	}),
 );

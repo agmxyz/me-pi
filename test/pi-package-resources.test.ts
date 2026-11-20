@@ -26,7 +26,6 @@ async function createPackageFixture(parent) {
 	await cp(join(root, "extensions"), join(packageRoot, "extensions"), { recursive: true });
 	await cp(join(root, "packages"), join(packageRoot, "packages"), { recursive: true });
 	await cp(join(root, "skills"), join(packageRoot, "skills"), { recursive: true });
-	await cp(join(root, "themes"), join(packageRoot, "themes"), { recursive: true });
 	await symlink(join(root, "node_modules"), join(packageRoot, "node_modules"), "dir");
 	await writeFile(
 		join(packageRoot, "package.json"),
@@ -93,8 +92,6 @@ test("Pi discovers only the root package extensions and honors package filtering
 				assert.deepEqual(result.warnings, []);
 				assert.deepEqual(result.skills, []);
 				assert.deepEqual(result.skillDiagnostics, []);
-				assert.deepEqual(result.themes, ["me"]);
-				assert.deepEqual(result.themeDiagnostics, []);
 				await assert.rejects(lstat(join(agentDir, "AGENTS.md")), { code: "ENOENT" });
 				await assert.rejects(lstat(join(agentDir, "GLOBAL_AGENTS.md")), { code: "ENOENT" });
 			} finally {
