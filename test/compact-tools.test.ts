@@ -183,6 +183,8 @@ test("colour marks what needs attention: error lines of a failed call, a slow ru
 	assert.notEqual(colourOf(failed[2], "Error"), colourOf(failed[1], "compiling"), "the error line stands out");
 	const passed = paint("bash", { command: "rg Error" }, { content: text("compiling\nError: boom") });
 	assert.equal(colourOf(passed[2], "Error"), colourOf(passed[1], "compiling"), "not in a passing call");
+	const cut = paint("bash", { command: `grep ${"x".repeat(200)} file | sort -u` }, { content: text("") })[0];
+	assert.ok(!cut.slice(0, cut.indexOf("sort -u")).includes("\x1b[0m"), "the end of a cut command keeps its style");
 	const time = (durationMs: number) => paint("bash", { command: "make" }, { content: text(""), durationMs })[0];
 	assert.notEqual(colourOf(time(45_000), "45.0s"), colourOf(time(5_000), "5.0s"));
 	const details = { diff: "-2 limit: 256m\n+2 limit: 1g", patch: "" };

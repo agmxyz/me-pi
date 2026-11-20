@@ -117,13 +117,16 @@ function outputLine(line: string, theme: Theme, context: Context): string {
 /** Text cut in the middle to fit: a command's start says what ran, its end what came out. */
 function middleCut(text: string, room: number): string {
 	if (visibleWidth(text) <= room) return text;
-	const right = Math.floor((room - 1) / 3);
-	let end = "";
-	for (const char of [...text].reverse()) {
-		if (visibleWidth(char + end) > right) break;
-		end = char + end;
-	}
-	return `${truncateToWidth(text, room - 1 - visibleWidth(end), "")}…${end}`;
+	const chars = [...text];
+	const fit = (from: string[], width: number) => {
+		let count = 0;
+		while (count < from.length && visibleWidth(from.slice(0, count + 1).join("")) <= width) count++;
+		return count;
+	};
+	const right = fit(chars.toReversed(), Math.floor((room - 1) / 3));
+	const end = chars.slice(chars.length - right).join("");
+	// Cut by hand: Pi's truncation ends its result with a style reset, which would unstyle the end.
+	return `${chars.slice(0, fit(chars, room - 1 - visibleWidth(end))).join("")}…${end}`;
 }
 /** How many lines a failed command keeps from its end: from the first error-like line among the last twenty. */
 function failedTail(output: string[]): number {
