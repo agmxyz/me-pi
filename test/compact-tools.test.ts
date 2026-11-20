@@ -156,7 +156,7 @@ test("bash shows Pi's output preview while it runs, and Pi's rendering when expa
 	const result = { content: text(numbered(40)), durationMs: 4200 };
 	const running = row("bash", { command: "npm test" }, result, { partial: true });
 	assert.equal(running[0], "● $ npm test");
-	assert.ok(running.includes("line 36") && !running.includes("line 35"), "running keeps Pi's five-line preview");
+	assert.ok(running.includes("line 36") && !running.includes("line 35"), "a row not held back keeps Pi's preview");
 	const expanded = row("bash", { command: "npm test\necho done" }, result, { expanded: true });
 	assert.ok(expanded.includes("line 1") && expanded.includes("echo done"));
 	const failed = row(
@@ -201,44 +201,6 @@ test("colour marks what needs attention: error lines of a failed call, a slow ru
 	const details = { diff: "-2 limit: 256m\n+2 limit: 1g", patch: "" };
 	const edit = paint("edit", { path: "a.yml", edits: [] }, { content: text("ok"), details });
 	assert.match(edit[1], /\x1b\[7m256m/, "the changed word is inverted");
-});
-
-test("a running call shows whole seconds on its first line, in place of Pi's Elapsed line", (t) => {
-	t.mock.timers.enable({ apis: ["Date", "setInterval"] });
-	let redraws = 0;
-	const ui = { requestRender: () => redraws++ } as any;
-	const component = new ToolExecutionComponent(
-		"bash",
-		"c",
-		{ command: "make" },
-		{},
-		resolver("bash", () => PI.bash),
-		ui,
-		ROOT,
-	);
-	const shown = () =>
-		component
-			.render(80)
-			.map((line: string) =>
-				stripVTControlCharacters(line)
-					.replace(/^\s*│ ?/, "")
-					.trim(),
-			)
-			.filter(Boolean);
-	component.markExecutionStarted();
-	component.setArgsComplete();
-	assert.deepEqual(shown(), ["● $ make"]);
-	t.mock.timers.tick(12_000);
-	assert.ok(redraws >= 12, "the row asks for a redraw every second");
-	assert.deepEqual(shown(), ["● $ make · 12s"]);
-	component.updateResult({ content: text("step 1"), details: {}, isError: false }, true);
-	t.mock.timers.tick(60_000);
-	assert.deepEqual(shown(), ["● $ make · 1m 12s", "step 1"]);
-	component.updateResult({ content: text("step 1"), details: {}, isError: false, durationMs: 72_300 }, false);
-	assert.deepEqual(shown(), ["✓ $ make · 1m 12s", "step 1"]);
-	const settled = redraws;
-	t.mock.timers.tick(5_000);
-	assert.equal(redraws, settled, "a settled row stops redrawing");
 });
 
 test("an output line too long for the row is cut, unless it reads like an error: then it gets a second row", () => {
@@ -329,24 +291,26 @@ test("a tool that draws its own row keeps its lines, behind the glyph and withou
 	);
 });
 
+const IDLE = { isIdle: () => true, sessionManager: { getBranch: () => [] } };
+
 /** A transcript as Pi builds it: each step is one assistant message, with optional text before its calls. */
 function session() {
-	handlers.session_start({}, { sessionManager: { getBranch: () => [] } });
+	handlers.session_start({}, IDLE);
 	handlers.message_start({ message: { role: "user" } });
 	const rows: any[] = [];
 	let count = 0;
+	const says = (content: any[]) => {
+		const message = { role: "assistant", content };
+		handlers.message_start({ message });
+		handlers.message_end({ message });
+	};
 	return {
-		step(calls: [string, any, any][], says = "") {
+		step(calls: [string, any, any][], text = "") {
 			const ids = calls.map(() => `call-${count++}`);
-			const message = {
-				role: "assistant",
-				content: [
-					...(says ? [{ type: "text", text: says }] : []),
-					...calls.map(([name, args], i) => ({ type: "toolCall", id: ids[i], name, arguments: args })),
-				],
-			};
-			handlers.message_start({ message });
-			handlers.message_end({ message });
+			says([
+				...(text ? [{ type: "text", text }] : []),
+				...calls.map(([name, args], i) => ({ type: "toolCall", id: ids[i], name, arguments: args })),
+			]);
 			calls.forEach(([name, args, result], i) => {
 				const component = new ToolExecutionComponent(
 					name,
@@ -359,10 +323,12 @@ function session() {
 				);
 				component.markExecutionStarted();
 				component.setArgsComplete();
-				component.updateResult({ details: {}, isError: false, ...result }, false);
+				if (result) component.updateResult({ details: {}, isError: false, ...result }, false);
 				rows.push(component);
 			});
 		},
+		reply: (text: string) => says([{ type: "text", text }]),
+		stop: () => handlers.agent_end({}, { hasUI: false }),
 		expand() {
 			for (const row of rows) row.setExpanded(true);
 		},
@@ -383,29 +349,31 @@ const ran = (command: string, output: string, more = {}): [string, any, any] => 
 	{ command },
 	{ content: text(output), ...more },
 ];
+const edited: [string, any, any] = [
+	"edit",
+	{ path: "a.ts", edits: [{ oldText: "a", newText: "b" }] },
+	{ content: text("ok"), details: { diff: "-1 a\n+1 b" } },
+];
 
-test("a finished call folds to its first line once a later step follows, and folded rows close up", () => {
+test("a call stays out of the transcript until the next step shows what became of it", () => {
+	const running = session();
+	running.step([["bash", { command: "npm install" }, undefined]]);
+	assert.deepEqual(running.screen(), [], "a running call shows only in the live area");
 	const s = session();
-	s.step([ran("ls", "a\nb")]);
-	assert.deepEqual(s.screen(), ["", "✓ $ ls", "a", "b"], "the newest step shows its output");
-	s.step([ran("cat a", "one")]);
-	assert.deepEqual(s.screen(), ["", "✓ $ ls · 2 lines", "", "✓ $ cat a", "one"]);
-	s.step([ran("npm test", "ok")]);
-	assert.deepEqual(s.screen(), ["", "✓ $ ls · 2 lines", "✓ $ cat a · 1 line", "", "✓ $ npm test", "ok"]);
+	s.step([ran("npm install left-pad", "added 1 package")]);
+	assert.deepEqual(s.screen(), [], "a finished call waits for the step after it");
+	s.step([ran("npm run build", "built")]);
+	assert.deepEqual(s.screen(), ["", "✓ $ npm install left-pad · 1 line"], "followed by a step: one line");
+	s.reply("Built.");
+	assert.deepEqual(s.screen(), ["", "✓ $ npm install left-pad · 1 line", "", "✓ $ npm run build", "built"]);
 });
 
-test("a failure, an edit's changed lines and the last step before the reply keep their lines", () => {
+test("a failure, a write and an edit show as soon as they end, and stay", () => {
 	const s = session();
 	s.step([ran("npm run lint", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
-	s.step([
-		[
-			"edit",
-			{ path: "a.ts", edits: [{ oldText: "a", newText: "b" }] },
-			{ content: text("ok"), details: { diff: "-1 a\n+1 b" } },
-		],
-	]);
-	s.step([ran("npm test", "ok")]);
-	const settled = [
+	assert.deepEqual(s.screen(), ["", "✗ $ npm run lint · exit 1", "Error: boom"]);
+	s.step([edited, ["write", { path: "b.ts", content: "one\ntwo\n" }, { content: text("ok") }]]);
+	const kept = [
 		"",
 		"✗ $ npm run lint · exit 1",
 		"Error: boom",
@@ -414,22 +382,78 @@ test("a failure, an edit's changed lines and the last step before the reply keep
 		"-1 a",
 		"+1 b",
 		"",
-		"✓ $ npm test",
-		"ok",
+		"✓ write b.ts · 2 lines",
 	];
-	assert.deepEqual(s.screen(), settled);
+	assert.deepEqual(s.screen(), kept);
+	s.step([ran("make", "ok")]);
+	s.stop();
+	assert.deepEqual(s.screen(), [...kept, "", "✓ $ make", "ok"], "a stopped run shows its last step");
 	handlers.message_start({ message: { role: "user" } });
-	handlers.message_start({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } });
-	assert.deepEqual(s.screen(), settled, "the next prompt folds nothing above it");
+	s.reply("Done.");
+	assert.deepEqual(s.screen(), [...kept, "", "✓ $ make", "ok"], "the next prompt changes nothing above it");
 });
 
-test("calls of one message fold together, and text between two steps keeps their rows apart", () => {
+test("a call that changes nothing keeps no line once a step follows; a stretch of only such calls is a count", () => {
 	const s = session();
-	s.step([ran("ls", "a"), ran("pwd", "/x")]);
-	assert.deepEqual(s.screen(), ["", "✓ $ ls", "a", "", "✓ $ pwd", "/x"], "neither is superseded yet");
-	s.step([ran("cat a", "one")], "Now the file.");
-	s.step([ran("true", "")]);
-	assert.deepEqual(s.screen(), ["", "✓ $ ls · 1 line", "✓ $ pwd · 1 line", "", "✓ $ cat a · 1 line", "", "✓ $ true"]);
+	s.step([ran("ls", "a\nb"), ["read", { path: "a.ts" }, { content: text("one\ntwo") }]]);
+	s.step([ran("npm test", "ok")]);
+	assert.deepEqual(s.screen(), ["", "⋮ 2 calls"]);
+	s.step([ran("make", "ok")]);
+	assert.deepEqual(s.screen(), ["", "⋮ 3 calls"]);
+	s.step([ran("git status --short", "")]);
+	assert.deepEqual(s.screen(), ["", "✓ $ make · 1 line"], "beside a row that keeps its line there is no count");
+	s.step([ran("rg -n foo src", "src/a.ts:1:foo")], "Now the search.");
+	s.reply("Found it.");
+	assert.deepEqual(
+		s.screen(),
+		["", "✓ $ make · 1 line", "", "✓ $ rg -n foo src", "src/a.ts:1:foo"],
+		"the last step before the reply keeps its output",
+	);
+});
+
+test("only a command made of programs known to change nothing loses its line", () => {
+	const kept = (command: string) => {
+		const s = session();
+		s.step([ran("make", "ok")]);
+		s.step([ran(command, "x")]);
+		s.step([ran("make", "ok")]);
+		return s.screen().length === 3;
+	};
+	const nothing = [
+		"rg -n foo src | head -5",
+		"git status --short && git log --oneline -3",
+		"cd /tmp/x && git -C ../y diff --stat 2>&1 | tail -3",
+		"npm test",
+		"npm run check --prefix extensions",
+		"for f in a b; do wc -l $f; done",
+		"N=$(ls | wc -l); echo $N",
+		"python3 - <<'EOF'\nimport json\nprint(json.load(open('a.json'))['x'])\nEOF",
+		"ls 2>/dev/null",
+		"git branch --show-current",
+		"gh pr view 12 --json state",
+		"pi --help",
+	];
+	const changes = [
+		"npm install",
+		"rm -rf build",
+		"ls > out.txt",
+		"git commit -m 'fix: x'",
+		"git branch -D old",
+		"gh pr merge 12",
+		"find . -name '*.tmp' -delete",
+		"sed -i '' s/a/b/ a.ts",
+		"./deploy.sh",
+		"echo $(rm a.ts)",
+		"python3 - <<'EOF'\nopen('a.txt', 'w').write('x')\nEOF",
+		"cat > a.txt <<'EOF'\nhello\nEOF",
+		"npx biome check --write .",
+	];
+	assert.deepEqual(nothing.filter(kept), [], "these change nothing");
+	assert.deepEqual(
+		changes.filter((command) => !kept(command)),
+		[],
+		"these may change something, as does any program not known",
+	);
 });
 
 test("expanded rows are Pi's rendering, each on its own", () => {
@@ -439,112 +463,133 @@ test("expanded rows are Pi's rendering, each on its own", () => {
 	s.step([ran("true", "")]);
 	s.expand();
 	const screen = s.screen();
-	assert.ok(screen.includes("a") && screen.includes("/x"), "expanding shows the folded output again");
-	assert.equal(screen.filter((line) => line.startsWith("$ ")).length, 3);
+	assert.ok(screen.includes("a") && screen.includes("/x"), "expanding shows the hidden output again");
+	assert.equal(screen.filter((line) => line.startsWith("$ ")).length, 3, "also the step nothing has followed yet");
 });
 
 test("a resumed session folds the rows it draws from its history", () => {
 	const call = (id: string, command: string) => ({ type: "toolCall", id, name: "bash", arguments: { command } });
 	const branch = [
 		{ type: "message", message: { role: "user", content: "go" } },
-		{ type: "message", message: { role: "assistant", content: [call("old-1", "ls")] } },
+		{ type: "message", message: { role: "assistant", content: [call("old-1", "make")] } },
 		{ type: "message", message: { role: "toolResult", toolCallId: "old-1" } },
-		{ type: "message", message: { role: "assistant", content: [call("old-2", "pwd")] } },
+		{ type: "message", message: { role: "assistant", content: [call("old-2", "make test")] } },
 	];
-	handlers.session_start({}, { sessionManager: { getBranch: () => branch } });
-	const component = new ToolExecutionComponent(
-		"bash",
-		"old-1",
-		{ command: "ls" },
-		{},
-		resolver("bash", () => PI.bash),
-		UI,
-		ROOT,
-	);
-	component.updateResult({ content: text("a\nb"), details: {}, isError: false }, false);
-	assert.deepEqual(
-		component.render(80).map((line: string) => stripVTControlCharacters(line).trim()),
-		["", "✓ $ ls · 2 lines"],
-	);
-});
-
-test("a failed command folds once the same command passes on a later run", () => {
-	const s = session();
-	const failure = "Error: boom\n\nCommand exited with code 1";
-	s.step([ran("npm test", failure, { isError: true })]);
-	s.step([ran("ls", "a")]);
-	assert.deepEqual(s.screen().slice(0, 3), ["", "✗ $ npm test · exit 1", "Error: boom"], "still open");
-	s.step([ran("npm test", failure, { isError: true })]);
-	s.step([ran("npm test", "ok")]);
-	s.step([ran("true", "")]);
-	assert.deepEqual(s.screen(), [
-		"",
-		"✗ $ npm test · exit 1 · passed later",
-		"✓ $ ls · 1 line",
-		"✗ $ npm test · exit 1 · passed later",
-		"✓ $ npm test · 1 line",
-		"",
-		"✓ $ true",
-	]);
-});
-
-test("a folded row is dim when its call only looked something up", () => {
-	handlers.session_start({}, { sessionManager: { getBranch: () => [] } });
-	handlers.message_start({ message: { role: "user" } });
-	const commands = [
-		"rg -n foo src | head -5",
-		"git status --short && git log --oneline -3",
-		"npm test",
-		"ls > out.txt",
-		"rm -rf build",
-	];
-	const rows = commands.map((command, i) => {
-		const message = {
-			role: "assistant",
-			content: [{ type: "toolCall", id: `dim-${i}`, name: "bash", arguments: { command } }],
-		};
-		handlers.message_start({ message });
-		handlers.message_end({ message });
+	const drawn = (id: string, command: string) => {
 		const component = new ToolExecutionComponent(
 			"bash",
-			`dim-${i}`,
+			id,
 			{ command },
 			{},
 			resolver("bash", () => PI.bash),
 			UI,
 			ROOT,
 		);
-		component.updateResult({ content: text("x"), details: {}, isError: false }, false);
-		return component;
-	});
-	// Folded rows close up: the last of them draws the whole run, one line per call.
-	const drawn = rows
-		.flatMap((component) => component.render(80))
-		.filter((line: string) => stripVTControlCharacters(line).trim());
+		component.updateResult({ content: text("a\nb"), details: {}, isError: false }, false);
+		return component.render(80).map((line: string) => stripVTControlCharacters(line).trim());
+	};
+	handlers.session_start({}, { isIdle: () => true, sessionManager: { getBranch: () => branch } });
+	assert.deepEqual(drawn("old-1", "make"), ["", "✓ $ make · 2 lines"]);
+	assert.deepEqual(drawn("old-2", "make test"), ["", "✓ $ make test", "│ a", "│ b"], "the last step is shown");
+	handlers.session_start({}, { isIdle: () => false, sessionManager: { getBranch: () => branch } });
+	assert.deepEqual(drawn("old-2", "make test"), [], "with a run under way, its last step is still held back");
+});
+
+test("a failed command folds once the same command passes on a later run", () => {
+	const s = session();
+	const failure = "Error: boom\n\nCommand exited with code 1";
+	s.step([ran("make", failure, { isError: true })]);
+	s.step([ran("touch a", "")]);
+	s.step([ran("make", failure, { isError: true })]);
+	assert.equal(s.screen().filter((line) => line === "Error: boom").length, 2, "both still open");
+	s.step([ran("make", "ok")]);
+	s.step([ran("true", "")]);
+	assert.deepEqual(s.screen(), [
+		"",
+		"✗ $ make · exit 1 · passed later",
+		"✓ $ touch a",
+		"✗ $ make · exit 1 · passed later",
+		"✓ $ make · 1 line",
+	]);
+});
+
+/** A stand-in for Pi's widget slot: `lines()` is what the slot shows at 60 columns. */
+function widgetSlot() {
+	const theme = { fg: (_role: string, value: string) => value, bold: (value: string) => value };
+	let content: any;
+	let redraws = 0;
+	const ui = {
+		theme,
+		setWidget(_key: string, next: any) {
+			content?.dispose?.();
+			content = typeof next === "function" ? next({ requestRender: () => redraws++ }, theme) : next;
+		},
+	};
+	return {
+		ctx: { hasUI: true, cwd: ROOT, ui },
+		redraws: () => redraws,
+		lines: (): string[] | undefined =>
+			(Array.isArray(content) ? content : content?.render(60))?.map((line: string) =>
+				stripVTControlCharacters(line).trimEnd(),
+			),
+	};
+}
+
+test("while the agent works, three lines above the editor show its last calls and the running one's time", (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"] });
+	const slot = widgetSlot();
+	const start = (toolCallId: string, toolName: string, args: any, more = {}) =>
+		handlers.tool_execution_start({ toolCallId, toolName, args, ...more }, slot.ctx);
+	const end = (toolCallId: string, toolName: string, output: string, more = {}) =>
+		handlers.tool_execution_end({ toolCallId, toolName, result: { content: text(output) }, isError: false, ...more });
+
+	handlers.agent_start({}, slot.ctx);
+	assert.equal(slot.lines(), undefined, "nothing before the first call");
+	start("1", "bash", { command: "make" });
+	assert.deepEqual(slot.lines(), ["", "", " ● $ make"], "blank lines keep the height at three");
+	t.mock.timers.tick(12_000);
+	assert.ok(slot.redraws() >= 12, "the area redraws every second");
+	assert.deepEqual(slot.lines(), ["", "", " ● $ make · 12s"]);
+	handlers.tool_execution_update({ toolCallId: "1", partialResult: { content: text("step 1\nstep 2\nstep 3") } });
+	assert.deepEqual(slot.lines(), [" ● $ make · 12s", " │ step 2", " │ step 3"], "with the end of its output");
+	end("1", "bash", "step 1\nstep 2\nstep 3", { durationMs: 12_300 });
+	assert.deepEqual(slot.lines(), ["", "", " ✓ $ make · 3 lines · 12.3s"]);
+
+	start("2", "read", { path: join(ROOT, "a.ts") });
+	start("3", "bash", { command: "npm test" });
+	start("nested", "bash", { command: "ls" }, { parentToolCallId: "3" });
+	end("2", "read", "one\ntwo");
+	end("3", "bash", "Error: boom\n\nCommand exited with code 1", { isError: true });
 	assert.deepEqual(
-		drawn.map((line: string) => line.includes("\x1b[1m")),
-		[false, false, true, true, true, false],
-		"the two lookups are dim; the last row is the newest step, with its output line",
+		slot.lines(),
+		[" ✓ $ make · 3 lines · 12.3s", " ✓ read a.ts · 2 lines", " ✗ $ npm test · 1 line · exit 1"],
+		"a call made by another tool is left out",
 	);
+	start("4", "bash", { command: "git status" });
+	assert.deepEqual(slot.lines(), [" ✓ read a.ts · 2 lines", " ✗ $ npm test · 1 line · exit 1", " ● $ git status"]);
+
+	const before = slot.redraws();
+	handlers.agent_end({}, slot.ctx);
+	t.mock.timers.tick(5_000);
+	assert.equal(slot.redraws(), before, "the stopped area no longer redraws");
+	assert.deepEqual(slot.lines(), ["✗ 1 failure open · 4 calls · 12.0s"], "the receipt takes its place");
+	handlers.agent_start({}, slot.ctx);
+	assert.equal(slot.lines(), undefined, "a new run clears the receipt");
 });
 
 test("when the agent stops, one line sums up the run: open failures, files changed, calls, time", (t) => {
-	t.mock.timers.enable({ apis: ["Date"] });
-	const widgets: (string[] | undefined)[] = [];
-	const theme = { fg: (_role: string, value: string) => value };
-	const ctx = { hasUI: true, ui: { theme, setWidget: (_key: string, content: any) => widgets.push(content) } };
+	t.mock.timers.enable({ apis: ["Date", "setInterval"] });
+	const slot = widgetSlot();
 	const call = (id: string, toolName: string, args: any, isError = false) => {
-		handlers.tool_execution_start({ toolCallId: id, toolName, args });
-		handlers.tool_execution_end({ toolCallId: id, toolName, isError });
+		handlers.tool_execution_start({ toolCallId: id, toolName, args }, slot.ctx);
+		handlers.tool_execution_end({ toolCallId: id, toolName, result: { content: [] }, isError });
 	};
-	const shown = () => widgets.at(-1)?.map((line) => stripVTControlCharacters(line).trim());
 
-	handlers.agent_start({}, ctx);
-	assert.equal(widgets.at(-1), undefined, "a new run clears the last receipt");
-	handlers.agent_end({}, ctx);
-	assert.equal(widgets.at(-1), undefined, "a run without a call has no receipt");
+	handlers.agent_start({}, slot.ctx);
+	handlers.agent_end({}, slot.ctx);
+	assert.equal(slot.lines(), undefined, "a run without a call has no receipt");
 
-	handlers.agent_start({}, ctx);
+	handlers.agent_start({}, slot.ctx);
 	call("1", "bash", { command: "npm test" }, true);
 	call("2", "edit", { path: "a.ts" });
 	call("3", "edit", { path: "a.ts" });
@@ -552,6 +597,6 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 	call("5", "bash", { command: "npm run lint" }, true);
 	call("6", "bash", { command: "npm test" });
 	t.mock.timers.tick(72_000);
-	handlers.agent_end({}, ctx);
-	assert.deepEqual(shown(), ["✗ 1 failure open · 2 files changed · 6 calls · 1m 12s"]);
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(slot.lines(), ["✗ 1 failure open · 2 files changed · 6 calls · 1m 12s"]);
 });
