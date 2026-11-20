@@ -176,8 +176,9 @@ function unsettled(toolCallId: string): boolean {
 	return call !== undefined && call.turn > transcript.settled;
 }
 /**
- * True when a later call of the same message already shows. The call then shows too: a line added above a
- * drawn row moves it, and Pi repaints the whole screen when that row has scrolled away.
+ * True when a later call of the same message already shows. The call then shows too, also while it still
+ * runs, and keeps its line: a line added above a drawn row moves it, and Pi repaints the whole screen when
+ * that row has scrolled away.
  */
 function overtaken(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
@@ -297,8 +298,8 @@ interface Run {
 	startedAt: number;
 	calls: number;
 	changed: Set<string>;
-	/** Failed calls by what they tried, dropped when the same thing later succeeds. */
-	open: Set<string>;
+	/** Failed calls by what they tried, with how each ended; dropped when the same thing later succeeds. */
+	open: Map<string, string>;
 	tried: Map<string, string>;
 	/** The calls of the live area, oldest first. */
 	shown: Map<string, Shown>;
@@ -313,10 +314,12 @@ const newRun = (): Run => ({
 	startedAt: Date.now(),
 	calls: 0,
 	changed: new Set(),
-	open: new Set(),
+	open: new Map(),
 	tried: new Map(),
 	shown: new Map(),
 });
+/** Columns of the receipt an open failure's command or file may take. */
+const OPEN_WIDTH = 32;
 /** What a call tried: a command, or a tool on a file. A retry of the same thing settles an earlier failure. */
 function attempt(toolName: string, args: any): string {
 	const target = toolName === "bash" ? sameCommand(args?.command) : (args?.path ?? args?.file_path ?? "");
@@ -325,8 +328,12 @@ function attempt(toolName: string, args: any): string {
 /** The run in one line, what needs attention first; nothing for a run that called no tool. */
 function receipt(run: Run, theme: Theme): string | undefined {
 	if (run.calls === 0) return undefined;
+	// The newest open failure is named, so it need not be looked up in the transcript.
+	const [tried, ending] = [...run.open].at(-1) ?? [];
+	const named = `${truncateToWidth((tried ?? "").replace(/^bash /, "").split("\n")[0], OPEN_WIDTH, "…")}${ending ? ` · ${ending}` : ""}`;
+	const others = run.open.size > 1 ? ` (+${run.open.size - 1} more)` : "";
 	const facts = [
-		...(run.open.size > 0 ? [theme.fg("error", `✗ ${plural(run.open.size, "failure")} open`)] : []),
+		...(run.open.size > 0 ? [theme.fg("error", `✗ open: ${named}${others}`)] : []),
 		...(run.changed.size > 0 ? [theme.fg("muted", `${plural(run.changed.size, "file")} changed`)] : []),
 		theme.fg("dim", plural(run.calls, "call")),
 		theme.fg("dim", formatDuration(Date.now() - run.startedAt)),
@@ -343,8 +350,8 @@ function liveArea(run: Run, theme: Theme, cwd: string, width: number): string[] 
 	for (const [id, call] of [...run.shown].toReversed()) {
 		if (rows.length >= AREA_LINES) break;
 		if (drawsOwnRow.has(call.toolName) || (transcript.calls.has(id) && !unsettled(id))) continue;
-		// A finished call made with one that shows at once is in the transcript too.
-		if (call.result && overtaken(id)) continue;
+		// A call made before one that shows at once is in the transcript too.
+		if (overtaken(id)) continue;
 		const context = { cwd, isError: call.failed === true, outputPad: 1, state: { compactTools: call } } as Context;
 		const summarize = SUMMARIES[call.toolName] ?? plainSummary(call.toolName);
 		const summary = summarize(call.args, call.result, theme, context);
@@ -743,8 +750,8 @@ function compactRenderers(
 	 */
 	const held = (args: any, state: RowState, theme: Theme, context: Context): boolean => {
 		if (drawsOwn || showsPi(context) || !unsettled(context.toolCallId)) return false;
-		if (!state.result) return true;
-		return !(state.failed || summary(args, state, theme, context).keep || overtaken(context.toolCallId));
+		if (overtaken(context.toolCallId)) return false;
+		return !state.result || !(state.failed || summary(args, state, theme, context).keep);
 	};
 	/** Pi updated the row: what was kept from its last state is stale. */
 	const refresh = (state: RowState) => {
@@ -757,6 +764,8 @@ function compactRenderers(
 		renderCall(args, theme, context) {
 			const state = rowState(context);
 			refresh(state);
+			// A running row can be in the transcript, beside a call that shows at once: it then shows its time.
+			if (context.executionStarted) state.startedAt ??= Date.now();
 			state.piCall = pi?.renderCall?.(args, theme, { ...context, lastComponent: state.piCall });
 			if (showsPi(context)) {
 				const full =
@@ -790,7 +799,11 @@ function compactRenderers(
 				command: toolName === "bash" ? sameCommand((args as any)?.command) : undefined,
 				folded,
 				silent: () =>
-					folded() && superseded(id) && summary(args, state, theme, context).silent === true && !failedBefore(id),
+					folded() &&
+					superseded(id) &&
+					summary(args, state, theme, context).silent === true &&
+					!failedBefore(id) &&
+					!overtaken(id),
 				place: () => summary(args, state, theme, context).place ?? HERE,
 				atOnce: () =>
 					state.result !== undefined &&
@@ -921,7 +934,12 @@ export default function (pi: ExtensionAPI) {
 		redraw?.();
 		const tried = run.tried.get(event.toolCallId) ?? event.toolCallId;
 		if (event.isError) {
-			run.open.add(tried);
+			const exit = outputLines(event.result)
+				.at(-1)
+				?.match(/^Command exited with code (\d+)$/)?.[1];
+			// Set again so the newest failure is the last one.
+			run.open.delete(tried);
+			run.open.set(tried, exit ? `exit ${exit}` : "");
 			return;
 		}
 		run.open.delete(tried);

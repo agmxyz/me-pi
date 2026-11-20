@@ -370,9 +370,22 @@ test("a call made with one that shows at once shows with it, so no line is added
 		ran("false", "Command exited with code 1", { isError: true }),
 	]);
 	handlers.tool_execution_start({ toolCallId: "call-0", toolName: "bash", args: { command: "sleep 3" } }, slot.ctx);
-	assert.deepEqual(running.screen(), ["", "✗ $ false · exit 1"]);
-	assert.deepEqual(slot.lines(), ["", "", " ● $ sleep 3"], "one still running stays in the live area");
+	assert.deepEqual(
+		running.screen(),
+		["", "● $ sleep 3", "", "✗ $ false · exit 1"],
+		"one still running takes its line at once, so none is added above the failure later",
+	);
+	assert.deepEqual(slot.lines(), ["", "", ""], "and is not in the live area as well");
 	handlers.agent_end({}, slot.ctx);
+	const lookup = session();
+	lookup.step([ran("ls", "a"), ran("false", "Command exited with code 1", { isError: true })]);
+	lookup.step([ran("make", "ok")]);
+	lookup.step([ran("true", "")]);
+	assert.deepEqual(
+		lookup.screen(),
+		["", "✓ $ ls · 1 line", "✗ $ false · exit 1", "✓ $ make · 1 line"],
+		"a call that changes nothing keeps the line it was drawn with",
+	);
 });
 
 test("a command names its directory only when it differs from the command row above", () => {
@@ -685,7 +698,7 @@ test("while the agent works, three lines above the editor show its last calls an
 	assert.equal(slot.redraws(), before, "the stopped area no longer redraws");
 	assert.deepEqual(
 		slot.lines(),
-		["✗ 1 failure open · 1 file changed · 5 calls · 12.0s"],
+		["✗ open: npm test · exit 1 · 1 file changed · 5 calls · 12.0s"],
 		"the receipt takes its place",
 	);
 	handlers.agent_start({}, slot.ctx);
@@ -713,5 +726,20 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 	call("6", "bash", { command: "npm test" });
 	t.mock.timers.tick(72_000);
 	handlers.agent_end({}, slot.ctx);
-	assert.deepEqual(slot.lines(), ["✗ 1 failure open · 2 files changed · 6 calls · 1m 12s"]);
+	assert.deepEqual(slot.lines(), ["✗ open: npm run lint · 2 files changed · 6 calls · 1m 12s"]);
+
+	handlers.agent_start({}, slot.ctx);
+	const failed = (id: string, command: string, code: number) => {
+		handlers.tool_execution_start({ toolCallId: id, toolName: "bash", args: { command } }, slot.ctx);
+		const result = { content: text(`boom\n\nCommand exited with code ${code}`) };
+		handlers.tool_execution_end({ toolCallId: id, toolName: "bash", result, isError: true });
+	};
+	failed("7", "make", 2);
+	failed("8", `pytest ${"tests/a_long_name.py ".repeat(4)}2>&1 | tail -5`, 1);
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(
+		slot.lines(),
+		["✗ open: pytest tests/a_long_name.py tes… · exit 1 (+1 more) · 2 calls · 0.0s"],
+		"the newest open failure is named with its exit code, cut short; the others are counted",
+	);
 });
