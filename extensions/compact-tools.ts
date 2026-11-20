@@ -490,6 +490,8 @@ const SUMMARIES: Record<string, Summarize> = {
 		// Pi ends a failed command's output with this line; the head line carries the code instead.
 		const exit = context.isError ? output.at(-1)?.match(/^Command exited with code (\d+)$/)?.[1] : undefined;
 		if (exit) output.pop();
+		// Pi's stand-in for a command that printed nothing is not a line of output.
+		if (output.length === 1 && output[0] === "(no output)") output.pop();
 		const whole = !context.isError && output.length <= WHOLE_LINES;
 		const headCount = whole ? output.length : context.isError ? 0 : HEAD_LINES;
 		const tailCount = whole ? 0 : context.isError ? failedTail(output) : TAIL_LINES;

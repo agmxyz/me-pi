@@ -91,6 +91,17 @@ test("a short bash call shows its whole output, without blank lines or a duratio
 		"/work",
 	]);
 	assert.deepEqual(row("bash", { command: "true" }, { content: text(""), durationMs: 20 }), ["✓ $ true"]);
+	assert.deepEqual(
+		row("bash", { command: "cp a b" }, { content: text("(no output)") }),
+		["✓ $ cp a b"],
+		"Pi's stand-in for no output is not a line",
+	);
+	const failed = row(
+		"bash",
+		{ command: "false" },
+		{ content: text("(no output)\n\nCommand exited with code 1"), isError: true },
+	);
+	assert.deepEqual(failed, ["✗ $ false · exit 1"]);
 	const six = row("bash", { command: "ls" }, { content: text("a\n\nb\nc\n\nd\ne\nf\n") });
 	assert.deepEqual(six, ["✓ $ ls", "a", "b", "c", "d", "e", "f"]);
 });
