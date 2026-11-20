@@ -241,7 +241,7 @@ function receipt(run: Run, theme: Theme): string | undefined {
 		theme.fg("dim", plural(run.calls, "call")),
 		theme.fg("dim", formatDuration(Date.now() - run.startedAt)),
 	];
-	return ` ${facts.join(theme.fg("dim", " · "))}`;
+	return facts.join(theme.fg("dim", " · "));
 }
 
 /** `cd <dir>` in front of a command says where it ran, not what it did. */
