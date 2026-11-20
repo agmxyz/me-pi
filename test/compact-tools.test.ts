@@ -310,6 +310,13 @@ function session() {
 				rows.push(component);
 			});
 		},
+		/** A running call prints: Pi gives the row a partial result. */
+		print: (index: number, output: string) =>
+			rows[index].updateResult({ content: text(output), details: {}, isError: false }, true),
+		/** Ends every row still running, which stops the timer Pi keeps for it. */
+		finish() {
+			for (const row of rows) row.updateResult({ content: text(""), details: {}, isError: false }, false);
+		},
 		reply: (text: string) => says([{ type: "text", text }]),
 		stop: () => handlers.agent_end({}, { hasUI: false }),
 		expand() {
@@ -369,6 +376,7 @@ test("a call made with one that shows at once shows with it, so no line is added
 		["bash", { command: "sleep 3" }, undefined],
 		ran("false", "Command exited with code 1", { isError: true }),
 	]);
+	running.print(0, "tick 1\ntick 2");
 	handlers.tool_execution_start({ toolCallId: "call-0", toolName: "bash", args: { command: "sleep 3" } }, slot.ctx);
 	assert.deepEqual(
 		running.screen(),
@@ -377,6 +385,7 @@ test("a call made with one that shows at once shows with it, so no line is added
 	);
 	assert.deepEqual(slot.lines(), ["", "", ""], "and is not in the live area as well");
 	handlers.agent_end({}, slot.ctx);
+	running.finish();
 	const lookup = session();
 	lookup.step([ran("ls", "a"), ran("false", "Command exited with code 1", { isError: true })]);
 	lookup.step([ran("make", "ok")]);

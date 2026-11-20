@@ -847,7 +847,10 @@ function compactRenderers(
 			// Running output, and the result of a tool that draws its own, are Pi's lines without the box.
 			if (state.piResult && (options.isPartial || !summarize)) {
 				const partial = indented(state.piResult, state, theme, context);
-				return lines((width) => (held(context.args, state, theme, context) ? [] : partial.render(width)));
+				// A running row that shows beside a drawn one is one line: its output would move the rows below it.
+				const hidden = () =>
+					held(context.args, state, theme, context) || (summarize !== undefined && overtaken(context.toolCallId));
+				return lines((width) => (hidden() ? [] : partial.render(width)));
 			}
 			return lines((width) => {
 				if (held(context.args, state, theme, context)) return [];
