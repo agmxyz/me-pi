@@ -310,6 +310,13 @@ function session() {
 				rows.push(component);
 			});
 		},
+		/** A running call prints: Pi gives the row a partial result. */
+		print: (index: number, output: string) =>
+			rows[index].updateResult({ content: text(output), details: {}, isError: false }, true),
+		/** Ends every row still running, which stops the timer Pi keeps for it. */
+		finish() {
+			for (const row of rows) row.updateResult({ content: text(""), details: {}, isError: false }, false);
+		},
 		reply: (text: string) => says([{ type: "text", text }]),
 		stop: () => handlers.agent_end({}, { hasUI: false }),
 		expand() {
@@ -355,6 +362,41 @@ test("a call stays out of the transcript until the next step shows what became o
 	);
 });
 
+test("a call made with one that shows at once shows with it, so no line is added above a drawn row", () => {
+	const s = session();
+	s.step([ran("make", "ok"), ran("npm run lint", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+	assert.deepEqual(s.screen(), ["", "✓ $ make · 1 line", "", "✗ $ npm run lint · exit 1", "Error: boom"]);
+	const later = session();
+	later.step([ran("npm run lint", "Error: boom\n\nCommand exited with code 1", { isError: true }), ran("make", "ok")]);
+	assert.deepEqual(later.screen(), ["", "✗ $ npm run lint · exit 1", "Error: boom"], "a call below it still waits");
+	const slot = widgetSlot();
+	handlers.agent_start({}, slot.ctx);
+	const running = session();
+	running.step([
+		["bash", { command: "sleep 3" }, undefined],
+		ran("false", "Command exited with code 1", { isError: true }),
+	]);
+	running.print(0, "tick 1\ntick 2");
+	handlers.tool_execution_start({ toolCallId: "call-0", toolName: "bash", args: { command: "sleep 3" } }, slot.ctx);
+	assert.deepEqual(
+		running.screen(),
+		["", "● $ sleep 3", "", "✗ $ false · exit 1"],
+		"one still running takes its line at once, so none is added above the failure later",
+	);
+	assert.deepEqual(slot.lines(), ["", "", ""], "and is not in the live area as well");
+	handlers.agent_end({}, slot.ctx);
+	running.finish();
+	const lookup = session();
+	lookup.step([ran("ls", "a"), ran("false", "Command exited with code 1", { isError: true })]);
+	lookup.step([ran("make", "ok")]);
+	lookup.step([ran("true", "")]);
+	assert.deepEqual(
+		lookup.screen(),
+		["", "✓ $ ls · 1 line", "✗ $ false · exit 1", "✓ $ make · 1 line"],
+		"a call that changes nothing keeps the line it was drawn with",
+	);
+});
+
 test("a command names its directory only when it differs from the command row above", () => {
 	const s = session();
 	s.step([ran("cd /srv/app && make", "ok")]);
@@ -395,19 +437,35 @@ test("a call that changes nothing keeps no line once a step follows; a stretch t
 	const s = session();
 	s.step([ran("ls", "a\nb"), ["read", { path: "a.ts" }, { content: text("one\ntwo") }]]);
 	s.step([ran("npm test", "ok")]);
-	assert.deepEqual(s.screen(), ["", "⋮ 2 calls"]);
+	assert.deepEqual(s.screen(), ["", "⋮ 2 calls, nothing changed"]);
 	s.step([ran("make", "ok")]);
-	assert.deepEqual(s.screen(), ["", "⋮ 3 calls"], "a passing check changes nothing either");
+	assert.deepEqual(s.screen(), ["", "⋮ 3 calls, nothing changed"], "a passing check changes nothing either");
 	s.step([ran("git status --short", "")]);
-	assert.deepEqual(s.screen(), ["", "⋮ 3 calls", "✓ $ make · 1 line"], "the count stays above later rows");
+	assert.deepEqual(
+		s.screen(),
+		["", "⋮ 3 calls, nothing changed", "✓ $ make · 1 line"],
+		"the count stays above later rows",
+	);
 	s.step([ran("ls", "a")]);
-	assert.deepEqual(s.screen(), ["", "⋮ 3 calls", "✓ $ make · 1 line"], "after a row with a line there is no count");
+	assert.deepEqual(
+		s.screen(),
+		["", "⋮ 3 calls, nothing changed", "✓ $ make · 1 line"],
+		"after a row with a line there is no count",
+	);
 	s.step([ran("rg -n foo src", "src/a.ts:1:foo")], "Now the search.");
+	const spoken = ["", "⋮ 3 calls, nothing changed", "✓ $ make · 1 line", "✓ $ ls · 1 line"];
+	assert.deepEqual(s.screen(), spoken, "a step that text follows shows with its line, also a lookup");
+	s.step([ran("wc -l a.ts", "3 a.ts")]);
+	assert.deepEqual(
+		s.screen(),
+		[...spoken, "", "⋮ 1 call, nothing changed"],
+		"and keeps it when more steps follow: a line once drawn stays",
+	);
 	s.reply("Found it.");
 	assert.deepEqual(
 		s.screen(),
-		["", "⋮ 3 calls", "✓ $ make · 1 line", "", "✓ $ rg -n foo src · 1 line"],
-		"the last step before the reply keeps its line, also a lookup",
+		[...spoken, "", "⋮ 1 call, nothing changed", "✓ $ wc -l a.ts · 1 line"],
+		"as does the last step before the reply",
 	);
 });
 
@@ -439,6 +497,15 @@ test("only a command made of programs known to change nothing loses its line", (
 		"gh api repos/o/r/pulls/3 --jq .state",
 		"ls &>/dev/null",
 		"awk '{print $1}' a.txt | sort -u",
+		"sed -n '3,9p;20p' a.ts | head -3",
+		"sed -n '/^function a/,/^}/p' a.ts",
+		"sed -nE '/a|b/p' a.ts",
+		"git fetch -q origin",
+		"git fetch origin main",
+		"uv run --offline ruff check src",
+		"shellcheck install.sh",
+		"git diff main > /tmp/pr.diff",
+		"mkdir -p /tmp/lab && npm test 2>&1 | tee /tmp/lab/test.log | tail -3",
 	];
 	const changes = [
 		"npm install",
@@ -471,6 +538,29 @@ test("only a command made of programs known to change nothing loses its line", (
 		"awk '{print > \"out.txt\"}' in.txt",
 		"npx tsc -p .",
 		"npm test -- -u",
+		"sed -i.bak s/a/b/ a.ts",
+		"sed 's/a/b/w out.txt' a.ts",
+		"sed 's/a/b/' a.ts",
+		"sed -n '1w out.txt' a.ts",
+		"sed -n '1p' -i a.ts",
+		"sed -n '/a/p' -e 'w out.txt' a.ts",
+		"sed 's/.*/touch x/e' a.ts",
+		"npm test | tee /tmp/log ~/.bashrc",
+		"mkdir -p /tmp/x src/new",
+		"git fetch --set-upstream origin main",
+		"git fetch --unshallow",
+		"git fetch origin tag v1",
+		"shfmt -d -w a.sh",
+		"ruff check --add-noqa src",
+		"git fetch origin +main:main",
+		"git fetch -p",
+		"uv run ruff format src",
+		"git diff main > pr.diff",
+		"cp a.ts /tmp/a.ts",
+		"cd /tmp/work && ls > /tmp/work/list.txt",
+		"echo x > /tmp/../etc/hosts",
+		"echo x > /tmp/$DIR/hosts",
+		`ls > ${ROOT.replace(/^\/private/, "")}/list.txt`,
 	];
 	assert.deepEqual(nothing.filter(kept), [], "these change nothing");
 	assert.deepEqual(
@@ -539,6 +629,24 @@ test("a failed command folds once the same command passes on a later run", () =>
 		"✗ $ make · exit 1 · passed later",
 		"✓ $ make · 1 line",
 	]);
+	const other = session();
+	other.step([ran("pytest tests/a.py 2>&1 | tail -20", failure, { isError: true })]);
+	other.step([ran("pytest tests/a.py 2>&1 | tail -20", "1 failed")]);
+	other.step([ran("true", "")]);
+	assert.ok(other.screen().includes("Error: boom"), "a piped run that passes proves nothing: tail passed, not pytest");
+	other.step([ran("uv run --offline pytest tests/a.py", "1 passed")]);
+	other.step([ran("pytest tests/b.py", "1 passed")]);
+	other.step([ran("true", "")]);
+	assert.deepEqual(
+		other.screen(),
+		[
+			"",
+			"✗ $ pytest tests/a.py · exit 1 · passed later",
+			"✓ $ pytest tests/a.py · 1 line",
+			"✓ $ uv run --offline pytest tests/a.py · 1 line",
+		],
+		"the same command with other plumbing or behind a runner settles it, and that passing run keeps its line",
+	);
 });
 
 /** A stand-in for Pi's widget slot: `lines()` is what the slot shows at 60 columns. */
@@ -621,7 +729,7 @@ test("while the agent works, three lines above the editor show its last calls an
 	assert.equal(slot.redraws(), before, "the stopped area no longer redraws");
 	assert.deepEqual(
 		slot.lines(),
-		["✗ 1 failure open · 1 file changed · 5 calls · 12.0s"],
+		["✗ open: npm test · exit 1 · 1 file changed · 5 calls · 12.0s"],
 		"the receipt takes its place",
 	);
 	handlers.agent_start({}, slot.ctx);
@@ -649,5 +757,20 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 	call("6", "bash", { command: "npm test" });
 	t.mock.timers.tick(72_000);
 	handlers.agent_end({}, slot.ctx);
-	assert.deepEqual(slot.lines(), ["✗ 1 failure open · 2 files changed · 6 calls · 1m 12s"]);
+	assert.deepEqual(slot.lines(), ["✗ open: npm run lint · 2 files changed · 6 calls · 1m 12s"]);
+
+	handlers.agent_start({}, slot.ctx);
+	const failed = (id: string, command: string, code: number) => {
+		handlers.tool_execution_start({ toolCallId: id, toolName: "bash", args: { command } }, slot.ctx);
+		const result = { content: text(`boom\n\nCommand exited with code ${code}`) };
+		handlers.tool_execution_end({ toolCallId: id, toolName: "bash", result, isError: true });
+	};
+	failed("7", "make", 2);
+	failed("8", `pytest ${"tests/a_long_name.py ".repeat(4)}2>&1 | tail -5`, 1);
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(
+		slot.lines(),
+		["✗ open: pytest tests/a_long_name.py tes… · exit 1 (+1 more) · 2 calls · 0.0s"],
+		"the newest open failure is named with its exit code, cut short; the others are counted",
+	);
 });

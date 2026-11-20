@@ -8,9 +8,11 @@
  * transcript. A row enters the transcript once the next step shows what became of it:
  *
  * - Followed by another step, a call known to change nothing (a lookup, or a check that passed) keeps no line;
- *   those that open a stretch of work are one count. Any other call keeps its line.
- * - Followed by text, a call keeps its line, also a lookup: it is usually the check the reply rests on. It
- *   loses the line as above if another step follows the text after all.
+ *   those that open a stretch of work are one count. Any other call keeps its line, as does a passing run of
+ *   a command that failed before: it shows how the failure ended.
+ * - Followed by text, a call keeps its line, also a lookup: it is usually the check the reply rests on. The
+ *   line stays when more steps follow that text: a line once drawn is not taken back, since changing a row
+ *   that has scrolled away makes Pi repaint the whole screen.
  * - A failure, a write and an edit show as soon as the call ends, and stay. A failed command loses its output,
  *   and dims, once the same command passes later.
  *
@@ -53,7 +55,7 @@ interface Summary {
 	place?: string;
 	/** Lines of output the call returned: a row that shows none of them says how many there were. */
 	count?: number;
-	/** The call changed a file: its row shows as soon as the call ends. */
+	/** The row shows as soon as the call ends: the call changed a file, or Pi draws an image under it. */
 	keep?: boolean;
 	/** The call is known to change nothing: once folded it keeps no line of its own. */
 	silent?: boolean;
@@ -97,10 +99,12 @@ interface Row {
 	/** True when the row keeps no line: it is counted with the silent rows next to it. */
 	silent: () => boolean;
 	head: (width: number) => string[];
-	/** The command a `bash` row ran: a failure is settled once the same command passes. */
+	/** The command a `bash` row ran, as `sameCommand` has it: a failure is settled once the same command passes. */
 	command?: string;
 	/** Where that command ran, as the row names it. */
 	place: () => string;
+	/** True for a finished call whose row does not wait for the next step: a failure, a write, an edit. */
+	atOnce: () => boolean;
 }
 /**
  * The calls of the current session in transcript order, kept from Pi's message events: a row cannot see its
@@ -111,8 +115,9 @@ const transcript = {
 	order: [] as Call[],
 	/** Rows by call id. A row can draw before its call is known here, so a new session does not clear them. */
 	rows: new Map<string, Row>(),
-	/** The calls that ran each command and passed. */
+	/** The calls that ran each command and passed, and those that ran it and failed. */
 	passed: new Map<string, Set<string>>(),
+	failed: new Map<string, Set<string>>(),
 	turn: 0,
 	block: 0,
 	run: 0,
@@ -120,11 +125,14 @@ const transcript = {
 	newest: new Map<number, number>(),
 	/** The last turn whose calls have their place in the transcript; later calls show only in the live area. */
 	settled: 0,
+	/** Turns whose calls were followed by text: their rows were drawn with a line each, and keep it. */
+	spoken: new Set<number>(),
 	textSeen: false,
 };
 function resetTranscript(): void {
 	transcript.calls.clear();
 	transcript.newest.clear();
+	transcript.spoken.clear();
 	Object.assign(transcript, { order: [], turn: 0, block: 0, run: 0, settled: 0, textSeen: false });
 }
 function startMessage(message: any): void {
@@ -146,6 +154,8 @@ function noteMessage(message: any): void {
 		// with its output, and folds if a call follows after all.
 		if (text || block.type === "toolCall") settle(transcript.turn - 1);
 		if (text && !transcript.textSeen) {
+			// Text that comes before any call of its message is what the reader saw the step before it end on.
+			if (transcript.newest.get(transcript.run) !== transcript.turn) transcript.spoken.add(transcript.turn - 1);
 			transcript.textSeen = true;
 			transcript.block++;
 		}
@@ -165,10 +175,26 @@ function unsettled(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	return call !== undefined && call.turn > transcript.settled;
 }
-/** True once a later step followed the call: a call of a later message, before the next user prompt. */
+/**
+ * True when a later call of the same message already shows. The call then shows too, also while it still
+ * runs, and keeps its line: a line added above a drawn row moves it, and Pi repaints the whole screen when
+ * that row has scrolled away.
+ */
+function overtaken(toolCallId: string): boolean {
+	const call = transcript.calls.get(toolCallId);
+	if (!call) return false;
+	for (let at = call.index + 1; transcript.order[at]?.turn === call.turn; at++)
+		if (transcript.rows.get(transcript.order[at].id)?.atOnce()) return true;
+	return false;
+}
+/**
+ * True once another step followed the call with no text in between: a call of the next message. A step that
+ * text followed was drawn with its line, and a line once drawn stays, so a later call does not count.
+ */
 function superseded(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
-	return call !== undefined && call.turn < (transcript.newest.get(call.run) ?? 0);
+	if (!call || transcript.spoken.has(call.turn)) return false;
+	return call.turn < (transcript.newest.get(call.run) ?? 0);
 }
 /** True for a failed command that a later call ran again and passed. */
 function passedLater(toolCallId: string): boolean {
@@ -177,6 +203,15 @@ function passedLater(toolCallId: string): boolean {
 	if (!call || command === undefined) return false;
 	for (const id of transcript.passed.get(command) ?? [])
 		if ((transcript.calls.get(id)?.index ?? -1) > call.index) return true;
+	return false;
+}
+/** True for a command an earlier call ran and failed: this run of it is the one that shows how that ended. */
+function failedBefore(toolCallId: string): boolean {
+	const call = transcript.calls.get(toolCallId);
+	const command = transcript.rows.get(toolCallId)?.command;
+	if (!call || command === undefined) return false;
+	for (const id of transcript.failed.get(command) ?? [])
+		if ((transcript.calls.get(id)?.index ?? call.index) < call.index) return true;
 	return false;
 }
 /**
@@ -263,9 +298,11 @@ interface Run {
 	startedAt: number;
 	calls: number;
 	changed: Set<string>;
-	/** Failed calls by what they tried, dropped when the same thing later succeeds. */
-	open: Set<string>;
+	/** Failed calls by what they tried, with how each ended; dropped when the same thing later succeeds. */
+	open: Map<string, string>;
 	tried: Map<string, string>;
+	/** Calls whose passing would not settle a failure: a piped command passes whatever its first program did. */
+	unproven: Set<string>;
 	/** The calls of the live area, oldest first. */
 	shown: Map<string, Shown>;
 }
@@ -279,20 +316,27 @@ const newRun = (): Run => ({
 	startedAt: Date.now(),
 	calls: 0,
 	changed: new Set(),
-	open: new Set(),
+	open: new Map(),
 	tried: new Map(),
+	unproven: new Set(),
 	shown: new Map(),
 });
+/** Columns of the receipt an open failure's command or file may take. */
+const OPEN_WIDTH = 32;
 /** What a call tried: a command, or a tool on a file. A retry of the same thing settles an earlier failure. */
 function attempt(toolName: string, args: any): string {
-	const target = toolName === "bash" ? String(args?.command ?? "").trim() : (args?.path ?? args?.file_path ?? "");
+	const target = toolName === "bash" ? sameCommand(args?.command) : (args?.path ?? args?.file_path ?? "");
 	return `${toolName} ${target}`;
 }
 /** The run in one line, what needs attention first; nothing for a run that called no tool. */
 function receipt(run: Run, theme: Theme): string | undefined {
 	if (run.calls === 0) return undefined;
+	// The newest open failure is named, so it need not be looked up in the transcript.
+	const [tried, ending] = [...run.open].at(-1) ?? [];
+	const named = `${truncateToWidth((tried ?? "").replace(/^bash /, "").split("\n")[0], OPEN_WIDTH, "…")}${ending ? ` · ${ending}` : ""}`;
+	const others = run.open.size > 1 ? ` (+${run.open.size - 1} more)` : "";
 	const facts = [
-		...(run.open.size > 0 ? [theme.fg("error", `✗ ${plural(run.open.size, "failure")} open`)] : []),
+		...(run.open.size > 0 ? [theme.fg("error", `✗ open: ${named}${others}`)] : []),
 		...(run.changed.size > 0 ? [theme.fg("muted", `${plural(run.changed.size, "file")} changed`)] : []),
 		theme.fg("dim", plural(run.calls, "call")),
 		theme.fg("dim", formatDuration(Date.now() - run.startedAt)),
@@ -309,6 +353,8 @@ function liveArea(run: Run, theme: Theme, cwd: string, width: number): string[] 
 	for (const [id, call] of [...run.shown].toReversed()) {
 		if (rows.length >= AREA_LINES) break;
 		if (drawsOwnRow.has(call.toolName) || (transcript.calls.has(id) && !unsettled(id))) continue;
+		// A call made before one that shows at once is in the transcript too.
+		if (overtaken(id)) continue;
 		const context = { cwd, isError: call.failed === true, outputPad: 1, state: { compactTools: call } } as Context;
 		const summarize = SUMMARIES[call.toolName] ?? plainSummary(call.toolName);
 		const summary = summarize(call.args, call.result, theme, context);
@@ -332,6 +378,27 @@ function liveArea(run: Run, theme: Theme, cwd: string, width: number): string[] 
 
 /** `cd <dir>` in front of a command says where it ran, not what it did. */
 const CD_PREFIX = /^cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;|\n)\s*/;
+/** A runner in front of a program: with or without it, the same check ran. */
+const RUNNER = /^(?:uv\s+run(?:\s+--[\w-]+)*|npx(?:\s+--?[\w-]+)*|poetry\s+run|bundle\s+exec)\s+/;
+/**
+ * What tells one command from another when asking whether a failure was run again and passed: the command
+ * without its output plumbing and without a runner in front of it.
+ */
+function sameCommand(command: unknown): string {
+	const [first, ...rest] = String(command ?? "")
+		.trim()
+		.replace(SHELL_OPTIONS, "")
+		.split("\n");
+	const merged = first.replace(STDERR_MERGE, "");
+	return [((rest.length === 0 && merged.replace(OUTPUT_CAP, "")) || merged).replace(RUNNER, ""), ...rest].join("\n");
+}
+/**
+ * True when a passing command says its first program passed: with a pipe, the shell reports only the last
+ * program's exit code, so `npm test | tail -5` passes whatever the tests did.
+ */
+const provesPass = (command: unknown) =>
+	/pipefail/.test(String(command)) ||
+	!/(?<!\|)\|(?!\|)/.test(String(command).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "q"));
 /** Plumbing that shapes a command's output for the model and tells a reader nothing about what ran. */
 const SHELL_OPTIONS = /^set\s+[-+][a-z]+(?:\s+pipefail)?\s*(?:&&|;|\n)\s*/;
 const STDERR_MERGE = /\s+2>&1(?=\s|$)/g;
@@ -340,19 +407,22 @@ const OUTPUT_CAP = /\s*\|\s*(?:tail|head)(?:\s+-n?\s*\d+)?\s*$/;
 /** Programs that read, wait or report, and checks: test runs, linters, type checks. None leaves a change behind. */
 const CHANGES_NOTHING = new RegExp(
 	`^(?:${[
-		"rg|grep|ls|cat|head|tail|sed\\s+-n(?!.*\\s-(?:[a-zA-Z]*i|-in-place))|find|fd|wc|tree(?!.*\\s-o)|stat|file|which|pwd",
+		"rg|grep|ls|cat|head|tail|sed|find|fd|wc|tree(?!.*\\s-o)|stat|file|which|pwd",
 		"echo|printf|sort(?!.*\\s-o)|uniq(?:\\s+-\\w+)*\\s*$|cut|tr|column",
 		"jq|nl|du|df|diff|cmp|awk|seq|date|sleep|true|false|ps|pgrep|basename|dirname|realpath|shasum|whoami|uname",
 		"cd|test|\\[|exit|break|continue|wait|read|type|env\\s*$|printenv|export|set|xargs\\s+(?:rg|grep|ls|cat|wc|head|tail)",
 		"git\\s+(?:status|log|diff|show|rev-parse|rev-list|ls-files|ls-tree|ls-remote|blame|grep|describe|merge-base|merge-tree|cat-file|reflog(?!\\s+(?:expire|delete|drop))|shortlog|check-ignore|config\\s+--get)",
+		// A fetch only moves remote-tracking branches, unless an option or a refspec makes it do more.
+		"git\\s+fetch(?!.*(?:\\s-[a-zA-Z]*[pfPt]|\\s--(?!quiet\\b|no-tags\\b)|\\stag\\s|[:+]))",
 		"git\\s+(?:branch|tag|remote|stash\\s+list|worktree\\s+list)(?:\\s+(?:-[arvl]+|--(?:list|show-current|all|remotes|verbose|merged|no-merged|porcelain|sort|format)(?:=\\S+)?))*\\s*$",
 		"gh\\s+(?:pr|issue|run|release|repo|workflow|search)\\s+(?:view|list|checks|diff|status|watch|prs|issues|code)",
 		"gh\\s+api(?!.*\\s(?:-X|--method|-f|-F|--raw-field|--field|--input))",
-		"herdr\\s+(?:pane\\s+(?:read|get|list)|agent\\s+(?:list|get|status|read|wait)|workspace\\s+list)",
+		"herdr\\s+(?:pane\\s+(?:read|get|list|current|process-info)|agent\\s+(?:list|get|status|read|wait)|(?:workspace|tab)\\s+list)",
 		"npm\\s+(?:test|ls|view|outdated|run\\s+(?:check|test|lint|typecheck))(?!.*\\s(?:-u|--update)\\b)",
-		"node\\s+--test|(?:npx\\s+)?tsc(?=.*\\s--noEmit\\b)|npx\\s+(?:vitest|jest)(?!.*\\s(?:-u|--update)\\b)|pytest",
+		"node\\s+--test|(?:npx\\s+)?tsc(?=.*\\s--noEmit\\b)|npx\\s+(?:vitest|jest)(?!.*\\s(?:-u|--update)\\b)",
 		"npx\\s+biome\\s+(?:check|lint)(?!.*--(?:write|fix))",
-		"uv\\s+run\\s+(?:pytest|ruff\\s+check(?!.*--fix)|mypy|pyright)|ruff\\s+check(?!.*--fix)|mypy|pyright",
+		"(?:uv\\s+run\\s+(?:--(?:offline|frozen|locked|no-sync|quiet)\\s+)*)?(?:pytest|ruff\\s+(?:check|format\\s+--check)|mypy|pyright)(?!.*\\s--(?:fix|add-noqa|install-types|snapshot-update|createstub))",
+		"shellcheck|markdownlint(?:-cli2)?(?!.*\\s(?:--fix|-o))|shfmt\\s+-d(?!.*\\s-\\w*w)",
 		"cargo\\s+(?:test|check|clippy)|go\\s+(?:test|vet)",
 		"[\\w.-]+(?:\\s+[\\w-]+)*\\s+--(?:help|version)\\s*$",
 	].join("|")})(?:\\s|$)`,
@@ -366,8 +436,31 @@ const GIT_DIR = /^git\s+-C\s+\S+\s+/;
 /** A redirect to a file, an option that names an output file, or a `find` that deletes, writes or runs a program. */
 const MAY_CHANGE =
 	/(?<![0-9])>(?!&)(?!\s*\/dev\/null)|[0-9]>(?!&|\s*\/dev\/null)|\s--output\b|\s-(?:delete|exec\w*|ok\w*|fprint\w*|fls)\b/;
-/** An `awk` program that may write a file or run a command; it sits in quotes, so it is looked for in the command as typed. */
-const AWK_CHANGES = /\bawk\b[^|;&\n]*(?:>|\|\s*"|system\(|-i\s+inplace)/;
+/**
+ * An `awk` program that may write a file or run a command; it sits in quotes, so it is looked for in the
+ * command as typed.
+ */
+const PROGRAM_CHANGES = /\bawk\b[^|;&\n]*(?:>|\|\s*"|system\(|-i\s+inplace)/;
+/**
+ * The one use of `sed` known to change nothing: printing lines by number or pattern, as in `sed -n '3,9p'`. A `sed`
+ * script can also write files and run commands, so any other use keeps its line, as does an option after the
+ * script: `-i` or a second script with `-e`.
+ */
+const SED_ADDRESS = "(?:\\d+|\\$|\\/(?:[^\\/\\\\'\"]|\\\\.)*\\/)";
+const SED_PRINTS = new RegExp(
+	`\\bsed\\s+(?:-E\\s+)?-nE?\\s+(?:-E\\s+)?(['"]?)(?:${SED_ADDRESS}(?:,${SED_ADDRESS})?p;?)+\\1(?=\\s|$)(?![^|;&\\n]*\\s-)`,
+	"g",
+);
+/**
+ * Scratch work: a redirect to a file under the temp directory, a `tee` to one, a directory made there. It
+ * counts as changing nothing, unless it lands in a directory the work is done in. A path with `..` or a
+ * variable in it is not known to stay under the temp directory, and a `tee` or `mkdir` with more than one
+ * path may name one outside it.
+ */
+const SCRATCH =
+	/(?:[0-9&]?>>?\s*|\b(?:tee\s+(?:-a\s+)?|mkdir\s+(?:-p\s+)?)(?=\S+\s*(?:[;|&)\n]|$)))(\/(?:private\/)?tmp\/[^\s;|&()<>]+)/g;
+/** A directory with `/` at its end and the temp directory under one name, to tell what lies inside what. */
+const inTemp = (path: string) => `${path}/`.replace(/^\/private\/tmp\//, "/tmp/");
 /** A script for an interpreter: on standard input from a here-document, or as an argument. */
 const HERE_DOCUMENT = /<<-?\s*(['"]?)(\w+)\1([^\n]*)\n([\s\S]*?)\n[ \t]*\2(?=\n|$)/;
 const INLINE_SCRIPT = /\b(?:python3?|node|ruby|perl)\s+-[ce]\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/;
@@ -394,8 +487,9 @@ function takeOut(
  * True for a command made only of programs known to change nothing. Any other command may have changed
  * something: a program this list does not name counts as one that did.
  */
-function changesNothing(command: string): boolean {
-	if (AWK_CHANGES.test(command)) return false;
+function changesNothing(command: string, work: string[]): boolean {
+	if (PROGRAM_CHANGES.test(command)) return false;
+	if ((command.match(/\bsed\b/g)?.length ?? 0) !== (command.match(SED_PRINTS)?.length ?? 0)) return false;
 	const scripts: string[] = [];
 	const ran: string[] = [];
 	// A here-document is text for the program in front of it: its body is no command.
@@ -410,6 +504,11 @@ function changesNothing(command: string): boolean {
 		ran.push(match[1] ?? match[2]);
 		return "q";
 	})?.replace(/"(?:[^"\\]|\\.)*"/g, "q");
+	// What is left stands for the part taken out: nothing for a redirect, a harmless program otherwise.
+	rest = rest?.replace(SCRATCH, (match, path: string) => {
+		if (/\.\.|\$/.test(path) || work.some((dir) => inTemp(path).startsWith(inTemp(dir)))) return match;
+		return match.includes(">") ? " " : "true";
+	});
 	if (rest === undefined || /\$\(|`|<<|<\(/.test(rest) || MAY_CHANGE.test(rest)) return false;
 	const parts = rest.split(/&&|\|\||[;|\n]/).map((part) =>
 		part
@@ -424,7 +523,7 @@ function changesNothing(command: string): boolean {
 		if (script) return READS_SCRIPT.test(program) && !SCRIPT_CHANGES.test(scripts[Number(script[1])]);
 		return RUNS_NOTHING.test(program) || CHANGES_NOTHING.test(program);
 	});
-	return harmless && ran.every(changesNothing);
+	return harmless && ran.every((inner) => changesNothing(inner, work));
 }
 
 /** `src/a.ts:12` or `src/a.ts:12:5` in output: a place in a file, which a terminal can open. */
@@ -484,12 +583,14 @@ const SUMMARIES: Record<string, Summarize> = {
 		let command = String(args?.command ?? "...").trim();
 		const meta: string[] = [];
 		let place: string | undefined;
+		let where = context.cwd;
 		const options = command.match(SHELL_OPTIONS);
 		if (options && command.length > options[0].length) command = command.slice(options[0].length);
 		const cd = command.match(CD_PREFIX);
 		if (cd && command.length > cd[0].length) {
 			command = command.slice(cd[0].length);
-			const dir = shortPath(cd[1].replace(/^["']|["']$/g, "").replace(/\/$/, ""), context.cwd);
+			where = cd[1].replace(/^["']|["']$/g, "").replace(/\/$/, "");
+			const dir = shortPath(where, context.cwd);
 			if (dir !== HERE) place = dir;
 		}
 		const [firstLine, ...rest] = command.split("\n");
@@ -502,7 +603,7 @@ const SUMMARIES: Record<string, Summarize> = {
 			title(theme, middleCut(first, room - 2 - visibleWidth(more))) +
 			theme.fg("muted", more);
 		if (!result) return { head, meta, place };
-		const silent = !context.isError && changesNothing(command);
+		const silent = !context.isError && changesNothing(command, [context.cwd, where]);
 		const output = outputLines(result);
 		// Pi ends a failed command's output with this line; the head line carries the code instead.
 		const exit = context.isError ? output.at(-1)?.match(/^Command exited with code (\d+)$/)?.[1] : undefined;
@@ -526,7 +627,9 @@ const SUMMARIES: Record<string, Summarize> = {
 		if (!result) return { head };
 		if (context.isError) return { head, body: outputLines(result).map((line) => theme.fg("toolOutput", line)) };
 		const blocks = result.content ?? [];
-		if (blocks.some((block) => block.type === "image")) return { head, meta: [theme.fg("muted", "image")] };
+		// Pi draws the image under the row as soon as the call ends; a head line added later would push it down.
+		if (blocks.some((block) => block.type === "image"))
+			return { head, meta: [theme.fg("muted", "image")], keep: true };
 		const text = blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n");
 		// Pi ends a partial read with a bracketed note on how to continue; it is not a line of the file.
 		const count = text
@@ -670,6 +773,7 @@ function compactRenderers(
 	 */
 	const held = (args: any, state: RowState, theme: Theme, context: Context): boolean => {
 		if (drawsOwn || showsPi(context) || !unsettled(context.toolCallId)) return false;
+		if (overtaken(context.toolCallId)) return false;
 		return !state.result || !(state.failed || summary(args, state, theme, context).keep);
 	};
 	/** Pi updated the row: what was kept from its last state is stale. */
@@ -713,13 +817,21 @@ function compactRenderers(
 				!summary(args, state, theme, context).body?.length;
 			transcript.rows.set(id, {
 				head,
-				command: toolName === "bash" ? String((args as any)?.command ?? "").trim() : undefined,
+				command: toolName === "bash" ? sameCommand((args as any)?.command) : undefined,
 				folded,
-				silent: () => folded() && superseded(id) && summary(args, state, theme, context).silent === true,
+				silent: () =>
+					folded() &&
+					superseded(id) &&
+					summary(args, state, theme, context).silent === true &&
+					!failedBefore(id) &&
+					!overtaken(id),
 				place: () => summary(args, state, theme, context).place ?? HERE,
+				atOnce: () =>
+					state.result !== undefined &&
+					(state.failed === true || summary(args, state, theme, context).keep === true),
 			});
 			const tally = (count: number) =>
-				`${" ".repeat(context.outputPad)}${theme.fg("dim", `⋮ ${plural(count, "call")}`)}`;
+				`${" ".repeat(context.outputPad)}${theme.fg("dim", `⋮ ${plural(count, "call")}, nothing changed`)}`;
 			return lines((width) => {
 				if (held(args, state, theme, context)) return [];
 				const call = foldedRow(transcript.calls.get(id));
@@ -735,9 +847,9 @@ function compactRenderers(
 			state.durationMs = context.durationMs;
 			refresh(state);
 			const command = transcript.rows.get(context.toolCallId)?.command;
-			if (command !== undefined && state.result && !state.failed) {
-				const passed = transcript.passed.get(command) ?? new Set();
-				transcript.passed.set(command, passed.add(context.toolCallId));
+			if (command !== undefined && state.result && (state.failed || provesPass((context.args as any)?.command))) {
+				const ended = state.failed ? transcript.failed : transcript.passed;
+				ended.set(command, (ended.get(command) ?? new Set()).add(context.toolCallId));
 			}
 			state.piResult = pi?.renderResult?.(result, options, theme, { ...context, lastComponent: state.piResult });
 			if (showsPi(context)) {
@@ -756,7 +868,10 @@ function compactRenderers(
 			// Running output, and the result of a tool that draws its own, are Pi's lines without the box.
 			if (state.piResult && (options.isPartial || !summarize)) {
 				const partial = indented(state.piResult, state, theme, context);
-				return lines((width) => (held(context.args, state, theme, context) ? [] : partial.render(width)));
+				// A running row that shows beside a drawn one is one line: its output would move the rows below it.
+				const hidden = () =>
+					held(context.args, state, theme, context) || (summarize !== undefined && overtaken(context.toolCallId));
+				return lines((width) => (hidden() ? [] : partial.render(width)));
 			}
 			return lines((width) => {
 				if (held(context.args, state, theme, context)) return [];
@@ -783,10 +898,11 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.isIdle()) settle(transcript.turn);
 		// Rows of the session that was left are dropped; rows this session drew before the event are kept.
 		for (const id of transcript.rows.keys()) if (!transcript.calls.has(id)) transcript.rows.delete(id);
-		for (const [command, ids] of transcript.passed) {
-			for (const id of ids) if (!transcript.calls.has(id)) ids.delete(id);
-			if (ids.size === 0) transcript.passed.delete(command);
-		}
+		for (const ended of [transcript.passed, transcript.failed])
+			for (const [command, ids] of ended) {
+				for (const id of ids) if (!transcript.calls.has(id)) ids.delete(id);
+				if (ids.size === 0) ended.delete(command);
+			}
 	};
 	pi.on("session_start", reload);
 	pi.on("session_tree", reload);
@@ -804,6 +920,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("tool_execution_start", (event, ctx) => {
 		run.tried.set(event.toolCallId, attempt(event.toolName, event.args));
+		if (event.toolName === "bash" && !provesPass(event.args?.command)) run.unproven.add(event.toolCallId);
 		// A call made by another tool, such as a codemode script, shows inside that tool's row.
 		if (event.parentToolCallId) return;
 		run.calls++;
@@ -842,10 +959,15 @@ export default function (pi: ExtensionAPI) {
 		redraw?.();
 		const tried = run.tried.get(event.toolCallId) ?? event.toolCallId;
 		if (event.isError) {
-			run.open.add(tried);
+			const exit = outputLines(event.result)
+				.at(-1)
+				?.match(/^Command exited with code (\d+)$/)?.[1];
+			// Set again so the newest failure is the last one.
+			run.open.delete(tried);
+			run.open.set(tried, exit ? `exit ${exit}` : "");
 			return;
 		}
-		run.open.delete(tried);
+		if (!run.unproven.has(event.toolCallId)) run.open.delete(tried);
 		if (event.toolName === "edit" || event.toolName === "write") run.changed.add(tried.slice(tried.indexOf(" ") + 1));
 	});
 	pi.on("agent_end", (_event, ctx) => {
