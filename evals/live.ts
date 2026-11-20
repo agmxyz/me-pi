@@ -1,7 +1,7 @@
 /** Driving a sandboxed Pi through pi-live.sh, and the live-rig snapshot every eval runner takes before and after. */
 import { execFile as execFileCb } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { Sandbox } from "./sandbox.ts";
@@ -50,18 +50,44 @@ export async function panePid(sandbox: Sandbox, target: string): Promise<number>
 	return pid;
 }
 
-/** Pids of live processes whose command line contains `marker` (`pgrep -f`, as a literal string). */
+/**
+ * Pids of live processes tied to `marker` (a directory): its path appears in their command line (`pgrep -f`, as a
+ * literal string), or their working directory is inside it (`lsof`). Delegate workers name the sandbox only in their
+ * environment and run with cwd in the attempt's worktree, so the command line alone misses them.
+ */
 export async function processesWith(marker: string): Promise<number[]> {
 	const pattern = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	try {
-		const { stdout } = await execFile("pgrep", ["-f", pattern]);
-		return stdout.split("\n").filter(Boolean).map(Number);
-	} catch (err) {
-		// pgrep exits 1 when nothing matches.
-		if ((err as { code?: number }).code === 1) return [];
-		throw err;
-	}
+	const byArgs = async () => {
+		try {
+			return (await execFile("pgrep", ["-f", pattern])).stdout.split("\n").filter(Boolean).map(Number);
+		} catch (err) {
+			// pgrep exits 1 when nothing matches.
+			if ((err as { code?: number }).code === 1) return [];
+			throw err;
+		}
+	};
+	const byCwd = async () => {
+		const dir = realpathSync(marker);
+		// lsof exits 1 when some processes can't be inspected; its output for the rest is still complete.
+		const { stdout } = await execFile("lsof", ["-a", "-d", "cwd", "-F", "pn"], { maxBuffer: 64 * 1024 * 1024 }).catch(
+			(err: { code?: number; stdout?: string }) => {
+				if (err.code === 1 && typeof err.stdout === "string") return { stdout: err.stdout };
+				throw err;
+			},
+		);
+		const pids: number[] = [];
+		let pid = 0;
+		for (const line of stdout.split("\n")) {
+			if (line.startsWith("p")) pid = Number(line.slice(1));
+			else if (line.startsWith("n") && inside(line.slice(1), dir)) pids.push(pid);
+		}
+		return pids;
+	};
+	const [args, cwd] = await Promise.all([byArgs(), existsSync(marker) ? byCwd() : []]);
+	return [...new Set([...args, ...cwd])].filter((p) => p !== process.pid);
 }
+
+const inside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
 const alive = (pid: number) => {
 	try {

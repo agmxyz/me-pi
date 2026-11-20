@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -224,6 +224,20 @@ test("sweepProcesses SIGKILLs a process that ignores SIGTERM, and waits for one 
 	await new Promise((r) => setTimeout(r, 100));
 	assert.equal(await sweepProcesses(root, [], { graceMs: 5_000, termMs: 500, pollMs: 50 }), 0);
 	assert.equal(await done, null);
+});
+
+test("sweepProcesses finds a detached process by its working directory alone, as delegate workers run", async (t) => {
+	const root = scratch(t);
+	const work = join(root, "worktree");
+	mkdirSync(work);
+	// Neither argv nor a listed pid names the root: only the cwd ties it to the attempt.
+	const child = spawn("sleep", ["300"], { cwd: work, detached: true, stdio: "ignore" });
+	t.after(() => child.kill("SIGKILL"));
+	const gone = exited(child);
+	await new Promise((r) => setTimeout(r, 200));
+	assert.deepEqual(await processesWith(root), [child.pid]);
+	assert.equal(await sweepProcesses(root, [], { graceMs: 200, termMs: 2_000, pollMs: 50 }), 1);
+	assert.equal(await gone, "SIGTERM");
 });
 
 test("sweepProcesses also waits for a listed pid whose argv does not name the root", async (t) => {
