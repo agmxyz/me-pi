@@ -641,7 +641,7 @@ function compactRenderers(
 		return !state.result || !(state.failed || summary(args, state, theme, context).keep);
 	};
 	/** Pi updated the row: what was kept from its last state is stale. */
-	const refresh = (state: RowState, context: Context) => {
+	const refresh = (state: RowState) => {
 		state.summary = undefined;
 		state.headLine = undefined;
 		state.bodyLines = undefined;
@@ -650,7 +650,7 @@ function compactRenderers(
 		renderShell: "self",
 		renderCall(args, theme, context) {
 			const state = rowState(context);
-			refresh(state, context);
+			refresh(state);
 			state.piCall = pi?.renderCall?.(args, theme, { ...context, lastComponent: state.piCall });
 			if (showsPi(context)) {
 				const full =
@@ -700,7 +700,7 @@ function compactRenderers(
 			state.result = options.isPartial ? undefined : result;
 			state.failed = context.isError;
 			state.durationMs = context.durationMs;
-			refresh(state, context);
+			refresh(state);
 			const command = transcript.rows.get(context.toolCallId)?.command;
 			if (command !== undefined && state.result && !state.failed) {
 				const passed = transcript.passed.get(command) ?? new Set();
