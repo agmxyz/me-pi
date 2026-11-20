@@ -497,7 +497,9 @@ test("only a command made of programs known to change nothing loses its line", (
 		"gh api repos/o/r/pulls/3 --jq .state",
 		"ls &>/dev/null",
 		"awk '{print $1}' a.txt | sort -u",
-		"sed 's/a/b/' a.ts | head -3",
+		"sed -n '3,9p;20p' a.ts | head -3",
+		"sed -n '/^function a/,/^}/p' a.ts",
+		"sed -nE '/a|b/p' a.ts",
 		"git fetch -q origin",
 		"git fetch origin main",
 		"uv run --offline ruff check src",
@@ -538,6 +540,18 @@ test("only a command made of programs known to change nothing loses its line", (
 		"npm test -- -u",
 		"sed -i.bak s/a/b/ a.ts",
 		"sed 's/a/b/w out.txt' a.ts",
+		"sed 's/a/b/' a.ts",
+		"sed -n '1w out.txt' a.ts",
+		"sed -n '1p' -i a.ts",
+		"sed -n '/a/p' -e 'w out.txt' a.ts",
+		"sed 's/.*/touch x/e' a.ts",
+		"npm test | tee /tmp/log ~/.bashrc",
+		"mkdir -p /tmp/x src/new",
+		"git fetch --set-upstream origin main",
+		"git fetch --unshallow",
+		"git fetch origin tag v1",
+		"shfmt -d -w a.sh",
+		"ruff check --add-noqa src",
 		"git fetch origin +main:main",
 		"git fetch -p",
 		"uv run ruff format src",
@@ -617,12 +631,20 @@ test("a failed command folds once the same command passes on a later run", () =>
 	]);
 	const other = session();
 	other.step([ran("pytest tests/a.py 2>&1 | tail -20", failure, { isError: true })]);
+	other.step([ran("pytest tests/a.py 2>&1 | tail -20", "1 failed")]);
+	other.step([ran("true", "")]);
+	assert.ok(other.screen().includes("Error: boom"), "a piped run that passes proves nothing: tail passed, not pytest");
 	other.step([ran("uv run --offline pytest tests/a.py", "1 passed")]);
 	other.step([ran("pytest tests/b.py", "1 passed")]);
 	other.step([ran("true", "")]);
 	assert.deepEqual(
 		other.screen(),
-		["", "✗ $ pytest tests/a.py · exit 1 · passed later", "✓ $ uv run --offline pytest tests/a.py · 1 line"],
+		[
+			"",
+			"✗ $ pytest tests/a.py · exit 1 · passed later",
+			"✓ $ pytest tests/a.py · 1 line",
+			"✓ $ uv run --offline pytest tests/a.py · 1 line",
+		],
 		"the same command with other plumbing or behind a runner settles it, and that passing run keeps its line",
 	);
 });

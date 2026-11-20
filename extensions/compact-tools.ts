@@ -301,6 +301,8 @@ interface Run {
 	/** Failed calls by what they tried, with how each ended; dropped when the same thing later succeeds. */
 	open: Map<string, string>;
 	tried: Map<string, string>;
+	/** Calls whose passing would not settle a failure: a piped command passes whatever its first program did. */
+	unproven: Set<string>;
 	/** The calls of the live area, oldest first. */
 	shown: Map<string, Shown>;
 }
@@ -316,6 +318,7 @@ const newRun = (): Run => ({
 	changed: new Set(),
 	open: new Map(),
 	tried: new Map(),
+	unproven: new Set(),
 	shown: new Map(),
 });
 /** Columns of the receipt an open failure's command or file may take. */
@@ -389,6 +392,13 @@ function sameCommand(command: unknown): string {
 	const merged = first.replace(STDERR_MERGE, "");
 	return [((rest.length === 0 && merged.replace(OUTPUT_CAP, "")) || merged).replace(RUNNER, ""), ...rest].join("\n");
 }
+/**
+ * True when a passing command says its first program passed: with a pipe, the shell reports only the last
+ * program's exit code, so `npm test | tail -5` passes whatever the tests did.
+ */
+const provesPass = (command: unknown) =>
+	/pipefail/.test(String(command)) ||
+	!/(?<!\|)\|(?!\|)/.test(String(command).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "q"));
 /** Plumbing that shapes a command's output for the model and tells a reader nothing about what ran. */
 const SHELL_OPTIONS = /^set\s+[-+][a-z]+(?:\s+pipefail)?\s*(?:&&|;|\n)\s*/;
 const STDERR_MERGE = /\s+2>&1(?=\s|$)/g;
@@ -397,13 +407,13 @@ const OUTPUT_CAP = /\s*\|\s*(?:tail|head)(?:\s+-n?\s*\d+)?\s*$/;
 /** Programs that read, wait or report, and checks: test runs, linters, type checks. None leaves a change behind. */
 const CHANGES_NOTHING = new RegExp(
 	`^(?:${[
-		"rg|grep|ls|cat|head|tail|sed(?!.*\\s-(?:[a-zA-Z]*i|-in-place))|find|fd|wc|tree(?!.*\\s-o)|stat|file|which|pwd",
+		"rg|grep|ls|cat|head|tail|sed|find|fd|wc|tree(?!.*\\s-o)|stat|file|which|pwd",
 		"echo|printf|sort(?!.*\\s-o)|uniq(?:\\s+-\\w+)*\\s*$|cut|tr|column",
 		"jq|nl|du|df|diff|cmp|awk|seq|date|sleep|true|false|ps|pgrep|basename|dirname|realpath|shasum|whoami|uname",
 		"cd|test|\\[|exit|break|continue|wait|read|type|env\\s*$|printenv|export|set|xargs\\s+(?:rg|grep|ls|cat|wc|head|tail)",
 		"git\\s+(?:status|log|diff|show|rev-parse|rev-list|ls-files|ls-tree|ls-remote|blame|grep|describe|merge-base|merge-tree|cat-file|reflog(?!\\s+(?:expire|delete|drop))|shortlog|check-ignore|config\\s+--get)",
-		// A fetch only moves remote-tracking branches, unless it prunes them or names a local branch to write.
-		"git\\s+fetch(?!.*(?:\\s-[a-zA-Z]*[pf]|\\s--(?:prune|force|all|multiple)|[:+]))",
+		// A fetch only moves remote-tracking branches, unless an option or a refspec makes it do more.
+		"git\\s+fetch(?!.*(?:\\s-[a-zA-Z]*[pfPt]|\\s--(?!quiet\\b|no-tags\\b)|\\stag\\s|[:+]))",
 		"git\\s+(?:branch|tag|remote|stash\\s+list|worktree\\s+list)(?:\\s+(?:-[arvl]+|--(?:list|show-current|all|remotes|verbose|merged|no-merged|porcelain|sort|format)(?:=\\S+)?))*\\s*$",
 		"gh\\s+(?:pr|issue|run|release|repo|workflow|search)\\s+(?:view|list|checks|diff|status|watch|prs|issues|code)",
 		"gh\\s+api(?!.*\\s(?:-X|--method|-f|-F|--raw-field|--field|--input))",
@@ -411,8 +421,8 @@ const CHANGES_NOTHING = new RegExp(
 		"npm\\s+(?:test|ls|view|outdated|run\\s+(?:check|test|lint|typecheck))(?!.*\\s(?:-u|--update)\\b)",
 		"node\\s+--test|(?:npx\\s+)?tsc(?=.*\\s--noEmit\\b)|npx\\s+(?:vitest|jest)(?!.*\\s(?:-u|--update)\\b)",
 		"npx\\s+biome\\s+(?:check|lint)(?!.*--(?:write|fix))",
-		"(?:uv\\s+run\\s+(?:--(?:offline|frozen|locked|no-sync|quiet)\\s+)*)?(?:pytest|ruff\\s+(?:check(?!.*--fix)|format\\s+--check)|mypy|pyright)",
-		"shellcheck|markdownlint(?:-cli2)?(?!.*--fix)|shfmt\\s+-d",
+		"(?:uv\\s+run\\s+(?:--(?:offline|frozen|locked|no-sync|quiet)\\s+)*)?(?:pytest|ruff\\s+(?:check|format\\s+--check)|mypy|pyright)(?!.*\\s--(?:fix|add-noqa|install-types|snapshot-update|createstub))",
+		"shellcheck|markdownlint(?:-cli2)?(?!.*\\s(?:--fix|-o))|shfmt\\s+-d(?!.*\\s-\\w*w)",
 		"cargo\\s+(?:test|check|clippy)|go\\s+(?:test|vet)",
 		"[\\w.-]+(?:\\s+[\\w-]+)*\\s+--(?:help|version)\\s*$",
 	].join("|")})(?:\\s|$)`,
@@ -427,17 +437,30 @@ const GIT_DIR = /^git\s+-C\s+\S+\s+/;
 const MAY_CHANGE =
 	/(?<![0-9])>(?!&)(?!\s*\/dev\/null)|[0-9]>(?!&|\s*\/dev\/null)|\s--output\b|\s-(?:delete|exec\w*|ok\w*|fprint\w*|fls)\b/;
 /**
- * An `awk` or `sed` program that may write a file or run a command; it sits in quotes, so it is looked for in
- * the command as typed.
+ * An `awk` program that may write a file or run a command; it sits in quotes, so it is looked for in the
+ * command as typed.
  */
-const PROGRAM_CHANGES = /\bawk\b[^|;&\n]*(?:>|\|\s*"|system\(|-i\s+inplace)|\bsed\b[^|;&\n]*['"/;}]\s*[we]\s+\S/;
+const PROGRAM_CHANGES = /\bawk\b[^|;&\n]*(?:>|\|\s*"|system\(|-i\s+inplace)/;
+/**
+ * The one use of `sed` known to change nothing: printing lines by number or pattern, as in `sed -n '3,9p'`. A `sed`
+ * script can also write files and run commands, so any other use keeps its line, as does an option after the
+ * script: `-i` or a second script with `-e`.
+ */
+const SED_ADDRESS = "(?:\\d+|\\$|\\/(?:[^\\/\\\\'\"]|\\\\.)*\\/)";
+const SED_PRINTS = new RegExp(
+	`\\bsed\\s+(?:-E\\s+)?-nE?\\s+(?:-E\\s+)?(['"]?)(?:${SED_ADDRESS}(?:,${SED_ADDRESS})?p;?)+\\1(?=\\s|$)(?![^|;&\\n]*\\s-)`,
+	"g",
+);
 /**
  * Scratch work: a redirect to a file under the temp directory, a `tee` to one, a directory made there. It
  * counts as changing nothing, unless it lands in a directory the work is done in. A path with `..` or a
- * variable in it is not known to stay under the temp directory.
+ * variable in it is not known to stay under the temp directory, and a `tee` or `mkdir` with more than one
+ * path may name one outside it.
  */
-const SCRATCH = /(?:[0-9&]?>>?\s*|\btee\s+(?:-a\s+)?|\bmkdir\s+(?:-p\s+)?)(\/(?:private\/)?tmp\/[^\s;|&()<>]+)/g;
-const TEMP = /^\/(?:private\/)?tmp\//;
+const SCRATCH =
+	/(?:[0-9&]?>>?\s*|\b(?:tee\s+(?:-a\s+)?|mkdir\s+(?:-p\s+)?)(?=\S+\s*(?:[;|&)\n]|$)))(\/(?:private\/)?tmp\/[^\s;|&()<>]+)/g;
+/** A directory with `/` at its end and the temp directory under one name, to tell what lies inside what. */
+const inTemp = (path: string) => `${path}/`.replace(/^\/private\/tmp\//, "/tmp/");
 /** A script for an interpreter: on standard input from a here-document, or as an argument. */
 const HERE_DOCUMENT = /<<-?\s*(['"]?)(\w+)\1([^\n]*)\n([\s\S]*?)\n[ \t]*\2(?=\n|$)/;
 const INLINE_SCRIPT = /\b(?:python3?|node|ruby|perl)\s+-[ce]\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/;
@@ -466,6 +489,7 @@ function takeOut(
  */
 function changesNothing(command: string, work: string[]): boolean {
 	if (PROGRAM_CHANGES.test(command)) return false;
+	if ((command.match(/\bsed\b/g)?.length ?? 0) !== (command.match(SED_PRINTS)?.length ?? 0)) return false;
 	const scripts: string[] = [];
 	const ran: string[] = [];
 	// A here-document is text for the program in front of it: its body is no command.
@@ -482,8 +506,7 @@ function changesNothing(command: string, work: string[]): boolean {
 	})?.replace(/"(?:[^"\\]|\\.)*"/g, "q");
 	// What is left stands for the part taken out: nothing for a redirect, a harmless program otherwise.
 	rest = rest?.replace(SCRATCH, (match, path: string) => {
-		const target = `${path.replace(TEMP, "/tmp/")}/`;
-		if (/\.\.|\$/.test(path) || work.some((dir) => target.startsWith(`${dir.replace(TEMP, "/tmp/")}/`))) return match;
+		if (/\.\.|\$/.test(path) || work.some((dir) => inTemp(path).startsWith(inTemp(dir)))) return match;
 		return match.includes(">") ? " " : "true";
 	});
 	if (rest === undefined || /\$\(|`|<<|<\(/.test(rest) || MAY_CHANGE.test(rest)) return false;
@@ -764,8 +787,6 @@ function compactRenderers(
 		renderCall(args, theme, context) {
 			const state = rowState(context);
 			refresh(state);
-			// A running row can be in the transcript, beside a call that shows at once: it then shows its time.
-			if (context.executionStarted) state.startedAt ??= Date.now();
 			state.piCall = pi?.renderCall?.(args, theme, { ...context, lastComponent: state.piCall });
 			if (showsPi(context)) {
 				const full =
@@ -826,7 +847,7 @@ function compactRenderers(
 			state.durationMs = context.durationMs;
 			refresh(state);
 			const command = transcript.rows.get(context.toolCallId)?.command;
-			if (command !== undefined && state.result) {
+			if (command !== undefined && state.result && (state.failed || provesPass((context.args as any)?.command))) {
 				const ended = state.failed ? transcript.failed : transcript.passed;
 				ended.set(command, (ended.get(command) ?? new Set()).add(context.toolCallId));
 			}
@@ -899,6 +920,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("tool_execution_start", (event, ctx) => {
 		run.tried.set(event.toolCallId, attempt(event.toolName, event.args));
+		if (event.toolName === "bash" && !provesPass(event.args?.command)) run.unproven.add(event.toolCallId);
 		// A call made by another tool, such as a codemode script, shows inside that tool's row.
 		if (event.parentToolCallId) return;
 		run.calls++;
@@ -945,7 +967,7 @@ export default function (pi: ExtensionAPI) {
 			run.open.set(tried, exit ? `exit ${exit}` : "");
 			return;
 		}
-		run.open.delete(tried);
+		if (!run.unproven.has(event.toolCallId)) run.open.delete(tried);
 		if (event.toolName === "edit" || event.toolName === "write") run.changed.add(tried.slice(tried.indexOf(" ") + 1));
 	});
 	pi.on("agent_end", (_event, ctx) => {
