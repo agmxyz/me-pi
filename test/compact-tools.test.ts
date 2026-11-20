@@ -10,6 +10,8 @@ const ROOT = mkdtempSync(join(tmpdir(), "compact-tools-test-"));
 process.env.HOME = ROOT;
 process.env.TMPDIR = ROOT;
 process.env.PI_CODING_AGENT_DIR = join(ROOT, "agent");
+// Pi inverts a diff's changed words through chalk, which emits no styles when the output is not a terminal.
+process.env.FORCE_COLOR = "3";
 process.on("exit", () => rmSync(ROOT, { recursive: true, force: true }));
 
 const {
@@ -41,6 +43,8 @@ const PI: Record<string, any> = {
 const numbered = (count: number) => Array.from({ length: count }, (_, i) => `line ${i + 1}`).join("\n");
 const text = (value: string) => [{ type: "text", text: value }];
 
+const UI = { requestRender() {} } as any;
+
 /** A tool row as the transcript draws it, through Pi's own row component: non-empty lines. */
 function rawRow(name: string, args: any, result?: any, { expanded = false, partial = false } = {}): string[] {
 	const component = new ToolExecutionComponent(
@@ -49,9 +53,7 @@ function rawRow(name: string, args: any, result?: any, { expanded = false, parti
 		args,
 		{},
 		resolver(name, () => PI[name]),
-		{
-			requestRender() {},
-		} as any,
+		UI,
 		ROOT,
 	);
 	component.markExecutionStarted();
@@ -153,6 +155,39 @@ test("bash shows Pi's output preview while it runs, and Pi's rendering when expa
 		{ expanded: true },
 	);
 	assert.ok(failed.includes("Command exited with code 1"));
+});
+
+test("colour marks what needs attention: error lines of a failed call, a slow run, the words an edit changed", () => {
+	const paint = (name: string, args: any, result: any) => {
+		const component = new ToolExecutionComponent(
+			name,
+			"c",
+			args,
+			{},
+			resolver(name, () => PI[name]),
+			UI,
+			ROOT,
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.updateResult({ details: {}, isError: false, ...result }, false);
+		return component.render(80).filter((line: string) => stripVTControlCharacters(line).trim());
+	};
+	const colourOf = (line: string, word: string) =>
+		line
+			.slice(0, line.indexOf(word))
+			.match(/\x1b\[38[\d;]*m/g)
+			?.at(-1);
+	const output = "compiling\nError: boom\n\nCommand exited with code 1";
+	const failed = paint("bash", { command: "make" }, { content: text(output), isError: true });
+	assert.notEqual(colourOf(failed[2], "Error"), colourOf(failed[1], "compiling"), "the error line stands out");
+	const passed = paint("bash", { command: "rg Error" }, { content: text("compiling\nError: boom") });
+	assert.equal(colourOf(passed[2], "Error"), colourOf(passed[1], "compiling"), "not in a passing call");
+	const time = (durationMs: number) => paint("bash", { command: "make" }, { content: text(""), durationMs })[0];
+	assert.notEqual(colourOf(time(45_000), "45.0s"), colourOf(time(5_000), "5.0s"));
+	const details = { diff: "-2 limit: 256m\n+2 limit: 1g", patch: "" };
+	const edit = paint("edit", { path: "a.yml", edits: [] }, { content: text("ok"), details });
+	assert.match(edit[1], /\x1b\[7m256m/, "the changed word is inverted");
 });
 
 test("a read shows its path, range and line count, and its error when it failed", () => {

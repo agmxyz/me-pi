@@ -8,7 +8,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import type { ExtensionAPI, Theme, ToolRenderers } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, renderDiff, type Theme, type ToolRenderers } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	getCapabilities,
@@ -29,6 +29,8 @@ const FAILED_LINES = 20;
 const FAILED_MIN_LINES = 5;
 const ERROR_LIKE =
 	/error|fail|✖|✗|not found|no such|denied|cannot|exception|traceback|fatal|panic|refused|invalid|unexpected/i;
+/** A command that ran this long shows its duration as a warning. */
+const SLOW_MS = 30_000;
 /** Changed lines an edit shows before it counts the rest. */
 const EDIT_LINES = 4;
 
@@ -93,6 +95,25 @@ const SHELL_OPTIONS = /^set\s+[-+][a-z]+(?:\s+pipefail)?\s*(?:&&|;|\n)\s*/;
 const STDERR_MERGE = /\s+2>&1(?=\s|$)/g;
 const OUTPUT_CAP = /\s*\|\s*(?:tail|head)(?:\s+-n?\s*\d+)?\s*$/;
 
+/** `src/a.ts:12` or `src/a.ts:12:5` in output: a place in a file, which a terminal can open. */
+const FILE_REFERENCE = /(?<![\w/.-])((?:\.{0,2}\/)?(?:[\w@.-]+\/)*[\w@-][\w@.-]*\.[a-z]{1,5}):(\d+)(?::\d+)?/g;
+
+/**
+ * An output line in its colour, with file references linked where the terminal supports links. Only a failed
+ * call marks its error-like lines: in passing output the same words are mostly matches in code, not errors.
+ */
+function outputLine(line: string, theme: Theme, context: Context): string {
+	const paint = (text: string) => theme.fg(context.isError && ERROR_LIKE.test(line) ? "error" : "toolOutput", text);
+	if (!getCapabilities().hyperlinks) return paint(line);
+	let linked = "";
+	let end = 0;
+	for (const match of line.matchAll(FILE_REFERENCE)) {
+		const url = `${pathToFileURL(resolve(context.cwd, match[1])).href}#L${match[2]}`;
+		linked += paint(line.slice(end, match.index)) + hyperlink(paint(match[0]), url);
+		end = match.index + match[0].length;
+	}
+	return linked + paint(line.slice(end));
+}
 /** Text cut in the middle to fit: a command's start says what ran, its end what came out. */
 function middleCut(text: string, room: number): string {
 	if (visibleWidth(text) <= room) return text;
@@ -135,8 +156,11 @@ const SUMMARIES: Record<string, Summarize> = {
 		const merged = firstLine.replace(STDERR_MERGE, "");
 		const first = (rest.length === 0 && merged.replace(OUTPUT_CAP, "")) || merged;
 		const more = rest.length > 0 ? ` ⏎${rest.length}` : "";
+		// The prompt is dim so the eye lands on the command.
 		const head = (room: number) =>
-			title(theme, middleCut(`$ ${first}`, room - visibleWidth(more))) + theme.fg("muted", more);
+			theme.fg("dim", "$ ") +
+			title(theme, middleCut(first, room - 2 - visibleWidth(more))) +
+			theme.fg("muted", more);
 		if (!result) return { head, meta };
 		const output = outputLines(result);
 		// Pi ends a failed command's output with this line; the head line carries the code instead.
@@ -149,8 +173,8 @@ const SUMMARIES: Record<string, Summarize> = {
 		if (exit) meta.push(theme.fg("error", `exit ${exit}`));
 		if (hidden > 0) meta.push(theme.fg("muted", `+${plural(hidden, "line")}`));
 		const ms = rowState(context).durationMs ?? 0;
-		if (ms >= 1000) meta.push(theme.fg("muted", formatDuration(ms)));
-		const shown = (rows: string[]) => rows.map((line) => theme.fg("toolOutput", line));
+		if (ms >= 1000) meta.push(theme.fg(ms >= SLOW_MS ? "warning" : "muted", formatDuration(ms)));
+		const shown = (rows: string[]) => rows.map((line) => outputLine(line, theme, context));
 		const body = [
 			...shown(output.slice(0, headCount)),
 			...(headCount > 0 && hidden > 0 ? [theme.fg("dim", "⋮")] : []),
@@ -187,13 +211,11 @@ const SUMMARIES: Record<string, Summarize> = {
 		const meta = [
 			`${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${changed.length - added}`)}`,
 		];
-		const body = changed
-			.slice(0, EDIT_LINES)
-			.map((line) =>
-				theme.fg(line.startsWith("+") ? "toolDiffAdded" : "toolDiffRemoved", line.replace(/\t/g, "   ")),
-			);
-		if (changed.length > body.length && body.length > 0)
-			body.push(theme.fg("muted", `… +${plural(changed.length - body.length, "changed line")}`));
+		// Pi's diff colours the lines and, where one line replaces one, inverts the words that changed.
+		const shown = changed.slice(0, EDIT_LINES);
+		const body = shown.length > 0 ? renderDiff(shown.join("\n")).split("\n") : [];
+		if (changed.length > shown.length && shown.length > 0)
+			body.push(theme.fg("muted", `… +${plural(changed.length - shown.length, "changed line")}`));
 		return { head, meta, body };
 	},
 };
