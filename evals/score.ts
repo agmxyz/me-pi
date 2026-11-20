@@ -50,33 +50,50 @@ export function parseSession(jsonl: string): Transcript {
 	return t;
 }
 
-export interface WorkerSpend {
+export interface SessionSpend {
+	/** Pi-estimated coordinator spend: the sum of the coordinator's own `usage.cost.total`. */
+	coordinator: number;
 	/** Pi-estimated worker spend: the sum of `details.view.runs[].cost` over every finished delegate job, each counted once. */
-	cost: number;
-	/** Per role (`general` when the call names none): delegate calls made and the worker cost of those that finished. */
-	byRole: Record<string, { calls: number; cost: number }>;
+	worker: number;
+	total: number;
+	/**
+	 * Delegate calls (by tool-call id) and background jobs (`bgN`) that started but whose result never reached the log,
+	 * because they were still running or were killed at shutdown; their spend is missing from `worker`.
+	 */
+	pending: string[];
+	/** Whether `pending` is non-empty, so `worker` and `total` are lower bounds. */
+	partial: boolean;
+	/**
+	 * Per role (`general` when the call names none): delegate calls made, and the worker cost and run time
+	 * (`details.view.runs[].ms`) of those that finished.
+	 */
+	byRole: Record<string, { calls: number; cost: number; ms: number }>;
 }
 
-const viewCost = (details: any): number =>
-	(details?.view?.runs ?? []).reduce((sum: number, r: any) => sum + (Number(r?.cost) || 0), 0);
+const viewSum = (details: any, key: "cost" | "ms"): number =>
+	(details?.view?.runs ?? []).reduce((sum: number, r: any) => sum + (Number(r?.[key]) || 0), 0);
 const plainText = (content: any): string => (typeof content === "string" ? content : textOf(content));
 
 /**
- * Sums worker cost from a coordinator session. Delegate results carry no `usage`; the cost is in the view: on the
- * `delegate` toolResult for a foreground call, and on the later `custom_message` (customType `delegate`) for a
- * background job, which is matched to its call through the job id (`Started background job bgN`).
+ * Sums coordinator and worker cost from a coordinator session. Delegate results carry no `usage`; the cost is in the
+ * view: on the `delegate` toolResult for a foreground call, and on the later `custom_message` (customType `delegate`)
+ * for a background job, which is matched to its call through the job id (`Started background job bgN`). A job
+ * killed at shutdown never delivers its message, so its spend is unknown: it is listed in `pending`.
  */
-export function workerSpend(jsonl: string): WorkerSpend {
-	const spend: WorkerSpend = { cost: 0, byRole: {} };
+export function sessionSpend(jsonl: string): SessionSpend {
+	const spend: SessionSpend = { coordinator: 0, worker: 0, total: 0, pending: [], partial: false, byRole: {} };
 	const roleOfCall = new Map<string, string>();
 	const roleOfJob = new Map<string, string>();
 	const counted = new Set<string>();
-	const add = (role: string, cost: number) => {
-		spend.cost += cost;
+	const open = new Set<string>();
+	const add = (role: string, details: any) => {
+		const cost = viewSum(details, "cost");
+		spend.worker += cost;
 		spend.byRole[role].cost += cost;
+		spend.byRole[role].ms += viewSum(details, "ms");
 	};
 	const slot = (role: string) => {
-		spend.byRole[role] ??= { calls: 0, cost: 0 };
+		spend.byRole[role] ??= { calls: 0, cost: 0, ms: 0 };
 		return role;
 	};
 	for (const line of jsonl.split("\n")) {
@@ -86,25 +103,36 @@ export function workerSpend(jsonl: string): WorkerSpend {
 			const job = /^Background delegate job (bg\d+)/.exec(plainText(entry.content))?.[1];
 			if (!job || counted.has(job)) continue;
 			counted.add(job);
-			add(slot(roleOfJob.get(job) ?? "unknown"), viewCost(entry.details));
+			open.delete(job);
+			add(slot(roleOfJob.get(job) ?? "unknown"), entry.details);
 			continue;
 		}
 		if (entry.type !== "message") continue;
 		const m = entry.message;
-		if (m.role === "assistant")
+		if (m.role === "assistant") {
+			spend.coordinator += m.usage?.cost?.total ?? 0;
 			for (const c of m.content ?? [])
 				if (c.type === "toolCall" && c.name === "delegate" && !roleOfCall.has(c.id)) {
 					const role = slot(c.arguments?.role ?? "general");
 					roleOfCall.set(c.id, role);
 					spend.byRole[role].calls++;
+					open.add(c.id);
 				}
+		}
 		if (m.role !== "toolResult" || m.toolName !== "delegate" || counted.has(m.toolCallId)) continue;
 		counted.add(m.toolCallId);
+		open.delete(m.toolCallId);
 		const role = slot(roleOfCall.get(m.toolCallId) ?? "unknown");
 		const job = /^Started background job (bg\d+)/.exec(textOf(m.content))?.[1];
-		if (job) roleOfJob.set(job, role);
-		else add(role, viewCost(m.details));
+		if (!job) add(role, m.details);
+		else if (!counted.has(job)) {
+			roleOfJob.set(job, role);
+			open.add(job);
+		}
 	}
+	spend.total = spend.coordinator + spend.worker;
+	spend.pending = [...open];
+	spend.partial = open.size > 0;
 	return spend;
 }
 

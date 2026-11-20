@@ -20,6 +20,10 @@ import { parseArgs } from "node:util";
 import {
 	ARMS,
 	type Arm,
+	type AttemptState,
+	coordinatorEnv,
+	costMedian,
+	finalState,
 	median,
 	promptOf,
 	renderContract,
@@ -28,19 +32,21 @@ import {
 	skillOf,
 	validateTask,
 } from "./ab-task.ts";
-import { liveSnapshot, piCommand, piLive, sha, socketOf } from "./live.ts";
+import { liveSnapshot, panePid, piCommand, piLive, sha, socketOf, sweepProcesses } from "./live.ts";
 import { cloneAt, createSandbox, type Sandbox } from "./sandbox.ts";
-import { parseSession, workerSpend } from "./score.ts";
+import { sessionSpend } from "./score.ts";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
 const WATCH_MS = 20_000;
+/** A coordinator that has written no session log this long after its prompt would leave the cap blind. */
+const NO_LOG_MS = 3 * 60_000;
 
 const { values: opt } = parseArgs({
 	options: {
 		task: { type: "string" },
 		arm: { type: "string", multiple: true },
 		n: { type: "string", default: "1" },
-		jobs: { type: "string", default: "2" },
+		jobs: { type: "string", default: "1" },
 		auth: { type: "string" },
 		skill: { type: "string", multiple: true, default: [] },
 		extension: { type: "string", multiple: true, default: [] },
@@ -95,11 +101,15 @@ interface ShellResult {
 	tail: string;
 }
 
+/** Process groups of running setup and check commands, killed on SIGINT/SIGTERM. */
+const shells = new Set<number>();
+
 /** Runs one shell command asynchronously (parallel attempts keep their watchdogs ticking), killed at `limitMs`. */
 function shell(command: string, cwd: string, env: Record<string, string>, limitMs: number): Promise<ShellResult> {
 	const started = Date.now();
 	return new Promise((done, fail) => {
 		const child = spawn("sh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+		shells.add(child.pid!);
 		let output = "";
 		const keep = (b: Buffer) => {
 			output = (output + b.toString()).slice(-4000);
@@ -113,6 +123,7 @@ function shell(command: string, cwd: string, env: Record<string, string>, limitM
 		}, limitMs);
 		child.on("error", fail);
 		child.on("close", (exit) => {
+			shells.delete(child.pid!);
 			clearTimeout(timer);
 			done({ exit, ms: Date.now() - started, timedOut, tail: output.slice(-1500) });
 		});
@@ -121,6 +132,61 @@ function shell(command: string, cwd: string, env: Record<string, string>, limitM
 
 /** Every sandbox made, for socket and root cleanup. */
 const roots: Sandbox[] = [];
+
+/** Started Pi targets not yet halted, by sandbox root: each entry stops its target and sweeps its processes. */
+const live = new Map<string, () => Promise<number>>();
+/** Roots where a process survived SIGKILL: never deleted under it. */
+const survived = new Set<string>();
+
+/**
+ * Starts the coordinator and registers its halt, so a stop from any path (cap, timeout, end, error, signal) ends the
+ * same way: kill the tmux session, then sweep every process of the attempt, including detached delegate workers.
+ */
+async function startTarget(sandbox: Sandbox, cwd: string, cmd: string[]) {
+	const target = (await piLive(sandbox, "start", cwd, "--", ...cmd)).stdout.trim();
+	const pid = await panePid(sandbox, target).catch(async (err) => {
+		await piLive(sandbox, "stop", target).catch(() => {});
+		await sweepProcesses(sandbox.root).catch((sweepErr) => {
+			survived.add(sandbox.root);
+			throw sweepErr;
+		});
+		throw err;
+	});
+	let halted: Promise<number> | undefined;
+	const halt = () => {
+		halted ??= (async () => {
+			await piLive(sandbox, "stop", target).catch(() => {});
+			try {
+				return await sweepProcesses(sandbox.root, [pid]);
+			} catch (err) {
+				survived.add(sandbox.root);
+				throw err;
+			} finally {
+				live.delete(sandbox.root);
+			}
+		})();
+		return halted;
+	};
+	live.set(sandbox.root, halt);
+	return { target, halt };
+}
+
+/** Halts every started target, kills running setup and check commands, then removes sockets and (unless --keep) roots. */
+async function cleanup() {
+	const halts = await Promise.allSettled([...live.values()].map((halt) => halt()));
+	for (const h of halts) if (h.status === "rejected") console.error(`⚠ halt failed: ${(h.reason as Error).message}`);
+	for (const pid of shells)
+		try {
+			process.kill(-pid, "SIGKILL");
+		} catch {
+			// Already exited.
+		}
+	for (const s of roots) rmSync(socketOf(s), { force: true });
+	for (const s of roots)
+		if (survived.has(s.root)) console.error(`⚠ kept ${s.root}: a process of it survived SIGKILL`);
+		else if (!opt.keep) rmSync(s.root, { recursive: true, force: true });
+		else console.log(`kept ${s.root}`);
+}
 
 function sandboxFor(arm: Arm): Sandbox {
 	return createSandbox({
@@ -185,26 +251,22 @@ async function prepare(arm: Arm, n: number): Promise<Attempt> {
 	return a;
 }
 
-const coordinatorEnv = (a: Attempt) => ({
-	// Both arms run unattended: nobody answers a dialog, so guard refuses instead of waiting.
-	ME_PI_UNATTENDED: "1",
-	ME_PI_STATUS_LOG: a.status,
-	ME_PI_SPEND_BUDGET_USD: String(cap),
-});
-
 // The target is a remote-less clone the coordinator works in, so its project resources (e.g. `.agents/skills`) load as in
 // the live rig, where the user trusts the repo; without this, Pi stops at the project-trust prompt nobody answers.
-const coordinatorCommand = (a: Attempt) => [...piCommand(pi, a.sandbox, coordinatorEnv(a), a.sessions), "--approve"];
+const coordinatorCommand = (a: Attempt) => [
+	...piCommand(pi, a.sandbox, coordinatorEnv(a.status, cap), a.sessions),
+	"--approve",
+];
 
 async function dryRun(arm: Arm): Promise<boolean> {
 	const a = await prepare(arm, 0);
 	const cmd = coordinatorCommand(a);
-	const { stdout: target } = await piLive(a.sandbox, "start", a.worktree, "--", ...cmd);
+	const { target, halt } = await startTarget(a.sandbox, a.worktree, cmd);
 	let screen = "";
 	try {
-		screen = (await piLive(a.sandbox, "read", target.trim())).stdout;
+		screen = (await piLive(a.sandbox, "read", target)).stdout;
 	} finally {
-		await piLive(a.sandbox, "stop", target.trim());
+		await halt();
 	}
 	const missing = [skillOf(arm), "delegate.ts"].filter((w) => !screen.includes(w));
 	console.log(screen);
@@ -222,13 +284,6 @@ const sessionLog = (a: Attempt) => {
 	return file ? readFileSync(join(a.sessions, file), "utf8") : undefined;
 };
 
-/** Pi-estimated spend so far; workers still running are not in the log yet, so the cap can overshoot by one job. */
-function spent(jsonl: string) {
-	const coordinator = parseSession(jsonl).coordinatorCost;
-	const worker = workerSpend(jsonl);
-	return { coordinator, worker, total: coordinator + worker.cost };
-}
-
 function numstat(cwd: string, env: Record<string, string>, from: string, to: string) {
 	const rows = git(cwd, env, "diff", "--numstat", from, to)
 		.split("\n")
@@ -238,20 +293,25 @@ function numstat(cwd: string, env: Record<string, string>, from: string, to: str
 	return { files: rows.length, insertions: sum(0), deletions: sum(1) };
 }
 
-/** Re-runs the check on the final HEAD: in the worktree when clean, else in a fresh clone of HEAD after setup. */
-async function recheck(a: Attempt, head: string, clean: boolean) {
-	let cwd = a.worktree;
-	if (!clean) {
-		cwd = join(a.dir, "recheck");
-		cloneAt(a.worktree, head, cwd);
-		for (const command of task.setup) {
-			const r = await shell(command, cwd, a.sandbox.env, timeoutMs);
-			if (r.exit !== 0) return { where: "clone", setupFailed: command, ...r };
-		}
+/** Runs `setup` then the check in `cwd`; a failed setup command is reported instead of the check. */
+async function setupAndCheck(a: Attempt, cwd: string) {
+	for (const command of task.setup) {
+		const r = await shell(command, cwd, a.sandbox.env, timeoutMs);
+		if (r.exit !== 0) return { setupFailed: command, ...r };
 	}
-	return { where: clean ? "worktree" : "clone", ...(await shell(task.check, cwd, a.sandbox.env, timeoutMs)) };
+	return shell(task.check, cwd, a.sandbox.env, timeoutMs);
 }
 
+/**
+ * Re-runs the check on the final HEAD twice: in the worktree as the agent left it, and in a fresh remote-less clone of
+ * HEAD after `setup`, so ignored build output the agent left behind cannot make it pass.
+ */
+async function recheck(a: Attempt, head: string) {
+	const inWorktree = await shell(task.check, a.worktree, a.sandbox.env, timeoutMs);
+	const fresh = join(a.dir, "fresh");
+	cloneAt(a.worktree, head, fresh);
+	return { inWorktree, fresh: await setupAndCheck(a, fresh) };
+}
 function diffVsReference(a: Attempt, head: string) {
 	if (!task.reference) return undefined;
 	const env = a.sandbox.env;
@@ -281,25 +341,34 @@ async function quiet(a: Attempt, target: string, stopped: () => boolean) {
 
 async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 	const started = Date.now();
-	let state: "completed" | "capped" | "timeout" | "incomplete" | "void" = "completed";
+	let state: AttemptState = "completed";
 	let note = "";
-	let target = "";
-	const stop = async (why: "capped" | "timeout", detail: string) => {
+	let halt: (() => Promise<number>) | undefined;
+	let askedAt: number | undefined;
+	const stop = (why: AttemptState, detail: string) => {
 		if (state !== "completed") return;
 		[state, note] = [why, detail];
-		if (target) await piLive(a.sandbox, "stop", target).catch(() => {});
+		void halt?.().catch(() => {});
 	};
 	const watchdog = setInterval(() => {
 		const log = sessionLog(a);
-		const total = log ? spent(log).total : 0;
-		if (total >= cap) void stop("capped", `$${total.toFixed(2)} ≥ cap $${cap}`);
+		if (!log) {
+			if (askedAt !== undefined && Date.now() - askedAt >= NO_LOG_MS) stop("incomplete", "no session log");
+			return;
+		}
+		const { total } = sessionSpend(log);
+		if (total >= cap) stop("capped", `$${total.toFixed(2)} ≥ cap $${cap}`);
 	}, WATCH_MS);
-	const deadline = setTimeout(() => void stop("timeout", `${timeoutMs / 60_000} min`), timeoutMs);
+	const deadline = setTimeout(() => stop("timeout", `${timeoutMs / 60_000} min`), timeoutMs);
+	let orphansKilled = 0;
 	try {
-		const cmd = coordinatorCommand(a);
-		target = (await piLive(a.sandbox, "start", a.worktree, "--", ...cmd)).stdout.trim();
-		await piLive(a.sandbox, "ask", target, promptOf(a.arm, a.contract));
-		await quiet(a, target, () => state !== "completed");
+		const t = await startTarget(a.sandbox, a.worktree, coordinatorCommand(a));
+		halt = t.halt;
+		// The deadline may have passed while Pi started; nothing halted it then.
+		if (state !== "completed") throw new Error(note);
+		askedAt = Date.now();
+		await piLive(a.sandbox, "ask", t.target, promptOf(a.arm, a.contract));
+		await quiet(a, t.target, () => state !== "completed");
 	} catch (err) {
 		if (state === "completed") {
 			const message = (err as Error).message;
@@ -310,12 +379,20 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 	} finally {
 		clearInterval(watchdog);
 		clearTimeout(deadline);
-		if (target) await piLive(a.sandbox, "stop", target).catch(() => {});
+		// Nothing of the attempt may run past here: an implement worker's shutdown WIP commit would race the measurement.
+		if (halt) orphansKilled = await halt();
 	}
 	const wallMs = Date.now() - started;
-	const status = existsSync(a.status) ? readFileSync(a.status, "utf8") : "";
-	if (/STOPPED: account/.test(status)) [state, note] = ["incomplete", "account"];
-	else if (/STOPPED: infra/.test(status)) [state, note] = ["void", "infra"];
+	const log = sessionLog(a);
+	const spend = log ? sessionSpend(log) : undefined;
+	({ state, note } = finalState({
+		arm: a.arm,
+		state,
+		note,
+		statusLog: existsSync(a.status) ? readFileSync(a.status, "utf8") : "",
+		hasLog: !!log,
+		implementCalls: spend?.byRole.implement?.calls ?? 0,
+	}));
 
 	const env = a.sandbox.env;
 	const head = git(a.worktree, env, "rev-parse", "HEAD");
@@ -326,13 +403,11 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 	writeFileSync(join(dir, "diff.patch"), patch ? `${patch}\n` : "", { mode: 0o600 });
 	const reportExists = existsSync(a.report);
 	if (reportExists) copyFileSync(a.report, join(dir, "report.md"));
-	const check = await recheck(a, head, clean);
+	const ignoredLeftovers = git(a.worktree, env, "clean", "-ndX").split("\n").filter(Boolean).length;
+	const check = await recheck(a, head);
 
-	const log = sessionLog(a);
-	if (!log && state === "completed") [state, note] = ["incomplete", "no session log"];
-	const cost = log ? spent(log) : undefined;
 	const facts = log ? sessionFacts(log) : undefined;
-	const byRole = cost?.worker.byRole ?? {};
+	const byRole = spend?.byRole ?? {};
 	return {
 		sweep,
 		attempt: a.id,
@@ -366,20 +441,25 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		head,
 		commits: Number(git(a.worktree, env, "rev-list", "--count", `${task.base}..${head}`)),
 		clean,
-		check: { command: task.check, ...check },
+		ignoredLeftovers,
+		checkInWorktree: { command: task.check, ...check.inWorktree },
+		checkFresh: { command: task.check, ...check.fresh },
 		diffstat: numstat(a.worktree, env, task.base, head),
 		diffVsReference: diffVsReference(a, head),
 		report: { exists: reportExists, status: reportExists ? reportStatus(readFileSync(a.report, "utf8")) : null },
-		cost: cost
+		cost: spend
 			? {
-					coordinator: cost.coordinator,
-					worker: cost.worker.cost,
-					total: cost.total,
-					source: "pi-estimate",
+					coordinator: spend.coordinator,
+					worker: spend.worker,
+					total: spend.total,
+					source: spend.partial ? "partial" : "pi-estimate",
+					pending: spend.pending,
 				}
-			: { coordinator: 0, worker: 0, total: 0, source: "unavailable" },
+			: { coordinator: 0, worker: 0, total: 0, source: "unavailable", pending: [] },
 		workerCostByRole: Object.fromEntries(Object.entries(byRole).map(([r, v]) => [r, v.cost])),
 		delegateCalls: Object.fromEntries(Object.entries(byRole).map(([r, v]) => [r, v.calls])),
+		implementWorkerSeconds: Math.round((byRole.implement?.ms ?? 0) / 1000),
+		orphansKilled,
 		compactions: facts?.compactions ?? null,
 		blocked: facts?.blocked ?? null,
 		patch: join(dir, "diff.patch"),
@@ -389,16 +469,19 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 const fmt = (x: number | undefined, f: (v: number) => string) => (x === undefined ? "–" : f(x));
 
 function summary(records: Record<string, any>[]) {
-	console.log("| arm | attempts | completed | check green | median cost | median wall | median compactions |");
+	console.log(
+		"| arm | attempts | completed | check green (fresh clone) | median cost (n excluded) | median wall | median compactions |",
+	);
 	console.log("|---|---|---|---|---|---|---|");
 	for (const arm of arms) {
 		const r = records.filter((x) => x.arm === arm);
-		const green = r.filter((x) => x.check.exit === 0 && !x.check.timedOut).length;
+		const green = r.filter((x) => x.checkFresh.exit === 0 && !x.checkFresh.timedOut).length;
+		const cost = costMedian(r as Parameters<typeof costMedian>[0]);
 		console.log(
 			`| ${arm} | ${r.length} | ${r.filter((x) => x.state === "completed").length} | ${green} | ${fmt(
-				median(r.map((x) => x.cost.total)),
+				cost.median,
 				(v) => `$${v.toFixed(2)}`,
-			)} | ${fmt(
+			)} (${cost.excluded} excluded) | ${fmt(
 				median(r.map((x) => x.wallMs)),
 				(v) => `${(v / 60_000).toFixed(1)} min`,
 			)} | ${fmt(median(r.filter((x) => x.compactions !== null).map((x) => x.compactions)), String)} |`,
@@ -406,8 +489,37 @@ function summary(records: Record<string, any>[]) {
 	}
 }
 
+const before = liveSnapshot(realHome);
+let cleaned: Promise<void> | undefined;
+/** Runs once, from the normal end or a signal: nothing is removed until every started target is halted. */
+function finish() {
+	cleaned ??= (async () => {
+		await cleanup();
+		const after = liveSnapshot(realHome);
+		const changed = Object.keys(before).filter((k) => before[k] !== after[k]);
+		if (changed.length)
+			console.error(`⚠ live ~/.pi/agent changed during the run (yours or the run's?): ${changed.join(", ")}`);
+	})();
+	return cleaned;
+}
+
+// `finally` does not run when a signal ends the process, so a signal halts every started target first.
+for (const [sig, code] of [
+	["SIGINT", 130],
+	["SIGTERM", 143],
+] as const)
+	process.once(sig, () => {
+		console.error(`\n${sig}: stopping every started attempt…`);
+		finish().then(
+			() => process.exit(code),
+			(err) => {
+				console.error(err);
+				process.exit(code);
+			},
+		);
+	});
+
 async function main() {
-	const before = liveSnapshot(realHome);
 	try {
 		if (opt["dry-run"]) {
 			const ok: boolean[] = [];
@@ -421,38 +533,44 @@ async function main() {
 		mkdirSync(dirname(out), { recursive: true });
 		const records: Record<string, any>[] = [];
 		let authChecked: Promise<void> | undefined;
-		let stopped = false;
+		let stopped = "";
 		const worker = async () => {
 			for (let q = queue.shift(); q && !stopped; q = queue.shift()) {
-				const a = await prepare(q.arm, q.n);
-				// One serial check refreshes the shared eval login before parallel attempts could race to rotate it.
-				authChecked ??= Promise.resolve().then(() => {
-					execFileSync(pi, ["auth", "check", "--provider", task.coordinator.provider], {
-						env: a.sandbox.env,
-						stdio: "inherit",
+				try {
+					const a = await prepare(q.arm, q.n);
+					// One serial check refreshes the shared eval login before parallel attempts could race to rotate it.
+					authChecked ??= Promise.resolve().then(() => {
+						execFileSync(pi, ["auth", "check", "--provider", task.coordinator.provider], {
+							env: a.sandbox.env,
+							stdio: "inherit",
+						});
 					});
-				});
-				await authChecked;
-				const record = await runAttempt(a);
-				records.push(record);
-				appendFileSync(out, `${JSON.stringify(record)}\n`, { mode: 0o600 });
-				console.log(
-					`${record.attempt}: ${record.state} check ${record.check.exit === 0 ? "✓" : "✗"} $${record.cost.total.toFixed(2)}`,
-				);
-				if (record.note === "account") stopped = true;
+					await authChecked;
+					const record = await runAttempt(a);
+					records.push(record);
+					appendFileSync(out, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+					console.log(
+						`${record.attempt}: ${record.state} check ${record.checkFresh.exit === 0 ? "✓" : "✗"} $${record.cost.total.toFixed(2)}${record.cost.source === "partial" ? "+ (partial)" : ""}`,
+					);
+					if (record.note === "account") stopped = "account error";
+				} catch (err) {
+					// No new attempt starts; the ones running finish and are recorded.
+					stopped ||= `error in ${task.id}-${q.arm}${q.n}`;
+					throw err;
+				}
 			}
 		};
-		await Promise.all(Array.from({ length: jobs }, worker));
-		console.log(`\nrecords: ${out}\npatches: ${artifacts}${stopped ? "\n✗ stopped: account error" : ""}\n`);
+		const ended = await Promise.allSettled(Array.from({ length: jobs }, worker));
+		console.log(`\nrecords: ${out}\npatches: ${artifacts}${stopped ? `\n✗ stopped: ${stopped}` : ""}\n`);
 		summary(records);
+		const failed = ended.filter((e): e is PromiseRejectedResult => e.status === "rejected");
+		if (failed.length)
+			throw new AggregateError(
+				failed.map((f) => f.reason),
+				`${failed.length} attempt(s) failed`,
+			);
 	} finally {
-		const after = liveSnapshot(realHome);
-		const changed = Object.keys(before).filter((k) => before[k] !== after[k]);
-		if (changed.length)
-			console.error(`⚠ live ~/.pi/agent changed during the run (yours or the run's?): ${changed.join(", ")}`);
-		for (const s of roots) rmSync(socketOf(s), { force: true });
-		if (!opt.keep) for (const s of roots) rmSync(s.root, { recursive: true, force: true });
-		else for (const s of roots) console.log(`kept ${s.root}`);
+		await finish();
 	}
 }
 

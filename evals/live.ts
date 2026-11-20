@@ -41,6 +41,77 @@ export const piLive = (sandbox: Sandbox, ...args: string[]) =>
 		maxBuffer: 16 * 1024 * 1024,
 	});
 
+/** The pid of the process in a pi-live tmux target's pane (Pi itself: `env -i` execs it). */
+export async function panePid(sandbox: Sandbox, target: string): Promise<number> {
+	const session = target.replace(/^tmux:/, "");
+	const { stdout } = await execFile("tmux", ["-S", socketOf(sandbox), "display", "-p", "-t", session, "#{pane_pid}"]);
+	const pid = Number(stdout.trim());
+	if (!Number.isInteger(pid) || pid <= 0) throw new Error(`no pane pid for ${target}: ${stdout.trim()}`);
+	return pid;
+}
+
+/** Pids of live processes whose command line contains `marker` (`pgrep -f`, as a literal string). */
+export async function processesWith(marker: string): Promise<number[]> {
+	const pattern = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	try {
+		const { stdout } = await execFile("pgrep", ["-f", pattern]);
+		return stdout.split("\n").filter(Boolean).map(Number);
+	} catch (err) {
+		// pgrep exits 1 when nothing matches.
+		if ((err as { code?: number }).code === 1) return [];
+		throw err;
+	}
+}
+
+const alive = (pid: number) => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+};
+const signal = (pids: number[], sig: NodeJS.Signals) => {
+	for (const pid of pids)
+		try {
+			process.kill(pid, sig);
+		} catch {
+			// Exited in between.
+		}
+};
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Makes sure nothing started for an attempt survives: waits up to `graceMs` for every process whose command line
+ * contains `marker` (the sandbox root; delegate workers run in their own process groups, but their args and paths name
+ * it) and every pid in `pids` to exit, then SIGTERMs the rest, then SIGKILLs what still lives. Returns how many had to
+ * be signalled; throws when any survive SIGKILL.
+ */
+export async function sweepProcesses(
+	marker: string,
+	pids: number[] = [],
+	{ graceMs = 20_000, termMs = 3_000, pollMs = 250 } = {},
+): Promise<number> {
+	const left = async () => [...new Set([...(await processesWith(marker)), ...pids.filter(alive)])];
+	const until = async (ms: number) => {
+		const end = Date.now() + ms;
+		let now = await left();
+		while (now.length && Date.now() < end) {
+			await sleep(pollMs);
+			now = await left();
+		}
+		return now;
+	};
+	const stragglers = await until(graceMs);
+	if (!stragglers.length) return 0;
+	signal(stragglers, "SIGTERM");
+	const stubborn = await until(termMs);
+	signal(stubborn, "SIGKILL");
+	const survivors = await until(termMs);
+	if (survivors.length) throw new Error(`processes survived SIGKILL: ${survivors.join(", ")}`);
+	return stragglers.length;
+}
+
 /** The command pi-live.sh starts: Pi under `env -i` with the sandbox env plus `extra`, writing its session to `sessionDir`. */
 export function piCommand(pi: string, sandbox: Sandbox, extra: Record<string, string>, sessionDir: string): string[] {
 	const env = Object.entries({ ...sandbox.env, ...extra }).map(([k, v]) => `${k}=${v}`);

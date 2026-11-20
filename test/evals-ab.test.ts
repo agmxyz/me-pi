@@ -1,9 +1,23 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { promptOf, renderContract, reportStatus, sessionFacts, type Task, validateTask } from "../evals/ab-task.ts";
-import { workerSpend } from "../evals/score.ts";
+import {
+	coordinatorEnv,
+	costMedian,
+	finalState,
+	promptOf,
+	renderContract,
+	reportStatus,
+	sessionFacts,
+	type Task,
+	validateTask,
+} from "../evals/ab-task.ts";
+import { piCommand, processesWith, sweepProcesses } from "../evals/live.ts";
+import type { Sandbox } from "../evals/sandbox.ts";
+import { sessionSpend } from "../evals/score.ts";
 
 const lines = (...entries: object[]) => entries.map((e) => JSON.stringify(e)).join("\n");
 const call = (id: string, args: object) => ({
@@ -23,10 +37,16 @@ const background = (job: string, details: object) => ({
 	details,
 });
 
-test("workerSpend sums foreground results and background messages once each, by role", () => {
+const said = (cost: number) => ({
+	type: "message",
+	message: { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { cost: { total: cost } } },
+});
+
+test("sessionSpend sums coordinator usage, and foreground results and background messages once each, by role", () => {
 	const log = lines(
+		said(0.5),
 		call("c1", { role: "implement", task: "x" }),
-		result("c1", "✓ im1 feat; check ✓", view(1.25)),
+		result("c1", "✓ im1 feat; check ✓", { view: { stage: "Done", runs: [{ cost: 1.25, ms: 90_000 }] } }),
 		call("c2", { task: "review", runs: [{}, {}] }),
 		result("c2", "two answers", view(0.5, 0.25)),
 		call("c3", { role: "scout", task: "find", background: true }),
@@ -38,16 +58,32 @@ test("workerSpend sums foreground results and background messages once each, by 
 		// A replayed message for a job already counted adds nothing.
 		background("bg1", view(0.125)),
 	);
-	const spend = workerSpend(log);
-	assert.equal(spend.cost, 1.25 + 0.75 + 0.125 + 2);
+	const spend = sessionSpend(log);
+	assert.equal(spend.coordinator, 0.5);
+	assert.equal(spend.worker, 1.25 + 0.75 + 0.125 + 2);
+	assert.equal(spend.total, 0.5 + spend.worker);
+	assert.deepEqual([spend.partial, spend.pending], [false, []]);
 	assert.deepEqual(spend.byRole, {
-		implement: { calls: 2, cost: 3.25 },
-		general: { calls: 1, cost: 0.75 },
-		scout: { calls: 1, cost: 0.125 },
+		implement: { calls: 2, cost: 3.25, ms: 90_000 },
+		general: { calls: 1, cost: 0.75, ms: 0 },
+		scout: { calls: 1, cost: 0.125, ms: 0 },
 	});
 });
 
-test("workerSpend counts a call that never returned, without cost, and ignores other tools", () => {
+test("sessionSpend is partial when a started background job never delivered, and lists it", () => {
+	const log = lines(
+		call("c1", { role: "implement", task: "x", background: true }),
+		result("c1", "Started background job bg1 (sol).", { background: "bg1" }),
+		call("c2", { role: "scout", task: "y", background: true }),
+		result("c2", "Started background job bg2 (luna).", { background: "bg2" }),
+		background("bg2", view(0.25)),
+	);
+	const spend = sessionSpend(log);
+	assert.equal(spend.worker, 0.25);
+	assert.deepEqual([spend.partial, spend.pending], [true, ["bg1"]]);
+});
+
+test("sessionSpend counts a call that never returned as pending, without cost, and ignores other tools", () => {
 	const log = lines(
 		{ type: "session", version: 3 },
 		call("c1", { role: "implement", task: "x" }),
@@ -57,7 +93,147 @@ test("workerSpend counts a call that never returned, without cost, and ignores o
 		},
 		{ type: "custom_message", customType: "other", content: "Background delegate job bg1:", details: view(9) },
 	);
-	assert.deepEqual(workerSpend(log), { cost: 0, byRole: { implement: { calls: 1, cost: 0 } } });
+	assert.deepEqual(sessionSpend(log), {
+		coordinator: 0,
+		worker: 0,
+		total: 0,
+		pending: ["c1"],
+		partial: true,
+		byRole: { implement: { calls: 1, cost: 0, ms: 0 } },
+	});
+});
+
+test("finalState voids an arm-B attempt that used implement, and keeps arm A's", () => {
+	const base = { state: "completed" as const, note: "", statusLog: "", hasLog: true, implementCalls: 1 };
+	assert.deepEqual(finalState({ ...base, arm: "B" }), { state: "void", note: "arm B used implement" });
+	assert.deepEqual(finalState({ ...base, arm: "B", state: "capped", note: "$30" }), {
+		state: "void",
+		note: "arm B used implement",
+	});
+	assert.deepEqual(finalState({ ...base, arm: "A" }), { state: "completed", note: "" });
+	assert.deepEqual(finalState({ ...base, arm: "B", implementCalls: 0 }), { state: "completed", note: "" });
+});
+
+test("finalState: status-log stops win, and a completed run with no log is incomplete", () => {
+	const base = { arm: "A" as const, state: "completed" as const, note: "", hasLog: true, implementCalls: 0 };
+	assert.deepEqual(finalState({ ...base, statusLog: "STOPPED: account 401" }), {
+		state: "incomplete",
+		note: "account",
+	});
+	assert.deepEqual(finalState({ ...base, statusLog: "STOPPED: infra" }), { state: "void", note: "infra" });
+	assert.deepEqual(finalState({ ...base, statusLog: "", hasLog: false }), {
+		state: "incomplete",
+		note: "no session log",
+	});
+	assert.deepEqual(finalState({ ...base, statusLog: "", hasLog: false, state: "timeout", note: "120 min" }), {
+		state: "timeout",
+		note: "120 min",
+	});
+});
+
+test("costMedian leaves out unknown, partial, and non-completed costs instead of counting them as $0", () => {
+	const r = (state: string, source: string, total: number) => ({ state, cost: { source, total } });
+	assert.deepEqual(
+		costMedian([
+			r("completed", "pi-estimate", 4),
+			r("completed", "pi-estimate", 6),
+			r("completed", "unavailable", 0),
+			r("capped", "pi-estimate", 25),
+			r("completed", "partial", 1),
+		]),
+		{ median: 5, excluded: 3 },
+	);
+	assert.deepEqual(costMedian([r("timeout", "unavailable", 0)]), { median: undefined, excluded: 1 });
+});
+
+test("the coordinator command carries no GitHub token and pins git's ssh to no identity", () => {
+	const sandbox = { env: { HOME: "/s/home", PATH: "/usr/bin" } } as unknown as Sandbox;
+	const saved = { GH_TOKEN: process.env.GH_TOKEN, GITHUB_TOKEN: process.env.GITHUB_TOKEN };
+	Object.assign(process.env, { GH_TOKEN: "x", GITHUB_TOKEN: "y" });
+	try {
+		const cmd = piCommand("/bin/pi", sandbox, coordinatorEnv("/s/status.log", 25), "/s/sessions");
+		assert.deepEqual(cmd.slice(0, 2), ["env", "-i"]);
+		assert.equal(
+			cmd.some((a) => /^(GH_TOKEN|GITHUB_TOKEN)=/.test(a)),
+			false,
+		);
+		assert.ok(
+			cmd.includes(
+				"GIT_SSH_COMMAND=ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes",
+			),
+		);
+		assert.ok(cmd.includes("GIT_TERMINAL_PROMPT=0"));
+		assert.ok(cmd.includes("ME_PI_UNATTENDED=1"));
+		assert.ok(cmd.includes("ME_PI_SPEND_BUDGET_USD=25"));
+	} finally {
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	}
+});
+
+/** A temp root with HOME and TMPDIR pointed into it, as a sandbox root would be. */
+function scratch(t: any) {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "evals-sweep-")));
+	const saved = { HOME: process.env.HOME, TMPDIR: process.env.TMPDIR };
+	Object.assign(process.env, { HOME: dir, TMPDIR: dir });
+	t.after(() => {
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+		rmSync(dir, { recursive: true, force: true });
+	});
+	return dir;
+}
+
+const exited = (child: ReturnType<typeof spawn>) =>
+	new Promise<NodeJS.Signals | null>((done) => {
+		if (child.exitCode !== null || child.signalCode !== null) done(child.signalCode);
+		else child.once("exit", (_code, sig) => done(sig));
+	});
+
+test("sweepProcesses kills a detached process whose argv names the root, and returns the count", async (t) => {
+	const root = scratch(t);
+	// Detached like a delegate worker: its own process group, so killing the tmux session would not reach it.
+	const child = spawn("sleep", ["300"], { argv0: join(root, "worker"), detached: true, stdio: "ignore" });
+	t.after(() => child.kill("SIGKILL"));
+	const gone = exited(child);
+	await new Promise((r) => setTimeout(r, 200));
+	assert.deepEqual(await processesWith(root), [child.pid]);
+	assert.equal(await sweepProcesses(root, [], { graceMs: 300, termMs: 2_000, pollMs: 50 }), 1);
+	assert.equal(await gone, "SIGTERM");
+	assert.deepEqual(await processesWith(root), []);
+});
+
+test("sweepProcesses SIGKILLs a process that ignores SIGTERM, and waits for one that exits in its grace", async (t) => {
+	const root = scratch(t);
+	const stubborn = spawn("sh", ["-c", 'trap "" TERM; while :; do sleep 0.1; done', join(root, "stubborn")], {
+		detached: true,
+		stdio: "ignore",
+	});
+	t.after(() => stubborn.kill("SIGKILL"));
+	const gone = exited(stubborn);
+	await new Promise((r) => setTimeout(r, 200));
+	assert.equal(await sweepProcesses(root, [], { graceMs: 200, termMs: 500, pollMs: 50 }), 1);
+	assert.equal(await gone, "SIGKILL");
+
+	const polite = spawn("sleep", ["0.3"], { argv0: join(root, "polite"), stdio: "ignore" });
+	const done = exited(polite);
+	await new Promise((r) => setTimeout(r, 100));
+	assert.equal(await sweepProcesses(root, [], { graceMs: 5_000, termMs: 500, pollMs: 50 }), 0);
+	assert.equal(await done, null);
+});
+
+test("sweepProcesses also waits for a listed pid whose argv does not name the root", async (t) => {
+	const root = scratch(t);
+	const child = spawn("sleep", ["300"], { stdio: "ignore" });
+	t.after(() => child.kill("SIGKILL"));
+	const gone = exited(child);
+	await new Promise((r) => setTimeout(r, 100));
+	assert.equal(await sweepProcesses(root, [child.pid!], { graceMs: 200, termMs: 2_000, pollMs: 50 }), 1);
+	assert.equal(await gone, "SIGTERM");
 });
 
 const TASK: Task = {

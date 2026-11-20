@@ -111,6 +111,53 @@ export function sessionFacts(jsonl: string): { compactions: number; blocked: num
 	return facts;
 }
 
+/**
+ * What the coordinator gets on top of the sandbox env. Pi runs under `env -i`, so no GitHub token is inherited.
+ * OpenSSH reads `~/.ssh` from the passwd home, not `$HOME`, so git's ssh gets no config, no identity, and no prompt:
+ * the agent cannot push with the user's keys.
+ */
+export const coordinatorEnv = (statusLog: string, capUsd: number): Record<string, string> => ({
+	// Both arms run unattended: nobody answers a dialog, so guard refuses instead of waiting.
+	ME_PI_UNATTENDED: "1",
+	ME_PI_STATUS_LOG: statusLog,
+	ME_PI_SPEND_BUDGET_USD: String(capUsd),
+	GIT_SSH_COMMAND: "ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes",
+	GIT_TERMINAL_PROMPT: "0",
+});
+
+export type AttemptState = "completed" | "capped" | "timeout" | "incomplete" | "void";
+
+/**
+ * The attempt's final state from how it ended and what it left: an account or infra stop from the status log wins,
+ * then an arm-B attempt that used the implement worker (it ran arm A's method), then a completed run with no log.
+ */
+export function finalState(o: {
+	arm: Arm;
+	state: AttemptState;
+	note: string;
+	statusLog: string;
+	hasLog: boolean;
+	implementCalls: number;
+}): { state: AttemptState; note: string } {
+	if (/STOPPED: account/.test(o.statusLog)) return { state: "incomplete", note: "account" };
+	if (/STOPPED: infra/.test(o.statusLog)) return { state: "void", note: "infra" };
+	if (o.arm === "B" && o.implementCalls > 0) return { state: "void", note: "arm B used implement" };
+	if (!o.hasLog && o.state === "completed") return { state: "incomplete", note: "no session log" };
+	return { state: o.state, note: o.note };
+}
+
+/**
+ * Median total cost over the records whose cost is fully known: completed, with a Pi estimate that has no pending
+ * job. The rest are counted in `excluded`, not averaged in as $0.
+ */
+export function costMedian(records: { state: string; cost: { source: string; total: number } }[]): {
+	median: number | undefined;
+	excluded: number;
+} {
+	const known = records.filter((r) => r.state === "completed" && r.cost.source === "pi-estimate");
+	return { median: median(known.map((r) => r.cost.total)), excluded: records.length - known.length };
+}
+
 export function median(xs: number[]): number | undefined {
 	if (!xs.length) return undefined;
 	const s = [...xs].sort((a, b) => a - b);
