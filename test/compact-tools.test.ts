@@ -76,7 +76,7 @@ function row(...args: Parameters<typeof rawRow>): string[] {
 
 test("a finished bash call is one line of facts, then its first output line and its last three", () => {
 	const lines = row("bash", { command: "npm test\necho done" }, { content: text(numbered(40)), durationMs: 4200 });
-	assert.deepEqual(lines, ["✓ $ npm test ⏎1 · +36 lines · 4.2s", "line 1", "⋮", "line 38", "line 39", "line 40"]);
+	assert.deepEqual(lines, ["✓ $ npm test ⏎1 · 4.2s", "line 1", "⋮ 36 more lines", "line 38", "line 39", "line 40"]);
 	const raw = rawRow("bash", { command: "npm test" }, { content: text("one\ntwo") });
 	assert.deepEqual(raw, [" ✓ $ npm test", " │ one", " │ two"], "output sits behind a bar in the glyph's column");
 });
@@ -115,6 +115,9 @@ test("a command loses its output plumbing, and a long one is cut in the middle",
 	const wide = head(`grep ${"x".repeat(200)} file | sort -u`);
 	assert.ok(wide.length <= 80, "a long command is cut to one line");
 	assert.match(wide, /^✓ \$ grep x+…x* file \| sort -u$/);
+	const barely = head(`echo ${"x".repeat(70)} done`);
+	assert.match(barely, /^✓ \$ echo x+…$/, "a command only a little too long is cut at its end");
+	assert.ok(barely.length >= 78);
 });
 
 test("a failed bash call shows a cross and its exit code, and keeps its end from the first error-like line", () => {
@@ -125,14 +128,18 @@ test("a failed bash call shows a cross and its exit code, and keeps its end from
 		"ls: x: No such file or directory",
 	]);
 	const dull = failed(`${numbered(40)}\n\nCommand exited with code 2`);
-	assert.equal(dull[0], "✗ $ npm test · exit 2 · +35 lines · 4.2s");
-	assert.deepEqual(dull.slice(1), numbered(40).split("\n").slice(-5), "no error-like line: the last five");
+	assert.deepEqual(dull.slice(0, 2), ["✗ $ npm test · exit 2 · 4.2s", "⋮ 35 more lines"]);
+	assert.deepEqual(dull.slice(2), numbered(40).split("\n").slice(-5), "no error-like line: the last five");
 	const output = [...numbered(30).split("\n"), "Error: boom", ...numbered(8).split("\n")];
 	const found = failed(`${output.join("\n")}\n\nCommand exited with code 1`);
-	assert.deepEqual(found.slice(1, 3), ["Error: boom", "line 1"], "kept from the first error-like line");
-	assert.equal(found.length, 10);
+	assert.deepEqual(
+		found.slice(1, 4),
+		["⋮ 30 more lines", "Error: boom", "line 1"],
+		"kept from the first error-like line",
+	);
+	assert.equal(found.length, 11);
 	const old = failed(`Error: early\n${numbered(40)}\n\nCommand exited with code 1`);
-	assert.equal(old.length, 6, "an error line more than twenty lines back does not count");
+	assert.equal(old.length, 7, "an error line more than twenty lines back does not count");
 	const wide = failed(`${"z".repeat(100)}\n\nCommand exited with code 1`);
 	assert.equal(wide.join("").match(/z/g)?.length, 100, "a long error line wraps instead of being cut");
 	assert.deepEqual(failed("Command timed out after 5 seconds"), [
@@ -238,6 +245,12 @@ test("an output line too long for the row is cut, unless it reads like an error:
 	const error = row("bash", { command: "cat log" }, { content: text(output) });
 	assert.equal(error.length, 3);
 	assert.ok(error[2].includes("ReferenceError: TOUR is not defined") && error[2].endsWith("…"));
+	const mention = row(
+		"bash",
+		{ command: "git log" },
+		{ content: text(`c8f482c feat: a row for long error lines ${"z".repeat(200)}`) },
+	);
+	assert.equal(mention.length, 2, "a line that only mentions an error stays one row");
 });
 
 test("a read shows its path, range and line count, and its error when it failed", () => {

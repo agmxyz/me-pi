@@ -29,6 +29,11 @@ const FAILED_LINES = 20;
 const FAILED_MIN_LINES = 5;
 const ERROR_LIKE =
 	/error|fail|✖|✗|not found|no such|denied|cannot|exception|traceback|fatal|panic|refused|invalid|unexpected/i;
+/** The shape of an error message itself, not just a line that mentions one: `TypeError:`, `error TS2322`, `fatal:`. */
+const ERROR_SHAPE =
+	/\w*(Error|Exception):|\berror[ :[(]+[A-Z]+\d+|^\s*(fatal|panic|error)\b[:!]|\b(FAIL|FAILED|Traceback)\b|✖|✗/;
+/** A cut in the middle of a command must save at least this many columns over a cut at its end. */
+const MIDDLE_CUT_MIN = 8;
 /** A command that ran this long shows its duration as a warning. */
 const SLOW_MS = 30_000;
 /** Changed lines an edit shows before it counts the rest. */
@@ -117,16 +122,20 @@ function outputLine(line: string, theme: Theme, context: Context): string {
 	}
 	return linked + paint(line.slice(end));
 }
-/** Text cut in the middle to fit: a command's start says what ran, its end what came out. */
+/**
+ * Text cut in the middle to fit: a command's start says what ran, its end what came out. Text only a little too
+ * long is cut at its end instead, where a few lost characters read more easily.
+ */
 function middleCut(text: string, room: number): string {
-	if (visibleWidth(text) <= room) return text;
+	const over = visibleWidth(text) - room;
+	if (over <= 0) return text;
 	const chars = [...text];
 	const fit = (from: string[], width: number) => {
 		let count = 0;
 		while (count < from.length && visibleWidth(from.slice(0, count + 1).join("")) <= width) count++;
 		return count;
 	};
-	const right = fit(chars.toReversed(), Math.floor((room - 1) / 3));
+	const right = over < MIDDLE_CUT_MIN ? 0 : fit(chars.toReversed(), Math.floor((room - 1) / 3));
 	const end = chars.slice(chars.length - right).join("");
 	// Cut by hand: Pi's truncation ends its result with a style reset, which would unstyle the end.
 	return `${chars.slice(0, fit(chars, room - 1 - visibleWidth(end))).join("")}…${end}`;
@@ -177,13 +186,13 @@ const SUMMARIES: Record<string, Summarize> = {
 		const tailCount = whole ? 0 : context.isError ? failedTail(output) : TAIL_LINES;
 		const hidden = output.length - headCount - tailCount;
 		if (exit) meta.push(theme.fg("error", `exit ${exit}`));
-		if (hidden > 0) meta.push(theme.fg("muted", `+${plural(hidden, "line")}`));
 		const ms = rowState(context).durationMs ?? 0;
 		if (ms >= 1000) meta.push(theme.fg(ms >= SLOW_MS ? "warning" : "muted", formatDuration(ms)));
 		const shown = (rows: string[]) => rows.map((line) => outputLine(line, theme, context));
+		// The count of skipped lines sits where they were skipped.
 		const body = [
 			...shown(output.slice(0, headCount)),
-			...(headCount > 0 && hidden > 0 ? [theme.fg("dim", "⋮")] : []),
+			...(hidden > 0 ? [theme.fg("muted", `⋮ ${plural(hidden, "more line")}`)] : []),
 			...shown(tailCount > 0 ? output.slice(-tailCount) : []),
 		];
 		return { head, meta, body };
@@ -284,7 +293,7 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 }
 /** A line cut to one row, or to two when it reads like an error: the message is usually at its end. */
 function fitted(line: string, room: number): string[] {
-	if (visibleWidth(line) <= room || !ERROR_LIKE.test(stripVTControlCharacters(line)))
+	if (visibleWidth(line) <= room || !ERROR_SHAPE.test(stripVTControlCharacters(line)))
 		return [truncateToWidth(line, room, "…")];
 	const [first, ...rest] = wrapTextWithAnsi(line, room);
 	return [first, truncateToWidth(rest.join(" "), room, "…")];
