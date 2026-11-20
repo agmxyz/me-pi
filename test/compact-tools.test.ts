@@ -26,9 +26,13 @@ const { default: registerCompactTools } = await import("../extensions/compact-to
 
 initTheme("dark", false);
 let resolver: any;
+const handlers: Record<string, (event: any, ctx?: any) => void> = {};
 registerCompactTools({
 	registerToolRenderer: (registered: any) => {
 		resolver = registered;
+	},
+	on(name: string, handler: any) {
+		handlers[name] = handler;
 	},
 } as any);
 
@@ -322,5 +326,144 @@ test("a tool that draws its own row keeps its lines, behind the glyph and withou
 		resolver("custom", () => own),
 		own,
 		"a tool that draws its own shell is left alone",
+	);
+});
+
+/** A transcript as Pi builds it: each step is one assistant message, with optional text before its calls. */
+function session() {
+	handlers.session_start({}, { sessionManager: { getBranch: () => [] } });
+	handlers.message_start({ message: { role: "user" } });
+	const rows: any[] = [];
+	let count = 0;
+	return {
+		step(calls: [string, any, any][], says = "") {
+			const ids = calls.map(() => `call-${count++}`);
+			const message = {
+				role: "assistant",
+				content: [
+					...(says ? [{ type: "text", text: says }] : []),
+					...calls.map(([name, args], i) => ({ type: "toolCall", id: ids[i], name, arguments: args })),
+				],
+			};
+			handlers.message_start({ message });
+			handlers.message_end({ message });
+			calls.forEach(([name, args, result], i) => {
+				const component = new ToolExecutionComponent(
+					name,
+					ids[i],
+					args,
+					{},
+					resolver(name, () => PI[name]),
+					UI,
+					ROOT,
+				);
+				component.markExecutionStarted();
+				component.setArgsComplete();
+				component.updateResult({ details: {}, isError: false, ...result }, false);
+				rows.push(component);
+			});
+		},
+		expand() {
+			for (const row of rows) row.setExpanded(true);
+		},
+		/** Every row's lines, blank ones included, without the bar. */
+		screen: () =>
+			rows.flatMap((row) =>
+				row.render(80).map((line: string) =>
+					stripVTControlCharacters(line)
+						.replace(/^\s*│ ?/, "")
+						.trimEnd()
+						.trim(),
+				),
+			),
+	};
+}
+const ran = (command: string, output: string, more = {}): [string, any, any] => [
+	"bash",
+	{ command },
+	{ content: text(output), ...more },
+];
+
+test("a finished call folds to its first line once a later step follows, and folded rows close up", () => {
+	const s = session();
+	s.step([ran("ls", "a\nb")]);
+	assert.deepEqual(s.screen(), ["", "✓ $ ls", "a", "b"], "the newest step shows its output");
+	s.step([ran("cat a", "one")]);
+	assert.deepEqual(s.screen(), ["", "✓ $ ls · 2 lines", "", "✓ $ cat a", "one"]);
+	s.step([ran("npm test", "ok")]);
+	assert.deepEqual(s.screen(), ["", "✓ $ ls · 2 lines", "✓ $ cat a · 1 line", "", "✓ $ npm test", "ok"]);
+});
+
+test("a failure, an edit's changed lines and the last step before the reply keep their lines", () => {
+	const s = session();
+	s.step([ran("npm test", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+	s.step([
+		[
+			"edit",
+			{ path: "a.ts", edits: [{ oldText: "a", newText: "b" }] },
+			{ content: text("ok"), details: { diff: "-1 a\n+1 b" } },
+		],
+	]);
+	s.step([ran("npm test", "ok")]);
+	const settled = [
+		"",
+		"✗ $ npm test · exit 1",
+		"Error: boom",
+		"",
+		"✓ edit a.ts · +1 -1",
+		"-1 a",
+		"+1 b",
+		"",
+		"✓ $ npm test",
+		"ok",
+	];
+	assert.deepEqual(s.screen(), settled);
+	handlers.message_start({ message: { role: "user" } });
+	handlers.message_start({ message: { role: "assistant", content: [{ type: "text", text: "Done." }] } });
+	assert.deepEqual(s.screen(), settled, "the next prompt folds nothing above it");
+});
+
+test("calls of one message fold together, and text between two steps keeps their rows apart", () => {
+	const s = session();
+	s.step([ran("ls", "a"), ran("pwd", "/x")]);
+	assert.deepEqual(s.screen(), ["", "✓ $ ls", "a", "", "✓ $ pwd", "/x"], "neither is superseded yet");
+	s.step([ran("cat a", "one")], "Now the file.");
+	s.step([ran("true", "")]);
+	assert.deepEqual(s.screen(), ["", "✓ $ ls · 1 line", "✓ $ pwd · 1 line", "", "✓ $ cat a · 1 line", "", "✓ $ true"]);
+});
+
+test("expanded rows are Pi's rendering, each on its own", () => {
+	const s = session();
+	s.step([ran("ls", "a")]);
+	s.step([ran("pwd", "/x")]);
+	s.step([ran("true", "")]);
+	s.expand();
+	const screen = s.screen();
+	assert.ok(screen.includes("a") && screen.includes("/x"), "expanding shows the folded output again");
+	assert.equal(screen.filter((line) => line.startsWith("$ ")).length, 3);
+});
+
+test("a resumed session folds the rows it draws from its history", () => {
+	const call = (id: string, command: string) => ({ type: "toolCall", id, name: "bash", arguments: { command } });
+	const branch = [
+		{ type: "message", message: { role: "user", content: "go" } },
+		{ type: "message", message: { role: "assistant", content: [call("old-1", "ls")] } },
+		{ type: "message", message: { role: "toolResult", toolCallId: "old-1" } },
+		{ type: "message", message: { role: "assistant", content: [call("old-2", "pwd")] } },
+	];
+	handlers.session_start({}, { sessionManager: { getBranch: () => branch } });
+	const component = new ToolExecutionComponent(
+		"bash",
+		"old-1",
+		{ command: "ls" },
+		{},
+		resolver("bash", () => PI.bash),
+		UI,
+		ROOT,
+	);
+	component.updateResult({ content: text("a\nb"), details: {}, isError: false }, false);
+	assert.deepEqual(
+		component.render(80).map((line: string) => stripVTControlCharacters(line).trim()),
+		["", "✓ $ ls · 2 lines"],
 	);
 });

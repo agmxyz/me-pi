@@ -4,6 +4,11 @@
  *
  * The numbers below were picked by replaying 40 past sessions through Pi's row component and by checking which
  * lines a reader needs: the first output line often carries the answer or a table header, the last ones the result.
+ *
+ * A finished call keeps its output on screen only while it is the newest step. Once the model calls another tool
+ * the row folds to its first line, and folded rows that follow each other close up into one block. Failures, the
+ * changed lines of an edit, and the last step before a reply stay: that step is usually the check the reply
+ * rests on, and folding it later would redraw a screen the reader has already scrolled past.
  */
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -48,6 +53,10 @@ interface Summary {
 	head: string | ((room: number) => string);
 	meta?: string[];
 	body?: string[];
+	/** Lines of output the call returned: a row that shows none of them says how many there were. */
+	count?: number;
+	/** The body is what the call did, not what it printed: it stays when the row folds. */
+	keep?: boolean;
 }
 type Summarize = (args: any, result: Result | undefined, theme: Theme, context: Context) => Summary;
 
@@ -61,6 +70,92 @@ interface RowState {
 	/** When the call started running, and the redraw that keeps its elapsed time current until it settles. */
 	startedAt?: number;
 	clock?: ReturnType<typeof setInterval>;
+	expanded?: boolean;
+}
+
+/** Where a call sits in the transcript. */
+interface Call {
+	id: string;
+	index: number;
+	/** The assistant message that made the call: calls of one message run together and fold together. */
+	turn: number;
+	/** The user prompt the call answers. */
+	run: number;
+	/** Calls with no text between their rows; folded rows of one block close up. */
+	block: number;
+}
+/** What a drawn row tells its neighbours. */
+interface Row {
+	/** True when the row is one folded line, so it can close up with the rows around it. */
+	folded: () => boolean;
+	head: (width: number) => string[];
+}
+/**
+ * The calls of the current session in transcript order, kept from Pi's message events: a row cannot see its
+ * neighbours. A hidden `Thinking...` label between two rows is not text, so it does not start a new block.
+ */
+const transcript = {
+	calls: new Map<string, Call>(),
+	order: [] as Call[],
+	/** Rows by call id. A row can draw before its call is known here: a resumed session draws first. */
+	rows: new Map<string, Row>(),
+	turn: 0,
+	block: 0,
+	run: 0,
+	/** The newest turn with a call, by run. */
+	newest: new Map<number, number>(),
+	textSeen: false,
+};
+function resetTranscript(): void {
+	transcript.calls.clear();
+	transcript.rows.clear();
+	transcript.newest.clear();
+	Object.assign(transcript, { order: [], turn: 0, block: 0, run: 0, textSeen: false });
+}
+function startMessage(message: any): void {
+	if (message?.role === "user") {
+		transcript.run++;
+		transcript.block++;
+	} else if (message?.role === "assistant") {
+		transcript.turn++;
+		transcript.textSeen = false;
+	}
+}
+/** Takes in an assistant message as it stands; called again as the message streams in. */
+function noteMessage(message: any): void {
+	if (message?.role !== "assistant" || !Array.isArray(message.content)) return;
+	for (const block of message.content) {
+		if (block.type === "text" && block.text?.trim() && !transcript.textSeen) {
+			transcript.textSeen = true;
+			transcript.block++;
+		}
+		if (block.type !== "toolCall" || transcript.calls.has(block.id)) continue;
+		const { turn, run } = transcript;
+		const call = { id: block.id, index: transcript.order.length, turn, run, block: transcript.block };
+		transcript.calls.set(block.id, call);
+		transcript.order.push(call);
+		transcript.newest.set(run, turn);
+	}
+}
+/** True once a later step followed the call: a call of a later message, before the next user prompt. */
+function superseded(toolCallId: string): boolean {
+	const call = transcript.calls.get(toolCallId);
+	return call !== undefined && call.turn < (transcript.newest.get(call.run) ?? 0);
+}
+const foldedRow = (call: Call | undefined) => (call && transcript.rows.get(call.id)?.folded() ? call : undefined);
+const closesUp = (call: Call, other: Call | undefined) => other?.block === call.block && foldedRow(other) !== undefined;
+/** A folded row followed by another in its block draws nothing: the last row of the run draws them all. */
+function drawnByNext(toolCallId: string): boolean {
+	const call = foldedRow(transcript.calls.get(toolCallId));
+	return call !== undefined && closesUp(call, transcript.order[call.index + 1]);
+}
+/** The first lines of the folded rows that close up above this one. */
+function runAbove(toolCallId: string, width: number): string[] {
+	const call = foldedRow(transcript.calls.get(toolCallId));
+	const rows: string[] = [];
+	for (let at = (call?.index ?? 0) - 1; call && at >= 0 && closesUp(call, transcript.order[at]); at--)
+		rows.unshift(...(transcript.rows.get(transcript.order[at].id)?.head(width) ?? []));
+	return rows;
 }
 
 function rowState(context: Context): RowState {
@@ -195,7 +290,7 @@ const SUMMARIES: Record<string, Summarize> = {
 			...(hidden > 0 ? [theme.fg("muted", `⋮ ${plural(hidden, "more line")}`)] : []),
 			...shown(tailCount > 0 ? output.slice(-tailCount) : []),
 		];
-		return { head, meta, body };
+		return { head, meta, body, count: output.length };
 	},
 	read(args, result, theme, context) {
 		const head = `${title(theme, "read")} ${filePath(args, theme, context.cwd)}${theme.fg("warning", lineRange(args))}`;
@@ -231,7 +326,7 @@ const SUMMARIES: Record<string, Summarize> = {
 		const body = shown.length > 0 ? renderDiff(shown.join("\n")).split("\n") : [];
 		if (changed.length > shown.length && shown.length > 0)
 			body.push(theme.fg("muted", `… +${plural(changed.length - shown.length, "changed line")}`));
-		return { head, meta, body };
+		return { head, meta, body, keep: true };
 	},
 };
 /** Tools whose failure Pi draws: it shows what the call tried to change. */
@@ -249,8 +344,8 @@ const plainSummary =
 		const kept = context.isError ? FAILED_LINES : output.length <= WHOLE_LINES ? WHOLE_LINES : 0;
 		return {
 			head: `${title(theme, toolName)} ${theme.fg("muted", pairs.join(" "))}`,
-			meta: output.length > kept ? [theme.fg("muted", plural(output.length, "line"))] : [],
 			body: kept > 0 ? output.slice(-kept).map((line) => theme.fg("toolOutput", line)) : [],
+			count: output.length,
 		};
 	};
 
@@ -284,7 +379,12 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 		const pad = " ".repeat(context.outputPad);
 		const sep = theme.fg("dim", " · ");
 		const running = elapsed(state);
-		const facts = [...(summary.meta ?? []), ...(running ? [theme.fg("muted", running)] : [])];
+		const unseen = summary.body?.length ? 0 : (summary.count ?? 0);
+		const facts = [
+			...(unseen > 0 ? [theme.fg("muted", plural(unseen, "line"))] : []),
+			...(summary.meta ?? []),
+			...(running ? [theme.fg("muted", running)] : []),
+		];
 		const meta = facts.join(sep);
 		const room = Math.max(8, width - context.outputPad * 2 - 2 - (meta ? visibleWidth(meta) + 3 : 0));
 		const head = typeof summary.head === "function" ? summary.head(room) : truncateToWidth(summary.head, room, "…");
@@ -348,10 +448,17 @@ function compactRenderers(
 	const framed = pi?.renderShell !== "self";
 	const showsPi = (context: Context) => context.expanded || (context.isError && PI_DRAWS_FAILURE.has(toolName));
 	const fallback = summarize ?? plainSummary(toolName);
+	/** The row's summary: without its output once a later step followed a call that succeeded. */
+	const summary = (args: any, state: RowState, theme: Theme, context: Context): Summary => {
+		const full = fallback(args, state.result, theme, context);
+		const folds = state.result && !state.failed && !full.keep && superseded(context.toolCallId);
+		return folds ? { ...full, body: [] } : full;
+	};
 	return {
 		renderShell: "self",
 		renderCall(args, theme, context) {
 			const state = rowState(context);
+			state.expanded = context.expanded;
 			keepTime(state, context);
 			state.piCall = pi?.renderCall?.(args, theme, { ...context, lastComponent: state.piCall });
 			if (showsPi(context)) {
@@ -366,15 +473,26 @@ function compactRenderers(
 				return framed ? piShell(full, theme, context, "top") : full;
 			}
 			if (!summarize && state.piCall) return glyphed(state.piCall, state, theme, context);
-			return lines((width) =>
-				headLine(fallback(args, state.result, theme, context), state, theme, context).render(width),
-			);
+			const head = (width: number) =>
+				headLine(summary(args, state, theme, context), state, theme, context).render(width);
+			const id = context.toolCallId;
+			transcript.rows.set(id, {
+				head,
+				folded: () =>
+					!state.expanded &&
+					state.result !== undefined &&
+					!state.result.content?.some((block) => block.type === "image") &&
+					!summary(args, state, theme, context).body?.length &&
+					superseded(id),
+			});
+			return lines((width) => (drawnByNext(id) ? [] : [...runAbove(id, width), ...head(width)]));
 		},
 		renderResult(result, options, theme, context) {
 			const state = rowState(context);
 			state.result = options.isPartial ? undefined : result;
 			state.failed = context.isError;
 			state.durationMs = context.durationMs;
+			state.expanded = context.expanded;
 			keepTime(state, context);
 			state.piResult = pi?.renderResult?.(result, options, theme, { ...context, lastComponent: state.piResult });
 			if (showsPi(context)) {
@@ -394,13 +512,27 @@ function compactRenderers(
 			if (state.piResult && (options.isPartial || !summarize))
 				return indented(state.piResult, state, theme, context);
 			return lines((width) =>
-				indented(fallback(context.args, result, theme, context).body ?? [], state, theme, context).render(width),
+				indented(summary(context.args, state, theme, context).body ?? [], state, theme, context).render(width),
 			);
 		},
 	};
 }
 
 export default function (pi: ExtensionAPI) {
+	const reload = (_event: unknown, ctx: { sessionManager: { getBranch(): any[] } }) => {
+		resetTranscript();
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type !== "message") continue;
+			startMessage(entry.message);
+			noteMessage(entry.message);
+		}
+	};
+	pi.on("session_start", reload);
+	pi.on("session_tree", reload);
+	pi.on("session_compact", reload);
+	pi.on("message_start", (event) => startMessage(event.message));
+	pi.on("message_update", (event) => noteMessage(event.message));
+	pi.on("message_end", (event) => noteMessage(event.message));
 	pi.registerToolRenderer((toolName, next) => {
 		const renderers = next();
 		// A tool that draws its own shell keeps it, unless its row has a summary here.
