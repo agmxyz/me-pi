@@ -27,6 +27,7 @@ Pi loads this checkout as a local path, so it runs whichever branch and working 
 2. For the `claude-code` provider (a Claude subscription), run `pi install https://github.com/earendil-works/pi-claude-code`.
 3. Optionally create `~/.pi/agent/delegate.json` to choose worker models; without it, workers use the session's model. See [Configure model pools](../packages/pi-workers/docs/delegate.md#configure-model-pools).
 4. Verify: run `/reload`, then `/delegate status` resolves the pools, `/guard` reports `guard on`, and the skills list shows `implement-me-pi`, `implement-spec-me-pi`, `ticket-readiness`, and `batch-chief` (plus `pi-live-test` when Pi runs inside this checkout).
+5. Optionally select the `me` theme under **Theme** in `/settings`; `install.sh` leaves your theme setting unchanged.
 
 ## Undo
 

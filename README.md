@@ -36,7 +36,9 @@ To install any of them, add this repo to `packages` in `~/.pi/agent/settings.jso
 { "packages": [{ "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/steps.ts", "extensions/minimal-footer.ts"] }] }
 ```
 
-Without a filter, `pi install git:github.com/agmxyz/me-pi` loads both plus the pi-workers extensions.
+Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all three plus the pi-workers extensions.
+
+The package also carries the [`me`](themes/me.json) theme: Pi's dark theme with tool output, facts, hints, and the `Thinking...` label each a step dimmer than the last, quieter borders, and headings in blue so yellow is left for warnings. Select it under **Theme** in `/settings`.
 
 ## Setup
 
