@@ -53,6 +53,9 @@ interface RowState {
 	result?: Result;
 	failed?: boolean;
 	durationMs?: number;
+	/** When the call started running, and the redraw that keeps its elapsed time current until it settles. */
+	startedAt?: number;
+	clock?: ReturnType<typeof setInterval>;
 }
 
 function rowState(context: Context): RowState {
@@ -247,28 +250,57 @@ function glyph(state: RowState, theme: Theme): string {
 	return state.failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
 }
 
-/** The first line of a row: status glyph, what ran, then the facts about its result. */
+/** Starts the row's clock when the call starts running, and stops it once the call has its final result. */
+function keepTime(state: RowState, context: Context): void {
+	if (state.result) {
+		clearInterval(state.clock);
+		state.clock = undefined;
+	} else if (context.executionStarted && state.startedAt === undefined) {
+		state.startedAt = Date.now();
+		// Unreferenced: a call that never settles must not keep the process alive.
+		state.clock = setInterval(() => context.invalidate(), 1000).unref();
+	}
+}
+/** Whole seconds a running call has taken, from one second on: `12s`, then `1m 5s`. */
+function elapsed(state: RowState): string | undefined {
+	if (state.result || state.startedAt === undefined) return undefined;
+	const seconds = Math.floor((Date.now() - state.startedAt) / 1000);
+	if (seconds < 1) return undefined;
+	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+/** The first line of a row: status glyph, what ran, then the facts about its result or how long it has run. */
 function headLine(summary: Summary, state: RowState, theme: Theme, context: Context): Component {
 	return lines((width) => {
 		const pad = " ".repeat(context.outputPad);
 		const sep = theme.fg("dim", " · ");
-		const meta = summary.meta?.length ? summary.meta.join(sep) : "";
+		const running = elapsed(state);
+		const facts = [...(summary.meta ?? []), ...(running ? [theme.fg("muted", running)] : [])];
+		const meta = facts.join(sep);
 		const room = Math.max(8, width - context.outputPad * 2 - 2 - (meta ? visibleWidth(meta) + 3 : 0));
 		const head = typeof summary.head === "function" ? summary.head(room) : truncateToWidth(summary.head, room, "…");
 		return [`${pad}${glyph(state, theme)} ${head}${meta ? sep : ""}${meta}`];
 	});
 }
+/** A line cut to one row, or to two when it reads like an error: the message is usually at its end. */
+function fitted(line: string, room: number): string[] {
+	if (visibleWidth(line) <= room || !ERROR_LIKE.test(stripVTControlCharacters(line)))
+		return [truncateToWidth(line, room, "…")];
+	const [first, ...rest] = wrapTextWithAnsi(line, room);
+	return [first, truncateToWidth(rest.join(" "), room, "…")];
+}
 /**
  * A component's lines under the head line, behind a bar in the glyph's column: red when the call failed.
- * A failure's lines wrap, so no part of an error is cut off.
+ * A failure's lines wrap, so no part of an error is cut off. The head line shows a running call's time, so Pi's
+ * own `Elapsed` line is dropped.
  */
 function indented(child: Component | string[], state: RowState, theme: Theme, context: Context): Component {
 	return lines((width) => {
 		const indent = `${" ".repeat(context.outputPad)}${theme.fg(state.failed ? "error" : "dim", "│")} `;
 		const room = Math.max(8, width - visibleWidth(indent) - context.outputPad);
 		const rows = Array.isArray(child)
-			? child.flatMap((line) => (state.failed ? wrapTextWithAnsi(line, room) : [truncateToWidth(line, room, "…")]))
-			: child.render(room).filter((line) => stripVTControlCharacters(line).trim());
+			? child.flatMap((line) => (state.failed ? wrapTextWithAnsi(line, room) : fitted(line, room)))
+			: child.render(room).filter((line) => !/^(Elapsed \d.*)?$/.test(stripVTControlCharacters(line).trim()));
 		return rows.map((line) => indent + line);
 	});
 }
@@ -311,6 +343,7 @@ function compactRenderers(
 		renderShell: "self",
 		renderCall(args, theme, context) {
 			const state = rowState(context);
+			keepTime(state, context);
 			state.piCall = pi?.renderCall?.(args, theme, { ...context, lastComponent: state.piCall });
 			if (showsPi(context)) {
 				const full =
@@ -333,6 +366,7 @@ function compactRenderers(
 			state.result = options.isPartial ? undefined : result;
 			state.failed = context.isError;
 			state.durationMs = context.durationMs;
+			keepTime(state, context);
 			state.piResult = pi?.renderResult?.(result, options, theme, { ...context, lastComponent: state.piResult });
 			if (showsPi(context)) {
 				const full =

@@ -192,6 +192,54 @@ test("colour marks what needs attention: error lines of a failed call, a slow ru
 	assert.match(edit[1], /\x1b\[7m256m/, "the changed word is inverted");
 });
 
+test("a running call shows whole seconds on its first line, in place of Pi's Elapsed line", (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval"] });
+	let redraws = 0;
+	const ui = { requestRender: () => redraws++ } as any;
+	const component = new ToolExecutionComponent(
+		"bash",
+		"c",
+		{ command: "make" },
+		{},
+		resolver("bash", () => PI.bash),
+		ui,
+		ROOT,
+	);
+	const shown = () =>
+		component
+			.render(80)
+			.map((line: string) =>
+				stripVTControlCharacters(line)
+					.replace(/^\s*│ ?/, "")
+					.trim(),
+			)
+			.filter(Boolean);
+	component.markExecutionStarted();
+	component.setArgsComplete();
+	assert.deepEqual(shown(), ["● $ make"]);
+	t.mock.timers.tick(12_000);
+	assert.ok(redraws >= 12, "the row asks for a redraw every second");
+	assert.deepEqual(shown(), ["● $ make · 12s"]);
+	component.updateResult({ content: text("step 1"), details: {}, isError: false }, true);
+	t.mock.timers.tick(60_000);
+	assert.deepEqual(shown(), ["● $ make · 1m 12s", "step 1"]);
+	component.updateResult({ content: text("step 1"), details: {}, isError: false, durationMs: 72_300 }, false);
+	assert.deepEqual(shown(), ["✓ $ make · 1m 12s", "step 1"]);
+	const settled = redraws;
+	t.mock.timers.tick(5_000);
+	assert.equal(redraws, settled, "a settled row stops redrawing");
+});
+
+test("an output line too long for the row is cut, unless it reads like an error: then it gets a second row", () => {
+	const plain = row("bash", { command: "cat log" }, { content: text(`ok ${"x".repeat(200)}`) });
+	assert.equal(plain.length, 2);
+	assert.ok(plain[1].endsWith("…"));
+	const output = `2026-11-19T09:36:02Z ${"step ".repeat(12)} ReferenceError: TOUR is not defined ${"y".repeat(200)}`;
+	const error = row("bash", { command: "cat log" }, { content: text(output) });
+	assert.equal(error.length, 3);
+	assert.ok(error[2].includes("ReferenceError: TOUR is not defined") && error[2].endsWith("…"));
+});
+
 test("a read shows its path, range and line count, and its error when it failed", () => {
 	const path = `${ROOT}/src/a.ts`;
 	assert.deepEqual(row("read", { path }, { content: text(numbered(40)) }), ["✓ read src/a.ts · 40 lines"]);
