@@ -395,6 +395,14 @@ test("a call made with one that shows at once shows with it, so no line is added
 		["", "✓ $ ls · 1 line", "✗ $ false · exit 1", "✓ $ make · 1 line"],
 		"a call that changes nothing keeps the line it was drawn with",
 	);
+	// `plan` draws its own row, and draws it as soon as it is called.
+	const own = session();
+	own.step([ran("ls", "a"), ["plan", {}, { content: text("ok") }]]);
+	const drawn = ["", "✓ $ ls · 1 line", "", "✓ plan 2/5", "step three"];
+	assert.deepEqual(own.screen(), drawn, "a call made before a tool that draws its own row shows with it");
+	own.step([ran("make", "ok")]);
+	own.step([ran("true", "")]);
+	assert.deepEqual(own.screen(), [...drawn, "", "✓ $ make · 1 line"], "and keeps its line");
 });
 
 test("a command names its directory only when it differs from the command row above", () => {
@@ -647,6 +655,40 @@ test("a failed command folds once the same command passes on a later run", () =>
 		],
 		"the same command with other plumbing or behind a runner settles it, and that passing run keeps its line",
 	);
+});
+
+test("a failed command that has scrolled away keeps its output when the command passes", (t) => {
+	const rows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+	Object.defineProperty(process.stdout, "rows", { value: 28, configurable: true });
+	t.after(() => {
+		if (rows) Object.defineProperty(process.stdout, "rows", rows);
+		else delete (process.stdout as any).rows;
+	});
+	const failure = "Error: boom\n\nCommand exited with code 1";
+	const near = session();
+	near.step([ran("make", failure, { isError: true })]);
+	near.step([ran("touch a", "")]);
+	near.step([ran("make", "ok")]);
+	near.step([ran("true", "")]);
+	assert.deepEqual(
+		near.screen(),
+		["", "✗ $ make · exit 1 · passed later", "✓ $ touch a", "✓ $ make · 1 line"],
+		"still on screen, it shrinks",
+	);
+	const far = session();
+	far.step([ran("make", failure, { isError: true })]);
+	for (let i = 0; i < 30; i++) far.step([ran(`touch ${i}`, "")]);
+	const before = far.screen();
+	far.step([ran("make", "ok")]);
+	far.step([ran("true", "")]);
+	assert.deepEqual(far.screen().slice(0, before.length), before, "no line above the bottom of the screen changed");
+	assert.equal(far.screen().at(-1), "✓ $ make · 1 line", "the passing run shows below");
+	const spoken = session();
+	spoken.step([ran("make", failure, { isError: true })]);
+	spoken.reply(Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\n"));
+	spoken.step([ran("make", "ok")]);
+	spoken.step([ran("true", "")]);
+	assert.ok(spoken.screen().includes("Error: boom"), "text below the row counts toward the screen as well");
 });
 
 /** A stand-in for Pi's widget slot: `lines()` is what the slot shows at 60 columns. */

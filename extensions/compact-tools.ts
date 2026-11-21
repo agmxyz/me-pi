@@ -77,6 +77,9 @@ interface RowState {
 	summary?: Summary;
 	headLine?: { key: string; rows: string[] };
 	bodyLines?: { key: string; rows: string[] };
+	/** How many lines the row's two parts drew last. */
+	callRows?: number;
+	resultRows?: number;
 }
 
 /** Where a call sits in the transcript. */
@@ -89,6 +92,11 @@ interface Call {
 	run: number;
 	/** Calls with no text between their rows; folded rows of one block close up. */
 	block: number;
+	name: string;
+	/** An estimate, never too low, of the lines of text the session had before the call. */
+	textAbove: number;
+	/** The call was in the session when it was loaded, so its row was first drawn with all that followed it. */
+	loaded: boolean;
 }
 /** The working directory, as a row names it. */
 const HERE = ".";
@@ -105,6 +113,8 @@ interface Row {
 	place: () => string;
 	/** True for a finished call whose row does not wait for the next step: a failure, a write, an edit. */
 	atOnce: () => boolean;
+	/** The lines the row takes on screen, the blank one above it included; unknown while Pi draws it. */
+	height: () => number;
 }
 /**
  * The calls of the current session in transcript order, kept from Pi's message events: a row cannot see its
@@ -128,15 +138,33 @@ const transcript = {
 	/** Turns whose calls were followed by text: their rows were drawn with a line each, and keep it. */
 	spoken: new Set<number>(),
 	textSeen: false,
+	/** Estimated lines of text before the current message, and up to where that message stands. */
+	textBefore: 0,
+	textSoFar: 0,
+	/** Failed calls whose command passed later, and whether their row gave up its output for it. */
+	shrunk: new Map<string, boolean>(),
 };
 function resetTranscript(): void {
 	transcript.calls.clear();
 	transcript.newest.clear();
 	transcript.spoken.clear();
+	transcript.shrunk.clear();
 	Object.assign(transcript, { order: [], turn: 0, block: 0, run: 0, settled: 0, textSeen: false });
+	Object.assign(transcript, { textBefore: 0, textSoFar: 0 });
 }
+/** Columns a line of text is taken to wrap at when its height is estimated: narrower than any real pane. */
+const NARROW = 40;
+/** The lines a block of text may take on screen: two for each line of source, so a table's rules are covered. */
+const textHeight = (text: unknown) =>
+	typeof text === "string" && text.trim()
+		? text.split("\n").reduce((rows, line) => rows + 2 + Math.floor(line.length / NARROW), 2)
+		: 0;
 function startMessage(message: any): void {
+	transcript.textBefore = transcript.textSoFar;
 	if (message?.role === "user") {
+		const said = Array.isArray(message.content) ? message.content.map((block: any) => block.text) : [message.content];
+		transcript.textBefore += said.reduce((rows: number, text: unknown) => rows + textHeight(text), 0);
+		transcript.textSoFar = transcript.textBefore;
 		settle(transcript.turn);
 		transcript.run++;
 		transcript.block++;
@@ -146,10 +174,13 @@ function startMessage(message: any): void {
 	}
 }
 /** Takes in an assistant message as it stands; called again as the message streams in. */
-function noteMessage(message: any): void {
+function noteMessage(message: any, loaded = false): void {
 	if (message?.role !== "assistant" || !Array.isArray(message.content)) return;
+	let textAbove = transcript.textBefore;
 	for (const block of message.content) {
 		const text = block.type === "text" && block.text?.trim();
+		textAbove += textHeight(block.type === "text" ? block.text : block.thinking);
+		transcript.textSoFar = textAbove;
 		// The message's first text or call shows what became of the step before it. After text the step shows
 		// with its output, and folds if a call follows after all.
 		if (text || block.type === "toolCall") settle(transcript.turn - 1);
@@ -161,7 +192,16 @@ function noteMessage(message: any): void {
 		}
 		if (block.type !== "toolCall" || transcript.calls.has(block.id)) continue;
 		const { turn, run } = transcript;
-		const call = { id: block.id, index: transcript.order.length, turn, run, block: transcript.block };
+		const call = {
+			id: block.id,
+			index: transcript.order.length,
+			turn,
+			run,
+			block: transcript.block,
+			name: block.name,
+			textAbove,
+			loaded,
+		};
 		transcript.calls.set(block.id, call);
 		transcript.order.push(call);
 		transcript.newest.set(run, turn);
@@ -180,11 +220,15 @@ function unsettled(toolCallId: string): boolean {
  * runs, and keeps its line: a line added above a drawn row moves it, and Pi repaints the whole screen when
  * that row has scrolled away.
  */
+const drawsOwnRow = new Set<string>();
 function overtaken(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	if (!call) return false;
-	for (let at = call.index + 1; transcript.order[at]?.turn === call.turn; at++)
-		if (transcript.rows.get(transcript.order[at].id)?.atOnce()) return true;
+	for (let at = call.index + 1; transcript.order[at]?.turn === call.turn; at++) {
+		const later = transcript.order[at];
+		// A tool that draws its own row draws it as soon as it is called.
+		if (drawsOwnRow.has(later.name) || transcript.rows.get(later.id)?.atOnce()) return true;
+	}
 	return false;
 }
 /**
@@ -196,13 +240,36 @@ function superseded(toolCallId: string): boolean {
 	if (!call || transcript.spoken.has(call.turn)) return false;
 	return call.turn < (transcript.newest.get(call.run) ?? 0);
 }
-/** True for a failed command that a later call ran again and passed. */
+/** Lines below the transcript that the screen also holds: the status line, the live area, the editor, the footer. */
+const BELOW_TRANSCRIPT = 14;
+/**
+ * True when the call's row and all that follows it surely fit on the screen, so the row can change without
+ * Pi repainting. Text is estimated, and a row of unknown height counts as too far.
+ */
+function onScreen(call: Call): boolean {
+	let rows = transcript.textSoFar - call.textAbove + BELOW_TRANSCRIPT;
+	for (let at = call.index; at < transcript.order.length; at++)
+		rows += transcript.rows.get(transcript.order[at].id)?.height() ?? Number.POSITIVE_INFINITY;
+	// Without a terminal there is no screen to repaint.
+	return rows <= (process.stdout.rows ?? Number.POSITIVE_INFINITY);
+}
+/**
+ * True for a failed command that a later call ran again and passed, when its row gives up its output for
+ * that. It does when it is still on screen as the pass comes in, or when the session was loaded with the
+ * pass in it; a row that has scrolled away stays as it was drawn. Decided once.
+ */
 function passedLater(toolCallId: string): boolean {
+	const decided = transcript.shrunk.get(toolCallId);
+	if (decided !== undefined) return decided;
 	const call = transcript.calls.get(toolCallId);
 	const command = transcript.rows.get(toolCallId)?.command;
 	if (!call || command === undefined) return false;
-	for (const id of transcript.passed.get(command) ?? [])
-		if ((transcript.calls.get(id)?.index ?? -1) > call.index) return true;
+	for (const id of transcript.passed.get(command) ?? []) {
+		const pass = transcript.calls.get(id);
+		if (!pass || pass.index <= call.index) continue;
+		transcript.shrunk.set(toolCallId, pass.loaded || onScreen(call));
+		return transcript.shrunk.get(toolCallId) === true;
+	}
 	return false;
 }
 /** True for a command an earlier call ran and failed: this run of it is the one that shows how that ended. */
@@ -311,7 +378,6 @@ const AREA = "compact-tools";
 /** The live area's height. It does not change while the agent works, so the editor below it stays in place. */
 const AREA_LINES = 3;
 /** Tools whose rows this module does not hold back: they draw their own, so the live area leaves them out. */
-const drawsOwnRow = new Set<string>();
 const newRun = (): Run => ({
 	startedAt: Date.now(),
 	calls: 0,
@@ -829,15 +895,22 @@ function compactRenderers(
 				atOnce: () =>
 					state.result !== undefined &&
 					(state.failed === true || summary(args, state, theme, context).keep === true),
+				height: () =>
+					showsPi(context) ? Number.POSITIVE_INFINITY : (state.callRows ?? 0) + (state.resultRows ?? 0) + 1,
 			});
 			const tally = (count: number) =>
 				`${" ".repeat(context.outputPad)}${theme.fg("dim", `⋮ ${plural(count, "call")}, nothing changed`)}`;
-			return lines((width) => {
+			const call = (width: number) => {
 				if (held(args, state, theme, context)) return [];
 				const call = foldedRow(transcript.calls.get(id));
 				if (!call) return head(width);
 				// A folded row followed by another in its block draws nothing: the last row of the run draws them all.
 				return closesUp(call, transcript.order[call.index + 1]) ? [] : foldedRun(call, width, tally);
+			};
+			return lines((width) => {
+				const drawn = call(width);
+				state.callRows = drawn.length;
+				return drawn;
 			});
 		},
 		renderResult(result, options, theme, context) {
@@ -871,9 +944,13 @@ function compactRenderers(
 				// A running row that shows beside a drawn one is one line: its output would move the rows below it.
 				const hidden = () =>
 					held(context.args, state, theme, context) || (summarize !== undefined && overtaken(context.toolCallId));
-				return lines((width) => (hidden() ? [] : partial.render(width)));
+				return lines((width) => {
+					const drawn = hidden() ? [] : partial.render(width);
+					state.resultRows = drawn.length;
+					return drawn;
+				});
 			}
-			return lines((width) => {
+			const output = (width: number) => {
 				if (held(context.args, state, theme, context)) return [];
 				const body = summary(context.args, state, theme, context).body ?? [];
 				if (body.length === 0) return [];
@@ -881,6 +958,11 @@ function compactRenderers(
 				if (state.bodyLines?.key !== key)
 					state.bodyLines = { key, rows: indented(body, state, theme, context).render(width) };
 				return state.bodyLines.rows;
+			};
+			return lines((width) => {
+				const drawn = output(width);
+				state.resultRows = drawn.length;
+				return drawn;
 			});
 		},
 	};
@@ -892,7 +974,7 @@ export default function (pi: ExtensionAPI) {
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "message") continue;
 			startMessage(entry.message);
-			noteMessage(entry.message);
+			noteMessage(entry.message, true);
 		}
 		// With no run under way, nothing more follows the last step.
 		if (ctx.isIdle()) settle(transcript.turn);
