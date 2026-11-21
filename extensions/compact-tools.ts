@@ -935,19 +935,42 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 		const pad = " ".repeat(context.outputPad);
 		const sep = theme.fg("dim", " · ");
 		const running = elapsed(state);
+		// A directory takes at most half the line, and keeps its end: the folder the command ran in.
+		const placeRoom = Math.max(8, Math.floor((width - context.outputPad * 2 - 2) / 2) - 3);
 		const unseen = summary.body?.length ? 0 : (summary.count ?? 0);
 		const facts = [
 			...(unseen > 0 ? [theme.fg("muted", plural(unseen, "line"))] : []),
-			...(summary.place ? [theme.fg("muted", `in ${summary.place}`)] : []),
+			...(summary.place ? [theme.fg("muted", `in ${startCut(summary.place, placeRoom)}`)] : []),
 			...(summary.meta ?? []),
 			...(running ? [theme.fg("muted", running)] : []),
 		];
 		const meta = facts.join(sep);
 		const room = Math.max(8, width - context.outputPad * 2 - 2 - (meta ? visibleWidth(meta) + 3 : 0));
 		const head = typeof summary.head === "function" ? summary.head(room) : truncateToWidth(summary.head, room, "…");
-		const line = `${pad}${glyph(state, theme, summary.unproven)} ${head}${meta ? sep : ""}${meta}`;
+		// The head keeps at least its minimum room, so facts too wide for the rest are cut at the line's end.
+		const line = truncateToWidth(
+			`${pad}${glyph(state, theme, summary.unproven)} ${head}${meta ? sep : ""}${meta}`,
+			width,
+			"…",
+		);
 		return [summary.quiet ? theme.fg("dim", stripVTControlCharacters(line)) : line];
 	});
+}
+/** A path cut at its start to fit: it keeps its last whole folders, or the end of the last one when that alone is too long. */
+function startCut(text: string, room: number): string {
+	if (visibleWidth(text) <= room) return text;
+	const folders = text.split("/");
+	let kept = "";
+	for (let at = folders.length - 1; at > 0; at--) {
+		const next = `/${folders[at]}${kept}`;
+		if (visibleWidth(next) > room - 1) break;
+		kept = next;
+	}
+	if (kept) return `…${kept}`;
+	const chars = [...text];
+	let from = chars.length;
+	while (from > 0 && visibleWidth(chars.slice(from - 1).join("")) <= room - 1) from--;
+	return `…${chars.slice(from).join("")}`;
 }
 /** A failed call's line, wrapped: a long one keeps its start, where the message is. */
 function wrapped(line: string, room: number): string[] {

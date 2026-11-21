@@ -23,6 +23,7 @@ const {
 	ToolExecutionComponent,
 } = await import("@earendil-works/pi-coding-agent");
 const { default: registerCompactTools } = await import("../extensions/compact-tools.ts");
+const { visibleWidth } = await import("@earendil-works/pi-tui");
 
 initTheme("dark", false);
 let resolver: any;
@@ -50,7 +51,12 @@ const text = (value: string) => [{ type: "text", text: value }];
 const UI = { requestRender() {} } as any;
 
 /** A tool row as the transcript draws it, through Pi's own row component: non-empty lines. */
-function rawRow(name: string, args: any, result?: any, { expanded = false, partial = false } = {}): string[] {
+function rawRow(
+	name: string,
+	args: any,
+	result?: any,
+	{ expanded = false, partial = false, width = 80 } = {},
+): string[] {
 	const component = new ToolExecutionComponent(
 		name,
 		"call-1",
@@ -65,7 +71,7 @@ function rawRow(name: string, args: any, result?: any, { expanded = false, parti
 	if (result) component.updateResult({ details: {}, isError: false, ...result }, partial);
 	component.setExpanded(expanded);
 	const lines = component
-		.render(80)
+		.render(width)
 		.map((line: string) => stripVTControlCharacters(line).trimEnd())
 		.filter((line: string) => line.trim());
 	// Pi redraws a running row every second; settling it stops that timer so the test process can exit.
@@ -121,6 +127,18 @@ test("a leading cd is taken off the command and named only when it leaves the wo
 	assert.equal(head(`cd "${ROOT}/web"\nnpm test`), "✓ $ npm test · in web");
 	assert.equal(head("cd /srv/app; ls"), "✓ $ ls · in /srv/app");
 	assert.equal(head("cd /srv/app"), "✓ $ cd /srv/app");
+	const narrow = rawRow("bash", { command: `cd /srv/${"deep/".repeat(20)}pi-tui/dist && rg -n foo` }, undefined, {
+		width: 51,
+	});
+	assert.ok(
+		narrow.every((line) => visibleWidth(line) <= 51),
+		"a directory too long for the terminal is cut, not drawn past its edge",
+	);
+	assert.deepEqual(
+		narrow.map((line) => line.trim()),
+		["● $ rg -n foo · in …/deep/pi-tui/dist"],
+		"a long directory keeps its end, and the command keeps its room",
+	);
 	assert.equal(head("set -euo pipefail\ncd /srv/app\nls"), "✓ $ ls · in /srv/app");
 });
 
