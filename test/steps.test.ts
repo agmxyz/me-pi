@@ -99,6 +99,16 @@ test("a running plan shows one line: the current step, its place in the plan, an
 	assert.equal(s.show().split("\n")[0], "● 1/3 A · 1m 27s");
 });
 
+test("a plan marked finished shows its last step as current until the agent stops", async () => {
+	const s = setup();
+	s.prompt();
+	await s.plan({ steps: ["A", "B"] });
+	await s.plan({ done: 2 });
+	assert.equal(s.show(), "● 2/2 B · 0s", "the call that came with the mark may still run");
+	s.end();
+	assert.equal(s.show(), "✓ 2/2 steps");
+});
+
 test("the timer restarts when the step changes, not on a repeated tick", async () => {
 	const s = setup();
 	s.prompt();
@@ -299,7 +309,19 @@ test("a plan call that starts a step leaves its heading in the transcript; any o
 	assert.deepEqual(await drawn({ steps: ["Find it", "Fix it", "Check it"] }), [" ▸ 1/3 Find it"]);
 	assert.deepEqual(await drawn({ done: 0 }), [], "a call that starts no step has no row");
 	assert.deepEqual(await drawn({ done: 2 }), [" ▸ 3/3 Check it"], "a skipped step has no heading");
-	assert.deepEqual(await drawn({ done: 3 }), [], "finishing the plan has no row");
+	assert.deepEqual(await drawn({ done: 3 }), [], "finishing the plan from its last step has no row");
+	await s.plan({ steps: ["Find it", "Fix it", "Check it"] });
+	await s.plan({ done: 1 });
+	assert.deepEqual(
+		await drawn({ done: 3 }),
+		[" ▸ 3/3 Check it"],
+		"finishing it from an earlier step came with the last step's work, so that step gets its heading",
+	);
+	assert.deepEqual(
+		await drawn({ steps: ["Only"], done: 1 }),
+		[" ▸ 1/1 Only"],
+		"also for steps set and finished at once",
+	);
 	const long = await drawn({ steps: ["x".repeat(100), "B"] });
 	const cut = stripVTControlCharacters(long[0]);
 	assert.ok(cut.length === 80 && cut.endsWith("…"), "a long step is cut to the width");

@@ -10,8 +10,8 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 type Plan = { steps: string[]; done: number };
-/** What a `plan` call leaves in the session: the plan after it, and whether the call started a step. */
-type Called = Plan & { started?: boolean };
+/** What a `plan` call leaves in the session: the plan after it, and the step whose heading the call draws. */
+type Called = Plan & { heading?: number };
 const WIDGET = "steps";
 const TOOL = "plan";
 
@@ -52,11 +52,22 @@ function writeEnabled(enabled: boolean) {
 const textOf = (result: { content: { type: string; text?: string }[] }) =>
 	result.content.map((part) => (part.type === "text" ? part.text : "")).join(" ");
 
-/** The transcript's heading for the step a `plan` call started: `▸ 2/5 Wire the parser`. Nothing otherwise. */
+/**
+ * The step a `plan` call draws a heading for: the one it started. A call that finishes the plan from before
+ * its last step came with that step's work, which has no heading yet, so it draws the last step's.
+ */
+function headed(plan: Plan, before: number, started: boolean): number | undefined {
+	const last = plan.steps.length - 1;
+	if (plan.done <= last) return started ? plan.done : undefined;
+	return started && before < last ? last : undefined;
+}
+
+/** The transcript's heading for that step: `▸ 2/5 Wire the parser`. Nothing for a call that draws none. */
 function heading(called: Called | undefined, theme: Theme, pad: number): string[] {
-	if (!called?.started || called.done >= called.steps.length) return [];
-	const count = theme.fg("dim", `${called.done + 1}/${called.steps.length}`);
-	return [`${" ".repeat(pad)}${theme.fg("accent", "▸")} ${count} ${theme.bold(called.steps[called.done])}`];
+	const step = called?.heading;
+	if (step === undefined || !called?.steps[step]) return [];
+	const count = theme.fg("dim", `${step + 1}/${called.steps.length}`);
+	return [`${" ".repeat(pad)}${theme.fg("accent", "▸")} ${count} ${theme.bold(called.steps[step])}`];
 }
 
 const elapsed = (ms: number) => {
@@ -98,12 +109,16 @@ export default function (pi: ExtensionAPI) {
 					invalidate() {},
 					render(width: number): string[] {
 						const line = (s: string) => truncateToWidth(s, width, theme.fg("dim", "…"));
-						if (done >= steps.length) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
+						// The model marks the plan finished in the message of its last call, which may still run: the
+						// last step shows as the current one until the agent stops.
+						const finished = done >= steps.length;
+						if (finished && !running) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
 						if (!running) return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${steps[done]}`))];
 						// The transcript has a heading for each step started; here is only where the work stands.
+						const current = Math.min(done, steps.length - 1);
 						const timer = theme.fg("dim", ` · ${elapsed(Date.now() - stepStartedAt)}`);
-						const count = theme.fg("dim", `${done + 1}/${steps.length}`);
-						return [line(`${theme.fg("accent", "●")} ${count} ${steps[done]}${timer}`)];
+						const count = theme.fg("dim", `${current + 1}/${steps.length}`);
+						return [line(`${theme.fg("accent", "●")} ${count} ${steps[current]}${timer}`)];
 					},
 				};
 			},
@@ -154,7 +169,10 @@ export default function (pi: ExtensionAPI) {
 				const started = pickedUp || params.steps !== undefined || plan.done !== before;
 				if (started) stepStartedAt = Date.now();
 				render();
-				return { content: [{ type: "text", text: "ok" }], details: { ...plan, started } satisfies Called };
+				// New steps have no step before them: the count they replace says nothing about them.
+				const from = params.steps ? -1 : before;
+				const details: Called = { ...plan, heading: headed(plan, from, started) };
+				return { content: [{ type: "text", text: "ok" }], details };
 			},
 			// A call that starts a step leaves the step's heading in the transcript, so the rows under it say what
 			// they were for. The heading is drawn once and never changes; any other call has no row, and a failed
