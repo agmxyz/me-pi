@@ -143,15 +143,16 @@ const transcript = {
 	textSoFar: 0,
 	/** Failed calls whose command passed later, and whether their row gave up its output for it. */
 	shrunk: new Map<string, boolean>(),
+	/** The newest turn whose message is complete: every call of it is known. */
+	closed: 0,
 };
 function resetTranscript(): void {
 	transcript.calls.clear();
 	transcript.newest.clear();
 	transcript.spoken.clear();
 	transcript.shrunk.clear();
-	ownLines.clear();
 	Object.assign(transcript, { order: [], turn: 0, block: 0, run: 0, settled: 0, textSeen: false });
-	Object.assign(transcript, { textBefore: 0, textSoFar: 0 });
+	Object.assign(transcript, { textBefore: 0, textSoFar: 0, closed: 0 });
 }
 /** Columns a line of text is taken to wrap at when its height is estimated: narrower than any real pane. */
 const NARROW = 40;
@@ -216,25 +217,29 @@ function unsettled(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	return call !== undefined && call.turn > transcript.settled;
 }
-/**
- * True when a later call of the same message already shows. The call then shows too, also while it still
- * runs, and keeps its line: a line added above a drawn row moves it, and Pi repaints the whole screen when
- * that row has scrolled away.
- */
+/** Tools whose row has a summary here or Pi's own lines behind a glyph: never in the live area. */
 const drawsOwnRow = new Set<string>();
-/** The lines such a tool's call and result drew last, by call: a tool may draw none, as `plan` does. */
+/**
+ * Tools that draw their own shell: their renderers are passed on. The line such a call draws is a heading
+ * for the calls of its message, as the `plan` tool's step is, so the first row of the message draws it.
+ */
+const ownShell = new Set<string>();
+/** The call component of each such call, and the lines its call and result drew last: a tool may draw none. */
+const ownCalls = new Map<string, Component>();
 const ownLines = new Map<string, { call?: number; result?: number }>();
-const drewOwn = (toolCallId: string) => {
-	const drawn = ownLines.get(toolCallId);
-	return (drawn?.call ?? 0) + (drawn?.result ?? 0) > 0;
-};
 /** Columns a part is drawn at to learn whether it has lines at all, before the screen draws it. */
 const PROBE_WIDTH = 80;
 /**
  * A component that notes how many lines one part of a call's row has. It is drawn once at once: the rows
- * above it are drawn first on each frame, and must already know whether this one shows.
+ * above it are drawn first on each frame, and must already know whether this one shows. With `elsewhere`
+ * true its lines are another row's to draw.
  */
-function counted(inner: Component, toolCallId: string, part: "call" | "result"): Component & { inner: Component } {
+function counted(
+	inner: Component,
+	toolCallId: string,
+	part: "call" | "result",
+	elsewhere = () => false,
+): Component & { inner: Component } {
 	ownLines.set(toolCallId, { ...ownLines.get(toolCallId), [part]: inner.render(PROBE_WIDTH).length });
 	return {
 		inner,
@@ -242,17 +247,80 @@ function counted(inner: Component, toolCallId: string, part: "call" | "result"):
 		render(width) {
 			const drawn = inner.render(width);
 			ownLines.set(toolCallId, { ...ownLines.get(toolCallId), [part]: drawn.length });
-			return drawn;
+			return elsewhere() ? [] : drawn;
 		},
 	};
 }
+/** The first call of the message that has a row of this module's: it draws the message's headings. */
+function carrier(call: Call): Call | undefined {
+	let at = call.index;
+	while (transcript.order[at - 1]?.turn === call.turn) at--;
+	for (; transcript.order[at]?.turn === call.turn; at++)
+		if (!ownShell.has(transcript.order[at].name)) return transcript.order[at];
+	return undefined;
+}
+/**
+ * True when the call line of a tool with its own shell is not drawn at the call's place: another row draws
+ * it, or the message is still coming in and may yet bring that row.
+ */
+function drawnElsewhere(toolCallId: string): boolean {
+	const call = transcript.calls.get(toolCallId);
+	return call !== undefined && (call.turn > transcript.closed || carrier(call) !== undefined);
+}
+/** True for a call that has lines at its own place, without this module holding them back. */
+function showsOwn(call: Call): boolean {
+	const drawn = ownLines.get(call.id);
+	if ((drawn?.result ?? 0) > 0) return true;
+	return (drawn?.call ?? 0) > 0 && !(ownShell.has(call.name) && drawnElsewhere(call.id));
+}
+/** True for a call that leaves nothing at its place: its row is empty, or another row draws its line. */
+const placeless = (call: Call) => ownShell.has(call.name) && !showsOwn(call);
+/** The headings a row draws above its line: the call lines of the tools with their own shell in its message. */
+function headings(call: Call | undefined, width: number): string[] {
+	if (!call || !hasHeading(call)) return [];
+	let at = call.index;
+	while (transcript.order[at - 1]?.turn === call.turn) at--;
+	const drawn: string[] = [];
+	for (; transcript.order[at]?.turn === call.turn; at++)
+		if (ownShell.has(transcript.order[at].name))
+			drawn.push(...(ownCalls.get(transcript.order[at].id)?.render(width) ?? []));
+	return drawn;
+}
+/** True when the row draws a heading above its line. Asked for every row on every frame, so nothing is drawn. */
+function hasHeading(call: Call): boolean {
+	if (call.turn > transcript.closed || carrier(call) !== call) return false;
+	let at = call.index;
+	while (transcript.order[at - 1]?.turn === call.turn) at--;
+	for (; transcript.order[at]?.turn === call.turn; at++)
+		if (ownShell.has(transcript.order[at].name) && (ownLines.get(transcript.order[at].id)?.call ?? 0) > 0)
+			return true;
+	return false;
+}
+/** A row with its message's headings above it. */
+function headed(child: Component, toolCallId: string): Component {
+	return {
+		invalidate: () => child.invalidate(),
+		render: (width) => [...headings(transcript.calls.get(toolCallId), width), ...child.render(width)],
+	};
+}
+/** The nearest call above or below that has a place in the transcript. */
+function neighbour(call: Call, step: 1 | -1): Call | undefined {
+	let at = call.index + step;
+	while (transcript.order[at] && placeless(transcript.order[at])) at += step;
+	return transcript.order[at];
+}
+/**
+ * True when a later call of the same message already shows. The call then shows too, also while it still
+ * runs, and keeps its line: a line added above a drawn row moves it, and Pi repaints the whole screen when
+ * that row has scrolled away.
+ */
 function overtaken(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	if (!call) return false;
 	for (let at = call.index + 1; transcript.order[at]?.turn === call.turn; at++) {
 		const later = transcript.order[at];
 		// A tool that draws its own row draws it as soon as it is called, if it draws one at all.
-		if (drewOwn(later.id) || transcript.rows.get(later.id)?.atOnce()) return true;
+		if (showsOwn(later) || transcript.rows.get(later.id)?.atOnce()) return true;
 	}
 	return false;
 }
@@ -273,8 +341,10 @@ const BELOW_TRANSCRIPT = 14;
  */
 function onScreen(call: Call): boolean {
 	let rows = transcript.textSoFar - call.textAbove + BELOW_TRANSCRIPT;
-	for (let at = call.index; at < transcript.order.length; at++)
-		rows += transcript.rows.get(transcript.order[at].id)?.height() ?? Number.POSITIVE_INFINITY;
+	for (const later of transcript.order.slice(call.index)) {
+		if (placeless(later)) continue;
+		rows += transcript.rows.get(later.id)?.height() ?? Number.POSITIVE_INFINITY;
+	}
 	// Without a terminal there is no screen to repaint.
 	return rows <= (process.stdout.rows ?? Number.POSITIVE_INFINITY);
 }
@@ -324,21 +394,30 @@ function placeNamed(toolCallId: string): string | undefined {
 	return place === HERE ? undefined : place;
 }
 const foldedRow = (call: Call | undefined) => (call && transcript.rows.get(call.id)?.folded() ? call : undefined);
-const closesUp = (call: Call, other: Call | undefined) => other?.block === call.block && foldedRow(other) !== undefined;
+/** True when two folded rows, one above the other, are drawn as one run. A row with a heading starts its own. */
+const joins = (above: Call | undefined, below: Call | undefined): boolean =>
+	above !== undefined &&
+	below !== undefined &&
+	above.block === below.block &&
+	foldedRow(above) !== undefined &&
+	foldedRow(below) !== undefined &&
+	!hasHeading(below);
 /**
  * The lines of the run of folded rows that ends with this one: a line for each row that keeps one. Rows that
- * keep none are one count when they open their block, so a stretch of work always leaves a trace, and the count
- * stays when rows with lines follow it.
+ * keep none are one count when they open their block or stand under a heading, so a stretch of work always
+ * leaves a trace, and the count stays when rows with lines follow it.
  */
 function foldedRun(call: Call, width: number, tally: (count: number) => string): string[] {
-	let first = call.index;
-	while (first > 0 && closesUp(call, transcript.order[first - 1])) first--;
-	const rows = transcript.order.slice(first, call.index + 1).map(({ id }) => transcript.rows.get(id));
-	const opensBlock = transcript.order[first - 1]?.block !== call.block;
+	const run = [call];
+	for (let above = neighbour(call, -1); above && joins(above, run[0]); above = neighbour(above, -1))
+		run.unshift(above);
+	const rows = run.map(({ id }) => transcript.rows.get(id));
+	const heading = headings(run[0], width);
+	const opensBlock = neighbour(run[0], -1)?.block !== call.block || heading.length > 0;
 	const firstKept = rows.findIndex((row) => !row?.silent());
 	const leading = opensBlock ? (firstKept < 0 ? rows.length : firstKept) : 0;
 	const drawn = rows.flatMap((row) => (row?.silent() ? [] : (row?.head(width) ?? [])));
-	return leading > 0 ? [tally(leading), ...drawn] : drawn;
+	return [...heading, ...(leading > 0 ? [tally(leading)] : []), ...drawn];
 }
 
 function rowState(context: Context): RowState {
@@ -888,10 +967,16 @@ function compactRenderers(
 							width,
 						),
 					);
-				return framed ? piShell(full, theme, context, "top") : full;
+				const shell = framed ? piShell(full, theme, context, "top") : full;
+				// With every row expanded, a heading shows at its own call.
+				return context.expanded ? shell : headed(shell, context.toolCallId);
 			}
 			if (!summarize && state.piCall)
-				return counted(glyphed(state.piCall, state, theme, context), context.toolCallId, "call");
+				return counted(
+					headed(glyphed(state.piCall, state, theme, context), context.toolCallId),
+					context.toolCallId,
+					"call",
+				);
 			const id = context.toolCallId;
 			const head = (width: number) => {
 				const drawn = { ...summary(args, state, theme, context), place: placeNamed(id) };
@@ -929,9 +1014,9 @@ function compactRenderers(
 			const call = (width: number) => {
 				if (held(args, state, theme, context)) return [];
 				const call = foldedRow(transcript.calls.get(id));
-				if (!call) return head(width);
-				// A folded row followed by another in its block draws nothing: the last row of the run draws them all.
-				return closesUp(call, transcript.order[call.index + 1]) ? [] : foldedRun(call, width, tally);
+				if (!call) return [...headings(transcript.calls.get(id), width), ...head(width)];
+				// A folded row that the next one joins draws nothing: the last row of the run draws them all.
+				return joins(call, neighbour(call, 1)) ? [] : foldedRun(call, width, tally);
 			};
 			return lines((width) => {
 				const drawn = call(width);
@@ -1005,7 +1090,10 @@ export default function (pi: ExtensionAPI) {
 		// With no run under way, nothing more follows the last step.
 		if (ctx.isIdle()) settle(transcript.turn);
 		// Rows of the session that was left are dropped; rows this session drew before the event are kept.
-		for (const id of transcript.rows.keys()) if (!transcript.calls.has(id)) transcript.rows.delete(id);
+		for (const kept of [transcript.rows, ownCalls, ownLines])
+			for (const id of kept.keys()) if (!transcript.calls.has(id)) kept.delete(id);
+		// Every message of a loaded session is complete.
+		transcript.closed = transcript.turn;
 		for (const ended of [transcript.passed, transcript.failed])
 			for (const [command, ids] of ended) {
 				for (const id of ids) if (!transcript.calls.has(id)) ids.delete(id);
@@ -1017,7 +1105,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", reload);
 	pi.on("message_start", (event) => startMessage(event.message));
 	pi.on("message_update", (event) => noteMessage(event.message));
-	pi.on("message_end", (event) => noteMessage(event.message));
+	pi.on("message_end", (event) => {
+		noteMessage(event.message);
+		if (event.message?.role === "assistant") transcript.closed = transcript.turn;
+	});
 
 	let run = newRun();
 	/** Redraws the live area; unset while the receipt or nothing is shown. */
@@ -1090,6 +1181,7 @@ export default function (pi: ExtensionAPI) {
 		// A tool that draws its own shell keeps it, unless its row has a summary here.
 		if (renderers?.renderShell === "self" && !SUMMARIES[toolName]) {
 			drawsOwnRow.add(toolName);
+			ownShell.add(toolName);
 			// Its renderers are passed on as they are; each gets back the component it made, not the counting one.
 			const own = (context: Context) => ({ ...context, lastComponent: (context.lastComponent as any)?.inner });
 			const { renderCall, renderResult } = renderers;
@@ -1097,7 +1189,13 @@ export default function (pi: ExtensionAPI) {
 				...renderers,
 				renderCall:
 					renderCall &&
-					((args, theme, context) => counted(renderCall(args, theme, own(context)), context.toolCallId, "call")),
+					((args, theme, context) => {
+						const id = context.toolCallId;
+						const drawn = renderCall(args, theme, own(context));
+						ownCalls.set(id, drawn);
+						// With every row expanded, the call's line shows at its own place.
+						return counted(drawn, id, "call", () => !context.expanded && drawnElsewhere(id));
+					}),
 				renderResult:
 					renderResult &&
 					((result, options, theme, context) =>

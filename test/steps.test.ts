@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
+import { stripVTControlCharacters } from "node:util";
 
 // The on/off choice is saved under the agent dir: keep HOME, TMPDIR and the agent dir in a temp dir,
 // never the real ~/.pi.
@@ -88,14 +89,14 @@ const wait = (ms: number) => {
 mock.method(Date, "now", () => now);
 test.beforeEach(() => rmSync(SETTINGS, { force: true }));
 
-test("a running plan shows every step with the current one timed", async () => {
+test("a running plan shows one line: the current step, its place in the plan, and its time", async () => {
 	const s = setup();
 	s.prompt();
 	await s.plan({ steps: ["A", "B", "C"] });
 	wait(5_000);
-	assert.equal(s.show(), "● A · 5s\n○ B\n○ C");
+	assert.equal(s.show(), "● 1/3 A · 5s");
 	wait(82_000);
-	assert.equal(s.show().split("\n")[0], "● A · 1m 27s");
+	assert.equal(s.show().split("\n")[0], "● 1/3 A · 1m 27s");
 });
 
 test("the timer restarts when the step changes, not on a repeated tick", async () => {
@@ -104,10 +105,10 @@ test("the timer restarts when the step changes, not on a repeated tick", async (
 	await s.plan({ steps: ["A", "B"] });
 	wait(10_000);
 	await s.plan({ done: 1 });
-	assert.equal(s.show(), "✓ A\n● B · 0s");
+	assert.equal(s.show(), "● 2/2 B · 0s");
 	wait(3_000);
 	await s.plan({ done: 1 });
-	assert.equal(s.show(), "✓ A\n● B · 3s");
+	assert.equal(s.show(), "● 2/2 B · 3s");
 });
 
 test("without a plan in this prompt nothing shows", () => {
@@ -140,7 +141,7 @@ test("an earlier prompt's plan stays hidden during and after a prompt that doesn
 	assert.equal(s.show(), "(hidden)");
 	s.prompt();
 	await s.plan({ done: 4 });
-	assert.equal(s.show(), "✓ A\n✓ B\n✓ C\n✓ D\n● E · 0s");
+	assert.equal(s.show(), "● 5/5 E · 0s");
 });
 
 test("only the model finishes a plan: a normal end before the last step shows it paused", async () => {
@@ -176,7 +177,7 @@ test("/steps off hides the widget and drops the plan tool; /steps on restores bo
 	assert.deepEqual(s.active(), ["read", "bash"]);
 	await s.command("on");
 	assert.deepEqual(s.active(), ["read", "bash", "plan"]);
-	assert.equal(s.show(), "● A · 0s\n○ B\n○ C");
+	assert.equal(s.show(), "● 1/3 A · 0s");
 	await s.command("maybe");
 	assert.equal(s.notes.at(-1), "warning: usage: /steps [on|off]");
 });
@@ -248,15 +249,15 @@ test("a resumed plan stays hidden until the model picks it up, then resumes from
 	assert.equal(s.show(), "(hidden)");
 	s.prompt();
 	await s.plan({ done: 1 });
-	assert.equal(s.show(), "✓ A\n● B · 0s\n○ C");
+	assert.equal(s.show(), "● 2/3 B · 0s");
 });
 
 test("restore ignores entries that are not plans and clamps done", async () => {
 	for (const [branch, expected] of [
-		[[planResult({ steps: ["A", "B", "C"], done: 1 }), planResult({ steps: "not a list" })], "✓ A\n● B · 0s\n○ C"],
+		[[planResult({ steps: ["A", "B", "C"], done: 1 }), planResult({ steps: "not a list" })], "● 2/3 B · 0s"],
 		// done past the end clamps to finished, and a finished plan clears at the next prompt.
 		[[planResult({ steps: ["A", "B"], done: 7 })], "(hidden)"],
-		[[planResult({ steps: ["X", "Y"] })], "● X · 0s\n○ Y"],
+		[[planResult({ steps: ["X", "Y"] })], "● 1/2 X · 0s"],
 	] as const) {
 		const s = setup({ branch: [...branch] });
 		s.prompt();
@@ -281,17 +282,30 @@ test("a setting that can't be read for another reason is reported and steps stay
 	}
 });
 
-test("a plan call has no transcript row; a failed one shows its error", () => {
+test("a plan call that starts a step leaves its heading in the transcript; any other has no row", async () => {
 	const s = setup();
 	const tool = s.tool();
-	const theme = { fg: (_color: string, text: string) => text };
+	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+	/** The transcript lines of one `plan` call: its call line, then its result. */
+	const drawn = async (params: any) => {
+		const context = { state: {} as any, outputPad: 1, isError: false };
+		const result = await s.plan(params);
+		const output = tool.renderResult(result, {}, theme, context).render(80);
+		return [...tool.renderCall(params, theme, context).render(80), ...output];
+	};
 	assert.equal(tool.renderShell, "self");
-	assert.deepEqual(tool.renderCall({ steps: ["A"] }, theme, {}).render(80), []);
-	const ok = { content: [{ type: "text", text: "ok" }] };
-	assert.deepEqual(tool.renderResult(ok, {}, theme, { isError: false }).render(80), []);
+	assert.deepEqual(tool.renderCall({}, theme, { state: {}, outputPad: 1 }).render(80), [], "nothing before it ran");
+	s.prompt();
+	assert.deepEqual(await drawn({ steps: ["Find it", "Fix it", "Check it"] }), [" ▸ 1/3 Find it"]);
+	assert.deepEqual(await drawn({ done: 0 }), [], "a call that starts no step has no row");
+	assert.deepEqual(await drawn({ done: 2 }), [" ▸ 3/3 Check it"], "a skipped step has no heading");
+	assert.deepEqual(await drawn({ done: 3 }), [], "finishing the plan has no row");
+	const long = await drawn({ steps: ["x".repeat(100), "B"] });
+	const cut = stripVTControlCharacters(long[0]);
+	assert.ok(cut.length === 80 && cut.endsWith("…"), "a long step is cut to the width");
 	const failed = { content: [{ type: "text", text: "done: expected integer" }] };
 	assert.match(
-		tool.renderResult(failed, {}, theme, { isError: true }).render(80).join(""),
+		tool.renderResult(failed, {}, theme, { state: {}, isError: true }).render(80).join(""),
 		/plan failed: done: expected integer/,
 	);
 });
@@ -300,7 +314,7 @@ test("a message queued into the running loop hides the plan until the model touc
 	const s = setup();
 	s.prompt();
 	await s.plan({ steps: ["A", "B", "C"] });
-	assert.equal(s.show(), "● A · 0s\n○ B\n○ C");
+	assert.equal(s.show(), "● 1/3 A · 0s");
 	s.fire("message_start", { message: { role: "user" } });
 	assert.equal(s.show(), "(hidden)");
 	s.fire("message_start", { message: { role: "assistant" } });
@@ -310,5 +324,5 @@ test("a message queued into the running loop hides the plan until the model touc
 	s.prompt();
 	s.fire("message_start", { message: { role: "custom" } });
 	await s.plan({ done: 1 });
-	assert.equal(s.show(), "✓ A\n● B · 0s\n○ C");
+	assert.equal(s.show(), "● 2/3 B · 0s");
 });

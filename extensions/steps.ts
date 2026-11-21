@@ -1,15 +1,17 @@
-// Steps: a minimal live checklist below the editor.
-// The model sets upcoming steps with the `plan` tool; the current step shows how long it has run.
+// Steps: the model sets upcoming steps with the `plan` tool. Each step it starts leaves a heading in the
+// transcript, and one line below the editor shows the current step and how long it has run.
 // Pi's tool blocks already show what is running, so without a plan this prompt shows nothing.
 // Off outside the TUI, including delegate workers (JSON mode): no tool, no prompt text, no tokens.
 // `/steps off` turns it off the same way for every session; the choice lives in <agent dir>/steps.json.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 type Plan = { steps: string[]; done: number };
+/** What a `plan` call leaves in the session: the plan after it, and whether the call started a step. */
+type Called = Plan & { started?: boolean };
 const WIDGET = "steps";
 const TOOL = "plan";
 
@@ -50,6 +52,13 @@ function writeEnabled(enabled: boolean) {
 const textOf = (result: { content: { type: string; text?: string }[] }) =>
 	result.content.map((part) => (part.type === "text" ? part.text : "")).join(" ");
 
+/** The transcript's heading for the step a `plan` call started: `▸ 2/5 Wire the parser`. Nothing otherwise. */
+function heading(called: Called | undefined, theme: Theme, pad: number): string[] {
+	if (!called?.started || called.done >= called.steps.length) return [];
+	const count = theme.fg("dim", `${called.done + 1}/${called.steps.length}`);
+	return [`${" ".repeat(pad)}${theme.fg("accent", "▸")} ${count} ${theme.bold(called.steps[called.done])}`];
+}
+
 const elapsed = (ms: number) => {
 	const seconds = Math.floor(ms / 1000);
 	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
@@ -89,18 +98,12 @@ export default function (pi: ExtensionAPI) {
 					invalidate() {},
 					render(width: number): string[] {
 						const line = (s: string) => truncateToWidth(s, width, theme.fg("dim", "…"));
-						if (!running) {
-							if (done >= steps.length) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
-							return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${steps[done]}`))];
-						}
-						return steps.map((step, i) => {
-							if (i < done) return line(theme.fg("dim", `✓ ${step}`));
-							if (i === done) {
-								const timer = theme.fg("dim", ` · ${elapsed(Date.now() - stepStartedAt)}`);
-								return line(`${theme.fg("accent", "●")} ${step}${timer}`);
-							}
-							return line(theme.fg("dim", `○ ${step}`));
-						});
+						if (done >= steps.length) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
+						if (!running) return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${steps[done]}`))];
+						// The transcript has a heading for each step started; here is only where the work stands.
+						const timer = theme.fg("dim", ` · ${elapsed(Date.now() - stepStartedAt)}`);
+						const count = theme.fg("dim", `${done + 1}/${steps.length}`);
+						return [line(`${theme.fg("accent", "●")} ${count} ${steps[done]}${timer}`)];
 					},
 				};
 			},
@@ -148,15 +151,35 @@ export default function (pi: ExtensionAPI) {
 				fresh = true;
 				if (params.steps) plan = { steps: params.steps, done: 0 };
 				if (params.done !== undefined) plan = { ...plan, done: clampDone(params.done, plan.steps) };
-				if (pickedUp || params.steps || plan.done !== before) stepStartedAt = Date.now();
+				const started = pickedUp || params.steps !== undefined || plan.done !== before;
+				if (started) stepStartedAt = Date.now();
 				render();
-				return { content: [{ type: "text", text: "ok" }], details: plan };
+				return { content: [{ type: "text", text: "ok" }], details: { ...plan, started } satisfies Called };
 			},
-			// The widget already shows the plan, so a call has no row in the transcript; only a failed call shows.
+			// A call that starts a step leaves the step's heading in the transcript, so the rows under it say what
+			// they were for. The heading is drawn once and never changes; any other call has no row, and a failed
+			// one shows its error.
 			renderShell: "self",
-			renderCall: () => new Text("", 0, 0),
-			renderResult: (result, _options, theme, context) =>
-				new Text(context.isError ? theme.fg("error", `plan failed: ${textOf(result)}`) : "", 0, 0),
+			renderCall: (_args, theme, context) => ({
+				invalidate() {},
+				// Pi draws every row on every frame, so the cut line is kept until the call's result or the width changes.
+				render(width) {
+					const called = context.state.called as Called | undefined;
+					const kept = context.state.heading as { called?: Called; width: number; rows: string[] } | undefined;
+					if (kept && kept.called === called && kept.width === width) return kept.rows;
+					const rows = heading(called, theme, context.outputPad).map((line) =>
+						truncateToWidth(line, width, theme.fg("dim", "…")),
+					);
+					context.state.heading = { called, width, rows };
+					return rows;
+				},
+			}),
+			renderResult: (result, _options, theme, context) => {
+				context.state.called = context.isError
+					? undefined
+					: parsePlan(result.details) && (result.details as Called);
+				return new Text(context.isError ? theme.fg("error", `plan failed: ${textOf(result)}`) : "", 0, 0);
+			},
 		});
 	});
 

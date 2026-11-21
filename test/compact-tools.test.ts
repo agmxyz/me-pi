@@ -423,7 +423,42 @@ test("a call made with one that shows at once shows with it, so no line is added
 	assert.deepEqual(none.screen(), [], "beside a tool whose row is empty, as the plan tool's is, the call still waits");
 	none.step([ran("make", "ok")]);
 	none.step([ran("true", "")]);
-	assert.deepEqual(none.screen(), ["", "⋮ 1 call, nothing changed", "", "✓ $ make · 1 line"]);
+	assert.deepEqual(
+		none.screen(),
+		["", "⋮ 1 call, nothing changed", "✓ $ make · 1 line"],
+		"and rows close up across the empty one",
+	);
+});
+
+test("a heading drawn by a tool with its own shell stands above the first row of its message", () => {
+	// As the `plan` tool draws a step it started: one line for the call, none for the result.
+	PI.step = {
+		renderShell: "self",
+		renderCall: (args: any) => ({ invalidate() {}, render: () => (args.title ? [` ▸ ${args.title}`] : []) }),
+		renderResult: () => ({ invalidate() {}, render: () => [] }),
+	};
+	const step = (title?: string): [string, any, any] => ["step", { title }, { content: text("ok") }];
+	const s = session();
+	s.step([ran("ls", "a"), step("Find it")]);
+	assert.deepEqual(s.screen(), [], "the heading waits with the row it stands above");
+	s.step([ran("rg greet", "a")]);
+	s.step([edited, step("Fix it")]);
+	const drawn = ["", "▸ Find it", "⋮ 2 calls, nothing changed", "", "▸ Fix it", "✓ edit a.ts · +1 -1"];
+	assert.deepEqual(
+		s.screen(),
+		drawn,
+		"though the tool was called last, and calls that keep no line are counted under it",
+	);
+	s.step([ran("make", "ok"), step()]);
+	s.step([step("Report")]);
+	s.reply("done");
+	assert.deepEqual(
+		s.screen(),
+		[...drawn, "✓ $ make · 1 line", "", "▸ Report"],
+		"a call with no heading leaves nothing, and a heading alone in its message stands at its own place",
+	);
+	s.expand();
+	assert.equal(s.screen().filter((line) => line === "▸ Find it").length, 1, "expanded, each heading shows once");
 });
 
 test("a command names its directory only when it differs from the command row above", () => {
