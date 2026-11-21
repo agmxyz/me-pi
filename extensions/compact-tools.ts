@@ -72,6 +72,8 @@ interface Summary {
 	silent?: boolean;
 	/** Set on a folded row that no longer needs attention: the whole line is dim. */
 	quiet?: boolean;
+	/** The call passed, but its exit code speaks only for its last statement: the glyph is `?`, not `✓`. */
+	unproven?: boolean;
 }
 type Summarize = (args: any, result: Result | undefined, theme: Theme, context: Context) => Summary;
 
@@ -581,9 +583,11 @@ function sameCommand(command: unknown): string {
  * state than the command that failed.
  */
 const MOVES = /^(?:cd|pushd|source|\.|export|git\s+(?:checkout|switch|stash))(?=\s|$)/;
+/** Quoted text and `2>&1` hold no operator; both keep their length so parts can be cut from the command. */
+const bareCommand = (command: string) =>
+	command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"|\d*>&\d+/g, (held) => "q".repeat(held.length));
 function proved(command: string): string[] {
-	// Quoted text and `2>&1` hold no operator; both keep their length so the parts can be cut from the command.
-	const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"|\d*>&\d+/g, (held) => "q".repeat(held.length));
+	const bare = bareCommand(command);
 	const parts: string[] = [];
 	let from = 0;
 	for (const match of bare.matchAll(/&&/g)) {
@@ -601,6 +605,27 @@ function proved(command: string): string[] {
 const provesPass = (command: unknown) =>
 	/pipefail/.test(String(command)) ||
 	!/(?<!\|)\|(?!\|)/.test(String(command).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "q"));
+/**
+ * True when a passing command is a sequence, statements cut by `;` or a newline: the shell reports only the
+ * last one's exit code, so an earlier one may have failed unseen. A leading `cd` and `set` are not statements
+ * of their own, and once `set -e` has run the shell stops at the first failure.
+ */
+function sequence(command: string): boolean {
+	let rest = command.trim();
+	for (let lead = leadingPlumbing(rest); lead; lead = leadingPlumbing(rest)) {
+		if (ERREXIT.test(lead)) return false;
+		rest = rest.slice(lead.length);
+	}
+	const statements = bareCommand(rest)
+		.split(/[;\n]/)
+		.map((statement) => statement.trim())
+		.filter(Boolean);
+	const errexit = statements.findIndex((statement) => ERREXIT.test(statement));
+	const unseen = statements.slice(0, errexit < 0 ? -1 : errexit);
+	return unseen.some((statement) => !/^set\s/.test(statement));
+}
+const ERREXIT = /^set\s+(?:-[a-z]*e|-o\s+errexit)/;
+const leadingPlumbing = (command: string) => (command.match(SHELL_OPTIONS) ?? command.match(CD_PREFIX))?.[0];
 /** Plumbing that shapes a command's output for the model and tells a reader nothing about what ran. */
 const SHELL_OPTIONS = /^set\s+[-+][a-z]+(?:\s+pipefail)?\s*(?:&&|;|\n)\s*/;
 const STDERR_MERGE = /\s+2>&1(?=\s|$)/g;
@@ -794,7 +819,8 @@ function lineRange(args: any): string {
 
 const SUMMARIES: Record<string, Summarize> = {
 	bash(args, result, theme, context) {
-		let command = String(args?.command ?? "...").trim();
+		const whole = String(args?.command ?? "...");
+		let command = whole.trim();
 		const meta: string[] = [];
 		let place: string | undefined;
 		let where = context.cwd;
@@ -827,7 +853,7 @@ const SUMMARIES: Record<string, Summarize> = {
 		if (exit) meta.push(theme.fg("error", `exit ${exit}`));
 		const ms = rowState(context).durationMs ?? 0;
 		if (ms >= 1000) meta.push(theme.fg(ms >= SLOW_MS ? "warning" : "muted", formatDuration(ms)));
-		if (!context.isError) return { head, meta, place, count: output.length, silent };
+		if (!context.isError) return { head, meta, place, count: output.length, silent, unproven: sequence(whole) };
 		const kept = failedTail(output);
 		const body = [
 			...(output.length > kept.length
@@ -889,9 +915,10 @@ const plainSummary =
 		};
 	};
 
-function glyph(state: RowState, theme: Theme): string {
+function glyph(state: RowState, theme: Theme, unproven = false): string {
 	if (!state.result) return theme.fg("accent", "●");
-	return state.failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
+	if (state.failed) return theme.fg("error", "✗");
+	return unproven ? theme.fg("muted", "?") : theme.fg("success", "✓");
 }
 
 /** Whole seconds a running call has taken, from one second on: `12s`, then `1m 5s`. */
@@ -918,7 +945,7 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 		const meta = facts.join(sep);
 		const room = Math.max(8, width - context.outputPad * 2 - 2 - (meta ? visibleWidth(meta) + 3 : 0));
 		const head = typeof summary.head === "function" ? summary.head(room) : truncateToWidth(summary.head, room, "…");
-		const line = `${pad}${glyph(state, theme)} ${head}${meta ? sep : ""}${meta}`;
+		const line = `${pad}${glyph(state, theme, summary.unproven)} ${head}${meta ? sep : ""}${meta}`;
 		return [summary.quiet ? theme.fg("dim", stripVTControlCharacters(line)) : line];
 	});
 }
