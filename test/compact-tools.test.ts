@@ -80,7 +80,7 @@ function row(...args: Parameters<typeof rawRow>): string[] {
 
 test("a finished bash call is one line: what ran, how many lines it printed, how long it took", () => {
 	const lines = row("bash", { command: "npm test\necho done" }, { content: text(numbered(40)), durationMs: 4200 });
-	assert.deepEqual(lines, ["✓ $ npm test ⏎1 · 40 lines · 4.2s"]);
+	assert.deepEqual(lines, ["? $ npm test ⏎1 · 40 lines · 4.2s"]);
 	assert.deepEqual(row("bash", { command: "pwd" }, { content: text("/work\n"), durationMs: 20 }), [
 		"✓ $ pwd · 1 line",
 	]);
@@ -117,10 +117,25 @@ test("a leading cd is taken off the command and named only when it leaves the wo
 	const head = (command: string) => row("bash", { command }, { content: text("") })[0];
 	assert.equal(head(`cd ${ROOT} && npm test`), "✓ $ npm test");
 	assert.equal(head(`cd ${ROOT}/web && npm test`), "✓ $ npm test · in web");
-	assert.equal(head(`cd "${ROOT}/web"\nnpm test\nnpm run lint`), "✓ $ npm test ⏎1 · in web");
+	assert.equal(head(`cd "${ROOT}/web"\nnpm test\nnpm run lint`), "? $ npm test ⏎1 · in web");
+	assert.equal(head(`cd "${ROOT}/web"\nnpm test`), "✓ $ npm test · in web");
 	assert.equal(head("cd /srv/app; ls"), "✓ $ ls · in /srv/app");
 	assert.equal(head("cd /srv/app"), "✓ $ cd /srv/app");
 	assert.equal(head("set -euo pipefail\ncd /srv/app\nls"), "✓ $ ls · in /srv/app");
+});
+
+test("a passing ; or newline sequence shows ?: only its last statement's exit code was seen", () => {
+	const head = (command: string) => row("bash", { command }, { content: text("") })[0];
+	assert.equal(head("./check.sh; git status"), "? $ ./check.sh; git status");
+	assert.equal(head("cd /srv/app\n./check.sh\ngit status"), "? $ ./check.sh ⏎1 · in /srv/app");
+	assert.equal(head("cd /srv/app; ls"), "✓ $ ls · in /srv/app");
+	assert.equal(head("npm test && npm run lint"), "✓ $ npm test && npm run lint", "&& stops at a failure");
+	assert.equal(head("set -e\n./check.sh\ngit status"), "✓ $ ./check.sh ⏎1", "errexit stops at a failure");
+	assert.equal(head("set -euo pipefail\ncd /srv/app\n./check.sh; ls"), "✓ $ ./check.sh; ls · in /srv/app");
+	assert.equal(head('echo "a; b"'), '✓ $ echo "a; b"', "a quoted ; is not a separator");
+	assert.equal(head("ls;"), "✓ $ ls;", "nothing after the ;");
+	const failed = row("bash", { command: "a; b" }, { content: text("Command exited with code 1"), isError: true });
+	assert.equal(failed[0], "✗ $ a; b · exit 1");
 });
 
 test("a command loses its output plumbing, and a long one is cut in the middle", () => {
@@ -131,7 +146,7 @@ test("a command loses its output plumbing, and a long one is cut in the middle",
 	assert.equal(head("tail -5 build.log"), "✓ $ tail -5 build.log");
 	assert.equal(
 		head("git log | head -3\necho done"),
-		"✓ $ git log | head -3 ⏎1",
+		"? $ git log | head -3 ⏎1",
 		"only a one-line command loses its cap",
 	);
 	const wide = head(`grep ${"x".repeat(200)} file | sort -u`);
