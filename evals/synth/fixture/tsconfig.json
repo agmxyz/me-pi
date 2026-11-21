@@ -1,0 +1,16 @@
+{
+	"compilerOptions": {
+		"target": "ES2024",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"lib": ["ES2024"],
+		"strict": true,
+		"erasableSyntaxOnly": true,
+		"verbatimModuleSyntax": true,
+		"allowImportingTsExtensions": true,
+		"skipLibCheck": true,
+		"types": ["node"],
+		"noEmit": true
+	},
+	"include": ["src/**/*.ts", "test/**/*.ts"]
+}

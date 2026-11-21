@@ -1,0 +1,7 @@
+{
+	"id": "s3",
+	"title": "Make discount.ts the single owner of discount code rules",
+	"shape": "cross-module refactor that must keep behaviour exactly",
+	"expect": "done",
+	"notes": "Base overlay plants the duplication (orders.ts switch on code names, cli.ts own code list); the agent must route both through discount.ts without changing any priced output, and must not 'fix' tax-on-subtotal, which is out of scope."
+}

@@ -1,0 +1,7 @@
+{
+	"id": "s1",
+	"title": "Low-stock check misses products exactly at their reorder level",
+	"shape": "small bug fix, one file",
+	"expect": "done",
+	"notes": "One-character off-by-one (< vs <=) in isLowStock; the existing test is named 'well below / well above' so it never covers the boundary, and the agent must add a boundary regression test rather than touch report.ts or the CLI."
+}
