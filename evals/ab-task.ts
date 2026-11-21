@@ -81,8 +81,13 @@ export const coordinatorLabel = (c: Coordinator) => `${c.provider}/${c.model}@${
 
 /** A coordinator's pool: `base` with scout and worker both on the coordinator's own model and thinking. */
 export function poolFor(base: Pool, c: Coordinator): Pool {
-	const models = { models: [{ model: `${c.provider}/${c.model}`, thinking: c.thinking }] };
-	return { ...base, scout: models, worker: models };
+	const model = `${c.provider}/${c.model}`;
+	// delegate accepts only `low` or `off` for scout; `low` keeps it on the same model as the coordinator.
+	return {
+		...base,
+		scout: { models: [{ model, thinking: "low" }] },
+		worker: { models: [{ model, thinking: c.thinking }] },
+	};
 }
 
 /** Each coordinator a task runs with, and its pool; `basePool` is used when the task has `coordinators` but no `pool`. */

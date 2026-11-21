@@ -498,8 +498,12 @@ const BASE_POOL: Pool = {
 };
 
 test("each coordinator of a matrix gets a pool with scout and worker on its own model, keeping the skills", () => {
-	const one = { models: [{ model: "p/m1", thinking: "max" }] };
-	assert.deepEqual(poolFor(BASE_POOL, C1), { ...BASE_POOL, scout: one, worker: one });
+	// delegate accepts only low or off for scout, so scout runs the coordinator's model at low.
+	assert.deepEqual(poolFor(BASE_POOL, C1), {
+		...BASE_POOL,
+		scout: { models: [{ model: "p/m1", thinking: "low" }] },
+		worker: { models: [{ model: "p/m1", thinking: "max" }] },
+	});
 	const seats = seatsOf({ ...TASK, coordinator: undefined, pool: undefined, coordinators: [C1, C2] }, BASE_POOL);
 	assert.deepEqual(
 		seats.map((s) => [coordinatorLabel(s.coordinator), (s.pool.worker as any).models, s.pool.readOnlySkills]),
