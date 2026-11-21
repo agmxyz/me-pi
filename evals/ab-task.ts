@@ -1,5 +1,6 @@
-/** The A/B eval's pure parts: the task file, the per-arm contract, and the facts read from a session log. */
-import { isAbsolute } from "node:path";
+/** The A/B eval's parts that need no Pi: the task file, the per-arm contract, scoring, and the facts read from a session log. */
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import type { Coordinator } from "./sandbox.ts";
 
 export type Arm = "A" | "B";
@@ -18,13 +19,27 @@ export interface Task {
 	check: string;
 	/** Commands run in the worktree before the coordinator starts. */
 	setup: string[];
-	coordinator: Coordinator;
-	/** A delegate.json object, version 3. */
-	pool: { version: 3 } & Record<string, unknown>;
+	/** The one coordinator, with `pool`; or absent when `coordinators` is given. */
+	coordinator?: Coordinator;
+	/** A delegate.json object, version 3. With `coordinators`, the base each coordinator's pool is derived from. */
+	pool?: Pool;
+	/** A coordinator matrix: each attempt runs one, with a pool whose scout and worker use the same model. */
+	coordinators?: Coordinator[];
+	/** Set for a synthetic task: its directory, and how its outcome is scored. */
+	synth?: Synth;
 	/** A known-good result SHA to diff against. */
 	reference?: string;
 	/** Free-form, copied into every record. */
 	baseline?: Record<string, unknown>;
+}
+
+export type Pool = { version: 3 } & Record<string, unknown>;
+
+export interface Synth {
+	/** Absolute path of `evals/synth/tasks/<id>`: brief.md, meta.json, hidden/, optional base/, reference/. */
+	dir: string;
+	expect: "done" | "blocked";
+	blockedKeywords: string[];
 }
 
 const isString = (v: unknown): v is string => typeof v === "string" && v.length > 0;
@@ -40,14 +55,74 @@ export function validateTask(raw: unknown): Task {
 	for (const key of ["repo", "brief"])
 		if (isString(t[key]) && !isAbsolute(t[key] as string)) problems.push(`${key}: must be an absolute path`);
 	if (!Array.isArray(t.setup) || !t.setup.every(isString)) problems.push("setup: required array of command strings");
-	const c = t.coordinator;
-	if (!isObject(c) || !isString(c.provider) || !isString(c.model) || !isString(c.thinking))
-		problems.push("coordinator: required {provider, model, thinking}");
-	if (!isObject(t.pool) || t.pool.version !== 3) problems.push("pool: required delegate.json object with version 3");
+	const isCoordinator = (c: unknown) =>
+		isObject(c) && isString(c.provider) && isString(c.model) && isString(c.thinking);
+	if (t.coordinators === undefined) {
+		if (!isCoordinator(t.coordinator)) problems.push("coordinator: required {provider, model, thinking}");
+		if (!isObject(t.pool) || t.pool.version !== 3)
+			problems.push("pool: required delegate.json object with version 3");
+	} else {
+		const cs = t.coordinators;
+		if (!Array.isArray(cs) || !cs.length || !cs.every(isCoordinator))
+			problems.push("coordinators: must be a non-empty array of {provider, model, thinking}");
+		else if (new Set(cs.map(coordinatorLabel)).size !== cs.length) problems.push("coordinators: given twice");
+		if (t.coordinator !== undefined) problems.push("coordinator: give coordinator or coordinators, not both");
+		if (t.pool !== undefined && (!isObject(t.pool) || t.pool.version !== 3))
+			problems.push("pool: must be a delegate.json object with version 3");
+	}
 	if (t.reference !== undefined && !isString(t.reference)) problems.push("reference: must be a commit SHA string");
 	if (t.baseline !== undefined && !isObject(t.baseline)) problems.push("baseline: must be an object");
 	if (problems.length) throw new Error(`task: ${problems.join("; ")}`);
 	return t as unknown as Task;
+}
+
+/** Names a coordinator in records, the queue, and the summary: `provider/model@thinking`. */
+export const coordinatorLabel = (c: Coordinator) => `${c.provider}/${c.model}@${c.thinking}`;
+
+/** A coordinator's pool: `base` with scout and worker both on the coordinator's own model and thinking. */
+export function poolFor(base: Pool, c: Coordinator): Pool {
+	const models = { models: [{ model: `${c.provider}/${c.model}`, thinking: c.thinking }] };
+	return { ...base, scout: models, worker: models };
+}
+
+/** Each coordinator a task runs with, and its pool; `basePool` is used when the task has `coordinators` but no `pool`. */
+export function seatsOf(task: Task, basePool: Pool): { coordinator: Coordinator; pool: Pool }[] {
+	if (!task.coordinators) return [{ coordinator: task.coordinator!, pool: task.pool! }];
+	return task.coordinators.map((coordinator) => ({ coordinator, pool: poolFor(task.pool ?? basePool, coordinator) }));
+}
+
+/**
+ * Turns a task-file entry into a task: a synthetic entry (`kind: "synth"`, with `dir` and `fixture`, resolved against
+ * `fileDir`) gets its target from `build(fixture, overlay)` (the fixture plus the task's `base/`, if any), its brief from
+ * `<dir>/brief.md`, its branch `task/<id>`, and its scoring from `<dir>/meta.json`. Any other entry is a git task.
+ */
+export function loadTask(
+	raw: unknown,
+	fileDir: string,
+	build: (fixture: string, overlay: string | undefined) => { repo: string; base: string },
+): Task {
+	if (!isObject(raw) || raw.kind !== "synth") return validateTask(raw);
+	const { kind: _, dir: rawDir, fixture: rawFixture, ...rest } = raw;
+	if (!isString(rest.id) || !isString(rawDir) || !isString(rawFixture))
+		throw new Error("task: a synth task needs id, dir, and fixture strings");
+	const dir = resolve(fileDir, rawDir);
+	const meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+	if (meta.expect !== "done" && meta.expect !== "blocked")
+		throw new Error(`task ${rest.id}: meta.json expect must be "done" or "blocked"`);
+	const blockedKeywords: unknown = meta.blockedKeywords ?? [];
+	if (!Array.isArray(blockedKeywords) || !blockedKeywords.every(isString))
+		throw new Error(`task ${rest.id}: meta.json blockedKeywords must be an array of strings`);
+	if (meta.expect === "blocked" && !blockedKeywords.length)
+		throw new Error(`task ${rest.id}: an expect "blocked" task needs blockedKeywords`);
+	const overlay = join(dir, "base");
+	const target = build(resolve(fileDir, rawFixture), existsSync(overlay) ? overlay : undefined);
+	return validateTask({
+		...rest,
+		...target,
+		branch: `task/${rest.id}`,
+		brief: join(dir, "brief.md"),
+		synth: { dir, expect: meta.expect, blockedKeywords },
+	});
 }
 
 export interface ContractPaths {
@@ -205,43 +280,70 @@ export function isAccepted(r: {
 	return r.state === "completed" && r.report.status === "DONE" && r.checkFresh.exit === 0 && !r.headIsWip;
 }
 
+/**
+ * A synthetic task's pass. `done`: accepted and every hidden test green. `blocked`: the report's Status is BLOCKED,
+ * its text names the ambiguity (one of `blockedKeywords`, any case), and nothing under `src` changed.
+ */
+export function isPass(
+	synth: Synth,
+	r: { accepted: boolean; hidden: { exit: number | null }; reportText: string; srcChanged: string[] },
+): boolean {
+	if (synth.expect === "done") return r.accepted && r.hidden.exit === 0;
+	const text = r.reportText.toLowerCase();
+	return (
+		reportStatus(r.reportText) === "BLOCKED" &&
+		synth.blockedKeywords.some((k) => text.includes(k.toLowerCase())) &&
+		r.srcChanged.length === 0
+	);
+}
+
 /** States a resumed sweep keeps; a `timeout` or `incomplete` attempt is run again. */
 const SETTLED: readonly AttemptState[] = ["completed", "capped", "void"];
-const keyOf = (task: string, arm: string, n: number) => `${task}\0${arm}\0${n}`;
+/** One attempt's identity: a resumed sweep and the summary key on it. */
+const keyOf = (r: { task: string; coordinator: Coordinator; arm: string; n: number }) =>
+	`${r.task}\0${coordinatorLabel(r.coordinator)}\0${r.arm}\0${r.n}`;
 
 export interface QueuedAttempt {
 	task: string;
+	coordinator: Coordinator;
 	arm: Arm;
 	n: number;
 }
 
 /**
- * The attempts to run, interleaved (for each n, each task, each arm) so provider drift during the sweep hits each arm
- * and task alike, less those `done` already holds a settled record for.
+ * The attempts to run, interleaved (for each n, each coordinator, each task that has it, each arm) so provider drift
+ * during the sweep hits each coordinator, task, and arm alike, less those `done` already holds a settled record for.
  */
 export function attemptQueue(
-	tasks: string[],
+	tasks: { id: string; coordinators: Coordinator[] }[],
 	arms: readonly Arm[],
 	runs: number,
-	done: { task: string; arm: string; n: number; state: string }[] = [],
+	done: { task: string; coordinator: Coordinator; arm: string; n: number; state: string }[] = [],
 ): QueuedAttempt[] {
-	const settled = new Set(
-		done.filter((r) => SETTLED.includes(r.state as AttemptState)).map((r) => keyOf(r.task, r.arm, r.n)),
-	);
+	const settled = new Set(done.filter((r) => SETTLED.includes(r.state as AttemptState)).map(keyOf));
+	const coordinators = new Map(tasks.flatMap((t) => t.coordinators).map((c) => [coordinatorLabel(c), c]));
 	const queue: QueuedAttempt[] = [];
 	for (let n = 1; n <= runs; n++)
-		for (const task of tasks)
-			for (const arm of arms) if (!settled.has(keyOf(task, arm, n))) queue.push({ task, arm, n });
+		for (const [label, coordinator] of coordinators)
+			for (const task of tasks)
+				if (task.coordinators.some((c) => coordinatorLabel(c) === label))
+					for (const arm of arms) {
+						const q = { task: task.id, coordinator, arm, n };
+						if (!settled.has(keyOf(q))) queue.push(q);
+					}
 	return queue;
 }
 
 /** What the summary reads from a record. */
 export interface SummaryRecord {
 	task: string;
+	coordinator: Coordinator;
 	arm: string;
 	n: number;
 	state: string;
 	accepted?: boolean;
+	/** Synthetic tasks only. */
+	pass?: boolean;
 	wallMs: number;
 	compactions: number | null;
 	checkFresh: { exit: number | null; timedOut: boolean };
@@ -251,40 +353,65 @@ export interface SummaryRecord {
 const fmt = (x: number | undefined, f: (v: number) => string) => (x === undefined ? "–" : f(x));
 
 /**
- * The summary table: one row per task and arm, then a total per arm. Only the last record of each (task, arm, n)
- * counts, so a resumed attempt replaces the timed-out one before it. Records of other tasks or arms are left out.
+ * The summary table: one row per coordinator, task, and arm; a total per coordinator and arm when there are several
+ * tasks; and an overall total per arm when there are several coordinators. Only the last record of each (task,
+ * coordinator, arm, n) counts, so a resumed attempt replaces the timed-out one before it. Records of other tasks,
+ * coordinators, or arms are left out. `pass` shows `–` for a group with no synthetic record.
  */
-export function summaryTable(records: SummaryRecord[], tasks: string[], arms: readonly Arm[]): string[] {
+export function summaryTable(
+	records: SummaryRecord[],
+	tasks: string[],
+	coordinators: Coordinator[],
+	arms: readonly Arm[],
+): string[] {
+	const labels = coordinators.map(coordinatorLabel);
 	const latest = new Map<string, SummaryRecord>();
-	for (const r of records) if (tasks.includes(r.task)) latest.set(keyOf(r.task, r.arm, r.n), r);
+	for (const r of records)
+		if (tasks.includes(r.task) && labels.includes(coordinatorLabel(r.coordinator))) latest.set(keyOf(r), r);
 	const kept = [...latest.values()];
-	const row = (task: string, arm: string, r: SummaryRecord[]) => {
+	const row = (coordinator: string, task: string, arm: string, r: SummaryRecord[]) => {
 		const green = r.filter((x) => x.checkFresh.exit === 0 && !x.checkFresh.timedOut).length;
 		const cost = costMedian(r);
-		return `| ${task} | ${arm} | ${r.length} | ${r.filter((x) => x.state === "completed").length} | ${green} | ${
+		const scored = r.filter((x) => x.pass !== undefined);
+		return `| ${coordinator} | ${task} | ${arm} | ${r.length} | ${r.filter((x) => x.state === "completed").length} | ${green} | ${
 			r.filter((x) => x.accepted === true).length
-		} | ${fmt(cost.median, (v) => `$${v.toFixed(2)}`)} (${cost.excluded} excluded) | ${fmt(
+		} | ${scored.length ? scored.filter((x) => x.pass).length : "–"} | ${fmt(cost.median, (v) => `$${v.toFixed(2)}`)} (${cost.excluded} excluded) | ${fmt(
 			median(r.map((x) => x.wallMs)),
 			(v) => `${(v / 60_000).toFixed(1)} min`,
 		)} | ${fmt(median(r.filter((x) => x.compactions !== null).map((x) => x.compactions as number)), String)} |`;
 	};
 	const lines = [
-		"| task | arm | attempts | completed | check green (fresh clone) | accepted | median cost (n excluded) | median wall | median compactions |",
-		"|---|---|---|---|---|---|---|---|---|",
+		"| coordinator | task | arm | attempts | completed | check green (fresh clone) | accepted | pass | median cost (n excluded) | median wall | median compactions |",
+		"|---|---|---|---|---|---|---|---|---|---|---|",
 	];
-	for (const task of tasks)
+	for (const label of labels) {
+		const mine = kept.filter((x) => coordinatorLabel(x.coordinator) === label);
+		for (const task of tasks)
+			for (const arm of arms)
+				lines.push(
+					row(
+						label,
+						task,
+						arm,
+						mine.filter((x) => x.task === task && x.arm === arm),
+					),
+				);
+		if (tasks.length > 1)
+			for (const arm of arms)
+				lines.push(
+					row(
+						label,
+						"total",
+						arm,
+						mine.filter((x) => x.arm === arm),
+					),
+				);
+	}
+	if (labels.length > 1)
 		for (const arm of arms)
 			lines.push(
 				row(
-					task,
-					arm,
-					kept.filter((x) => x.task === task && x.arm === arm),
-				),
-			);
-	if (tasks.length > 1)
-		for (const arm of arms)
-			lines.push(
-				row(
+					"all",
 					"total",
 					arm,
 					kept.filter((x) => x.arm === arm),

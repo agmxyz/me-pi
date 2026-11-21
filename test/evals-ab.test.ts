@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
 	attemptQueue,
 	coordinatorEnv,
+	coordinatorLabel,
 	costMedian,
 	finalState,
 	isAccepted,
+	isPass,
 	isWipSubject,
+	loadTask,
+	type Pool,
+	poolFor,
 	promptOf,
 	renderContract,
 	reportStatus,
 	type SummaryRecord,
+	seatsOf,
 	sessionFacts,
 	summaryTable,
 	type Task,
@@ -22,7 +28,7 @@ import {
 	validateTask,
 } from "../evals/ab-task.ts";
 import { piCommand, processesWith, sweepProcesses } from "../evals/live.ts";
-import type { Sandbox } from "../evals/sandbox.ts";
+import { fixtureRepo, type Sandbox } from "../evals/sandbox.ts";
 import { sessionSpend } from "../evals/score.ts";
 
 const lines = (...entries: object[]) => entries.map((e) => JSON.stringify(e)).join("\n");
@@ -369,8 +375,11 @@ test("tick counts a gap over 60 s between watchdog ticks as suspended and moves 
 	});
 });
 
+const C1 = { provider: "p", model: "m1", thinking: "max" };
+const C2 = { provider: "p", model: "m2", thinking: "medium" };
 const record = (over: Partial<SummaryRecord> & Record<string, unknown> = {}) => ({
 	task: "t1",
+	coordinator: C1,
 	arm: "A",
 	n: 1,
 	state: "completed",
@@ -409,27 +418,178 @@ test("summaryTable counts green and accepted apart, per task and arm, with a tot
 			record({ task: "other" }),
 		],
 		["t1", "t2"],
+		[C1],
 		["A", "B"],
 	);
-	assert.match(lines[0], /\| task \| arm \| attempts \| completed \| check green \(fresh clone\) \| accepted \|/);
+	assert.match(
+		lines[0],
+		/\| coordinator \| task \| arm \| attempts \| completed \| check green \(fresh clone\) \| accepted \| pass \|/,
+	);
 	assert.deepEqual(
-		lines.slice(2).map((l) => l.split(" | ").slice(0, 6).join(" | ")),
+		lines.slice(2).map((l) => l.split(" | ").slice(1, 8).join(" | ")),
 		[
-			"| t1 | A | 2 | 2 | 2 | 1",
-			"| t1 | B | 1 | 1 | 0 | 0",
-			"| t2 | A | 1 | 1 | 1 | 1",
-			"| t2 | B | 1 | 1 | 1 | 1",
-			"| total | A | 3 | 3 | 3 | 2",
-			"| total | B | 2 | 2 | 1 | 1",
+			"t1 | A | 2 | 2 | 2 | 1 | –",
+			"t1 | B | 1 | 1 | 0 | 0 | –",
+			"t2 | A | 1 | 1 | 1 | 1 | –",
+			"t2 | B | 1 | 1 | 1 | 1 | –",
+			"total | A | 3 | 3 | 3 | 2 | –",
+			"total | B | 2 | 2 | 1 | 1 | –",
 		],
 	);
 	assert.match(lines.at(-1)!, /\$3\.00 \(0 excluded\)/);
-	assert.equal(summaryTable([record()], ["t1"], ["A"]).length, 3);
+	assert.equal(summaryTable([record()], ["t1"], [C1], ["A"]).length, 3);
+});
+
+test("summaryTable groups by coordinator and arm, counts pass, and adds an overall row per arm", () => {
+	const lines = summaryTable(
+		[
+			record({ pass: true }),
+			record({ arm: "B", pass: false }),
+			// Same task, arm, and n under the other coordinator: its own attempt, not a re-run.
+			record({ coordinator: C2, pass: true }),
+			record({ coordinator: C2, arm: "B", pass: true }),
+			record({ coordinator: { ...C2, model: "other" } }),
+		],
+		["t1"],
+		[C1, C2],
+		["A", "B"],
+	);
+	assert.deepEqual(
+		lines.slice(2).map((l) => l.split(" | ").slice(0, 8).join(" | ")),
+		[
+			"| p/m1@max | t1 | A | 1 | 1 | 1 | 1 | 1",
+			"| p/m1@max | t1 | B | 1 | 1 | 1 | 1 | 0",
+			"| p/m2@medium | t1 | A | 1 | 1 | 1 | 1 | 1",
+			"| p/m2@medium | t1 | B | 1 | 1 | 1 | 1 | 1",
+			"| all | total | A | 2 | 2 | 2 | 2 | 2",
+			"| all | total | B | 2 | 2 | 2 | 2 | 1",
+		],
+	);
+});
+
+const SYNTH = { dir: "/s", expect: "blocked" as const, blockedKeywords: ["Per Line", "whole order"] };
+const blocked = (reportText: string, srcChanged: string[] = []) =>
+	isPass(SYNTH, { accepted: false, hidden: { exit: 0 }, reportText, srcChanged });
+
+test("an expect-blocked task passes only BLOCKED, naming the ambiguity, with no src change", () => {
+	assert.equal(blocked("## Status\nBLOCKED\n\nIs the discount per line or on the whole order?"), true);
+	assert.equal(blocked("Status: BLOCKED. Should it apply PER LINE?"), true, "keywords match in any case");
+	assert.equal(blocked("Status: DONE\nApplied per line."), false);
+	assert.equal(blocked("Status: BLOCKED\nThe brief is unclear."), false);
+	assert.equal(blocked("Status: BLOCKED\nper line or whole order?", ["src/orders.ts"]), false);
+	const done = { ...SYNTH, expect: "done" as const };
+	const r = { reportText: "", srcChanged: ["src/a.ts"] };
+	assert.equal(isPass(done, { ...r, accepted: true, hidden: { exit: 0 } }), true);
+	assert.equal(isPass(done, { ...r, accepted: true, hidden: { exit: 1 } }), false);
+	assert.equal(isPass(done, { ...r, accepted: false, hidden: { exit: 0 } }), false);
+});
+
+const BASE_POOL: Pool = {
+	version: 3,
+	scout: { models: [{ model: "x/scout", thinking: "off" }] },
+	worker: {
+		models: [
+			{ model: "x/a", thinking: "max" },
+			{ model: "x/b", thinking: "low" },
+		],
+	},
+	readOnlySkills: ["code-review"],
+	implementSkills: ["tdd"],
+};
+
+test("each coordinator of a matrix gets a pool with scout and worker on its own model, keeping the skills", () => {
+	const one = { models: [{ model: "p/m1", thinking: "max" }] };
+	assert.deepEqual(poolFor(BASE_POOL, C1), { ...BASE_POOL, scout: one, worker: one });
+	const seats = seatsOf({ ...TASK, coordinator: undefined, pool: undefined, coordinators: [C1, C2] }, BASE_POOL);
+	assert.deepEqual(
+		seats.map((s) => [coordinatorLabel(s.coordinator), (s.pool.worker as any).models, s.pool.readOnlySkills]),
+		[
+			["p/m1@max", [{ model: "p/m1", thinking: "max" }], ["code-review"]],
+			["p/m2@medium", [{ model: "p/m2", thinking: "medium" }], ["code-review"]],
+		],
+	);
+	assert.deepEqual(seatsOf(TASK, BASE_POOL), [{ coordinator: TASK.coordinator, pool: TASK.pool }]);
+	assert.throws(
+		() => validateTask({ ...TASK, coordinators: [C1, C1], coordinator: undefined }),
+		/coordinators: given twice/,
+	);
+	assert.throws(() => validateTask({ ...TASK, coordinators: [C1] }), /coordinator or coordinators, not both/);
+});
+
+const SYNTH_DIR = join(import.meta.dirname, "..", "evals", "synth");
+
+test("the synth task list loads every task, resolved against its file, with the coordinator matrix", () => {
+	const list = JSON.parse(readFileSync(join(SYNTH_DIR, "tasks.json"), "utf8"));
+	const built: [string, string | undefined][] = [];
+	const tasks = list.map((raw: unknown) =>
+		loadTask(raw, SYNTH_DIR, (fixture, overlay) => {
+			built.push([fixture, overlay]);
+			return { repo: "/targets/x", base: "abc" };
+		}),
+	);
+	assert.deepEqual(
+		tasks.map((t: Task) => t.id),
+		["s1", "s2", "s3", "s5", "s6", "s7", "s8"],
+	);
+	const s3 = tasks[2];
+	assert.equal(s3.branch, "task/s3");
+	assert.equal(s3.brief, join(SYNTH_DIR, "tasks", "s3", "brief.md"));
+	assert.equal(s3.synth.expect, "done");
+	assert.deepEqual(built[2], [join(SYNTH_DIR, "fixture"), join(SYNTH_DIR, "tasks", "s3", "base")]);
+	assert.equal(built[0][1], undefined, "s1 has no base overlay");
+	assert.equal(tasks[3].synth.expect, "blocked");
+	assert.ok(tasks[3].synth.blockedKeywords.includes("per line"));
+	assert.deepEqual(tasks[0].coordinators.map(coordinatorLabel), [
+		"openai-codex/gpt-6-luna@max",
+		"openai-codex/gpt-6.1-terra@medium",
+	]);
+});
+
+test("a synth target holds the fixture plus the base overlay, and no hidden tests or reference", (t) => {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "evals-synth-")));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const env = {
+		HOME: dir,
+		PATH: process.env.PATH!,
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_AUTHOR_NAME: "t",
+		GIT_AUTHOR_EMAIL: "t@invalid",
+		GIT_COMMITTER_NAME: "t",
+		GIT_COMMITTER_EMAIL: "t@invalid",
+	};
+	const raw = {
+		kind: "synth",
+		id: "s3",
+		dir: "tasks/s3",
+		fixture: "fixture",
+		check: "c",
+		setup: [],
+		coordinators: [C1],
+	};
+	const build = (dest: string) => (fixture: string, overlay: string | undefined) => ({
+		repo: join(dir, dest),
+		base: fixtureRepo(fixture, join(dir, dest), env, overlay),
+	});
+	const task = loadTask(raw, SYNTH_DIR, build("one"));
+	assert.equal(task.base, loadTask(raw, SYNTH_DIR, build("two")).base, "the base commit is deterministic");
+	const files = execFileSync("git", ["ls-files"], { cwd: task.repo, encoding: "utf8" }).split("\n");
+	assert.ok(files.includes("src/orders.ts"));
+	assert.ok(!files.some((f) => /(^|\/)(hidden|reference)\//.test(f) || f.startsWith("tasks/")), files.join(" "));
+	assert.ok(!existsSync(join(task.repo, "hidden")) && !existsSync(join(task.repo, "reference")));
+	assert.equal(
+		readFileSync(join(task.repo, "src", "orders.ts"), "utf8"),
+		readFileSync(join(SYNTH_DIR, "tasks", "s3", "base", "src", "orders.ts"), "utf8"),
+		"the overlay replaces the fixture's file",
+	);
 });
 
 test("attemptQueue interleaves n, task, arm and skips settled records on resume, not timeouts", () => {
 	const ids = (q: ReturnType<typeof attemptQueue>) => q.map((x) => `${x.task}-${x.arm}${x.n}`);
-	assert.deepEqual(ids(attemptQueue(["t1", "t2"], ["A", "B"], 2)), [
+	const tasks = [
+		{ id: "t1", coordinators: [C1] },
+		{ id: "t2", coordinators: [C1] },
+	];
+	assert.deepEqual(ids(attemptQueue(tasks, ["A", "B"], 2)), [
 		"t1-A1",
 		"t1-B1",
 		"t2-A1",
@@ -440,17 +600,46 @@ test("attemptQueue interleaves n, task, arm and skips settled records on resume,
 		"t2-B2",
 	]);
 	const done = [
-		{ task: "t1", arm: "A", n: 1, state: "completed" },
-		{ task: "t1", arm: "B", n: 1, state: "capped" },
-		{ task: "t2", arm: "A", n: 1, state: "void" },
-		{ task: "t2", arm: "B", n: 1, state: "timeout" },
-		{ task: "t1", arm: "A", n: 2, state: "incomplete" },
+		{ task: "t1", coordinator: C1, arm: "A", n: 1, state: "completed" },
+		{ task: "t1", coordinator: C1, arm: "B", n: 1, state: "capped" },
+		{ task: "t2", coordinator: C1, arm: "A", n: 1, state: "void" },
+		{ task: "t2", coordinator: C1, arm: "B", n: 1, state: "timeout" },
+		{ task: "t1", coordinator: C1, arm: "A", n: 2, state: "incomplete" },
 	];
-	assert.deepEqual(ids(attemptQueue(["t1", "t2"], ["A", "B"], 2, done)), [
-		"t2-B1",
-		"t1-A2",
-		"t1-B2",
-		"t2-A2",
-		"t2-B2",
+	assert.deepEqual(ids(attemptQueue(tasks, ["A", "B"], 2, done)), ["t2-B1", "t1-A2", "t1-B2", "t2-A2", "t2-B2"]);
+});
+
+test("attemptQueue interleaves n, then coordinator, then task, then arm, and resumes per coordinator", () => {
+	const ids = (q: ReturnType<typeof attemptQueue>) => q.map((x) => `${x.coordinator.model}-${x.task}-${x.arm}${x.n}`);
+	const tasks = [
+		{ id: "t1", coordinators: [C1, C2] },
+		{ id: "t2", coordinators: [C1, C2] },
+	];
+	assert.deepEqual(ids(attemptQueue(tasks, ["A", "B"], 2)), [
+		"m1-t1-A1",
+		"m1-t1-B1",
+		"m1-t2-A1",
+		"m1-t2-B1",
+		"m2-t1-A1",
+		"m2-t1-B1",
+		"m2-t2-A1",
+		"m2-t2-B1",
+		"m1-t1-A2",
+		"m1-t1-B2",
+		"m1-t2-A2",
+		"m1-t2-B2",
+		"m2-t1-A2",
+		"m2-t1-B2",
+		"m2-t2-A2",
+		"m2-t2-B2",
+	]);
+	// A settled attempt of one coordinator does not settle the same (task, arm, n) of the other.
+	const done = [{ task: "t1", coordinator: C1, arm: "A", n: 1, state: "completed" }];
+	assert.deepEqual(ids(attemptQueue(tasks, ["A"], 1, done)), ["m1-t2-A1", "m2-t1-A1", "m2-t2-A1"]);
+	// A task runs only with its own coordinators; coordinators go in order of first appearance.
+	assert.deepEqual(ids(attemptQueue([{ id: "t1", coordinators: [C2] }, tasks[1]], ["A"], 1)), [
+		"m2-t1-A1",
+		"m2-t2-A1",
+		"m1-t2-A1",
 	]);
 });

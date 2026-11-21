@@ -45,6 +45,9 @@ function fixture(t: any) {
 	mkdirSync(join(repo, "skills", "not-a-skill"));
 	writeFileSync(join(repo, "skills", "one", "SKILL.md"), "---\nname: one\n---\n");
 	writeFileSync(join(repo, "GLOBAL_AGENTS.md"), "policy\n");
+	mkdirSync(join(repo, "evals", "synth", "tasks", "s1", "hidden"), { recursive: true });
+	writeFileSync(join(repo, "evals", "synth", "tasks", "s1", "hidden", "s1.test.ts"), "oracle\n");
+	writeFileSync(join(repo, "evals", "keep.ts"), "\n");
 	const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, env, stdio: "ignore" });
 	git("init", "-q", "-b", "main");
 	git("add", "-A");
@@ -93,6 +96,9 @@ test("a full-rig sandbox loads me-pi from a remote-less clone and keeps every pa
 	for (const p of [s.home, s.src]) assert.ok(p.startsWith(`${s.root}/`), p);
 	assert.equal(execFileSync("git", ["-C", s.src, "remote"], { encoding: "utf8" }).trim(), "");
 	assert.equal(s.commit, execFileSync("git", ["-C", f.repo, "rev-parse", "main"], { encoding: "utf8" }).trim());
+	// The synthetic suite's oracle is deleted from the clone Pi loads; the rest of evals stays.
+	assert.ok(!existsSync(join(s.src, "evals", "synth")));
+	assert.ok(existsSync(join(s.src, "evals", "keep.ts")));
 
 	const settings = JSON.parse(readFileSync(join(s.agentDir, "settings.json"), "utf8"));
 	assert.deepEqual(settings.packages, ["npm:pi-web-access@0.46.0", s.src]);

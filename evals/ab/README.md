@@ -7,7 +7,7 @@ Compares two ways a coordinator runs real implementation tasks:
 
 Both arms get the same brief, check, review requirement, and report format, through a contract rendered from `contract.md`. The runner judges each attempt from the worktree and logs it leaves. It does not trust the agent's report.
 
-**Real spend.** Each attempt is a full implementation run with real model calls, often several dollars to tens of dollars. Never run it in `npm run check` or CI. Hermetic tests (`test/evals-ab.test.ts`) cover the cost parser, the final-state rules, the cost median, acceptance, the summary table, the attempt queue and resume, the sleep-gap clock, the coordinator env, the process sweep, the contract, and task validation; `test/evals-sandbox.test.ts` covers the sandbox's short TMPDIR. The tmux and model paths are tested only by real runs.
+**Real spend.** Each attempt is a full implementation run with real model calls, often several dollars to tens of dollars. Never run it in `npm run check` or CI. Hermetic tests (`test/evals-ab.test.ts`) cover the cost parser, the final-state rules, the cost median, acceptance, synthetic pass scoring, the synth target build, the per-coordinator pool, the summary table, the attempt queue and resume, the sleep-gap clock, the coordinator env, the process sweep, the contract, and task validation; `test/evals-sandbox.test.ts` covers the sandbox's short TMPDIR and its clone without `evals/synth`. The tmux and model paths are tested only by real runs.
 
 ## Task file
 
@@ -24,6 +24,7 @@ Write a JSON task file outside the repo, for example `~/.local/state/me-pi-evals
 | `setup` | Commands run in the worktree, with the sandbox env, before Pi starts (e.g. `["npm ci"]`) |
 | `coordinator` | `{provider, model, thinking}` for the coordinator |
 | `pool` | The sandbox's `delegate.json` (version 3) |
+| `coordinators` | Instead of `coordinator`: a list of `{provider, model, thinking}`. Each attempt runs one; its pool is `pool` (default `evals/pools/codex.json`) with `scout` and `worker` both set to that coordinator's model and thinking, so the skill lists stay |
 | `reference` | Optional SHA of a known-good result. It is fetched only after the session, so the agent never sees it |
 | `baseline` | Optional free-form object, copied into every record |
 
@@ -43,7 +44,8 @@ node evals/ab.ts --task <t1> --task <t2> --auth <file> --skill <dir> --n 2 --res
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--task` | required | A task file; repeat for several tasks (ids must differ). Attempts interleave: for each n, each task, each arm |
+| `--task` | `--task` or `--tasks` required | A task file; repeat for several tasks (ids must differ). Attempts interleave: for each n, each coordinator, each task, each arm |
+| `--tasks` | | A JSON array of task entries (e.g. `evals/synth/tasks.json`), added to the `--task` ones |
 | `--arm` | both | `A` or `B`; repeat for both. Attempts interleave A1, B1, A2, B2… |
 | `--n` | 1 | Attempts per task and arm |
 | `--jobs` | 1 | Attempts in parallel. See the OAuth race above |
@@ -52,7 +54,7 @@ node evals/ab.ts --task <t1> --task <t2> --auth <file> --skill <dir> --n 2 --res
 | `--cap` | 25 | Hard cap in USD per attempt. Also passed as `ME_PI_SPEND_BUDGET_USD` |
 | `--timeout-min` | 120 | Active-time limit per attempt (see sleep below). It is also `PI_LIVE_TIMEOUT`, and the limit for the setup and re-check commands |
 | `--out` | `~/.local/state/me-pi-evals/ab-<id>-<sweep>.jsonl`, or `ab-multi-<sweep>.jsonl` with several tasks | Record file, mode 0600. Patches go to the same path without `.jsonl` |
-| `--resume` | none | A record file from an interrupted sweep. Attempts (task, arm, n) it already holds as `completed`, `capped`, or `void` are skipped; `timeout` and `incomplete` ones run again. New records are appended to it, and `--out`, if given, must name the same file. Pass the same `--task`, `--arm`, and `--n` as before |
+| `--resume` | none | A record file from an interrupted sweep. Attempts (task, coordinator, arm, n) it already holds as `completed`, `capped`, or `void` are skipped; `timeout` and `incomplete` ones run again. New records are appended to it, and `--out`, if given, must name the same file. Pass the same `--task`, `--tasks`, `--arm`, and `--n` as before |
 | `--root`, `--keep` | OS temp, off | Where sandboxes go, and whether to keep them (with their TMPDIRs) |
 
 **Short TMPDIR.** Each sandbox's `TMPDIR` is its own `/tmp/mpe-XXXXXX`, not a directory under the sandbox root: under the OS temp dir it would be about 70 bytes, too long for the Unix sockets a target's tests create there (macOS caps socket paths near 104 bytes, so `listen` fails with `EINVAL`). It belongs to the sandbox: the sweep below also looks for processes in it, and it is removed with the root.
@@ -69,7 +71,21 @@ Both arms' coordinators run with `ME_PI_UNATTENDED=1`. Nobody answers a dialog, 
 
 **Ctrl-C and errors.** On SIGINT or SIGTERM the runner halts every started attempt the same way, kills running setup and check commands, removes sockets and roots, and exits with 130 or 143. If one attempt throws (e.g. `setup` fails), no new attempt starts. The attempts already running finish and are recorded, then the runner exits with the error. Sockets and roots are removed only after every started Pi is halted.
 
-The run prints one line per attempt. Then it prints a table with a row per task and arm, plus a total row per arm when there are several tasks: attempts, completed, check green in the fresh clone (`checkFresh`), accepted, median total cost, and the medians of wall time and compactions. With `--resume` the table covers the earlier records too; a re-run attempt replaces its earlier record. The cost median covers only `completed` attempts whose cost is fully known (`source: "pi-estimate"`). The cell shows how many attempts it left out, so unknown or partial costs never count as $0. The runner warns if the live `~/.pi/agent` changed during the run.
+The run prints one line per attempt. Then it prints a table with a row per coordinator, task, and arm, a total row per coordinator and arm when there are several tasks, and an `all` row per arm when there are several coordinators: attempts, completed, check green in the fresh clone (`checkFresh`), accepted, pass (synthetic tasks; `–` otherwise), median total cost, and the medians of wall time and compactions. With `--resume` the table covers the earlier records too; a re-run attempt replaces its earlier record. The cost median covers only `completed` attempts whose cost is fully known (`source: "pi-estimate"`). The cell shows how many attempts it left out, so unknown or partial costs never count as $0. The runner warns if the live `~/.pi/agent` changed during the run.
+
+## Synthetic suite
+
+`evals/synth/` holds a TypeScript fixture repo (`fixture/`) and tasks under `tasks/<id>/`: `brief.md` (the only part an agent sees), `meta.json` (`expect`: `done` or `blocked`, and `blockedKeywords` for `blocked`), `hidden/*.test.ts`, an optional `base/` overlay, and `reference/` (a known-good result). `evals/synth/verify.sh <tasks-dir> <id>` checks one task's oracle offline: the hidden tests fail on the base (pass, for `blocked`), and the reference passes `npm run check` and every hidden test. `evals/synth/tasks.json` lists the sweep's tasks with both coordinators; its paths are relative to it:
+
+```sh
+node evals/ab.ts --tasks evals/synth/tasks.json --auth <file> --skill ~/.agents/skills/code-review --n 2
+```
+
+An entry with `"kind": "synth"` has `id`, `dir`, `fixture`, `check`, `setup`, and `coordinator(s)`. The runner builds its target once per sweep with `fixtureRepo` (the fixture, then `base/` copied over it; the first commit is the same every sweep and is the `base`), uses `<dir>/brief.md`, and branch `task/<id>`.
+
+**Scoring.** After the attempt's processes are swept, the runner copies `hidden/*.test.ts` into `test/` of the fresh clone where `checkFresh` ran and runs `node --test` on exactly those files (same timeout): `hidden` holds `files`, `exit`, `ms`, `timedOut`, and a `tail`. For `expect: "done"`, `pass` = `accepted` and `hidden.exit` is 0. For `expect: "blocked"`, `pass` = the report's Status is `BLOCKED`, its text contains one of `blockedKeywords` (any case), and `git diff --name-only <base> HEAD -- src` is empty.
+
+**The oracle stays hidden.** The target holds only the fixture plus `base/`: never `hidden/`, `reference/`, or `meta.json`. Every sandbox deletes `evals/synth` from its me-pi clone right after cloning, so Pi, its skills, and its workers cannot read it there. The agent can still reach the live checkout by absolute path; the runner does not fence it.
 
 ## Records
 
@@ -78,6 +94,7 @@ Each JSONL record holds:
 - `attempt`, `arm`, `n`, `task`, `repo`, `base`, `branch`, `reference`, `baseline`. Also `commit` (the me-pi HEAD under test), the Pi, node and OS versions, `coordinator`, `skill`, and `hashes` of the pool, brief, contract, and extra skills, extensions, and packages.
 - `state`: `completed`, `capped`, `timeout`, `incomplete` (start failure, account stop, or no session log), or `void` (`STOPPED: infra`, or an arm-B attempt that called `delegate` with role `implement`: note `arm B used implement`). `note` gives the reason.
 - `accepted`: the attempt delivered: `state` is `completed`, the report's Status is `DONE`, `checkFresh` exited 0, and `headIsWip` is false. A green check alone is not delivery: an implement worker's shutdown WIP commit or a BLOCKED report can pass it.
+- `pass`, `expect`, `hidden`: synthetic tasks only; see below.
 - `wallMs`: from Pi's start until every process of the attempt has exited. It includes any sleep; `suspendedMs` is the part the timeout did not count.
 - `orphansKilled`: how many processes of the attempt were still alive 20 s after the tmux session was killed and had to be signalled.
 - `head`, `headIsWip` (its subject starts with `WIP(`, an implement worker's shutdown commit), `commits` (`base..head`), and `clean` (no uncommitted changes in the worktree).

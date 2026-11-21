@@ -116,6 +116,8 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
 	const src = join(root, "src");
 	mkdirSync(agentDir, { recursive: true });
 	const commit = cloneAt(opts.repo, opts.ref, src);
+	// The synthetic suite's hidden tests and references are the runner's oracle: no agent may read them from me-pi.
+	rmSync(join(src, "evals", "synth"), { recursive: true, force: true });
 
 	writeFileSync(
 		join(home, ".gitconfig"),
@@ -174,9 +176,13 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
 	};
 }
 
-/** Copies a fixture into a fresh git repo whose first commit is identical across runs. */
-export function fixtureRepo(fixture: string, dest: string, env: Record<string, string>): string {
+/**
+ * Copies a fixture, then `overlay` (if given) over it, into a fresh git repo whose first commit is identical across
+ * runs.
+ */
+export function fixtureRepo(fixture: string, dest: string, env: Record<string, string>, overlay?: string): string {
 	cpSync(fixture, dest, { recursive: true });
+	if (overlay) cpSync(overlay, dest, { recursive: true });
 	const date = "2026-01-01T00:00:00Z";
 	const run = (...args: string[]) =>
 		execFileSync("git", args, {

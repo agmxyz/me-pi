@@ -9,12 +9,13 @@ import {
 	copyFileSync,
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir, platform, release } from "node:os";
+import { homedir, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -24,22 +25,34 @@ import {
 	type AttemptState,
 	attemptQueue,
 	coordinatorEnv,
+	coordinatorLabel,
 	finalState,
 	isAccepted,
+	isPass,
 	isWipSubject,
+	loadTask,
+	type Pool,
 	promptOf,
 	renderContract,
 	reportStatus,
 	type SummaryRecord,
+	seatsOf,
 	sessionFacts,
 	skillOf,
 	summaryTable,
 	type Task,
 	tick,
-	validateTask,
 } from "./ab-task.ts";
 import { liveSnapshot, panePid, piCommand, piLive, sha, socketOf, sweepProcesses } from "./live.ts";
-import { cloneAt, createSandbox, removeSandbox, type Sandbox, sandboxDirs } from "./sandbox.ts";
+import {
+	type Coordinator,
+	cloneAt,
+	createSandbox,
+	fixtureRepo,
+	removeSandbox,
+	type Sandbox,
+	sandboxDirs,
+} from "./sandbox.ts";
 import { sessionSpend } from "./score.ts";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
@@ -50,6 +63,7 @@ const NO_LOG_MS = 3 * 60_000;
 const { values: opt } = parseArgs({
 	options: {
 		task: { type: "string", multiple: true },
+		tasks: { type: "string", multiple: true },
 		arm: { type: "string", multiple: true },
 		n: { type: "string", default: "1" },
 		jobs: { type: "string", default: "1" },
@@ -68,7 +82,7 @@ const { values: opt } = parseArgs({
 	},
 });
 
-if (!opt.task?.length) throw new Error("--task <file.json> is required");
+if (!opt.task?.length && !opt.tasks?.length) throw new Error("--task <file.json> or --tasks <list.json> is required");
 if (opt.resume && opt.out && resolve(opt.out) !== resolve(opt.resume))
 	throw new Error("--resume appends to its own file; drop --out or give the same path");
 const arms = (opt.arm?.length ? opt.arm : [...ARMS]) as Arm[];
@@ -85,11 +99,50 @@ const timeoutMs = positive("timeout-min", opt["timeout-min"]!) * 60_000;
 if (!opt["dry-run"] && !opt.auth)
 	throw new Error("--auth <eval auth.json> is required for a real run; use --dry-run without one");
 
-const tasks = opt.task.map((f) => validateTask(JSON.parse(readFileSync(resolve(f), "utf8"))));
+/** Synthetic targets (fixture plus the task's base overlay), built once per sweep and removed at the end. */
+const targets = mkdtempSync(join(tmpdir(), "me-pi-ab-targets-"));
+// A fixed identity and no user config, so the target's first commit, the attempts' base, is the same every sweep.
+const targetEnv = {
+	HOME: targets,
+	PATH: process.env.PATH ?? "/usr/bin:/bin",
+	GIT_CONFIG_NOSYSTEM: "1",
+	GIT_AUTHOR_NAME: "me-pi eval",
+	GIT_AUTHOR_EMAIL: "eval@invalid",
+	GIT_COMMITTER_NAME: "me-pi eval",
+	GIT_COMMITTER_EMAIL: "eval@invalid",
+};
+const loadEntry = (file: string) => (raw: any) =>
+	loadTask(raw, dirname(file), (fixture, overlay) => {
+		const repo = join(targets, String(raw.id));
+		return { repo, base: fixtureRepo(fixture, repo, targetEnv, overlay) };
+	});
+const loadAll = () => [
+	...(opt.task ?? []).map((f) => loadEntry(resolve(f))(JSON.parse(readFileSync(resolve(f), "utf8")))),
+	...(opt.tasks ?? []).flatMap((f) => {
+		const list = JSON.parse(readFileSync(resolve(f), "utf8"));
+		if (!Array.isArray(list)) throw new Error(`--tasks: ${f} must hold a JSON array of tasks`);
+		return list.map(loadEntry(resolve(f)));
+	}),
+];
+let tasks: Task[];
+try {
+	tasks = loadAll();
+} catch (err) {
+	rmSync(targets, { recursive: true, force: true });
+	throw err;
+}
 const taskIds = tasks.map((t) => t.id);
 const dup = taskIds.find((id, i) => taskIds.indexOf(id) !== i);
 if (dup) throw new Error(`--task: task id ${dup} given twice`);
 const taskById = new Map(tasks.map((t) => [t.id, t]));
+// A matrix task's pool keeps these skills; scout and worker become the attempt's coordinator.
+const basePool = JSON.parse(readFileSync(join(HERE, "pools", "codex.json"), "utf8")) as Pool;
+const seats = new Map(tasks.map((t) => [t.id, seatsOf(t, basePool)]));
+const seatOf = (task: Task, c: Coordinator) =>
+	seats.get(task.id)!.find((s) => coordinatorLabel(s.coordinator) === coordinatorLabel(c))!;
+const coordinators = [
+	...new Map([...seats.values()].flat().map((s) => [coordinatorLabel(s.coordinator), s.coordinator])).values(),
+];
 const template = readFileSync(join(HERE, "ab", "contract.md"), "utf8");
 const directSkill = join(HERE, "ab", "skills", "implement-direct");
 const realHome = homedir();
@@ -201,19 +254,20 @@ async function cleanup() {
 			// Already exited.
 		}
 	for (const s of roots) rmSync(socketOf(s), { force: true });
+	rmSync(targets, { recursive: true, force: true });
 	for (const s of roots)
 		if (survived.has(s.root)) console.error(`⚠ kept ${s.root}: a process of it survived SIGKILL`);
 		else if (!opt.keep) removeSandbox(s);
 		else console.log(`kept ${s.root} (TMPDIR ${s.tmp})`);
 }
 
-function sandboxFor(task: Task, arm: Arm): Sandbox {
+function sandboxFor(seat: { coordinator: Coordinator; pool: Pool }, arm: Arm): Sandbox {
 	return createSandbox({
 		repo,
 		ref: "HEAD",
 		policy: "full-rig",
-		coordinator: task.coordinator,
-		pool: task.pool,
+		coordinator: seat.coordinator,
+		pool: seat.pool,
 		auth: opt.auth,
 		skills: [...opt.skill!, ...(arm === "B" ? [directSkill] : [])],
 		extensions: opt.extension,
@@ -228,6 +282,8 @@ function sandboxFor(task: Task, arm: Arm): Sandbox {
 interface Attempt {
 	id: string;
 	task: Task;
+	coordinator: Coordinator;
+	pool: Pool;
 	arm: Arm;
 	n: number;
 	sandbox: Sandbox;
@@ -240,14 +296,20 @@ interface Attempt {
 }
 
 /** Clones the target at its base with no remote, creates the branch, runs setup, and writes the brief and contract. */
-async function prepare(task: Task, arm: Arm, n: number): Promise<Attempt> {
-	const sandbox = sandboxFor(task, arm);
+async function prepare(task: Task, coordinator: Coordinator, arm: Arm, n: number): Promise<Attempt> {
+	const seat = seatOf(task, coordinator);
+	const sandbox = sandboxFor(seat, arm);
 	roots.push(sandbox);
-	const id = `${task.id}-${arm}${n}`;
+	// A matrix task's attempts name their coordinator, so their artifact directories do not collide.
+	const id = task.coordinators
+		? `${task.id}-${coordinator.model}@${coordinator.thinking}-${arm}${n}`
+		: `${task.id}-${arm}${n}`;
 	const dir = join(sandbox.root, "attempt");
 	const a: Attempt = {
 		id,
 		task,
+		coordinator,
+		pool: seat.pool,
 		arm,
 		n,
 		sandbox,
@@ -279,8 +341,8 @@ const coordinatorCommand = (a: Attempt) => [
 	"--approve",
 ];
 
-async function dryRun(task: Task, arm: Arm): Promise<boolean> {
-	const a = await prepare(task, arm, 0);
+async function dryRun(task: Task, coordinator: Coordinator, arm: Arm): Promise<boolean> {
+	const a = await prepare(task, coordinator, arm, 0);
 	const cmd = coordinatorCommand(a);
 	const { target, halt } = await startTarget(a.sandbox, a.worktree, cmd);
 	let screen = "";
@@ -293,10 +355,10 @@ async function dryRun(task: Task, arm: Arm): Promise<boolean> {
 	console.log(screen);
 	console.log(
 		missing.length
-			? `✗ dry run ${task.id} arm ${arm}: not loaded: ${missing.join(", ")}`
-			: `✓ dry run ${task.id} arm ${arm}: Pi started with ${skillOf(arm)} and delegate.ts`,
+			? `✗ dry run ${a.id}: not loaded: ${missing.join(", ")}`
+			: `✓ dry run ${a.id}: Pi started with ${skillOf(arm)} and delegate.ts`,
 	);
-	console.log(`contract ${task.id} ${arm}: ${a.contract}`);
+	console.log(`contract ${a.id}: ${a.contract}`);
 	return missing.length === 0;
 }
 
@@ -331,7 +393,27 @@ async function recheck(a: Attempt, head: string) {
 	const inWorktree = await shell(a.task.check, a.worktree, a.sandbox.env, timeoutMs);
 	const fresh = join(a.dir, "fresh");
 	cloneAt(a.worktree, head, fresh);
-	return { inWorktree, fresh: await setupAndCheck(a, fresh) };
+	return { inWorktree, fresh: await setupAndCheck(a, fresh), hidden: await hiddenTests(a, fresh) };
+}
+
+/**
+ * A synthetic task's hidden tests, copied into the fresh clone's `test/` only now that every process of the attempt
+ * has exited, and run alone with `node --test`.
+ */
+async function hiddenTests(a: Attempt, fresh: string) {
+	if (!a.task.synth) return undefined;
+	const hidden = join(a.task.synth.dir, "hidden");
+	const files = readdirSync(hidden).filter((f) => f.endsWith(".test.ts"));
+	if (!files.length) throw new Error(`${a.task.id}: no hidden tests in ${hidden}`);
+	mkdirSync(join(fresh, "test"), { recursive: true });
+	for (const f of files) copyFileSync(join(hidden, f), join(fresh, "test", f));
+	const { exit, ms, timedOut, tail } = await shell(
+		`node --test ${files.map((f) => `'test/${f}'`).join(" ")}`,
+		fresh,
+		a.sandbox.env,
+		timeoutMs,
+	);
+	return { files, exit, ms, timedOut, tail };
 }
 function diffVsReference(a: Attempt, head: string) {
 	const { task } = a;
@@ -439,6 +521,17 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		status: reportExists ? reportStatus(readFileSync(a.report, "utf8")) : null,
 	};
 	const checkFresh = { command: task.check, ...check.fresh };
+	const accepted = isAccepted({ state, report, checkFresh, headIsWip });
+	const pass =
+		task.synth &&
+		isPass(task.synth, {
+			accepted,
+			hidden: check.hidden!,
+			reportText: reportExists ? readFileSync(a.report, "utf8") : "",
+			srcChanged: git(a.worktree, env, "diff", "--name-only", task.base, head, "--", "src")
+				.split("\n")
+				.filter(Boolean),
+		});
 	return {
 		sweep,
 		attempt: a.id,
@@ -454,10 +547,10 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		pi: piVersion,
 		node: process.version,
 		os: `${platform()} ${release()}`,
-		coordinator: task.coordinator,
+		coordinator: a.coordinator,
 		skill: skillOf(a.arm),
 		hashes: {
-			pool: sha(JSON.stringify(task.pool)),
+			pool: sha(JSON.stringify(a.pool)),
 			brief: sha(readFileSync(task.brief)),
 			contract: sha(readFileSync(a.contract)),
 			extraSkills: opt.skill,
@@ -468,7 +561,9 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		timeoutMin: timeoutMs / 60_000,
 		state,
 		note,
-		accepted: isAccepted({ state, report, checkFresh, headIsWip }),
+		accepted,
+		pass,
+		expect: task.synth?.expect,
 		wallMs,
 		suspendedMs: clock.suspendedMs,
 		head,
@@ -478,6 +573,7 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		ignoredLeftovers,
 		checkInWorktree: { command: task.check, ...check.inWorktree },
 		checkFresh,
+		hidden: check.hidden,
 		diffstat: numstat(a.worktree, env, task.base, head),
 		diffVsReference: diffVsReference(a, head),
 		report,
@@ -533,7 +629,10 @@ for (const [sig, code] of [
 		);
 	});
 
-/** The records already in the `--resume` file; a line that is not a record with task, arm, n, and state is an error. */
+/**
+ * The records already in the `--resume` file; a line that is not a record with task, coordinator, arm, n, and state is
+ * an error.
+ */
 function resumed(file: string): SummaryRecord[] {
 	if (!existsSync(file)) throw new Error(`--resume: no such file ${file}`);
 	return readFileSync(file, "utf8")
@@ -541,7 +640,13 @@ function resumed(file: string): SummaryRecord[] {
 		.filter((l) => l.trim())
 		.map((l, i) => {
 			const r = JSON.parse(l);
-			if (typeof r?.task !== "string" || typeof r.arm !== "string" || typeof r.n !== "number" || !r.state)
+			if (
+				typeof r?.task !== "string" ||
+				typeof r.coordinator?.model !== "string" ||
+				typeof r.arm !== "string" ||
+				typeof r.n !== "number" ||
+				!r.state
+			)
 				throw new Error(`--resume: line ${i + 1} of ${file} is not an attempt record`);
 			return r;
 		});
@@ -568,13 +673,21 @@ async function main() {
 	try {
 		if (opt["dry-run"]) {
 			const ok: boolean[] = [];
-			for (const task of tasks) for (const arm of arms) ok.push(await dryRun(task, arm));
+			for (const task of tasks)
+				for (const { coordinator } of seats.get(task.id)!)
+					for (const arm of arms) ok.push(await dryRun(task, coordinator, arm));
 			process.exitCode = ok.every(Boolean) ? 0 : 1;
 			return;
 		}
 		const prior = opt.resume ? resumed(out) : [];
-		// Interleave tasks and arms (t1 A1, t1 B1, t2 A1, t2 B1, t1 A2…) so provider drift hits each alike.
-		const queue = attemptQueue(taskIds, arms, runs, prior);
+		// Interleave coordinators, tasks, and arms (c1 t1 A1, c1 t1 B1, c1 t2 A1, …, c2 t1 A1, …, c1 t1 A2…) so provider
+		// drift hits each alike.
+		const queue = attemptQueue(
+			tasks.map((t) => ({ id: t.id, coordinators: seats.get(t.id)!.map((s) => s.coordinator) })),
+			arms,
+			runs,
+			prior,
+		);
 		if (opt.resume) console.log(`resume: ${queue.length} attempt(s) left to run in ${out}`);
 		mkdirSync(dirname(out), { recursive: true });
 		const records: Record<string, any>[] = [];
@@ -584,9 +697,9 @@ async function main() {
 			for (let q = queue.shift(); q && !stopped; q = queue.shift()) {
 				const task = taskById.get(q.task)!;
 				try {
-					const a = await prepare(task, q.arm, q.n);
+					const a = await prepare(task, q.coordinator, q.arm, q.n);
 					// One serial check per provider refreshes the shared eval login before parallel attempts could race to rotate it.
-					const provider = task.coordinator.provider;
+					const provider = q.coordinator.provider;
 					if (!authChecked.has(provider))
 						authChecked.set(
 							provider,
@@ -602,19 +715,20 @@ async function main() {
 					records.push(record);
 					appendFileSync(out, `${JSON.stringify(record)}\n`, { mode: 0o600 });
 					console.log(
-						`${record.attempt}: ${record.state} check ${record.checkFresh.exit === 0 ? "✓" : "✗"}${record.accepted ? " accepted" : ""}${record.headIsWip ? " (HEAD is WIP)" : ""} $${record.cost.total.toFixed(2)}${record.cost.source === "partial" ? "+ (partial)" : ""}`,
+						`${record.attempt}: ${record.state} check ${record.checkFresh.exit === 0 ? "✓" : "✗"}${record.accepted ? " accepted" : ""}${record.hidden ? ` hidden ${record.hidden.exit === 0 ? "✓" : "✗"}` : ""}${record.pass ? " pass" : ""}${record.headIsWip ? " (HEAD is WIP)" : ""} $${record.cost.total.toFixed(2)}${record.cost.source === "partial" ? "+ (partial)" : ""}`,
 					);
 					if (record.note === "account") stopped = "account error";
 				} catch (err) {
 					// No new attempt starts; the ones running finish and are recorded.
-					stopped ||= `error in ${task.id}-${q.arm}${q.n}`;
+					stopped ||= `error in ${task.id} ${coordinatorLabel(q.coordinator)} ${q.arm}${q.n}`;
 					throw err;
 				}
 			}
 		};
 		const ended = await Promise.allSettled(Array.from({ length: jobs }, worker));
 		console.log(`\nrecords: ${out}\npatches: ${artifacts}${stopped ? `\n✗ stopped: ${stopped}` : ""}\n`);
-		for (const line of summaryTable([...prior, ...(records as SummaryRecord[])], taskIds, arms)) console.log(line);
+		for (const line of summaryTable([...prior, ...(records as SummaryRecord[])], taskIds, coordinators, arms))
+			console.log(line);
 		const failed = ended.filter((e): e is PromiseRejectedResult => e.status === "rejected");
 		if (failed.length)
 			throw new AggregateError(
