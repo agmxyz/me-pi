@@ -176,6 +176,22 @@ test("a failed bash call shows a cross and its exit code, and keeps its end from
 		["⋮ 10 more lines", "fail 1", "✖ a breaks", "Error: 1 broke"],
 		"an end longer than eight lines shows only its error-like lines, each once",
 	);
+	const runner = [
+		"✖ prices keep two decimals",
+		"  AssertionError: Expected values to be strictly equal:",
+		"    actual: '$19.5',",
+		"    expected: '$19.05',",
+		"✔ more than the stock cannot",
+		"ℹ pass 2",
+		"ℹ fail 0",
+		"ok 3 - invalid input is refused",
+		"Error: some tests fail",
+	];
+	assert.deepEqual(
+		failed(`${runner.join("\n")}\n\nCommand exited with code 1`).slice(1),
+		["⋮ 4 more lines", runner[0], runner[1].trim(), runner[2].trim(), runner[3].trim(), runner[8]],
+		"lines that report a pass are left out, and the values of a failed comparison are kept",
+	);
 	const many = Array.from({ length: 15 }, (_, i) => `Error: ${i + 1}`).join("\n");
 	assert.deepEqual(
 		failed(`${many}\n\nCommand exited with code 1`).slice(1, 3),
@@ -782,6 +798,16 @@ test("a failed command that has scrolled away keeps its output when the command 
 	far.step([ran("true", "")]);
 	assert.deepEqual(far.screen().slice(0, before.length), before, "no line above the bottom of the screen changed");
 	assert.equal(far.screen().at(-1), "✓ $ make · 1 line", "the passing run shows below");
+	const folded = session();
+	folded.step([ran("make", failure, { isError: true })]);
+	folded.step(Array.from({ length: 20 }, (_, i) => ran(`ls ${i}`, "a")));
+	folded.step([ran("make", "ok")]);
+	folded.step([ran("true", "")]);
+	assert.equal(
+		folded.screen()[1],
+		"✗ $ make · exit 1 · passed later",
+		"calls folded into a count line take no rows of their own",
+	);
 	const spoken = session();
 	spoken.step([ran("make", failure, { isError: true })]);
 	spoken.reply(Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\n"));

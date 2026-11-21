@@ -42,6 +42,11 @@ const FAILED_SHOWN = 8;
 const FAILED_LINE_ROWS = 2;
 const ERROR_LIKE =
 	/error|fail|✖|✗|not found|no such|denied|cannot|exception|traceback|fatal|panic|refused|invalid|unexpected/i;
+/** A line that reports something passing, though it holds an error-like word: `✔ cannot be empty`, `fail 0`. */
+const PASSING = /^\s*(?:✔|✓|ok\b|PASS\b)|\b(?:fail(?:ed|ures?|ing)?|errors?)\s*[:=]?\s*0\b|\b0\s+(?:fail|error)/;
+const errorLike = (line: string) => ERROR_LIKE.test(line) && !PASSING.test(line);
+/** A line that gives the values of a failed comparison: it says what went wrong without an error-like word. */
+const COMPARED = /^\s*[-+]?\s*(?:expected|actual|received|got|want)\b/i;
 /** A cut in the middle of a command must save at least this many columns over a cut at its end. */
 const MIDDLE_CUT_MIN = 8;
 /** A command that ran this long shows its duration as a warning. */
@@ -728,7 +733,7 @@ const FILE_REFERENCE = /(?<![\w/.-])((?:\.{0,2}\/)?(?:[\w@.-]+\/)*[\w@-][\w@.-]*
  * call marks its error-like lines: in passing output the same words are mostly matches in code, not errors.
  */
 function outputLine(line: string, theme: Theme, context: Context): string {
-	const paint = (text: string) => theme.fg(context.isError && ERROR_LIKE.test(line) ? "error" : "toolOutput", text);
+	const paint = (text: string) => theme.fg(context.isError && errorLike(line) ? "error" : "toolOutput", text);
 	if (!getCapabilities().hyperlinks) return paint(line);
 	let linked = "";
 	let end = 0;
@@ -759,16 +764,19 @@ function middleCut(text: string, room: number): string {
 }
 /**
  * The lines a failed command shows: its end from the first error-like line among the last twenty. When that
- * is more than a screen can spare, only the error-like lines in it, each once, the newest kept.
+ * is more than a screen can spare, only the error-like lines in it and the values of failed comparisons, each
+ * once, the newest kept.
  */
 function failedTail(output: string[]): string[] {
 	const window = output.slice(-FAILED_LINES);
-	const first = window.findIndex((line) => ERROR_LIKE.test(line));
+	const first = window.findIndex(errorLike);
 	const kept = Math.min(output.length, Math.max(FAILED_MIN_LINES, first < 0 ? 0 : window.length - first));
 	const end = output.slice(output.length - kept);
 	if (end.length <= FAILED_SHOWN) return end;
 	const errors = end.filter(
-		(line, index) => ERROR_LIKE.test(line) && end.findLastIndex((other) => other.trim() === line.trim()) === index,
+		(line, index) =>
+			(errorLike(line) || COMPARED.test(line)) &&
+			end.findLastIndex((other) => other.trim() === line.trim()) === index,
 	);
 	return errors.slice(-FAILED_SHOWN);
 }
@@ -1046,8 +1054,12 @@ function compactRenderers(
 				atOnce: () =>
 					state.result !== undefined &&
 					(state.failed === true || summary(args, state, theme, context).keep === true),
-				height: () =>
-					showsPi(context) ? Number.POSITIVE_INFINITY : (state.callRows ?? 0) + (state.resultRows ?? 0) + 1,
+				height() {
+					if (showsPi(context)) return Number.POSITIVE_INFINITY;
+					// Pi puts the blank line only above a row that draws something.
+					const drawn = (state.callRows ?? 0) + (state.resultRows ?? 0);
+					return drawn > 0 ? drawn + 1 : 0;
+				},
 			});
 			const tally = (count: number) =>
 				`${" ".repeat(context.outputPad)}${theme.fg("dim", `⋮ ${plural(count, "call")}, nothing changed`)}`;
