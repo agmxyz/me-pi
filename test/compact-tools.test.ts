@@ -266,12 +266,22 @@ test("a tool that draws its own row keeps its lines, behind the glyph and withou
 		renderResult: () => ({ invalidate() {}, render: () => ["step three", ""] }),
 	};
 	assert.deepEqual(row("plan", {}, { content: text("ok") }), ["✓ plan 2/5", "step three"]);
-	const own = { renderShell: "self", renderCall: () => undefined, renderResult: () => undefined };
-	assert.equal(
-		resolver("custom", () => own),
-		own,
-		"a tool that draws its own shell is left alone",
+	const call = { invalidate() {}, render: () => ["mine"] };
+	const seen: unknown[] = [];
+	PI.custom = {
+		renderShell: "self",
+		renderCall: (_args: unknown, _theme: unknown, context: any) => {
+			seen.push(context.lastComponent);
+			return call;
+		},
+		renderResult: () => ({ invalidate() {}, render: () => [] }),
+	};
+	assert.deepEqual(
+		row("custom", {}, { content: text("ok") }),
+		["mine"],
+		"a tool that draws its own shell keeps its lines",
 	);
+	assert.equal(seen.at(-1), call, "and is handed back the component it made");
 });
 
 const IDLE = { isIdle: () => true, sessionManager: { getBranch: () => [] } };
@@ -395,7 +405,7 @@ test("a call made with one that shows at once shows with it, so no line is added
 		["", "✓ $ ls · 1 line", "✗ $ false · exit 1", "✓ $ make · 1 line"],
 		"a call that changes nothing keeps the line it was drawn with",
 	);
-	// `plan` draws its own row, and draws it as soon as it is called.
+	// `plan` draws its own row here, and draws it as soon as it is called.
 	const own = session();
 	own.step([ran("ls", "a"), ["plan", {}, { content: text("ok") }]]);
 	const drawn = ["", "✓ $ ls · 1 line", "", "✓ plan 2/5", "step three"];
@@ -403,6 +413,17 @@ test("a call made with one that shows at once shows with it, so no line is added
 	own.step([ran("make", "ok")]);
 	own.step([ran("true", "")]);
 	assert.deepEqual(own.screen(), [...drawn, "", "✓ $ make · 1 line"], "and keeps its line");
+	PI.hush = {
+		renderShell: "self",
+		renderCall: () => ({ invalidate() {}, render: () => [] }),
+		renderResult: () => ({ invalidate() {}, render: () => [] }),
+	};
+	const none = session();
+	none.step([ran("ls", "a"), ["hush", {}, { content: text("ok") }]]);
+	assert.deepEqual(none.screen(), [], "beside a tool whose row is empty, as the plan tool's is, the call still waits");
+	none.step([ran("make", "ok")]);
+	none.step([ran("true", "")]);
+	assert.deepEqual(none.screen(), ["", "⋮ 1 call, nothing changed", "", "✓ $ make · 1 line"]);
 });
 
 test("a command names its directory only when it differs from the command row above", () => {

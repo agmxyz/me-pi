@@ -149,6 +149,7 @@ function resetTranscript(): void {
 	transcript.newest.clear();
 	transcript.spoken.clear();
 	transcript.shrunk.clear();
+	ownLines.clear();
 	Object.assign(transcript, { order: [], turn: 0, block: 0, run: 0, settled: 0, textSeen: false });
 	Object.assign(transcript, { textBefore: 0, textSoFar: 0 });
 }
@@ -221,13 +222,37 @@ function unsettled(toolCallId: string): boolean {
  * that row has scrolled away.
  */
 const drawsOwnRow = new Set<string>();
+/** The lines such a tool's call and result drew last, by call: a tool may draw none, as `plan` does. */
+const ownLines = new Map<string, { call?: number; result?: number }>();
+const drewOwn = (toolCallId: string) => {
+	const drawn = ownLines.get(toolCallId);
+	return (drawn?.call ?? 0) + (drawn?.result ?? 0) > 0;
+};
+/** Columns a part is drawn at to learn whether it has lines at all, before the screen draws it. */
+const PROBE_WIDTH = 80;
+/**
+ * A component that notes how many lines one part of a call's row has. It is drawn once at once: the rows
+ * above it are drawn first on each frame, and must already know whether this one shows.
+ */
+function counted(inner: Component, toolCallId: string, part: "call" | "result"): Component & { inner: Component } {
+	ownLines.set(toolCallId, { ...ownLines.get(toolCallId), [part]: inner.render(PROBE_WIDTH).length });
+	return {
+		inner,
+		invalidate: () => inner.invalidate(),
+		render(width) {
+			const drawn = inner.render(width);
+			ownLines.set(toolCallId, { ...ownLines.get(toolCallId), [part]: drawn.length });
+			return drawn;
+		},
+	};
+}
 function overtaken(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	if (!call) return false;
 	for (let at = call.index + 1; transcript.order[at]?.turn === call.turn; at++) {
 		const later = transcript.order[at];
-		// A tool that draws its own row draws it as soon as it is called.
-		if (drawsOwnRow.has(later.name) || transcript.rows.get(later.id)?.atOnce()) return true;
+		// A tool that draws its own row draws it as soon as it is called, if it draws one at all.
+		if (drewOwn(later.id) || transcript.rows.get(later.id)?.atOnce()) return true;
 	}
 	return false;
 }
@@ -865,7 +890,8 @@ function compactRenderers(
 					);
 				return framed ? piShell(full, theme, context, "top") : full;
 			}
-			if (!summarize && state.piCall) return glyphed(state.piCall, state, theme, context);
+			if (!summarize && state.piCall)
+				return counted(glyphed(state.piCall, state, theme, context), context.toolCallId, "call");
 			const id = context.toolCallId;
 			const head = (width: number) => {
 				const drawn = { ...summary(args, state, theme, context), place: placeNamed(id) };
@@ -1064,7 +1090,19 @@ export default function (pi: ExtensionAPI) {
 		// A tool that draws its own shell keeps it, unless its row has a summary here.
 		if (renderers?.renderShell === "self" && !SUMMARIES[toolName]) {
 			drawsOwnRow.add(toolName);
-			return renderers;
+			// Its renderers are passed on as they are; each gets back the component it made, not the counting one.
+			const own = (context: Context) => ({ ...context, lastComponent: (context.lastComponent as any)?.inner });
+			const { renderCall, renderResult } = renderers;
+			return {
+				...renderers,
+				renderCall:
+					renderCall &&
+					((args, theme, context) => counted(renderCall(args, theme, own(context)), context.toolCallId, "call")),
+				renderResult:
+					renderResult &&
+					((result, options, theme, context) =>
+						counted(renderResult(result, options, theme, own(context)), context.toolCallId, "result")),
+			};
 		}
 		return compactRenderers(toolName, renderers, SUMMARIES[toolName]);
 	});
