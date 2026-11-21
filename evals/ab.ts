@@ -511,6 +511,8 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 	writeFileSync(join(dir, "diff.patch"), patch ? `${patch}\n` : "", { mode: 0o600 });
 	const reportExists = existsSync(a.report);
 	if (reportExists) copyFileSync(a.report, join(dir, "report.md"));
+	// Kept so a run can be audited afterwards, e.g. for a read of the live checkout's evals/synth by absolute path.
+	if (log) writeFileSync(join(dir, "session.jsonl"), log, { mode: 0o600 });
 	const ignoredLeftovers = git(a.worktree, env, "clean", "-ndX").split("\n").filter(Boolean).length;
 	const check = await recheck(a, head);
 
