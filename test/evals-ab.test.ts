@@ -116,7 +116,14 @@ test("sessionSpend counts a call that never returned as pending, without cost, a
 });
 
 test("finalState voids an arm-B attempt that used implement, and keeps arm A's", () => {
-	const base = { state: "completed" as const, note: "", statusLog: "", hasLog: true, implementCalls: 1 };
+	const base = {
+		state: "completed" as const,
+		note: "",
+		statusLog: "",
+		hasLog: true,
+		implementCalls: 1,
+		suspendedMs: 0,
+	};
 	assert.deepEqual(finalState({ ...base, arm: "B" }), { state: "void", note: "arm B used implement" });
 	assert.deepEqual(finalState({ ...base, arm: "B", state: "capped", note: "$30" }), {
 		state: "void",
@@ -127,7 +134,14 @@ test("finalState voids an arm-B attempt that used implement, and keeps arm A's",
 });
 
 test("finalState: status-log stops win, and a completed run with no log is incomplete", () => {
-	const base = { arm: "A" as const, state: "completed" as const, note: "", hasLog: true, implementCalls: 0 };
+	const base = {
+		arm: "A" as const,
+		state: "completed" as const,
+		note: "",
+		hasLog: true,
+		implementCalls: 0,
+		suspendedMs: 0,
+	};
 	assert.deepEqual(finalState({ ...base, statusLog: "STOPPED: account 401" }), {
 		state: "incomplete",
 		note: "account",
@@ -140,6 +154,20 @@ test("finalState: status-log stops win, and a completed run with no log is incom
 	assert.deepEqual(finalState({ ...base, statusLog: "", hasLog: false, state: "timeout", note: "120 min" }), {
 		state: "timeout",
 		note: "120 min",
+	});
+});
+
+test("finalState: an attempt the machine slept through is incomplete, so --resume runs it again", () => {
+	const base = { arm: "A" as const, note: "", statusLog: "", hasLog: true, implementCalls: 1 };
+	assert.deepEqual(finalState({ ...base, state: "completed", suspendedMs: 7_213_000 }), {
+		state: "incomplete",
+		note: "suspended",
+	});
+	assert.deepEqual(finalState({ ...base, state: "completed", suspendedMs: 0 }), { state: "completed", note: "" });
+	// An account stop still wins: it needs the user whether or not the machine slept.
+	assert.deepEqual(finalState({ ...base, state: "completed", statusLog: "STOPPED: account", suspendedMs: 5_000 }), {
+		state: "incomplete",
+		note: "account",
 	});
 });
 

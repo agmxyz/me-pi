@@ -499,6 +499,7 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 		statusLog: existsSync(a.status) ? readFileSync(a.status, "utf8") : "",
 		hasLog: !!log,
 		implementCalls: spend?.byRole.implement?.calls ?? 0,
+		suspendedMs: clock.suspendedMs,
 	}));
 
 	const env = a.sandbox.env;
@@ -655,8 +656,9 @@ function resumed(file: string): SummaryRecord[] {
 }
 
 /**
- * Keeps the Mac awake (`caffeinate -i`) while the runner lives: `-w` ends it with this process, and `finish` kills it.
- * Without caffeinate the run goes on, and the timeout still counts only active time.
+ * Keeps the Mac awake (`caffeinate -i -s`) while the runner lives: `-w` ends it with this process, and `finish` kills
+ * it. `-s` also blocks system sleep, but only on AC power; on battery a closed lid still sleeps the Mac, and an attempt
+ * that sleeps is recorded `incomplete` (`suspended`). Without caffeinate the run goes on the same way.
  */
 function stayAwake(): (() => boolean) | undefined {
 	try {
@@ -665,7 +667,7 @@ function stayAwake(): (() => boolean) | undefined {
 		console.error("⚠ caffeinate not found: the machine may sleep during the sweep");
 		return undefined;
 	}
-	const child = spawn("caffeinate", ["-i", "-w", String(process.pid)], { stdio: "ignore" });
+	const child = spawn("caffeinate", ["-i", "-s", "-w", String(process.pid)], { stdio: "ignore" });
 	child.on("error", (err) => console.error(`⚠ caffeinate failed: ${err.message}`));
 	return () => child.kill();
 }

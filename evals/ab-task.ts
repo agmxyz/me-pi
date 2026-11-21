@@ -221,8 +221,12 @@ export function finalState(o: {
 	statusLog: string;
 	hasLog: boolean;
 	implementCalls: number;
+	suspendedMs: number;
 }): { state: AttemptState; note: string } {
 	if (/STOPPED: account/.test(o.statusLog)) return { state: "incomplete", note: "account" };
+	// A machine that slept mid-attempt can drop connections and run a delegate worker's own cap on through the sleep,
+	// which falls mostly on arm A's long implement workers: such an attempt measures the machine, not the arm.
+	if (o.suspendedMs > 0) return { state: "incomplete", note: "suspended" };
 	if (/STOPPED: infra/.test(o.statusLog)) return { state: "void", note: "infra" };
 	if (o.arm === "B" && o.implementCalls > 0) return { state: "void", note: "arm B used implement" };
 	if (!o.hasLog && o.state === "completed") return { state: "incomplete", note: "no session log" };
