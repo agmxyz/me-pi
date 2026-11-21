@@ -43,10 +43,12 @@ const FAILED_LINE_ROWS = 2;
 const ERROR_LIKE =
 	/error|fail|✖|✗|not found|no such|denied|cannot|exception|traceback|fatal|panic|refused|invalid|unexpected/i;
 /** A line that reports something passing, though it holds an error-like word: `✔ cannot be empty`, `fail 0`. */
-const PASSING = /^\s*(?:✔|✓|ok\b|PASS\b)|\b(?:fail(?:ed|ures?|ing)?|errors?)\s*[:=]?\s*0\b|\b0\s+(?:fail|error)/;
+// A count of none ends there: `Error: 0 is not a valid port` reports no pass.
+const PASSING =
+	/^\s*(?:✔|✓|ok\b|PASS\b)|\b(?:fail(?:ed|ures?|ing)?|errors?)\s*(?:[:=]\s*)?0\b(?![.\d]|\s+\w)|\b0\s+(?:fail|error)/;
 const errorLike = (line: string) => ERROR_LIKE.test(line) && !PASSING.test(line);
-/** A line that gives the values of a failed comparison: it says what went wrong without an error-like word. */
-const COMPARED = /^\s*[-+]?\s*(?:expected|actual|received|got|want)\b/i;
+/** A line that gives the values of a failed comparison, or pytest's `E ` line: what went wrong, without an error-like word. */
+const COMPARED = /^\s*(?:[-+]\s*)?(?:expected|actual|received|got|want)\b|^E\s/i;
 /** A cut in the middle of a command must save at least this many columns over a cut at its end. */
 const MIDDLE_CUT_MIN = 8;
 /** A command that ran this long shows its duration as a warning. */
@@ -346,7 +348,8 @@ function superseded(toolCallId: string): boolean {
 const BELOW_TRANSCRIPT = 14;
 /**
  * True when the call's row and all that follows it surely fit on the screen, so the row can change without
- * Pi repainting. Text is estimated, and a row of unknown height counts as too far.
+ * Pi repainting. Text is estimated high; a row Pi draws itself counts as too far, and one not drawn yet as
+ * nothing. Messages of other roles are not counted, which the room left below the transcript has to cover.
  */
 function onScreen(call: Call): boolean {
 	let rows = transcript.textSoFar - call.textAbove + BELOW_TRANSCRIPT;
@@ -491,7 +494,6 @@ interface Run {
 const AREA = "compact-tools";
 /** The live area's height. It does not change while the agent works, so the editor below it stays in place. */
 const AREA_LINES = 3;
-/** Tools whose rows this module does not hold back: they draw their own, so the live area leaves them out. */
 const newRun = (): Run => ({
 	startedAt: Date.now(),
 	calls: 0,
@@ -575,8 +577,10 @@ function sameCommand(command: unknown): string {
 /**
  * The commands a passing run proves passed: itself, and each command of an `&&` chain, since the chain stops
  * at the first that fails. Only a plain chain counts: with `;`, `||`, a pipe or `&` a part may have failed
- * unseen, and after a `cd` the parts ran somewhere else.
+ * unseen, and after a `cd`, a `source`, an `export` or a change of branch the parts ran in another place or
+ * state than the command that failed.
  */
+const MOVES = /^(?:cd|pushd|source|\.|export|git\s+(?:checkout|switch|stash))(?=\s|$)/;
 function proved(command: string): string[] {
 	// Quoted text and `2>&1` hold no operator; both keep their length so the parts can be cut from the command.
 	const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"|\d*>&\d+/g, (held) => "q".repeat(held.length));
@@ -587,8 +591,7 @@ function proved(command: string): string[] {
 		from = match.index + 2;
 	}
 	parts.push(command.slice(from).trim());
-	const plain =
-		!/[;|\n`]|&(?!&)(?<!&&)|\$\(/.test(bare) && parts.every((part) => part && !/^(?:cd|pushd)\b/.test(part));
+	const plain = !/[;|\n`]|&(?!&)(?<!&&)|\$\(/.test(bare) && parts.every((part) => part && !MOVES.test(part));
 	return parts.length > 1 && plain ? [command, ...parts.map(sameCommand)] : [command];
 }
 /**
@@ -919,16 +922,16 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 		return [summary.quiet ? theme.fg("dim", stripVTControlCharacters(line)) : line];
 	});
 }
-/**
- * A component's lines under the head line, behind a bar in the glyph's column: red when the call failed.
- * A failure's lines wrap, so no part of an error is cut off; any other line is cut to one row.
- */
 /** A failed call's line, wrapped: a long one keeps its start, where the message is. */
 function wrapped(line: string, room: number): string[] {
 	const rows = wrapTextWithAnsi(line, room);
 	if (rows.length <= FAILED_LINE_ROWS) return rows;
 	return [...rows.slice(0, FAILED_LINE_ROWS - 1), truncateToWidth(`${rows[FAILED_LINE_ROWS - 1]}…`, room, "…")];
 }
+/**
+ * A component's lines under the head line, behind a bar in the glyph's column: red when the call failed.
+ * A failure's lines wrap to two rows at most; any other line is cut to one row.
+ */
 function indented(child: Component | string[], state: RowState, theme: Theme, context: Context): Component {
 	return lines((width) => {
 		const indent = `${" ".repeat(context.outputPad)}${theme.fg(state.failed ? "error" : "dim", "│")} `;
@@ -1254,8 +1257,15 @@ export default function (pi: ExtensionAPI) {
 					}),
 				renderResult:
 					renderResult &&
-					((result, options, theme, context) =>
-						counted(renderResult(result, options, theme, own(context)), context.toolCallId, "result")),
+					((result, options, theme, context) => {
+						const id = context.toolCallId;
+						const drawn = counted(renderResult(result, options, theme, own(context)), id, "result");
+						// Pi asks for the call's line before the result's, and a tool may draw the call from what its
+						// result left behind: measured again here, the rows above know of that line on this frame.
+						const call = ownCalls.get(id)?.render(PROBE_WIDTH).length;
+						if (call !== undefined) ownLines.set(id, { ...ownLines.get(id), call });
+						return drawn;
+					}),
 			};
 		}
 		return compactRenderers(toolName, renderers, SUMMARIES[toolName]);

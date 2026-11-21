@@ -187,6 +187,12 @@ test("a failed bash call shows a cross and its exit code, and keeps its end from
 		"ok 3 - invalid input is refused",
 		"Error: some tests fail",
 	];
+	const zero = failed(`Error: 0 is not a valid port\n${numbered(8)}\nfailed: 0\n\nCommand exited with code 1`);
+	assert.deepEqual(
+		zero.slice(1),
+		["⋮ 9 more lines", "Error: 0 is not a valid port"],
+		"a zero in an error is no pass, a count of none is",
+	);
 	assert.deepEqual(
 		failed(`${runner.join("\n")}\n\nCommand exited with code 1`).slice(1),
 		["⋮ 4 more lines", runner[0], runner[1].trim(), runner[2].trim(), runner[3].trim(), runner[8]],
@@ -471,13 +477,20 @@ test("a call made with one that shows at once shows with it, so no line is added
 });
 
 test("a heading drawn by a tool with its own shell stands above the first row of its message", () => {
-	// As the `plan` tool draws a step it started: one line for the call, none for the result.
+	// As the `plan` tool draws a step it started: one line for the call, none for the result. The line comes
+	// from what the result left in the row's state, so the call has nothing to draw until the result is in.
 	PI.step = {
 		renderShell: "self",
-		renderCall: (args: any) => ({ invalidate() {}, render: () => (args.title ? [` ▸ ${args.title}`] : []) }),
-		renderResult: () => ({ invalidate() {}, render: () => [] }),
+		renderCall: (_args: any, _theme: any, context: any) => ({
+			invalidate() {},
+			render: () => (context.state.title ? [` ▸ ${context.state.title}`] : []),
+		}),
+		renderResult: (result: any, _options: any, _theme: any, context: any) => {
+			context.state.title = result.details?.title;
+			return { invalidate() {}, render: () => [] };
+		},
 	};
-	const step = (title?: string): [string, any, any] => ["step", { title }, { content: text("ok") }];
+	const step = (title?: string): [string, any, any] => ["step", {}, { content: text("ok"), details: { title } }];
 	const s = session();
 	s.step([ran("ls", "a"), step("Find it")]);
 	assert.deepEqual(s.screen(), [], "the heading waits with the row it stands above");
@@ -955,4 +968,22 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 	call("12", "bash", { command: "./check.sh && git diff --check" });
 	handlers.agent_end({}, slot.ctx);
 	assert.deepEqual(slot.lines(), ["2 calls · 0.0s"], "a passing && chain settles each of its commands");
+	const unproven = [
+		"./check.sh |& cat && true",
+		"./check.sh &> /dev/null && true",
+		"echo $(./check.sh) && ./check.sh",
+		"echo `date` && ./check.sh",
+		"true &&\n./check.sh",
+		"./check.sh & wait && true",
+		"source env.sh && ./check.sh",
+		"export CI=1 && ./check.sh",
+		"git stash && ./check.sh",
+	];
+	for (const [index, command] of unproven.entries()) {
+		handlers.agent_start({}, slot.ctx);
+		failed(`f${index}`, "./check.sh", 1);
+		call(`p${index}`, "bash", { command });
+		handlers.agent_end({}, slot.ctx);
+		assert.match(slot.lines()?.[0] ?? "", /^✗ open: \.\/check\.sh/, `${JSON.stringify(command)} settles nothing`);
+	}
 });
