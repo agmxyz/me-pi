@@ -152,18 +152,64 @@ test("a failed bash call shows a cross and its exit code, and keeps its end from
 	const dull = failed(`${numbered(40)}\n\nCommand exited with code 2`);
 	assert.deepEqual(dull.slice(0, 2), ["✗ $ npm test · exit 2 · 4.2s", "⋮ 35 more lines"]);
 	assert.deepEqual(dull.slice(2), numbered(40).split("\n").slice(-5), "no error-like line: the last five");
-	const output = [...numbered(30).split("\n"), "Error: boom", ...numbered(8).split("\n")];
+	const output = [...numbered(30).split("\n"), "Error: boom", ...numbered(6).split("\n")];
 	const found = failed(`${output.join("\n")}\n\nCommand exited with code 1`);
 	assert.deepEqual(
 		found.slice(1, 4),
 		["⋮ 30 more lines", "Error: boom", "line 1"],
 		"kept from the first error-like line",
 	);
-	assert.equal(found.length, 11);
+	assert.equal(found.length, 9);
+	const report = [
+		"✖ a breaks",
+		"pass 0",
+		"fail 1",
+		"running b",
+		"ok b",
+		"ok c",
+		"ok d",
+		"✖ a breaks",
+		"Error: 1 broke",
+	];
+	assert.deepEqual(
+		failed(`${numbered(4)}\n${report.join("\n")}\n\nCommand exited with code 1`).slice(1),
+		["⋮ 10 more lines", "fail 1", "✖ a breaks", "Error: 1 broke"],
+		"an end longer than eight lines shows only its error-like lines, each once",
+	);
+	const runner = [
+		"✖ prices keep two decimals",
+		"  AssertionError: Expected values to be strictly equal:",
+		"    actual: '$19.5',",
+		"    expected: '$19.05',",
+		"✔ more than the stock cannot",
+		"ℹ pass 2",
+		"ℹ fail 0",
+		"ok 3 - invalid input is refused",
+		"Error: some tests fail",
+	];
+	const zero = failed(`Error: 0 is not a valid port\n${numbered(8)}\nfailed: 0\n\nCommand exited with code 1`);
+	assert.deepEqual(
+		zero.slice(1),
+		["⋮ 9 more lines", "Error: 0 is not a valid port"],
+		"a zero in an error is no pass, a count of none is",
+	);
+	assert.deepEqual(
+		failed(`${runner.join("\n")}\n\nCommand exited with code 1`).slice(1),
+		["⋮ 4 more lines", runner[0], runner[1].trim(), runner[2].trim(), runner[3].trim(), runner[8]],
+		"lines that report a pass are left out, and the values of a failed comparison are kept",
+	);
+	const many = Array.from({ length: 15 }, (_, i) => `Error: ${i + 1}`).join("\n");
+	assert.deepEqual(
+		failed(`${many}\n\nCommand exited with code 1`).slice(1, 3),
+		["⋮ 7 more lines", "Error: 8"],
+		"at most eight of them, the newest",
+	);
 	const old = failed(`Error: early\n${numbered(40)}\n\nCommand exited with code 1`);
 	assert.equal(old.length, 7, "an error line more than twenty lines back does not count");
 	const wide = failed(`${"z".repeat(100)}\n\nCommand exited with code 1`);
 	assert.equal(wide.join("").match(/z/g)?.length, 100, "a long error line wraps instead of being cut");
+	const huge = failed(`Error: ${"z".repeat(400)}\n\nCommand exited with code 1`);
+	assert.ok(huge.length === 3 && huge[2].endsWith("…"), "one line takes two rows at most and keeps its start");
 	assert.deepEqual(failed("Command timed out after 5 seconds"), [
 		"✗ $ npm test · 4.2s",
 		"Command timed out after 5 seconds",
@@ -266,12 +312,22 @@ test("a tool that draws its own row keeps its lines, behind the glyph and withou
 		renderResult: () => ({ invalidate() {}, render: () => ["step three", ""] }),
 	};
 	assert.deepEqual(row("plan", {}, { content: text("ok") }), ["✓ plan 2/5", "step three"]);
-	const own = { renderShell: "self", renderCall: () => undefined, renderResult: () => undefined };
-	assert.equal(
-		resolver("custom", () => own),
-		own,
-		"a tool that draws its own shell is left alone",
+	const call = { invalidate() {}, render: () => ["mine"] };
+	const seen: unknown[] = [];
+	PI.custom = {
+		renderShell: "self",
+		renderCall: (_args: unknown, _theme: unknown, context: any) => {
+			seen.push(context.lastComponent);
+			return call;
+		},
+		renderResult: () => ({ invalidate() {}, render: () => [] }),
+	};
+	assert.deepEqual(
+		row("custom", {}, { content: text("ok") }),
+		["mine"],
+		"a tool that draws its own shell keeps its lines",
 	);
+	assert.equal(seen.at(-1), call, "and is handed back the component it made");
 });
 
 const IDLE = { isIdle: () => true, sessionManager: { getBranch: () => [] } };
@@ -395,6 +451,67 @@ test("a call made with one that shows at once shows with it, so no line is added
 		["", "✓ $ ls · 1 line", "✗ $ false · exit 1", "✓ $ make · 1 line"],
 		"a call that changes nothing keeps the line it was drawn with",
 	);
+	// `plan` draws its own row here, and draws it as soon as it is called.
+	const own = session();
+	own.step([ran("ls", "a"), ["plan", {}, { content: text("ok") }]]);
+	const drawn = ["", "✓ $ ls · 1 line", "", "✓ plan 2/5", "step three"];
+	assert.deepEqual(own.screen(), drawn, "a call made before a tool that draws its own row shows with it");
+	own.step([ran("make", "ok")]);
+	own.step([ran("true", "")]);
+	assert.deepEqual(own.screen(), [...drawn, "", "✓ $ make · 1 line"], "and keeps its line");
+	PI.hush = {
+		renderShell: "self",
+		renderCall: () => ({ invalidate() {}, render: () => [] }),
+		renderResult: () => ({ invalidate() {}, render: () => [] }),
+	};
+	const none = session();
+	none.step([ran("ls", "a"), ["hush", {}, { content: text("ok") }]]);
+	assert.deepEqual(none.screen(), [], "beside a tool whose row is empty, as the plan tool's is, the call still waits");
+	none.step([ran("make", "ok")]);
+	none.step([ran("true", "")]);
+	assert.deepEqual(
+		none.screen(),
+		["", "⋮ 1 call, nothing changed", "✓ $ make · 1 line"],
+		"and rows close up across the empty one",
+	);
+});
+
+test("a heading drawn by a tool with its own shell stands above the first row of its message", () => {
+	// As the `plan` tool draws a step it started: one line for the call, none for the result. The line comes
+	// from what the result left in the row's state, so the call has nothing to draw until the result is in.
+	PI.step = {
+		renderShell: "self",
+		renderCall: (_args: any, _theme: any, context: any) => ({
+			invalidate() {},
+			render: () => (context.state.title ? [` ▸ ${context.state.title}`] : []),
+		}),
+		renderResult: (result: any, _options: any, _theme: any, context: any) => {
+			context.state.title = result.details?.title;
+			return { invalidate() {}, render: () => [] };
+		},
+	};
+	const step = (title?: string): [string, any, any] => ["step", {}, { content: text("ok"), details: { title } }];
+	const s = session();
+	s.step([ran("ls", "a"), step("Find it")]);
+	assert.deepEqual(s.screen(), [], "the heading waits with the row it stands above");
+	s.step([ran("rg greet", "a")]);
+	s.step([edited, step("Fix it")]);
+	const drawn = ["", "▸ Find it", "⋮ 2 calls, nothing changed", "", "▸ Fix it", "✓ edit a.ts · +1 -1"];
+	assert.deepEqual(
+		s.screen(),
+		drawn,
+		"though the tool was called last, and calls that keep no line are counted under it",
+	);
+	s.step([ran("make", "ok"), step()]);
+	s.step([step("Report")]);
+	s.reply("done");
+	assert.deepEqual(
+		s.screen(),
+		[...drawn, "✓ $ make · 1 line", "", "▸ Report"],
+		"a call with no heading leaves nothing, and a heading alone in its message stands at its own place",
+	);
+	s.expand();
+	assert.equal(s.screen().filter((line) => line === "▸ Find it").length, 1, "expanded, each heading shows once");
 });
 
 test("a command names its directory only when it differs from the command row above", () => {
@@ -647,6 +764,69 @@ test("a failed command folds once the same command passes on a later run", () =>
 		],
 		"the same command with other plumbing or behind a runner settles it, and that passing run keeps its line",
 	);
+	const chain = session();
+	chain.step([ran("./check.sh", failure, { isError: true })]);
+	chain.step([ran("./check.sh; git status --short", "ok")]);
+	chain.step([ran("cd sub && ./check.sh", "ok")]);
+	chain.step([ran("./check.sh || true", "ok")]);
+	chain.step([ran("true", "")]);
+	assert.ok(
+		chain.screen().includes("Error: boom"),
+		"a part that may have failed unseen, or ran elsewhere, proves nothing",
+	);
+	chain.step([ran("./check.sh 2>&1 && git diff --check && git status --short", "ok")]);
+	chain.step([ran("true", "")]);
+	const settled = chain.screen();
+	assert.equal(settled[1], "✗ $ ./check.sh · exit 1 · passed later", "each command of a passing && chain passed");
+	assert.match(
+		settled.at(-1) ?? "",
+		/^✓ \$ \.\/check\.sh .*&& git status --short · 1 line$/,
+		"and the chain keeps its line",
+	);
+});
+
+test("a failed command that has scrolled away keeps its output when the command passes", (t) => {
+	const rows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+	Object.defineProperty(process.stdout, "rows", { value: 28, configurable: true });
+	t.after(() => {
+		if (rows) Object.defineProperty(process.stdout, "rows", rows);
+		else delete (process.stdout as any).rows;
+	});
+	const failure = "Error: boom\n\nCommand exited with code 1";
+	const near = session();
+	near.step([ran("make", failure, { isError: true })]);
+	near.step([ran("touch a", "")]);
+	near.step([ran("make", "ok")]);
+	near.step([ran("true", "")]);
+	assert.deepEqual(
+		near.screen(),
+		["", "✗ $ make · exit 1 · passed later", "✓ $ touch a", "✓ $ make · 1 line"],
+		"still on screen, it shrinks",
+	);
+	const far = session();
+	far.step([ran("make", failure, { isError: true })]);
+	for (let i = 0; i < 30; i++) far.step([ran(`touch ${i}`, "")]);
+	const before = far.screen();
+	far.step([ran("make", "ok")]);
+	far.step([ran("true", "")]);
+	assert.deepEqual(far.screen().slice(0, before.length), before, "no line above the bottom of the screen changed");
+	assert.equal(far.screen().at(-1), "✓ $ make · 1 line", "the passing run shows below");
+	const folded = session();
+	folded.step([ran("make", failure, { isError: true })]);
+	folded.step(Array.from({ length: 20 }, (_, i) => ran(`ls ${i}`, "a")));
+	folded.step([ran("make", "ok")]);
+	folded.step([ran("true", "")]);
+	assert.equal(
+		folded.screen()[1],
+		"✗ $ make · exit 1 · passed later",
+		"calls folded into a count line take no rows of their own",
+	);
+	const spoken = session();
+	spoken.step([ran("make", failure, { isError: true })]);
+	spoken.reply(Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\n"));
+	spoken.step([ran("make", "ok")]);
+	spoken.step([ran("true", "")]);
+	assert.ok(spoken.screen().includes("Error: boom"), "text below the row counts toward the screen as well");
 });
 
 /** A stand-in for Pi's widget slot: `lines()` is what the slot shows at 60 columns. */
@@ -773,4 +953,37 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 		["✗ open: pytest tests/a_long_name.py tes… · exit 1 (+1 more) · 2 calls · 0.0s"],
 		"the newest open failure is named with its exit code, cut short; the others are counted",
 	);
+
+	handlers.agent_start({}, slot.ctx);
+	failed("9", "./check.sh", 1);
+	call("10", "bash", { command: "./check.sh; git status" });
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(
+		slot.lines(),
+		["✗ open: ./check.sh · exit 1 · 2 calls · 0.0s"],
+		"after `;` it may have failed unseen",
+	);
+	handlers.agent_start({}, slot.ctx);
+	failed("11", "./check.sh", 1);
+	call("12", "bash", { command: "./check.sh && git diff --check" });
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(slot.lines(), ["2 calls · 0.0s"], "a passing && chain settles each of its commands");
+	const unproven = [
+		"./check.sh |& cat && true",
+		"./check.sh &> /dev/null && true",
+		"echo $(./check.sh) && ./check.sh",
+		"echo `date` && ./check.sh",
+		"true &&\n./check.sh",
+		"./check.sh & wait && true",
+		"source env.sh && ./check.sh",
+		"export CI=1 && ./check.sh",
+		"git stash && ./check.sh",
+	];
+	for (const [index, command] of unproven.entries()) {
+		handlers.agent_start({}, slot.ctx);
+		failed(`f${index}`, "./check.sh", 1);
+		call(`p${index}`, "bash", { command });
+		handlers.agent_end({}, slot.ctx);
+		assert.match(slot.lines()?.[0] ?? "", /^✗ open: \.\/check\.sh/, `${JSON.stringify(command)} settles nothing`);
+	}
 });

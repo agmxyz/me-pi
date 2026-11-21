@@ -36,8 +36,19 @@ import {
 const FAILED_LINES = 20;
 /** A failed call with no such line keeps this many, which is also the least a failed call keeps. */
 const FAILED_MIN_LINES = 5;
+/** The most lines a failed call shows. An end longer than this shows only its error-like lines, each once. */
+const FAILED_SHOWN = 8;
+/** The most screen rows one line of a failed call takes. */
+const FAILED_LINE_ROWS = 2;
 const ERROR_LIKE =
 	/error|fail|✖|✗|not found|no such|denied|cannot|exception|traceback|fatal|panic|refused|invalid|unexpected/i;
+/** A line that reports something passing, though it holds an error-like word: `✔ cannot be empty`, `fail 0`. */
+// A count of none ends there: `Error: 0 is not a valid port` reports no pass.
+const PASSING =
+	/^\s*(?:✔|✓|ok\b|PASS\b)|\b(?:fail(?:ed|ures?|ing)?|errors?)\s*(?:[:=]\s*)?0\b(?![.\d]|\s+\w)|\b0\s+(?:fail|error)/;
+const errorLike = (line: string) => ERROR_LIKE.test(line) && !PASSING.test(line);
+/** A line that gives the values of a failed comparison, or pytest's `E ` line: what went wrong, without an error-like word. */
+const COMPARED = /^\s*(?:[-+]\s*)?(?:expected|actual|received|got|want)\b|^E\s/i;
 /** A cut in the middle of a command must save at least this many columns over a cut at its end. */
 const MIDDLE_CUT_MIN = 8;
 /** A command that ran this long shows its duration as a warning. */
@@ -77,6 +88,9 @@ interface RowState {
 	summary?: Summary;
 	headLine?: { key: string; rows: string[] };
 	bodyLines?: { key: string; rows: string[] };
+	/** How many lines the row's two parts drew last. */
+	callRows?: number;
+	resultRows?: number;
 }
 
 /** Where a call sits in the transcript. */
@@ -89,6 +103,11 @@ interface Call {
 	run: number;
 	/** Calls with no text between their rows; folded rows of one block close up. */
 	block: number;
+	name: string;
+	/** An estimate, never too low, of the lines of text the session had before the call. */
+	textAbove: number;
+	/** The call was in the session when it was loaded, so its row was first drawn with all that followed it. */
+	loaded: boolean;
 }
 /** The working directory, as a row names it. */
 const HERE = ".";
@@ -105,6 +124,8 @@ interface Row {
 	place: () => string;
 	/** True for a finished call whose row does not wait for the next step: a failure, a write, an edit. */
 	atOnce: () => boolean;
+	/** The lines the row takes on screen, the blank one above it included; unknown while Pi draws it. */
+	height: () => number;
 }
 /**
  * The calls of the current session in transcript order, kept from Pi's message events: a row cannot see its
@@ -128,15 +149,35 @@ const transcript = {
 	/** Turns whose calls were followed by text: their rows were drawn with a line each, and keep it. */
 	spoken: new Set<number>(),
 	textSeen: false,
+	/** Estimated lines of text before the current message, and up to where that message stands. */
+	textBefore: 0,
+	textSoFar: 0,
+	/** Failed calls whose command passed later, and whether their row gave up its output for it. */
+	shrunk: new Map<string, boolean>(),
+	/** The newest turn whose message is complete: every call of it is known. */
+	closed: 0,
 };
 function resetTranscript(): void {
 	transcript.calls.clear();
 	transcript.newest.clear();
 	transcript.spoken.clear();
+	transcript.shrunk.clear();
 	Object.assign(transcript, { order: [], turn: 0, block: 0, run: 0, settled: 0, textSeen: false });
+	Object.assign(transcript, { textBefore: 0, textSoFar: 0, closed: 0 });
 }
+/** Columns a line of text is taken to wrap at when its height is estimated: narrower than any real pane. */
+const NARROW = 40;
+/** The lines a block of text may take on screen: two for each line of source, so a table's rules are covered. */
+const textHeight = (text: unknown) =>
+	typeof text === "string" && text.trim()
+		? text.split("\n").reduce((rows, line) => rows + 2 + Math.floor(line.length / NARROW), 2)
+		: 0;
 function startMessage(message: any): void {
+	transcript.textBefore = transcript.textSoFar;
 	if (message?.role === "user") {
+		const said = Array.isArray(message.content) ? message.content.map((block: any) => block.text) : [message.content];
+		transcript.textBefore += said.reduce((rows: number, text: unknown) => rows + textHeight(text), 0);
+		transcript.textSoFar = transcript.textBefore;
 		settle(transcript.turn);
 		transcript.run++;
 		transcript.block++;
@@ -146,10 +187,13 @@ function startMessage(message: any): void {
 	}
 }
 /** Takes in an assistant message as it stands; called again as the message streams in. */
-function noteMessage(message: any): void {
+function noteMessage(message: any, loaded = false): void {
 	if (message?.role !== "assistant" || !Array.isArray(message.content)) return;
+	let textAbove = transcript.textBefore;
 	for (const block of message.content) {
 		const text = block.type === "text" && block.text?.trim();
+		textAbove += textHeight(block.type === "text" ? block.text : block.thinking);
+		transcript.textSoFar = textAbove;
 		// The message's first text or call shows what became of the step before it. After text the step shows
 		// with its output, and folds if a call follows after all.
 		if (text || block.type === "toolCall") settle(transcript.turn - 1);
@@ -161,7 +205,16 @@ function noteMessage(message: any): void {
 		}
 		if (block.type !== "toolCall" || transcript.calls.has(block.id)) continue;
 		const { turn, run } = transcript;
-		const call = { id: block.id, index: transcript.order.length, turn, run, block: transcript.block };
+		const call = {
+			id: block.id,
+			index: transcript.order.length,
+			turn,
+			run,
+			block: transcript.block,
+			name: block.name,
+			textAbove,
+			loaded,
+		};
 		transcript.calls.set(block.id, call);
 		transcript.order.push(call);
 		transcript.newest.set(run, turn);
@@ -175,6 +228,98 @@ function unsettled(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	return call !== undefined && call.turn > transcript.settled;
 }
+/** Tools whose row has a summary here or Pi's own lines behind a glyph: never in the live area. */
+const drawsOwnRow = new Set<string>();
+/**
+ * Tools that draw their own shell: their renderers are passed on. The line such a call draws is a heading
+ * for the calls of its message, as the `plan` tool's step is, so the first row of the message draws it.
+ */
+const ownShell = new Set<string>();
+/** The call component of each such call, and the lines its call and result drew last: a tool may draw none. */
+const ownCalls = new Map<string, Component>();
+const ownLines = new Map<string, { call?: number; result?: number }>();
+/** Columns a part is drawn at to learn whether it has lines at all, before the screen draws it. */
+const PROBE_WIDTH = 80;
+/**
+ * A component that notes how many lines one part of a call's row has. It is drawn once at once: the rows
+ * above it are drawn first on each frame, and must already know whether this one shows. With `elsewhere`
+ * true its lines are another row's to draw.
+ */
+function counted(
+	inner: Component,
+	toolCallId: string,
+	part: "call" | "result",
+	elsewhere = () => false,
+): Component & { inner: Component } {
+	ownLines.set(toolCallId, { ...ownLines.get(toolCallId), [part]: inner.render(PROBE_WIDTH).length });
+	return {
+		inner,
+		invalidate: () => inner.invalidate(),
+		render(width) {
+			const drawn = inner.render(width);
+			ownLines.set(toolCallId, { ...ownLines.get(toolCallId), [part]: drawn.length });
+			return elsewhere() ? [] : drawn;
+		},
+	};
+}
+/** The first call of the message that has a row of this module's: it draws the message's headings. */
+function carrier(call: Call): Call | undefined {
+	let at = call.index;
+	while (transcript.order[at - 1]?.turn === call.turn) at--;
+	for (; transcript.order[at]?.turn === call.turn; at++)
+		if (!ownShell.has(transcript.order[at].name)) return transcript.order[at];
+	return undefined;
+}
+/**
+ * True when the call line of a tool with its own shell is not drawn at the call's place: another row draws
+ * it, or the message is still coming in and may yet bring that row.
+ */
+function drawnElsewhere(toolCallId: string): boolean {
+	const call = transcript.calls.get(toolCallId);
+	return call !== undefined && (call.turn > transcript.closed || carrier(call) !== undefined);
+}
+/** True for a call that has lines at its own place, without this module holding them back. */
+function showsOwn(call: Call): boolean {
+	const drawn = ownLines.get(call.id);
+	if ((drawn?.result ?? 0) > 0) return true;
+	return (drawn?.call ?? 0) > 0 && !(ownShell.has(call.name) && drawnElsewhere(call.id));
+}
+/** True for a call that leaves nothing at its place: its row is empty, or another row draws its line. */
+const placeless = (call: Call) => ownShell.has(call.name) && !showsOwn(call);
+/** The headings a row draws above its line: the call lines of the tools with their own shell in its message. */
+function headings(call: Call | undefined, width: number): string[] {
+	if (!call || !hasHeading(call)) return [];
+	let at = call.index;
+	while (transcript.order[at - 1]?.turn === call.turn) at--;
+	const drawn: string[] = [];
+	for (; transcript.order[at]?.turn === call.turn; at++)
+		if (ownShell.has(transcript.order[at].name))
+			drawn.push(...(ownCalls.get(transcript.order[at].id)?.render(width) ?? []));
+	return drawn;
+}
+/** True when the row draws a heading above its line. Asked for every row on every frame, so nothing is drawn. */
+function hasHeading(call: Call): boolean {
+	if (call.turn > transcript.closed || carrier(call) !== call) return false;
+	let at = call.index;
+	while (transcript.order[at - 1]?.turn === call.turn) at--;
+	for (; transcript.order[at]?.turn === call.turn; at++)
+		if (ownShell.has(transcript.order[at].name) && (ownLines.get(transcript.order[at].id)?.call ?? 0) > 0)
+			return true;
+	return false;
+}
+/** A row with its message's headings above it. */
+function headed(child: Component, toolCallId: string): Component {
+	return {
+		invalidate: () => child.invalidate(),
+		render: (width) => [...headings(transcript.calls.get(toolCallId), width), ...child.render(width)],
+	};
+}
+/** The nearest call above or below that has a place in the transcript. */
+function neighbour(call: Call, step: 1 | -1): Call | undefined {
+	let at = call.index + step;
+	while (transcript.order[at] && placeless(transcript.order[at])) at += step;
+	return transcript.order[at];
+}
 /**
  * True when a later call of the same message already shows. The call then shows too, also while it still
  * runs, and keeps its line: a line added above a drawn row moves it, and Pi repaints the whole screen when
@@ -183,8 +328,11 @@ function unsettled(toolCallId: string): boolean {
 function overtaken(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	if (!call) return false;
-	for (let at = call.index + 1; transcript.order[at]?.turn === call.turn; at++)
-		if (transcript.rows.get(transcript.order[at].id)?.atOnce()) return true;
+	for (let at = call.index + 1; transcript.order[at]?.turn === call.turn; at++) {
+		const later = transcript.order[at];
+		// A tool that draws its own row draws it as soon as it is called, if it draws one at all.
+		if (showsOwn(later) || transcript.rows.get(later.id)?.atOnce()) return true;
+	}
 	return false;
 }
 /**
@@ -196,13 +344,39 @@ function superseded(toolCallId: string): boolean {
 	if (!call || transcript.spoken.has(call.turn)) return false;
 	return call.turn < (transcript.newest.get(call.run) ?? 0);
 }
-/** True for a failed command that a later call ran again and passed. */
+/** Lines below the transcript that the screen also holds: the status line, the live area, the editor, the footer. */
+const BELOW_TRANSCRIPT = 14;
+/**
+ * True when the call's row and all that follows it surely fit on the screen, so the row can change without
+ * Pi repainting. Text is estimated high; a row Pi draws itself counts as too far, and one not drawn yet as
+ * nothing. Messages of other roles are not counted, which the room left below the transcript has to cover.
+ */
+function onScreen(call: Call): boolean {
+	let rows = transcript.textSoFar - call.textAbove + BELOW_TRANSCRIPT;
+	for (const later of transcript.order.slice(call.index)) {
+		if (placeless(later)) continue;
+		rows += transcript.rows.get(later.id)?.height() ?? Number.POSITIVE_INFINITY;
+	}
+	// Without a terminal there is no screen to repaint.
+	return rows <= (process.stdout.rows ?? Number.POSITIVE_INFINITY);
+}
+/**
+ * True for a failed command that a later call ran again and passed, when its row gives up its output for
+ * that. It does when it is still on screen as the pass comes in, or when the session was loaded with the
+ * pass in it; a row that has scrolled away stays as it was drawn. Decided once.
+ */
 function passedLater(toolCallId: string): boolean {
+	const decided = transcript.shrunk.get(toolCallId);
+	if (decided !== undefined) return decided;
 	const call = transcript.calls.get(toolCallId);
 	const command = transcript.rows.get(toolCallId)?.command;
 	if (!call || command === undefined) return false;
-	for (const id of transcript.passed.get(command) ?? [])
-		if ((transcript.calls.get(id)?.index ?? -1) > call.index) return true;
+	for (const id of transcript.passed.get(command) ?? []) {
+		const pass = transcript.calls.get(id);
+		if (!pass || pass.index <= call.index) continue;
+		transcript.shrunk.set(toolCallId, pass.loaded || onScreen(call));
+		return transcript.shrunk.get(toolCallId) === true;
+	}
 	return false;
 }
 /** True for a command an earlier call ran and failed: this run of it is the one that shows how that ended. */
@@ -210,8 +384,9 @@ function failedBefore(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	const command = transcript.rows.get(toolCallId)?.command;
 	if (!call || command === undefined) return false;
-	for (const id of transcript.failed.get(command) ?? [])
-		if ((transcript.calls.get(id)?.index ?? call.index) < call.index) return true;
+	for (const part of proved(command))
+		for (const id of transcript.failed.get(part) ?? [])
+			if ((transcript.calls.get(id)?.index ?? call.index) < call.index) return true;
 	return false;
 }
 /**
@@ -232,21 +407,30 @@ function placeNamed(toolCallId: string): string | undefined {
 	return place === HERE ? undefined : place;
 }
 const foldedRow = (call: Call | undefined) => (call && transcript.rows.get(call.id)?.folded() ? call : undefined);
-const closesUp = (call: Call, other: Call | undefined) => other?.block === call.block && foldedRow(other) !== undefined;
+/** True when two folded rows, one above the other, are drawn as one run. A row with a heading starts its own. */
+const joins = (above: Call | undefined, below: Call | undefined): boolean =>
+	above !== undefined &&
+	below !== undefined &&
+	above.block === below.block &&
+	foldedRow(above) !== undefined &&
+	foldedRow(below) !== undefined &&
+	!hasHeading(below);
 /**
  * The lines of the run of folded rows that ends with this one: a line for each row that keeps one. Rows that
- * keep none are one count when they open their block, so a stretch of work always leaves a trace, and the count
- * stays when rows with lines follow it.
+ * keep none are one count when they open their block or stand under a heading, so a stretch of work always
+ * leaves a trace, and the count stays when rows with lines follow it.
  */
 function foldedRun(call: Call, width: number, tally: (count: number) => string): string[] {
-	let first = call.index;
-	while (first > 0 && closesUp(call, transcript.order[first - 1])) first--;
-	const rows = transcript.order.slice(first, call.index + 1).map(({ id }) => transcript.rows.get(id));
-	const opensBlock = transcript.order[first - 1]?.block !== call.block;
+	const run = [call];
+	for (let above = neighbour(call, -1); above && joins(above, run[0]); above = neighbour(above, -1))
+		run.unshift(above);
+	const rows = run.map(({ id }) => transcript.rows.get(id));
+	const heading = headings(run[0], width);
+	const opensBlock = neighbour(run[0], -1)?.block !== call.block || heading.length > 0;
 	const firstKept = rows.findIndex((row) => !row?.silent());
 	const leading = opensBlock ? (firstKept < 0 ? rows.length : firstKept) : 0;
 	const drawn = rows.flatMap((row) => (row?.silent() ? [] : (row?.head(width) ?? [])));
-	return leading > 0 ? [tally(leading), ...drawn] : drawn;
+	return [...heading, ...(leading > 0 ? [tally(leading)] : []), ...drawn];
 }
 
 function rowState(context: Context): RowState {
@@ -310,8 +494,6 @@ interface Run {
 const AREA = "compact-tools";
 /** The live area's height. It does not change while the agent works, so the editor below it stays in place. */
 const AREA_LINES = 3;
-/** Tools whose rows this module does not hold back: they draw their own, so the live area leaves them out. */
-const drawsOwnRow = new Set<string>();
 const newRun = (): Run => ({
 	startedAt: Date.now(),
 	calls: 0,
@@ -391,6 +573,26 @@ function sameCommand(command: unknown): string {
 		.split("\n");
 	const merged = first.replace(STDERR_MERGE, "");
 	return [((rest.length === 0 && merged.replace(OUTPUT_CAP, "")) || merged).replace(RUNNER, ""), ...rest].join("\n");
+}
+/**
+ * The commands a passing run proves passed: itself, and each command of an `&&` chain, since the chain stops
+ * at the first that fails. Only a plain chain counts: with `;`, `||`, a pipe or `&` a part may have failed
+ * unseen, and after a `cd`, a `source`, an `export` or a change of branch the parts ran in another place or
+ * state than the command that failed.
+ */
+const MOVES = /^(?:cd|pushd|source|\.|export|git\s+(?:checkout|switch|stash))(?=\s|$)/;
+function proved(command: string): string[] {
+	// Quoted text and `2>&1` hold no operator; both keep their length so the parts can be cut from the command.
+	const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"|\d*>&\d+/g, (held) => "q".repeat(held.length));
+	const parts: string[] = [];
+	let from = 0;
+	for (const match of bare.matchAll(/&&/g)) {
+		parts.push(command.slice(from, match.index).trim());
+		from = match.index + 2;
+	}
+	parts.push(command.slice(from).trim());
+	const plain = !/[;|\n`]|&(?!&)(?<!&&)|\$\(/.test(bare) && parts.every((part) => part && !MOVES.test(part));
+	return parts.length > 1 && plain ? [command, ...parts.map(sameCommand)] : [command];
 }
 /**
  * True when a passing command says its first program passed: with a pipe, the shell reports only the last
@@ -534,7 +736,7 @@ const FILE_REFERENCE = /(?<![\w/.-])((?:\.{0,2}\/)?(?:[\w@.-]+\/)*[\w@-][\w@.-]*
  * call marks its error-like lines: in passing output the same words are mostly matches in code, not errors.
  */
 function outputLine(line: string, theme: Theme, context: Context): string {
-	const paint = (text: string) => theme.fg(context.isError && ERROR_LIKE.test(line) ? "error" : "toolOutput", text);
+	const paint = (text: string) => theme.fg(context.isError && errorLike(line) ? "error" : "toolOutput", text);
 	if (!getCapabilities().hyperlinks) return paint(line);
 	let linked = "";
 	let end = 0;
@@ -563,11 +765,23 @@ function middleCut(text: string, room: number): string {
 	// Cut by hand: Pi's truncation ends its result with a style reset, which would unstyle the end.
 	return `${chars.slice(0, fit(chars, room - 1 - visibleWidth(end))).join("")}…${end}`;
 }
-/** How many lines a failed command keeps from its end: from the first error-like line among the last twenty. */
-function failedTail(output: string[]): number {
+/**
+ * The lines a failed command shows: its end from the first error-like line among the last twenty. When that
+ * is more than a screen can spare, only the error-like lines in it and the values of failed comparisons, each
+ * once, the newest kept.
+ */
+function failedTail(output: string[]): string[] {
 	const window = output.slice(-FAILED_LINES);
-	const first = window.findIndex((line) => ERROR_LIKE.test(line));
-	return Math.min(output.length, Math.max(FAILED_MIN_LINES, first < 0 ? 0 : window.length - first));
+	const first = window.findIndex(errorLike);
+	const kept = Math.min(output.length, Math.max(FAILED_MIN_LINES, first < 0 ? 0 : window.length - first));
+	const end = output.slice(output.length - kept);
+	if (end.length <= FAILED_SHOWN) return end;
+	const errors = end.filter(
+		(line, index) =>
+			(errorLike(line) || COMPARED.test(line)) &&
+			end.findLastIndex((other) => other.trim() === line.trim()) === index,
+	);
+	return errors.slice(-FAILED_SHOWN);
 }
 /** `:60-99` for a read of part of a file. */
 function lineRange(args: any): string {
@@ -615,10 +829,11 @@ const SUMMARIES: Record<string, Summarize> = {
 		if (ms >= 1000) meta.push(theme.fg(ms >= SLOW_MS ? "warning" : "muted", formatDuration(ms)));
 		if (!context.isError) return { head, meta, place, count: output.length, silent };
 		const kept = failedTail(output);
-		// The count of skipped lines sits where they were skipped.
 		const body = [
-			...(output.length > kept ? [theme.fg("muted", `⋮ ${plural(output.length - kept, "more line")}`)] : []),
-			...output.slice(output.length - kept).map((line) => outputLine(line, theme, context)),
+			...(output.length > kept.length
+				? [theme.fg("muted", `⋮ ${plural(output.length - kept.length, "more line")}`)]
+				: []),
+			...kept.map((line) => outputLine(line, theme, context)),
 		];
 		return { head, meta, place, body, count: output.length, silent };
 	},
@@ -707,16 +922,22 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 		return [summary.quiet ? theme.fg("dim", stripVTControlCharacters(line)) : line];
 	});
 }
+/** A failed call's line, wrapped: a long one keeps its start, where the message is. */
+function wrapped(line: string, room: number): string[] {
+	const rows = wrapTextWithAnsi(line, room);
+	if (rows.length <= FAILED_LINE_ROWS) return rows;
+	return [...rows.slice(0, FAILED_LINE_ROWS - 1), truncateToWidth(`${rows[FAILED_LINE_ROWS - 1]}…`, room, "…")];
+}
 /**
  * A component's lines under the head line, behind a bar in the glyph's column: red when the call failed.
- * A failure's lines wrap, so no part of an error is cut off; any other line is cut to one row.
+ * A failure's lines wrap to two rows at most; any other line is cut to one row.
  */
 function indented(child: Component | string[], state: RowState, theme: Theme, context: Context): Component {
 	return lines((width) => {
 		const indent = `${" ".repeat(context.outputPad)}${theme.fg(state.failed ? "error" : "dim", "│")} `;
 		const room = Math.max(8, width - visibleWidth(indent) - context.outputPad);
 		const rows = Array.isArray(child)
-			? child.flatMap((line) => (state.failed ? wrapTextWithAnsi(line, room) : [truncateToWidth(line, room, "…")]))
+			? child.flatMap((line) => (state.failed ? wrapped(line, room) : [truncateToWidth(line, room, "…")]))
 			: child.render(room).filter((line) => stripVTControlCharacters(line).trim());
 		return rows.map((line) => indent + line);
 	});
@@ -797,9 +1018,16 @@ function compactRenderers(
 							width,
 						),
 					);
-				return framed ? piShell(full, theme, context, "top") : full;
+				const shell = framed ? piShell(full, theme, context, "top") : full;
+				// With every row expanded, a heading shows at its own call.
+				return context.expanded ? shell : headed(shell, context.toolCallId);
 			}
-			if (!summarize && state.piCall) return glyphed(state.piCall, state, theme, context);
+			if (!summarize && state.piCall)
+				return counted(
+					headed(glyphed(state.piCall, state, theme, context), context.toolCallId),
+					context.toolCallId,
+					"call",
+				);
 			const id = context.toolCallId;
 			const head = (width: number) => {
 				const drawn = { ...summary(args, state, theme, context), place: placeNamed(id) };
@@ -829,15 +1057,26 @@ function compactRenderers(
 				atOnce: () =>
 					state.result !== undefined &&
 					(state.failed === true || summary(args, state, theme, context).keep === true),
+				height() {
+					if (showsPi(context)) return Number.POSITIVE_INFINITY;
+					// Pi puts the blank line only above a row that draws something.
+					const drawn = (state.callRows ?? 0) + (state.resultRows ?? 0);
+					return drawn > 0 ? drawn + 1 : 0;
+				},
 			});
 			const tally = (count: number) =>
 				`${" ".repeat(context.outputPad)}${theme.fg("dim", `⋮ ${plural(count, "call")}, nothing changed`)}`;
-			return lines((width) => {
+			const call = (width: number) => {
 				if (held(args, state, theme, context)) return [];
 				const call = foldedRow(transcript.calls.get(id));
-				if (!call) return head(width);
-				// A folded row followed by another in its block draws nothing: the last row of the run draws them all.
-				return closesUp(call, transcript.order[call.index + 1]) ? [] : foldedRun(call, width, tally);
+				if (!call) return [...headings(transcript.calls.get(id), width), ...head(width)];
+				// A folded row that the next one joins draws nothing: the last row of the run draws them all.
+				return joins(call, neighbour(call, 1)) ? [] : foldedRun(call, width, tally);
+			};
+			return lines((width) => {
+				const drawn = call(width);
+				state.callRows = drawn.length;
+				return drawn;
 			});
 		},
 		renderResult(result, options, theme, context) {
@@ -849,7 +1088,8 @@ function compactRenderers(
 			const command = transcript.rows.get(context.toolCallId)?.command;
 			if (command !== undefined && state.result && (state.failed || provesPass((context.args as any)?.command))) {
 				const ended = state.failed ? transcript.failed : transcript.passed;
-				ended.set(command, (ended.get(command) ?? new Set()).add(context.toolCallId));
+				for (const part of state.failed ? [command] : proved(command))
+					ended.set(part, (ended.get(part) ?? new Set()).add(context.toolCallId));
 			}
 			state.piResult = pi?.renderResult?.(result, options, theme, { ...context, lastComponent: state.piResult });
 			if (showsPi(context)) {
@@ -871,9 +1111,13 @@ function compactRenderers(
 				// A running row that shows beside a drawn one is one line: its output would move the rows below it.
 				const hidden = () =>
 					held(context.args, state, theme, context) || (summarize !== undefined && overtaken(context.toolCallId));
-				return lines((width) => (hidden() ? [] : partial.render(width)));
+				return lines((width) => {
+					const drawn = hidden() ? [] : partial.render(width);
+					state.resultRows = drawn.length;
+					return drawn;
+				});
 			}
-			return lines((width) => {
+			const output = (width: number) => {
 				if (held(context.args, state, theme, context)) return [];
 				const body = summary(context.args, state, theme, context).body ?? [];
 				if (body.length === 0) return [];
@@ -881,6 +1125,11 @@ function compactRenderers(
 				if (state.bodyLines?.key !== key)
 					state.bodyLines = { key, rows: indented(body, state, theme, context).render(width) };
 				return state.bodyLines.rows;
+			};
+			return lines((width) => {
+				const drawn = output(width);
+				state.resultRows = drawn.length;
+				return drawn;
 			});
 		},
 	};
@@ -892,12 +1141,15 @@ export default function (pi: ExtensionAPI) {
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "message") continue;
 			startMessage(entry.message);
-			noteMessage(entry.message);
+			noteMessage(entry.message, true);
 		}
 		// With no run under way, nothing more follows the last step.
 		if (ctx.isIdle()) settle(transcript.turn);
 		// Rows of the session that was left are dropped; rows this session drew before the event are kept.
-		for (const id of transcript.rows.keys()) if (!transcript.calls.has(id)) transcript.rows.delete(id);
+		for (const kept of [transcript.rows, ownCalls, ownLines])
+			for (const id of kept.keys()) if (!transcript.calls.has(id)) kept.delete(id);
+		// Every message of a loaded session is complete.
+		transcript.closed = transcript.turn;
 		for (const ended of [transcript.passed, transcript.failed])
 			for (const [command, ids] of ended) {
 				for (const id of ids) if (!transcript.calls.has(id)) ids.delete(id);
@@ -909,7 +1161,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", reload);
 	pi.on("message_start", (event) => startMessage(event.message));
 	pi.on("message_update", (event) => noteMessage(event.message));
-	pi.on("message_end", (event) => noteMessage(event.message));
+	pi.on("message_end", (event) => {
+		noteMessage(event.message);
+		if (event.message?.role === "assistant") transcript.closed = transcript.turn;
+	});
 
 	let run = newRun();
 	/** Redraws the live area; unset while the receipt or nothing is shown. */
@@ -967,7 +1222,10 @@ export default function (pi: ExtensionAPI) {
 			run.open.set(tried, exit ? `exit ${exit}` : "");
 			return;
 		}
-		if (!run.unproven.has(event.toolCallId)) run.open.delete(tried);
+		if (!run.unproven.has(event.toolCallId)) {
+			const [tool, command] = [tried.slice(0, tried.indexOf(" ")), tried.slice(tried.indexOf(" ") + 1)];
+			for (const part of tool === "bash" ? proved(command) : [command]) run.open.delete(`${tool} ${part}`);
+		}
 		if (event.toolName === "edit" || event.toolName === "write") run.changed.add(tried.slice(tried.indexOf(" ") + 1));
 	});
 	pi.on("agent_end", (_event, ctx) => {
@@ -982,7 +1240,33 @@ export default function (pi: ExtensionAPI) {
 		// A tool that draws its own shell keeps it, unless its row has a summary here.
 		if (renderers?.renderShell === "self" && !SUMMARIES[toolName]) {
 			drawsOwnRow.add(toolName);
-			return renderers;
+			ownShell.add(toolName);
+			// Its renderers are passed on as they are; each gets back the component it made, not the counting one.
+			const own = (context: Context) => ({ ...context, lastComponent: (context.lastComponent as any)?.inner });
+			const { renderCall, renderResult } = renderers;
+			return {
+				...renderers,
+				renderCall:
+					renderCall &&
+					((args, theme, context) => {
+						const id = context.toolCallId;
+						const drawn = renderCall(args, theme, own(context));
+						ownCalls.set(id, drawn);
+						// With every row expanded, the call's line shows at its own place.
+						return counted(drawn, id, "call", () => !context.expanded && drawnElsewhere(id));
+					}),
+				renderResult:
+					renderResult &&
+					((result, options, theme, context) => {
+						const id = context.toolCallId;
+						const drawn = counted(renderResult(result, options, theme, own(context)), id, "result");
+						// Pi asks for the call's line before the result's, and a tool may draw the call from what its
+						// result left behind: measured again here, the rows above know of that line on this frame.
+						const call = ownCalls.get(id)?.render(PROBE_WIDTH).length;
+						if (call !== undefined) ownLines.set(id, { ...ownLines.get(id), call });
+						return drawn;
+					}),
+			};
 		}
 		return compactRenderers(toolName, renderers, SUMMARIES[toolName]);
 	});

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
+import { stripVTControlCharacters } from "node:util";
 
 // The on/off choice is saved under the agent dir: keep HOME, TMPDIR and the agent dir in a temp dir,
 // never the real ~/.pi.
@@ -96,6 +97,16 @@ test("a running plan shows every step with the current one timed", async () => {
 	assert.equal(s.show(), "● A · 5s\n○ B\n○ C");
 	wait(82_000);
 	assert.equal(s.show().split("\n")[0], "● A · 1m 27s");
+});
+
+test("a plan marked finished shows its last step as current until the agent stops", async () => {
+	const s = setup();
+	s.prompt();
+	await s.plan({ steps: ["A", "B"] });
+	await s.plan({ done: 2 });
+	assert.equal(s.show(), "✓ A\n● B · 0s", "the call that came with the mark may still run");
+	s.end();
+	assert.equal(s.show(), "✓ 2/2 steps");
 });
 
 test("the timer restarts when the step changes, not on a repeated tick", async () => {
@@ -281,17 +292,42 @@ test("a setting that can't be read for another reason is reported and steps stay
 	}
 });
 
-test("a plan call has no transcript row; a failed one shows its error", () => {
+test("a plan call that starts a step leaves its heading in the transcript; any other has no row", async () => {
 	const s = setup();
 	const tool = s.tool();
-	const theme = { fg: (_color: string, text: string) => text };
+	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+	/** The transcript lines of one `plan` call: its call line, then its result. */
+	const drawn = async (params: any) => {
+		const context = { state: {} as any, outputPad: 1, isError: false };
+		const result = await s.plan(params);
+		const output = tool.renderResult(result, {}, theme, context).render(80);
+		return [...tool.renderCall(params, theme, context).render(80), ...output];
+	};
 	assert.equal(tool.renderShell, "self");
-	assert.deepEqual(tool.renderCall({ steps: ["A"] }, theme, {}).render(80), []);
-	const ok = { content: [{ type: "text", text: "ok" }] };
-	assert.deepEqual(tool.renderResult(ok, {}, theme, { isError: false }).render(80), []);
+	assert.deepEqual(tool.renderCall({}, theme, { state: {}, outputPad: 1 }).render(80), [], "nothing before it ran");
+	s.prompt();
+	assert.deepEqual(await drawn({ steps: ["Find it", "Fix it", "Check it"] }), [" ▸ 1/3 Find it"]);
+	assert.deepEqual(await drawn({ done: 0 }), [], "a call that starts no step has no row");
+	assert.deepEqual(await drawn({ done: 2 }), [" ▸ 3/3 Check it"], "a skipped step has no heading");
+	assert.deepEqual(await drawn({ done: 3 }), [], "finishing the plan from its last step has no row");
+	await s.plan({ steps: ["Find it", "Fix it", "Check it"] });
+	await s.plan({ done: 1 });
+	assert.deepEqual(
+		await drawn({ done: 3 }),
+		[" ▸ 3/3 Check it"],
+		"finishing it from an earlier step came with the last step's work, so that step gets its heading",
+	);
+	assert.deepEqual(
+		await drawn({ steps: ["Only"], done: 1 }),
+		[" ▸ 1/1 Only"],
+		"also for steps set and finished at once",
+	);
+	const long = await drawn({ steps: ["x".repeat(100), "B"] });
+	const cut = stripVTControlCharacters(long[0]);
+	assert.ok(cut.length === 80 && cut.endsWith("…"), "a long step is cut to the width");
 	const failed = { content: [{ type: "text", text: "done: expected integer" }] };
 	assert.match(
-		tool.renderResult(failed, {}, theme, { isError: true }).render(80).join(""),
+		tool.renderResult(failed, {}, theme, { state: {}, isError: true }).render(80).join(""),
 		/plan failed: done: expected integer/,
 	);
 });
