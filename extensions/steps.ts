@@ -1,5 +1,5 @@
-// Steps: the model sets upcoming steps with the `plan` tool. Each step it starts leaves a heading in the
-// transcript, and one line below the editor shows the current step and how long it has run.
+// Steps: a live checklist below the editor, set by the model with the `plan` tool; the current step shows how
+// long it has run. Each step the model starts also leaves a heading in the transcript.
 // Pi's tool blocks already show what is running, so without a plan this prompt shows nothing.
 // Off outside the TUI, including delegate workers (JSON mode): no tool, no prompt text, no tokens.
 // `/steps off` turns it off the same way for every session; the choice lives in <agent dir>/steps.json.
@@ -114,11 +114,13 @@ export default function (pi: ExtensionAPI) {
 						const finished = done >= steps.length;
 						if (finished && !running) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
 						if (!running) return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${steps[done]}`))];
-						// The transcript has a heading for each step started; here is only where the work stands.
 						const current = Math.min(done, steps.length - 1);
-						const timer = theme.fg("dim", ` · ${elapsed(Date.now() - stepStartedAt)}`);
-						const count = theme.fg("dim", `${current + 1}/${steps.length}`);
-						return [line(`${theme.fg("accent", "●")} ${count} ${steps[current]}${timer}`)];
+						return steps.map((step, i) => {
+							if (i < current) return line(theme.fg("dim", `✓ ${step}`));
+							if (i > current) return line(theme.fg("dim", `○ ${step}`));
+							const timer = theme.fg("dim", ` · ${elapsed(Date.now() - stepStartedAt)}`);
+							return line(`${theme.fg("accent", "●")} ${step}${timer}`);
+						});
 					},
 				};
 			},

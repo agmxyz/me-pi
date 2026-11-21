@@ -36,6 +36,10 @@ import {
 const FAILED_LINES = 20;
 /** A failed call with no such line keeps this many, which is also the least a failed call keeps. */
 const FAILED_MIN_LINES = 5;
+/** The most lines a failed call shows. An end longer than this shows only its error-like lines, each once. */
+const FAILED_SHOWN = 8;
+/** The most screen rows one line of a failed call takes. */
+const FAILED_LINE_ROWS = 2;
 const ERROR_LIKE =
 	/error|fail|✖|✗|not found|no such|denied|cannot|exception|traceback|fatal|panic|refused|invalid|unexpected/i;
 /** A cut in the middle of a command must save at least this many columns over a cut at its end. */
@@ -372,8 +376,9 @@ function failedBefore(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	const command = transcript.rows.get(toolCallId)?.command;
 	if (!call || command === undefined) return false;
-	for (const id of transcript.failed.get(command) ?? [])
-		if ((transcript.calls.get(id)?.index ?? call.index) < call.index) return true;
+	for (const part of proved(command))
+		for (const id of transcript.failed.get(part) ?? [])
+			if ((transcript.calls.get(id)?.index ?? call.index) < call.index) return true;
 	return false;
 }
 /**
@@ -563,6 +568,25 @@ function sameCommand(command: unknown): string {
 	return [((rest.length === 0 && merged.replace(OUTPUT_CAP, "")) || merged).replace(RUNNER, ""), ...rest].join("\n");
 }
 /**
+ * The commands a passing run proves passed: itself, and each command of an `&&` chain, since the chain stops
+ * at the first that fails. Only a plain chain counts: with `;`, `||`, a pipe or `&` a part may have failed
+ * unseen, and after a `cd` the parts ran somewhere else.
+ */
+function proved(command: string): string[] {
+	// Quoted text and `2>&1` hold no operator; both keep their length so the parts can be cut from the command.
+	const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"|\d*>&\d+/g, (held) => "q".repeat(held.length));
+	const parts: string[] = [];
+	let from = 0;
+	for (const match of bare.matchAll(/&&/g)) {
+		parts.push(command.slice(from, match.index).trim());
+		from = match.index + 2;
+	}
+	parts.push(command.slice(from).trim());
+	const plain =
+		!/[;|\n`]|&(?!&)(?<!&&)|\$\(/.test(bare) && parts.every((part) => part && !/^(?:cd|pushd)\b/.test(part));
+	return parts.length > 1 && plain ? [command, ...parts.map(sameCommand)] : [command];
+}
+/**
  * True when a passing command says its first program passed: with a pipe, the shell reports only the last
  * program's exit code, so `npm test | tail -5` passes whatever the tests did.
  */
@@ -733,11 +757,20 @@ function middleCut(text: string, room: number): string {
 	// Cut by hand: Pi's truncation ends its result with a style reset, which would unstyle the end.
 	return `${chars.slice(0, fit(chars, room - 1 - visibleWidth(end))).join("")}…${end}`;
 }
-/** How many lines a failed command keeps from its end: from the first error-like line among the last twenty. */
-function failedTail(output: string[]): number {
+/**
+ * The lines a failed command shows: its end from the first error-like line among the last twenty. When that
+ * is more than a screen can spare, only the error-like lines in it, each once, the newest kept.
+ */
+function failedTail(output: string[]): string[] {
 	const window = output.slice(-FAILED_LINES);
 	const first = window.findIndex((line) => ERROR_LIKE.test(line));
-	return Math.min(output.length, Math.max(FAILED_MIN_LINES, first < 0 ? 0 : window.length - first));
+	const kept = Math.min(output.length, Math.max(FAILED_MIN_LINES, first < 0 ? 0 : window.length - first));
+	const end = output.slice(output.length - kept);
+	if (end.length <= FAILED_SHOWN) return end;
+	const errors = end.filter(
+		(line, index) => ERROR_LIKE.test(line) && end.findLastIndex((other) => other.trim() === line.trim()) === index,
+	);
+	return errors.slice(-FAILED_SHOWN);
 }
 /** `:60-99` for a read of part of a file. */
 function lineRange(args: any): string {
@@ -785,10 +818,11 @@ const SUMMARIES: Record<string, Summarize> = {
 		if (ms >= 1000) meta.push(theme.fg(ms >= SLOW_MS ? "warning" : "muted", formatDuration(ms)));
 		if (!context.isError) return { head, meta, place, count: output.length, silent };
 		const kept = failedTail(output);
-		// The count of skipped lines sits where they were skipped.
 		const body = [
-			...(output.length > kept ? [theme.fg("muted", `⋮ ${plural(output.length - kept, "more line")}`)] : []),
-			...output.slice(output.length - kept).map((line) => outputLine(line, theme, context)),
+			...(output.length > kept.length
+				? [theme.fg("muted", `⋮ ${plural(output.length - kept.length, "more line")}`)]
+				: []),
+			...kept.map((line) => outputLine(line, theme, context)),
 		];
 		return { head, meta, place, body, count: output.length, silent };
 	},
@@ -881,12 +915,18 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
  * A component's lines under the head line, behind a bar in the glyph's column: red when the call failed.
  * A failure's lines wrap, so no part of an error is cut off; any other line is cut to one row.
  */
+/** A failed call's line, wrapped: a long one keeps its start, where the message is. */
+function wrapped(line: string, room: number): string[] {
+	const rows = wrapTextWithAnsi(line, room);
+	if (rows.length <= FAILED_LINE_ROWS) return rows;
+	return [...rows.slice(0, FAILED_LINE_ROWS - 1), truncateToWidth(`${rows[FAILED_LINE_ROWS - 1]}…`, room, "…")];
+}
 function indented(child: Component | string[], state: RowState, theme: Theme, context: Context): Component {
 	return lines((width) => {
 		const indent = `${" ".repeat(context.outputPad)}${theme.fg(state.failed ? "error" : "dim", "│")} `;
 		const room = Math.max(8, width - visibleWidth(indent) - context.outputPad);
 		const rows = Array.isArray(child)
-			? child.flatMap((line) => (state.failed ? wrapTextWithAnsi(line, room) : [truncateToWidth(line, room, "…")]))
+			? child.flatMap((line) => (state.failed ? wrapped(line, room) : [truncateToWidth(line, room, "…")]))
 			: child.render(room).filter((line) => stripVTControlCharacters(line).trim());
 		return rows.map((line) => indent + line);
 	});
@@ -1033,7 +1073,8 @@ function compactRenderers(
 			const command = transcript.rows.get(context.toolCallId)?.command;
 			if (command !== undefined && state.result && (state.failed || provesPass((context.args as any)?.command))) {
 				const ended = state.failed ? transcript.failed : transcript.passed;
-				ended.set(command, (ended.get(command) ?? new Set()).add(context.toolCallId));
+				for (const part of state.failed ? [command] : proved(command))
+					ended.set(part, (ended.get(part) ?? new Set()).add(context.toolCallId));
 			}
 			state.piResult = pi?.renderResult?.(result, options, theme, { ...context, lastComponent: state.piResult });
 			if (showsPi(context)) {
@@ -1166,7 +1207,10 @@ export default function (pi: ExtensionAPI) {
 			run.open.set(tried, exit ? `exit ${exit}` : "");
 			return;
 		}
-		if (!run.unproven.has(event.toolCallId)) run.open.delete(tried);
+		if (!run.unproven.has(event.toolCallId)) {
+			const [tool, command] = [tried.slice(0, tried.indexOf(" ")), tried.slice(tried.indexOf(" ") + 1)];
+			for (const part of tool === "bash" ? proved(command) : [command]) run.open.delete(`${tool} ${part}`);
+		}
 		if (event.toolName === "edit" || event.toolName === "write") run.changed.add(tried.slice(tried.indexOf(" ") + 1));
 	});
 	pi.on("agent_end", (_event, ctx) => {

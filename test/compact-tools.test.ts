@@ -152,18 +152,42 @@ test("a failed bash call shows a cross and its exit code, and keeps its end from
 	const dull = failed(`${numbered(40)}\n\nCommand exited with code 2`);
 	assert.deepEqual(dull.slice(0, 2), ["✗ $ npm test · exit 2 · 4.2s", "⋮ 35 more lines"]);
 	assert.deepEqual(dull.slice(2), numbered(40).split("\n").slice(-5), "no error-like line: the last five");
-	const output = [...numbered(30).split("\n"), "Error: boom", ...numbered(8).split("\n")];
+	const output = [...numbered(30).split("\n"), "Error: boom", ...numbered(6).split("\n")];
 	const found = failed(`${output.join("\n")}\n\nCommand exited with code 1`);
 	assert.deepEqual(
 		found.slice(1, 4),
 		["⋮ 30 more lines", "Error: boom", "line 1"],
 		"kept from the first error-like line",
 	);
-	assert.equal(found.length, 11);
+	assert.equal(found.length, 9);
+	const report = [
+		"✖ a breaks",
+		"pass 0",
+		"fail 1",
+		"running b",
+		"ok b",
+		"ok c",
+		"ok d",
+		"✖ a breaks",
+		"Error: 1 broke",
+	];
+	assert.deepEqual(
+		failed(`${numbered(4)}\n${report.join("\n")}\n\nCommand exited with code 1`).slice(1),
+		["⋮ 10 more lines", "fail 1", "✖ a breaks", "Error: 1 broke"],
+		"an end longer than eight lines shows only its error-like lines, each once",
+	);
+	const many = Array.from({ length: 15 }, (_, i) => `Error: ${i + 1}`).join("\n");
+	assert.deepEqual(
+		failed(`${many}\n\nCommand exited with code 1`).slice(1, 3),
+		["⋮ 7 more lines", "Error: 8"],
+		"at most eight of them, the newest",
+	);
 	const old = failed(`Error: early\n${numbered(40)}\n\nCommand exited with code 1`);
 	assert.equal(old.length, 7, "an error line more than twenty lines back does not count");
 	const wide = failed(`${"z".repeat(100)}\n\nCommand exited with code 1`);
 	assert.equal(wide.join("").match(/z/g)?.length, 100, "a long error line wraps instead of being cut");
+	const huge = failed(`Error: ${"z".repeat(400)}\n\nCommand exited with code 1`);
+	assert.ok(huge.length === 3 && huge[2].endsWith("…"), "one line takes two rows at most and keeps its start");
 	assert.deepEqual(failed("Command timed out after 5 seconds"), [
 		"✗ $ npm test · 4.2s",
 		"Command timed out after 5 seconds",
@@ -711,6 +735,25 @@ test("a failed command folds once the same command passes on a later run", () =>
 		],
 		"the same command with other plumbing or behind a runner settles it, and that passing run keeps its line",
 	);
+	const chain = session();
+	chain.step([ran("./check.sh", failure, { isError: true })]);
+	chain.step([ran("./check.sh; git status --short", "ok")]);
+	chain.step([ran("cd sub && ./check.sh", "ok")]);
+	chain.step([ran("./check.sh || true", "ok")]);
+	chain.step([ran("true", "")]);
+	assert.ok(
+		chain.screen().includes("Error: boom"),
+		"a part that may have failed unseen, or ran elsewhere, proves nothing",
+	);
+	chain.step([ran("./check.sh 2>&1 && git diff --check && git status --short", "ok")]);
+	chain.step([ran("true", "")]);
+	const settled = chain.screen();
+	assert.equal(settled[1], "✗ $ ./check.sh · exit 1 · passed later", "each command of a passing && chain passed");
+	assert.match(
+		settled.at(-1) ?? "",
+		/^✓ \$ \.\/check\.sh .*&& git status --short · 1 line$/,
+		"and the chain keeps its line",
+	);
 });
 
 test("a failed command that has scrolled away keeps its output when the command passes", (t) => {
@@ -871,4 +914,19 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 		["✗ open: pytest tests/a_long_name.py tes… · exit 1 (+1 more) · 2 calls · 0.0s"],
 		"the newest open failure is named with its exit code, cut short; the others are counted",
 	);
+
+	handlers.agent_start({}, slot.ctx);
+	failed("9", "./check.sh", 1);
+	call("10", "bash", { command: "./check.sh; git status" });
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(
+		slot.lines(),
+		["✗ open: ./check.sh · exit 1 · 2 calls · 0.0s"],
+		"after `;` it may have failed unseen",
+	);
+	handlers.agent_start({}, slot.ctx);
+	failed("11", "./check.sh", 1);
+	call("12", "bash", { command: "./check.sh && git diff --check" });
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(slot.lines(), ["2 calls · 0.0s"], "a passing && chain settles each of its commands");
 });
