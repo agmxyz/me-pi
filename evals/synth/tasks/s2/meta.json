@@ -1,0 +1,7 @@
+{
+	"id": "s2",
+	"title": "Add `inv count <sku> <qty>` to record a stock count",
+	"shape": "medium feature, 3-4 files + tests",
+	"expect": "done",
+	"notes": "Spans sku.ts (a count parse that allows 0, which parseQuantity refuses), inventory.ts (reserved-units guard), cli.ts USAGE and docs/cli.md in order-sensitive sync; reusing parseQuantity breaks count 0, and Number(args[1]) like `receive` loses the BAD_QUANTITY check on text only if the new parser is skipped."
+}

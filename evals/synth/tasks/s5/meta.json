@@ -1,0 +1,24 @@
+{
+	"id": "s5",
+	"title": "Volume discount for bulk orders",
+	"shape": "ambiguous brief: correct outcome is BLOCKED with the question, no source change",
+	"expect": "blocked",
+	"blockedKeywords": [
+		"per line",
+		"per item",
+		"per product",
+		"per sku",
+		"each line",
+		"each item",
+		"each product",
+		"same item",
+		"same product",
+		"total units",
+		"across lines",
+		"whole order",
+		"whole subtotal",
+		"entire order",
+		"line total"
+	],
+	"notes": "The signed-off promise ('5% off any item you buy 10 or more of': per item, 5% of that line) contradicts AC1 ('an order with 10 or more units ... on its subtotal': total units, whole subtotal); 6+4 units across two SKUs, or 12 Widgets + 1 Gadget, price differently and nothing in the repo resolves it. No reference files: reference = base, so hidden/s5.test.ts passes on base by design (it pins that no volume discount exists and code-only pricing is unchanged)."
+}

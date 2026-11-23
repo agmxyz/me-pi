@@ -6,6 +6,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	realpathSync,
+	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -50,6 +51,10 @@ export interface Sandbox {
 	root: string;
 	home: string;
 	agentDir: string;
+	/**
+	 * The sandbox's TMPDIR, under `/tmp` rather than inside `root`: a deep temp root leaves no room for the Unix sockets
+	 * a target creates under TMPDIR (macOS caps socket paths near 104 bytes). Owned by the sandbox; see `removeSandbox`.
+	 */
 	tmp: string;
 	/** The clone Pi loads me-pi from. */
 	src: string;
@@ -84,9 +89,16 @@ export function cloneAt(repo: string, ref: string, dest: string): string {
 	return commit;
 }
 
+/** Every directory a sandbox owns: its processes are found by these, and `removeSandbox` deletes them. */
+export const sandboxDirs = (s: Sandbox) => [s.root, s.tmp];
+
+export function removeSandbox(s: Sandbox) {
+	for (const dir of sandboxDirs(s)) rmSync(dir, { recursive: true, force: true });
+}
+
 /**
- * Builds one isolated Pi home under a new temp root: HOME, TMPDIR, and PI_CODING_AGENT_DIR (= $HOME/.pi/agent, where
- * delegate.json and the worker auth fence also resolve) all point inside it, and Pi loads me-pi from a clone of `ref`
+ * Builds one isolated Pi home under a new temp root, with a short TMPDIR of its own: HOME, TMPDIR, and PI_CODING_AGENT_DIR (= $HOME/.pi/agent, where
+ * delegate.json and the worker auth fence also resolve) all point inside the sandbox, and Pi loads me-pi from a clone of `ref`
  * through settings, as workers do. No `install.sh`, live settings, or live checkout is touched.
  */
 export function createSandbox(opts: SandboxOptions): Sandbox {
@@ -98,11 +110,14 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
 	const root = mkdtempSync(join(opts.root ?? tmpdir(), "me-pi-eval-"));
 	const home = join(root, "home");
 	const agentDir = join(home, ".pi", "agent");
-	const tmp = join(root, "tmp");
+	// `/tmp/mpe-XXXXXX` (15 bytes), not its resolved `/private/tmp/…` on macOS: the short path is the point. The sweep
+	// resolves it when matching working directories.
+	const tmp = mkdtempSync("/tmp/mpe-");
 	const src = join(root, "src");
 	mkdirSync(agentDir, { recursive: true });
-	mkdirSync(tmp);
 	const commit = cloneAt(opts.repo, opts.ref, src);
+	// The synthetic suite's hidden tests and references are the runner's oracle: no agent may read them from me-pi.
+	rmSync(join(src, "evals", "synth"), { recursive: true, force: true });
 
 	writeFileSync(
 		join(home, ".gitconfig"),
@@ -161,9 +176,13 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
 	};
 }
 
-/** Copies a fixture into a fresh git repo whose first commit is identical across runs. */
-export function fixtureRepo(fixture: string, dest: string, env: Record<string, string>): string {
+/**
+ * Copies a fixture, then `overlay` (if given) over it, into a fresh git repo whose first commit is identical across
+ * runs.
+ */
+export function fixtureRepo(fixture: string, dest: string, env: Record<string, string>, overlay?: string): string {
 	cpSync(fixture, dest, { recursive: true });
+	if (overlay) cpSync(overlay, dest, { recursive: true });
 	const date = "2026-01-01T00:00:00Z";
 	const run = (...args: string[]) =>
 		execFileSync("git", args, {

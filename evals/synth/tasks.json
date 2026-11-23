@@ -1,0 +1,156 @@
+[
+	{
+		"kind": "synth",
+		"id": "s1",
+		"dir": "tasks/s1",
+		"fixture": "fixture",
+		"check": "npm run check",
+		"setup": [
+			"npm ci --prefer-offline"
+		],
+		"coordinators": [
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6-luna",
+				"thinking": "max"
+			},
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6.1-terra",
+				"thinking": "medium"
+			}
+		]
+	},
+	{
+		"kind": "synth",
+		"id": "s2",
+		"dir": "tasks/s2",
+		"fixture": "fixture",
+		"check": "npm run check",
+		"setup": [
+			"npm ci --prefer-offline"
+		],
+		"coordinators": [
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6-luna",
+				"thinking": "max"
+			},
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6.1-terra",
+				"thinking": "medium"
+			}
+		]
+	},
+	{
+		"kind": "synth",
+		"id": "s3",
+		"dir": "tasks/s3",
+		"fixture": "fixture",
+		"check": "npm run check",
+		"setup": [
+			"npm ci --prefer-offline"
+		],
+		"coordinators": [
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6-luna",
+				"thinking": "max"
+			},
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6.1-terra",
+				"thinking": "medium"
+			}
+		]
+	},
+	{
+		"kind": "synth",
+		"id": "s5",
+		"dir": "tasks/s5",
+		"fixture": "fixture",
+		"check": "npm run check",
+		"setup": [
+			"npm ci --prefer-offline"
+		],
+		"coordinators": [
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6-luna",
+				"thinking": "max"
+			},
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6.1-terra",
+				"thinking": "medium"
+			}
+		]
+	},
+	{
+		"kind": "synth",
+		"id": "s6",
+		"dir": "tasks/s6",
+		"fixture": "fixture",
+		"check": "npm run check",
+		"setup": [
+			"npm ci --prefer-offline"
+		],
+		"coordinators": [
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6-luna",
+				"thinking": "max"
+			},
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6.1-terra",
+				"thinking": "medium"
+			}
+		]
+	},
+	{
+		"kind": "synth",
+		"id": "s7",
+		"dir": "tasks/s7",
+		"fixture": "fixture",
+		"check": "npm run check",
+		"setup": [
+			"npm ci --prefer-offline"
+		],
+		"coordinators": [
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6-luna",
+				"thinking": "max"
+			},
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6.1-terra",
+				"thinking": "medium"
+			}
+		]
+	},
+	{
+		"kind": "synth",
+		"id": "s8",
+		"dir": "tasks/s8",
+		"fixture": "fixture",
+		"check": "npm run check",
+		"setup": [
+			"npm ci --prefer-offline"
+		],
+		"coordinators": [
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6-luna",
+				"thinking": "max"
+			},
+			{
+				"provider": "openai-codex",
+				"model": "gpt-6.1-terra",
+				"thinking": "medium"
+			}
+		]
+	}
+]

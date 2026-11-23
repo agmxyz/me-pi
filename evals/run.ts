@@ -2,28 +2,16 @@
  * Manual routing evals: each attempt is a natural request in a fresh, isolated Pi, scored from its session log.
  * Real model calls and real spend; never part of `npm run check`. See evals/README.md.
  */
-import { execFile as execFileCb, execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import {
-	appendFileSync,
-	existsSync,
-	lstatSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	readlinkSync,
-	rmSync,
-	statSync,
-} from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, platform, release } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { parseArgs, promisify } from "node:util";
-import { cloneAt, createSandbox, fixtureRepo, type Policy, type Sandbox } from "./sandbox.ts";
+import { parseArgs } from "node:util";
+import { piCommand as command, piLive, sha, liveSnapshot as snapshot, socketOf } from "./live.ts";
+import { cloneAt, createSandbox, fixtureRepo, type Policy, removeSandbox, type Sandbox } from "./sandbox.ts";
 import { type Assertion, check, parseSession, type Verdict } from "./score.ts";
 
-const execFile = promisify(execFileCb);
 const HERE = dirname(new URL(import.meta.url).pathname);
-const PI_LIVE = join(HERE, "..", ".agents", "skills", "pi-live-test", "pi-live.sh");
 
 interface Scenario {
 	id: string;
@@ -66,40 +54,9 @@ const refs = opt.ref?.length ? opt.ref : ["HEAD"];
 const sweep = new Date().toISOString().replace(/[:.]/g, "-");
 const out =
 	opt.out ?? join(process.env.XDG_STATE_HOME ?? join(realHome, ".local", "state"), "me-pi-evals", `${sweep}.jsonl`);
-const sha = (s: string | Buffer) => createHash("sha256").update(s).digest("hex").slice(0, 16);
-
-/** What the run must leave untouched in the live rig; Pi sessions and checkouts are left out on purpose (the user may be working). */
-function liveSnapshot(): Record<string, string> {
-	const agent = join(realHome, ".pi", "agent");
-	const read = (f: string) => (existsSync(join(agent, f)) ? sha(readFileSync(join(agent, f))) : "absent");
-	const link = (f: string) =>
-		existsSync(join(agent, f)) && lstatSync(join(agent, f)).isSymbolicLink()
-			? readlinkSync(join(agent, f))
-			: "absent";
-	return {
-		"settings.json": read("settings.json"),
-		"delegate.json": read("delegate.json"),
-		"AGENTS.md": link("AGENTS.md"),
-		skills: existsSync(join(agent, "skills")) ? readdirSync(join(agent, "skills")).sort().join(",") : "absent",
-		"auth.json mtime": existsSync(join(agent, "auth.json"))
-			? String(statSync(join(agent, "auth.json")).mtimeMs)
-			: "absent",
-	};
-}
-
-// A Unix socket path is capped near 104 bytes, which a sandbox under a deep temp dir can exceed.
-const socketOf = (sandbox: Sandbox) => `/tmp/me-pi-eval-${sha(sandbox.root).slice(0, 12)}.sock`;
-
-const piLive = (sandbox: Sandbox, ...args: string[]) =>
-	execFile("bash", [PI_LIVE, ...args], {
-		env: { ...process.env, PI_LIVE_TMUX_SOCKET: socketOf(sandbox) },
-		maxBuffer: 16 * 1024 * 1024,
-	});
-
-function piCommand(sandbox: Sandbox, extra: Record<string, string>, sessionDir: string): string[] {
-	const env = Object.entries({ ...sandbox.env, ...extra }).map(([k, v]) => `${k}=${v}`);
-	return ["env", "-i", ...env, pi, "--session-dir", sessionDir];
-}
+const liveSnapshot = () => snapshot(realHome);
+const piCommand = (sandbox: Sandbox, extra: Record<string, string>, sessionDir: string) =>
+	command(pi, sandbox, extra, sessionDir);
 
 function sandboxFor(ref: string): Sandbox {
 	return createSandbox({
@@ -293,8 +250,8 @@ async function main() {
 		if (changed.length)
 			console.error(`⚠ live ~/.pi/agent changed during the run (yours or the run's?): ${changed.join(", ")}`);
 		for (const s of sandboxes.values()) rmSync(socketOf(s), { force: true });
-		if (!opt.keep) for (const s of sandboxes.values()) rmSync(s.root, { recursive: true, force: true });
-		else for (const s of sandboxes.values()) console.log(`kept ${s.root}`);
+		if (!opt.keep) for (const s of sandboxes.values()) removeSandbox(s);
+		else for (const s of sandboxes.values()) console.log(`kept ${s.root} (TMPDIR ${s.tmp})`);
 	}
 }
 

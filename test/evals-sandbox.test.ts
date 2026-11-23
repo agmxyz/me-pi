@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createSandbox, fixtureRepo, type SandboxOptions } from "../evals/sandbox.ts";
+import { createSandbox, fixtureRepo, removeSandbox, type Sandbox, type SandboxOptions } from "../evals/sandbox.ts";
 
 const ID = {
 	GIT_AUTHOR_NAME: "t",
@@ -45,6 +45,9 @@ function fixture(t: any) {
 	mkdirSync(join(repo, "skills", "not-a-skill"));
 	writeFileSync(join(repo, "skills", "one", "SKILL.md"), "---\nname: one\n---\n");
 	writeFileSync(join(repo, "GLOBAL_AGENTS.md"), "policy\n");
+	mkdirSync(join(repo, "evals", "synth", "tasks", "s1", "hidden"), { recursive: true });
+	writeFileSync(join(repo, "evals", "synth", "tasks", "s1", "hidden", "s1.test.ts"), "oracle\n");
+	writeFileSync(join(repo, "evals", "keep.ts"), "\n");
 	const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, env, stdio: "ignore" });
 	git("init", "-q", "-b", "main");
 	git("add", "-A");
@@ -65,13 +68,23 @@ function fixture(t: any) {
 		root: dir,
 		...over,
 	});
-	return { dir, env, repo, realHome, opts };
+	// The sandbox TMPDIR lives under /tmp, outside the fixture dir: every sandbox made is removed after the test.
+	const made: Sandbox[] = [];
+	t.after(() => {
+		for (const s of made) removeSandbox(s);
+	});
+	const sandbox = (o: SandboxOptions) => {
+		const s = createSandbox(o);
+		made.push(s);
+		return s;
+	};
+	return { dir, env, repo, realHome, opts, sandbox };
 }
 
 test("a full-rig sandbox loads me-pi from a remote-less clone and keeps every path inside its root", (t) => {
 	const f = fixture(t);
 	writeFileSync(join(f.dir, "ext.ts"), "export default () => {};\n");
-	const s = createSandbox(
+	const s = f.sandbox(
 		f.opts({
 			auth: join(f.dir, "eval-auth.json"),
 			packages: ["npm:pi-web-access@0.46.0"],
@@ -80,9 +93,12 @@ test("a full-rig sandbox loads me-pi from a remote-less clone and keeps every pa
 	);
 	assert.equal(readFileSync(join(s.agentDir, "extensions", "ext.ts"), "utf8"), "export default () => {};\n");
 	assert.equal(s.agentDir, join(s.home, ".pi", "agent"));
-	for (const p of [s.home, s.tmp, s.src]) assert.ok(p.startsWith(`${s.root}/`), p);
+	for (const p of [s.home, s.src]) assert.ok(p.startsWith(`${s.root}/`), p);
 	assert.equal(execFileSync("git", ["-C", s.src, "remote"], { encoding: "utf8" }).trim(), "");
 	assert.equal(s.commit, execFileSync("git", ["-C", f.repo, "rev-parse", "main"], { encoding: "utf8" }).trim());
+	// The synthetic suite's oracle is deleted from the clone Pi loads; the rest of evals stays.
+	assert.ok(!existsSync(join(s.src, "evals", "synth")));
+	assert.ok(existsSync(join(s.src, "evals", "keep.ts")));
 
 	const settings = JSON.parse(readFileSync(join(s.agentDir, "settings.json"), "utf8"));
 	assert.deepEqual(settings.packages, ["npm:pi-web-access@0.46.0", s.src]);
@@ -109,10 +125,25 @@ test("a full-rig sandbox loads me-pi from a remote-less clone and keeps every pa
 	assert.equal(s.env.PI_CODING_AGENT_DIR, s.agentDir);
 });
 
+test("a sandbox's TMPDIR is short enough for Unix sockets, its own, and removed with the sandbox", (t) => {
+	const f = fixture(t);
+	const s = f.sandbox(f.opts());
+	const other = f.sandbox(f.opts());
+	assert.equal(s.env.TMPDIR, s.tmp);
+	assert.ok(s.tmp.length <= 20, s.tmp);
+	assert.ok(existsSync(s.tmp));
+	assert.notEqual(s.tmp, other.tmp);
+	writeFileSync(join(s.tmp, "left.sock"), "");
+	removeSandbox(s);
+	assert.ok(!existsSync(s.tmp));
+	assert.ok(!existsSync(s.root));
+	assert.ok(existsSync(other.tmp));
+});
+
 test("an extensions-only sandbox has no global policy, skills, or extra packages", (t) => {
 	const f = fixture(t);
 	writeFileSync(join(f.dir, "ext.ts"), "");
-	const s = createSandbox(
+	const s = f.sandbox(
 		f.opts({
 			policy: "extensions-only",
 			packages: ["npm:pi-web-access@0.46.0"],

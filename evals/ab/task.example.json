@@ -1,0 +1,19 @@
+{
+	"id": "example-task",
+	"repo": "/absolute/path/to/target-repo",
+	"base": "0000000000000000000000000000000000000000",
+	"branch": "eval/example-task",
+	"brief": "/absolute/path/to/brief.md",
+	"check": "npm run check",
+	"setup": ["npm ci"],
+	"coordinator": { "provider": "openai-codex", "model": "gpt-6.1-sol", "thinking": "medium" },
+	"pool": {
+		"version": 3,
+		"scout": { "models": [{ "model": "openai-codex/gpt-6-luna", "thinking": "off" }] },
+		"worker": { "models": [{ "model": "openai-codex/gpt-6.1-sol", "thinking": "medium" }] },
+		"readOnlySkills": ["code-review"],
+		"implementSkills": ["tdd"]
+	},
+	"reference": "1111111111111111111111111111111111111111",
+	"baseline": { "note": "free-form; copied into every record, e.g. the human PR's size or time" }
+}

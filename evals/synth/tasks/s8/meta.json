@@ -1,0 +1,7 @@
+{
+	"id": "s8",
+	"title": "Report: buyers by product",
+	"shape": "small change that requires reading src/report.ts first",
+	"expect": "done",
+	"notes": "~15-line change, but correct only if the agent reads src/report.ts: revenue from soldLines (shipped only, price as sold, before discount and tax, not orderTotals or current list price), the '(deleted)' product name, byCentsDesc with SKU tie-break, money/count right alignment. The hidden test plants each trap: a discounted order, placed and cancelled orders, a price change after sale, a removed product, and a revenue tie."
+}

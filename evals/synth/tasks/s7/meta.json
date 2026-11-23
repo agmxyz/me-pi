@@ -1,0 +1,7 @@
+{
+	"id": "s7",
+	"title": "Part 1: `inv price` changes a list price; Part 2: `inv order reprice` updates a draft to current prices",
+	"shape": "two-part task, part 2 depends on part 1",
+	"expect": "done",
+	"notes": "Part 2 is only testable once Part 1 exists; Part 1 needs price validation pulled out of createProduct (one owner), and the trap is that existing lines must keep their snapshot price until an explicit draft-only reprice."
+}

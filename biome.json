@@ -35,7 +35,8 @@
 			"test/*.ts",
 			"test/fixtures/*.ts",
 			"evals/*.ts",
-			"skills/batch-chief/batch.ts"
+			"skills/batch-chief/batch.ts",
+			"!!evals/synth"
 		]
 	}
 }
