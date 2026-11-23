@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { runToolCall } from "@earendil-works/pi-agent-core";
 import { IMPLEMENT_REMOVED } from "../packages/pi-workers/extensions/delegate.ts";
 import { loadModelSet, resolveModelRef, resolveRun } from "../packages/pi-workers/extensions/delegate-config.ts";
 import { SUBAGENT_LINE } from "../packages/pi-workers/extensions/delegate-worker.ts";
 import {
+	CTX,
 	HAIKU,
 	LUNA,
 	modelSet,
@@ -61,7 +63,7 @@ test("workers drop coordinator-only policy and unlisted skills", (t) => {
 	const reader = options();
 	const { skills } = reader;
 	const handlers = setup(t, {
-		env: { ME_PI_RUN: "1", ME_PI_ROLE: "general", ME_PI_SKILLS: JSON.stringify(["code-review", "pr"]) },
+		env: { ME_PI_RUN: "1", ME_PI_SKILLS: JSON.stringify(["code-review", "pr"]) },
 	}).handlers;
 	handlers.before_agent_start({ systemPromptOptions: reader });
 	assert.equal(reader.contextFiles[0].content, "## Output\n- lead with the result\n## Secrets\n- never read keys");
@@ -72,16 +74,30 @@ test("workers drop coordinator-only policy and unlisted skills", (t) => {
 	assert.equal(reader.skills, skills, "filtered in place, so the Skill tool's array matches the prompt");
 
 	const unlisted = options();
-	setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "scout" } }).handlers.before_agent_start({
+	setup(t, { env: { ME_PI_RUN: "1" } }).handlers.before_agent_start({
 		systemPromptOptions: unlisted,
 	});
 	assert.equal(unlisted.skills.length, 3, "no allowlist keeps every skill");
+
+	// A policy file still using the pre-0.3.0 writer marker reaches workers as it did read-only ones.
+	const legacy = {
+		contextFiles: [
+			{
+				path: "/g/AGENTS.md",
+				content: POLICY.replace("(coordinator only)\n- protected", "(coordinator and implement only)\n- protected"),
+			},
+		],
+		skills: [],
+	};
+	assert.match(legacy.contextFiles[0].content, /## Approval \(coordinator and implement only\)/);
+	setup(t, { env: { ME_PI_RUN: "1" } }).handlers.before_agent_start({ systemPromptOptions: legacy });
+	assert.equal(legacy.contextFiles[0].content, "## Output\n- lead with the result\n## Secrets\n- never read keys");
 });
 
 test("a general worker with no context files or skills drops the subagent line", (t) => {
 	const options = { contextFiles: [], skills: [], appendSystemPrompt: workerContract(false) };
 	assert.ok(options.appendSystemPrompt.includes(SUBAGENT_LINE));
-	setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "general" } }).handlers.before_agent_start({
+	setup(t, { env: { ME_PI_RUN: "1" } }).handlers.before_agent_start({
 		systemPromptOptions: options,
 	});
 	assert.ok(!options.appendSystemPrompt.includes(SUBAGENT_LINE), options.appendSystemPrompt);
@@ -115,24 +131,37 @@ test("readOnlySkills reaches read-only workers and is validated", async (t) => {
 	}
 });
 
-test("role implement or a check fails with the migration error before any worker starts", async (t) => {
+test("role implement or a check fails with the migration error through Pi's tool path, before any worker starts", async (t) => {
 	const marker = scratch("implement-call-marker");
 	const { tool } = setup(t, { env: { FAKE_PI_MODE: "success", FAKE_PI_MARKER: marker } });
-	for (const params of [
+	// As Pi's tool-definition wrapper hands a registered tool to its agent loop.
+	const agentTool = {
+		...tool,
+		execute: (id: string, params: unknown, signal?: AbortSignal) => tool.execute(id, params, signal, undefined, CTX),
+	};
+	for (const args of [
 		{ role: "implement", task: "x" },
 		{ role: "implement", task: "x", check: "npm test" },
 		{ task: "x", check: "npm test" },
 		{ role: "scout", task: "x", check: "npm test" },
 	]) {
-		const res = await run(tool, params);
-		assert.equal(res.isError, true, JSON.stringify(params));
-		assert.equal(text(res), IMPLEMENT_REMOVED);
+		const outcome = await runToolCall({ type: "toolCall", id: "c", name: "delegate", arguments: args }, {
+			tools: [agentTool],
+			assistantMessage: { role: "assistant", content: [] },
+			context: { messages: [] },
+		} as any);
+		assert.equal(outcome.isError, true, JSON.stringify(args));
+		assert.equal(outcome.result.content[0].text, IMPLEMENT_REMOVED);
 	}
 	assert.match(IMPLEMENT_REMOVED, /removed in @agmxyz\/pi-workers 0\.3\.0: make the change yourself/);
 	assert.match(IMPLEMENT_REMOVED, /docs\/delegate\.md#migrating-from-implement$/);
 	assert.equal(existsSync(marker), false, "no worker started");
+	const ok = await runToolCall(
+		{ type: "toolCall", id: "c", name: "delegate", arguments: { role: "scout", task: "x" } },
+		{ tools: [agentTool], assistantMessage: { role: "assistant", content: [] }, context: { messages: [] } } as any,
+	);
+	assert.equal(ok.isError, false, ok.result.content[0].text);
 });
-
 test("an implementSkills key fails with a migration pointer before any worker starts; a config without it loads", async (t) => {
 	const marker = scratch("implement-skills-marker");
 	const base = { version: 3, scout: { models: [] }, worker: { models: [] }, readOnlySkills: ["pr"] };

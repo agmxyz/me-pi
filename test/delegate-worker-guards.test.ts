@@ -108,7 +108,6 @@ test("Pi blocked calls are reported on tool_execution_end, not tool_result", asy
 	const { handlers } = setup(t, {
 		env: {
 			ME_PI_RUN: "1",
-			ME_PI_ROLE: "general",
 			ME_PI_DELEGATE_JOB_ID: "actual-pi-job",
 			ME_PI_DELEGATE_ATTEMPT: "1",
 		},
@@ -173,7 +172,6 @@ test("Pi transports delegate-worker wrap-up denials on tool_execution_end", asyn
 	const { handlers } = setup(t, {
 		env: {
 			ME_PI_RUN: "1",
-			ME_PI_ROLE: "general",
 			ME_PI_DELEGATE_JOB_ID: "budget-pi-job",
 			ME_PI_DELEGATE_ATTEMPT: "1",
 			ME_PI_BUDGET: JSON.stringify({ tools: 0, deadline: Date.now() + 60_000, cost: 1 }),
@@ -289,8 +287,7 @@ test("workers get a wrap-up budget: scout tool calls, 80% of the time limit and 
 
 test("past the wrap-up budget, a worker's tool calls are blocked with an answer-now reason", async (t) => {
 	const far = Date.now() + 60_000;
-	const worker = (budget, role) =>
-		setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: role, ME_PI_BUDGET: JSON.stringify(budget) } }).handlers;
+	const worker = (budget) => setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: JSON.stringify(budget) } }).handlers;
 	const call = (h) => h.tool_call({ toolName: "read", input: { path: "README.md" } }, { cwd: REPO_ROOT });
 
 	const counted = worker({ tools: 2, deadline: far, cost: 1 });
@@ -327,11 +324,11 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	const late = worker({ tools: null, deadline: Date.now() - 1, cost: 1 });
 	assert.match((await call(late)).reason, /budget reached \(time\)/);
 
-	const cappedScout = worker({ tools: 60, deadline: far, cost: 1 }, "scout");
+	const cappedScout = worker({ tools: 60, deadline: far, cost: 1 });
 	for (let i = 0; i < 60; i++) assert.equal(await call(cappedScout), undefined);
 	assert.match((await call(cappedScout)).reason, /budget reached \(60 tool calls\)/);
 
-	const uncapped = worker({ tools: null, deadline: far, cost: 1 }, "general");
+	const uncapped = worker({ tools: null, deadline: far, cost: 1 });
 	for (let i = 0; i < 150; i++) assert.equal(await call(uncapped), undefined);
 
 	const unbounded = setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: undefined } }).handlers;

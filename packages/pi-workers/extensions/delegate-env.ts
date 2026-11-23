@@ -3,7 +3,6 @@
 // Dependency-free so guard.ts can import it without a cycle.
 
 export const ENV_RUN = "ME_PI_RUN";
-export const ENV_ROLE = "ME_PI_ROLE";
 export const ENV_OUTPUT_DIR = "ME_PI_OUTPUT_DIR";
 export const ENV_SKILLS = "ME_PI_SKILLS";
 export const ENV_JOB_ID = "ME_PI_DELEGATE_JOB_ID";

@@ -65,7 +65,6 @@ test("workerLaunch builds a scout's read-only args and protocol env", () => {
 	assert.deepEqual(env, {
 		...BASE,
 		ME_PI_RUN: "1",
-		ME_PI_ROLE: "scout",
 		ME_PI_OUTPUT_DIR: "",
 		ME_PI_SKILLS: '["pr"]',
 		ME_PI_DELEGATE_JOB_ID: "job-1",

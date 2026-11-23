@@ -112,5 +112,5 @@ Each attempt records owner-reported stop facts and tool effects. Two failures ar
 
 - **Calls.** Make the change in the calling session: edit, run the check, and commit there. Use `scout` or `general` for read-only exploration and review. A change too big for one session's context is split by whoever starts the session (you, or a chief launching one coordinator per part).
 - **Config.** Delete the `implementSkills` key and `/reload`. `readOnlySkills` is unchanged.
-- **Policy.** A `GLOBAL_AGENTS.md` section marked `(coordinator and implement only)` is no longer recognized and reaches every worker; mark it `(coordinator only)`.
+- **Policy.** Workers still drop a `GLOBAL_AGENTS.md` section marked `(coordinator and implement only)`, as read-only workers did before; rename the marker to `(coordinator only)`, since the old one will stop being recognized in a later release.
 - **Locks.** No session takes `me-pi-implement.lock` any more; one left in a checkout's git dir by an older version can be deleted.

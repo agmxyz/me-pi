@@ -5,7 +5,6 @@ import {
 	ENV_BUDGET,
 	ENV_JOB_ID,
 	ENV_OUTPUT_DIR,
-	ENV_ROLE,
 	ENV_RUN,
 	ENV_SKILLS,
 	workerIdentity,
@@ -96,7 +95,6 @@ export function workerLaunch(
 	const env: NodeJS.ProcessEnv = {
 		...base,
 		[ENV_RUN]: "1",
-		[ENV_ROLE]: job.role,
 		[ENV_OUTPUT_DIR]: outDir ?? "",
 		[ENV_SKILLS]: job.skills ? JSON.stringify(job.skills) : "",
 		[ENV_JOB_ID]: job.jobId,
@@ -162,8 +160,6 @@ const MAX_BLOCKED = 3;
 const BLOCKED_LINE_CAP = 200;
 const BLOCKED_LINE = /^(?:[-*]\s+)?BLOCKED:/;
 
-export const isBlockedLine = (line: string) => BLOCKED_LINE.test(line.trim());
-
 /** The contract's `BLOCKED: <step>: <reason>` lines, list items included, trimmed. */
 export function blockedLines(text: string): string[] {
 	return text
@@ -217,6 +213,9 @@ export const workerSystemPrompt = ({ role, answer, web }: Job, outDir?: string) 
 const policySection = (marker: string) =>
 	new RegExp(`^## [^\\n]*\\(${marker}\\)[^\\n]*\\n(?:(?!## )[^\\n]*(?:\\n|$))*`, "gm");
 const COORDINATOR_ONLY = policySection("coordinator only");
+// The writer-policy marker before 0.3.0; still dropped, so a policy file that kept it reaches workers as before.
+// Remove once no supported GLOBAL_AGENTS.md uses it (docs/delegate.md, Migrating from implement).
+const LEGACY_WRITER_ONLY = policySection("coordinator and implement only");
 
 /**
  * Drops from a worker's prompt what it cannot use: coordinator-only policy, skills outside `skills`
@@ -228,7 +227,8 @@ export function scopeWorkerPrompt(
 	options: { contextFiles?: { content: string }[]; skills?: { name: string }[]; appendSystemPrompt?: string },
 	{ skills }: { skills?: string[] },
 ) {
-	for (const file of options.contextFiles ?? []) file.content = file.content.replace(COORDINATOR_ONLY, "");
+	for (const file of options.contextFiles ?? [])
+		file.content = file.content.replace(COORDINATOR_ONLY, "").replace(LEGACY_WRITER_ONLY, "");
 	if (skills && options.skills) {
 		const kept = options.skills.filter((s) => skills.includes(s.name));
 		options.skills.splice(0, options.skills.length, ...kept);

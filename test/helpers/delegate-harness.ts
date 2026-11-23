@@ -172,7 +172,7 @@ let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
-  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), approve: args.includes("--approve"), skills: process.env.ME_PI_SKILLS, prompt }) + "\\n");
+  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), skills: process.env.ME_PI_SKILLS, prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
   if (mode === "rebuttal-rate-limit-model" && prompt.includes("## Round 2 (rebuttal)") && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     retryable("429 rate_limit_error: rebuttal unavailable");
@@ -284,17 +284,13 @@ process.stdin.on("end", () => {
     emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only to absolute paths inside " + out + " (relative paths resolve against the project)")));
     process.exit(0);
   }
-  // A tool call as Pi's JSON mode reports it: start, then end with isError.
+  // A successful tool call as Pi's JSON mode reports it: start, then end.
   let toolId = 0;
-  const tool = (toolName, args, isError = false, options = {}) => {
-    if (process.env.FAKE_PI_EVENT_MARKER) appendFileSync(process.env.FAKE_PI_EVENT_MARKER, toolName + "\\n");
-    const toolCallId = options.missingId ? undefined : (options.toolCallId || "t" + ++toolId);
-    if (!options.omitStart) console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
-    if (!options.omitEnd) console.log(JSON.stringify({
-      type: "tool_execution_end", toolCallId, toolName: options.endToolName || toolName,
-      result: options.result !== undefined ? options.result : !isError && toolName === "bash" ? { structuredContent: { exit_code: 0 } } : {}, isError,
-      ...(options.effectiveCommand !== undefined ? { effectiveCommand: options.effectiveCommand } : {}),
-    }));
+  const tool = (toolName, args) => {
+    const toolCallId = "t" + ++toolId;
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
+    const result = toolName === "bash" ? { structuredContent: { exit_code: 0 } } : {};
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName, result, isError: false }));
   };
   if (mode === "infra-flaky") {
     // Fails the first FAKE_PI_INFRA_FAILS runs with FAKE_PI_ERROR, counting runs in FAKE_PI_COUNTER.
@@ -414,16 +410,12 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 		ME_PI_RUN: undefined,
 		ME_PI_OUTPUT_DIR: undefined,
 		ME_PI_BUDGET: undefined,
-		ME_PI_ROLE: undefined,
 		ME_PI_SKILLS: undefined,
 		ME_PI_DELEGATE_JOB_ID: undefined,
 		ME_PI_DELEGATE_ATTEMPT: undefined,
 		// The coordinator's opt-in status (an eval-style session sets them): off unless a test asks.
 		ME_PI_STATUS_LOG: undefined,
 		ME_PI_SPEND_BUDGET_USD: undefined,
-		ME_PI_TEST_ROOT: REPO_ROOT,
-		FAKE_PI_EVENT_MARKER: undefined,
-		FAKE_PI_TOOL_EVENTS: undefined,
 		TMPDIR: TEST_HOME,
 		...env,
 	};

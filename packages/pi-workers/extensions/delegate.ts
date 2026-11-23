@@ -623,6 +623,11 @@ export default function (pi: ExtensionAPI) {
 		renderCall: (args, theme, context) => renderCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderResult(result as any, options, theme, context),
 		parameters: buildSchema() as any,
+		// Pi validates arguments against the schema before execute, which knows neither the role nor `check`.
+		prepareArguments: (args: any) => {
+			if (args?.role === "implement" || args?.check !== undefined) throw new Error(IMPLEMENT_REMOVED);
+			return args;
+		},
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
 			const fail = (text: string, details: Record<string, unknown> = {}) => ({
@@ -631,7 +636,6 @@ export default function (pi: ExtensionAPI) {
 				isError: true,
 			});
 			const { role = "general", task, web, answer, output, rebuttal, background } = params ?? {};
-			if (role === "implement" || params?.check !== undefined) return fail(IMPLEMENT_REMOVED);
 			const unknown = Object.keys(params ?? {}).filter(
 				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal", "background"].includes(k),
 			);
