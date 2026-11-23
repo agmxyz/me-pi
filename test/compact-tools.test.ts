@@ -139,6 +139,11 @@ test("a leading cd is taken off the command and named only when it leaves the wo
 		["● $ rg -n foo · in …/deep/pi-tui/dist"],
 		"a long directory keeps its end, and the command keeps its room",
 	);
+	assert.deepEqual(
+		row("bash", { command: `cd /srv/${"deep/".repeat(6)}pi-tui/dist && ls` }, { content: text("") }),
+		[`✓ $ ls · in /srv/${"deep/".repeat(6)}pi-tui/dist`],
+		"a directory longer than half the line stays whole while the row fits",
+	);
 	assert.equal(head("set -euo pipefail\ncd /srv/app\nls"), "✓ $ ls · in /srv/app");
 });
 

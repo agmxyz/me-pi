@@ -935,18 +935,24 @@ function headLine(summary: Summary, state: RowState, theme: Theme, context: Cont
 		const pad = " ".repeat(context.outputPad);
 		const sep = theme.fg("dim", " · ");
 		const running = elapsed(state);
-		// A directory takes at most half the line, and keeps its end: the folder the command ran in.
-		const placeRoom = Math.max(8, Math.floor((width - context.outputPad * 2 - 2) / 2) - 3);
+		// Room after the margins and the glyph with its space.
+		const inner = width - context.outputPad * 2 - 2;
 		const unseen = summary.body?.length ? 0 : (summary.count ?? 0);
-		const facts = [
-			...(unseen > 0 ? [theme.fg("muted", plural(unseen, "line"))] : []),
-			...(summary.place ? [theme.fg("muted", `in ${startCut(summary.place, placeRoom)}`)] : []),
-			...(summary.meta ?? []),
-			...(running ? [theme.fg("muted", running)] : []),
-		];
-		const meta = facts.join(sep);
-		const room = Math.max(8, width - context.outputPad * 2 - 2 - (meta ? visibleWidth(meta) + 3 : 0));
-		const head = typeof summary.head === "function" ? summary.head(room) : truncateToWidth(summary.head, room, "…");
+		const factsIn = (place: string | undefined) =>
+			[
+				...(unseen > 0 ? [theme.fg("muted", plural(unseen, "line"))] : []),
+				...(place ? [theme.fg("muted", `in ${place}`)] : []),
+				...(summary.meta ?? []),
+				...(running ? [theme.fg("muted", running)] : []),
+			].join(sep);
+		const headIn = (room: number) =>
+			typeof summary.head === "function" ? summary.head(room) : truncateToWidth(summary.head, room, "…");
+		const roomBeside = (meta: string) => Math.max(8, inner - (meta ? visibleWidth(meta) + 3 : 0));
+		let meta = factsIn(summary.place);
+		// A row too wide for the line cuts its directory to at most half the line, keeping its end: where the command ran.
+		if (summary.place && visibleWidth(headIn(inner)) > roomBeside(meta))
+			meta = factsIn(startCut(summary.place, Math.max(8, Math.floor(inner / 2) - 3)));
+		const head = headIn(roomBeside(meta));
 		// The head keeps at least its minimum room, so facts too wide for the rest are cut at the line's end.
 		const line = truncateToWidth(
 			`${pad}${glyph(state, theme, summary.unproven)} ${head}${meta ? sep : ""}${meta}`,
