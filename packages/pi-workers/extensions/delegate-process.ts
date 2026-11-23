@@ -25,7 +25,7 @@ function liveGroups(): Set<number> {
 }
 
 /** SIGKILLs a worker's process group; returns an error message, or undefined when killed or gone. */
-export function killGroup(pid: number): string | undefined {
+function killGroup(pid: number): string | undefined {
 	try {
 		process.kill(-pid, "SIGKILL");
 	} catch (err: any) {
@@ -33,8 +33,6 @@ export function killGroup(pid: number): string | undefined {
 	}
 	return undefined;
 }
-
-export type StopMode = "kill" | "term-then-kill";
 
 export interface WorkerProcessOptions {
 	command: string;
@@ -45,7 +43,6 @@ export interface WorkerProcessOptions {
 	stdin: string;
 	/** Timing, passed by the caller so its limits stay the single source. */
 	exitGraceMs: number;
-	termGraceMs: number;
 	/** Each stdout JSON-object line, synchronously in the data handler; it may call stop(). */
 	onRecord: (record: Record<string, any>) => void;
 	/** A non-empty stdout line that is not a JSON object. */
@@ -62,8 +59,8 @@ export interface WorkerProcessOptions {
 
 export interface WorkerProcess {
 	pid: number | undefined;
-	/** Signals the group once; returns false when already stopped, finished, or never started. */
-	stop(mode: StopMode): boolean;
+	/** Kills the group once; returns false when already stopped, finished, or never started. */
+	stop(): boolean;
 }
 
 export function startWorkerProcess(opts: WorkerProcessOptions): WorkerProcess {
@@ -80,24 +77,13 @@ export function startWorkerProcess(opts: WorkerProcessOptions): WorkerProcess {
 	let finished = false;
 	let stopped = false;
 	let buffer = "";
-	let termTimer: NodeJS.Timeout | undefined;
 	let exitTimer: NodeJS.Timeout | undefined;
 
-	const reportKill = () => {
-		const failure = killGroup(pid as number);
-		if (failure) opts.onKillFailure(failure);
-	};
-	const stop = (mode: StopMode): boolean => {
+	const stop = (): boolean => {
 		if (finished || stopped || pid === undefined) return false;
 		stopped = true;
-		if (mode === "term-then-kill") {
-			try {
-				process.kill(-pid, "SIGTERM");
-			} catch {}
-			termTimer = setTimeout(reportKill, opts.termGraceMs);
-			return true;
-		}
-		reportKill();
+		const failure = killGroup(pid);
+		if (failure) opts.onKillFailure(failure);
 		return true;
 	};
 	const processLine = (line: string) => {
@@ -116,7 +102,6 @@ export function startWorkerProcess(opts: WorkerProcessOptions): WorkerProcess {
 		if (buffer.trim()) processLine(buffer);
 		finished = true;
 		clearTimeout(exitTimer);
-		clearTimeout(termTimer);
 		proc.stdout.destroy();
 		proc.stderr.destroy();
 		if (pid !== undefined) groups.delete(pid);

@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { runToolCall } from "@earendil-works/pi-agent-core";
+import { IMPLEMENT_REMOVED } from "../packages/pi-workers/extensions/delegate.ts";
 import { loadModelSet, resolveModelRef, resolveRun } from "../packages/pi-workers/extensions/delegate-config.ts";
 import { SUBAGENT_LINE } from "../packages/pi-workers/extensions/delegate-worker.ts";
 import {
+	CTX,
 	HAIKU,
 	LUNA,
 	modelSet,
@@ -52,7 +55,7 @@ test("v1 and v2 configs fail with a pointer to the v3 format, and empty pools us
 	);
 });
 
-test("workers drop coordinator-only policy, writer policy unless implement, and unlisted skills", (t) => {
+test("workers drop coordinator-only policy and unlisted skills", (t) => {
 	const options = () => ({
 		contextFiles: [{ path: "/g/AGENTS.md", content: POLICY }],
 		skills: [{ name: "code-review" }, { name: "tdd" }, { name: "pr" }],
@@ -60,7 +63,7 @@ test("workers drop coordinator-only policy, writer policy unless implement, and 
 	const reader = options();
 	const { skills } = reader;
 	const handlers = setup(t, {
-		env: { ME_PI_RUN: "1", ME_PI_ROLE: "general", ME_PI_SKILLS: JSON.stringify(["code-review", "pr"]) },
+		env: { ME_PI_RUN: "1", ME_PI_SKILLS: JSON.stringify(["code-review", "pr"]) },
 	}).handlers;
 	handlers.before_agent_start({ systemPromptOptions: reader });
 	assert.equal(reader.contextFiles[0].content, "## Output\n- lead with the result\n## Secrets\n- never read keys");
@@ -70,19 +73,31 @@ test("workers drop coordinator-only policy, writer policy unless implement, and 
 	);
 	assert.equal(reader.skills, skills, "filtered in place, so the Skill tool's array matches the prompt");
 
-	const writer = options();
-	setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement" } }).handlers.before_agent_start({
-		systemPromptOptions: writer,
+	const unlisted = options();
+	setup(t, { env: { ME_PI_RUN: "1" } }).handlers.before_agent_start({
+		systemPromptOptions: unlisted,
 	});
-	assert.match(writer.contextFiles[0].content, /## Approval \(coordinator and implement only\)\n- protected actions/);
-	assert.doesNotMatch(writer.contextFiles[0].content, /coordinator ledger/);
-	assert.equal(writer.skills.length, 3, "no allowlist keeps every skill");
+	assert.equal(unlisted.skills.length, 3, "no allowlist keeps every skill");
+
+	// A policy file still using the pre-0.3.0 writer marker reaches workers as it did read-only ones.
+	const legacy = {
+		contextFiles: [
+			{
+				path: "/g/AGENTS.md",
+				content: POLICY.replace("(coordinator only)\n- protected", "(coordinator and implement only)\n- protected"),
+			},
+		],
+		skills: [],
+	};
+	assert.match(legacy.contextFiles[0].content, /## Approval \(coordinator and implement only\)/);
+	setup(t, { env: { ME_PI_RUN: "1" } }).handlers.before_agent_start({ systemPromptOptions: legacy });
+	assert.equal(legacy.contextFiles[0].content, "## Output\n- lead with the result\n## Secrets\n- never read keys");
 });
 
 test("a general worker with no context files or skills drops the subagent line", (t) => {
 	const options = { contextFiles: [], skills: [], appendSystemPrompt: workerContract(false) };
 	assert.ok(options.appendSystemPrompt.includes(SUBAGENT_LINE));
-	setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "general" } }).handlers.before_agent_start({
+	setup(t, { env: { ME_PI_RUN: "1" } }).handlers.before_agent_start({
 		systemPromptOptions: options,
 	});
 	assert.ok(!options.appendSystemPrompt.includes(SUBAGENT_LINE), options.appendSystemPrompt);
@@ -116,39 +131,61 @@ test("readOnlySkills reaches read-only workers and is validated", async (t) => {
 	}
 });
 
-test("implementSkills reaches implement workers only and is validated like readOnlySkills", (t) => {
-	const write = (extra: object) => {
-		const path = scratch("delegate.json");
-		writeFileSync(path, JSON.stringify({ version: 3, scout: { models: [] }, worker: { models: [] }, ...extra }));
-		return path;
+test("role implement or a check fails with the migration error through Pi's tool path, before any worker starts", async (t) => {
+	const marker = scratch("implement-call-marker");
+	const { tool } = setup(t, { env: { FAKE_PI_MODE: "success", FAKE_PI_MARKER: marker } });
+	// As Pi's tool-definition wrapper hands a registered tool to its agent loop.
+	const agentTool = {
+		...tool,
+		execute: (id: string, params: unknown, signal?: AbortSignal) => tool.execute(id, params, signal, undefined, CTX),
 	};
-	const set = loadModelSet(write({ readOnlySkills: ["pr"], implementSkills: ["tdd", "code-review"] }));
-	assert.deepEqual(set.implementSkills, ["tdd", "code-review"]);
-	assert.deepEqual(set.readOnlySkills, ["pr"]);
-	assert.equal(loadModelSet(write({})).implementSkills, undefined, "unset keeps all skills");
-	for (const [value, error] of [
-		["tdd", /\.implementSkills must be an array of skill names/],
-		[{ tdd: true }, /\.implementSkills must be an array of skill names/],
-		[["tdd", " "], /\.implementSkills must be an array of skill names/],
-		[["tdd", "tdd"], /\.implementSkills lists a skill twice/],
-	] as const)
-		assert.throws(() => loadModelSet(write({ implementSkills: value })), error);
-	assert.throws(
-		() => loadModelSet(write({ implementSkils: ["tdd"] })),
-		/unknown key\(s\) implementSkils \(allowed: version, scout, worker, readOnlySkills, implementSkills\)/,
+	for (const args of [
+		{ role: "implement", task: "x" },
+		{ role: "implement", task: "x", check: "npm test" },
+		{ task: "x", check: "npm test" },
+		{ role: "scout", task: "x", check: "npm test" },
+	]) {
+		const outcome = await runToolCall({ type: "toolCall", id: "c", name: "delegate", arguments: args }, {
+			tools: [agentTool],
+			assistantMessage: { role: "assistant", content: [] },
+			context: { messages: [] },
+		} as any);
+		assert.equal(outcome.isError, true, JSON.stringify(args));
+		assert.equal(outcome.result.content[0].text, IMPLEMENT_REMOVED);
+	}
+	assert.match(IMPLEMENT_REMOVED, /removed in @agmxyz\/pi-workers 0\.3\.0: make the change yourself/);
+	assert.match(IMPLEMENT_REMOVED, /docs\/delegate\.md#migrating-from-implement$/);
+	assert.equal(existsSync(marker), false, "no worker started");
+	const ok = await runToolCall(
+		{ type: "toolCall", id: "c", name: "delegate", arguments: { role: "scout", task: "x" } },
+		{ tools: [agentTool], assistantMessage: { role: "assistant", content: [] }, context: { messages: [] } } as any,
 	);
-
-	const handlers = setup(t, {
-		env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement", ME_PI_SKILLS: JSON.stringify(["tdd"]) },
-	}).handlers;
-	const options = { contextFiles: [], skills: [{ name: "tdd" }, { name: "wizard" }] };
-	handlers.before_agent_start({ systemPromptOptions: options });
-	assert.deepEqual(
-		options.skills.map((s) => s.name),
-		["tdd"],
+	assert.equal(ok.isError, false, ok.result.content[0].text);
+});
+test("an implementSkills key fails with a migration pointer before any worker starts; a config without it loads", async (t) => {
+	const marker = scratch("implement-skills-marker");
+	const base = { version: 3, scout: { models: [] }, worker: { models: [] }, readOnlySkills: ["pr"] };
+	const path = scratch("implement-delegate.json");
+	writeFileSync(path, JSON.stringify({ ...base, implementSkills: ["tdd"] }));
+	const migration =
+		/implementSkills was removed with the implement role in 0\.3\.0: delete the key; coordinators write their own changes; see docs\/delegate\.md#migrating-from-implement/;
+	assert.throws(() => loadModelSet(path), migration);
+	const { tool } = setup(t, {
+		config: { ...base, implementSkills: ["tdd"] },
+		env: { FAKE_PI_MODE: "success", FAKE_PI_MARKER: marker },
+	});
+	const res = await run(tool, { task: "x" });
+	assert.equal(res.isError, true);
+	assert.match(text(res), migration);
+	assert.equal(existsSync(marker), false, "no worker started");
+	writeFileSync(path, JSON.stringify(base));
+	assert.deepEqual(loadModelSet(path).readOnlySkills, ["pr"]);
+	writeFileSync(path, JSON.stringify({ ...base, implementSkils: ["tdd"] }));
+	assert.throws(
+		() => loadModelSet(path),
+		/unknown key\(s\) implementSkils \(allowed: version, scout, worker, readOnlySkills\)/,
 	);
 });
-
 test("v3 model configs validate per-model thinking", (t) => {
 	const write = (content) => {
 		const path = scratch("delegate.json");

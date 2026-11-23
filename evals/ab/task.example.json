@@ -11,8 +11,7 @@
 		"version": 3,
 		"scout": { "models": [{ "model": "openai-codex/gpt-6-luna", "thinking": "off" }] },
 		"worker": { "models": [{ "model": "openai-codex/gpt-6.1-sol", "thinking": "medium" }] },
-		"readOnlySkills": ["code-review"],
-		"implementSkills": ["tdd"]
+		"readOnlySkills": ["code-review"]
 	},
 	"reference": "1111111111111111111111111111111111111111",
 	"baseline": { "note": "free-form; copied into every record, e.g. the human PR's size or time" }

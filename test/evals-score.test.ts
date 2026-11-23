@@ -105,28 +105,11 @@ test("a delegate call that never returned makes a failing count unknown, not a f
 	assert.equal(run(log, { id: "bg", delegate: { background: true }, count: 1 }).result, "unknown");
 });
 
-test("inline needs an own edit and no implement worker", () => {
+test("inline needs an own edit", () => {
 	const own = session(["user", "q"], ["call", "codemode", { code: "await tools.edit({path:'a'})" }, "ok"]);
 	assert.equal(run(own, { id: "i", inline: true }).result, "pass");
-	const delegated = session(
-		["user", "q"],
-		["call", "edit", { path: "a" }, "ok"],
-		["call", "delegate", { role: "implement", task: "x" }, "✓ im1 feat 1 commit; check ✓ `npm test`"],
-	);
-	assert.equal(run(delegated, { id: "i", inline: true }).result, "fail");
-});
-
-test("noRerun flags the check re-run after an implement ✓, but not after an own edit", () => {
-	const impl = ["call", "delegate", { role: "implement", task: "x" }, "✓ im1 check ✓ `npm test`"];
-	const rerun = session(["user", "q"], impl, ["call", "bash", { command: "npm test" }, "ok"]);
-	assert.equal(run(rerun, { id: "r", noRerun: "npm (run )?test" }).result, "fail");
-	const ownFix = session(
-		["user", "q"],
-		impl,
-		["call", "edit", { path: "cli.js" }, "ok"],
-		["call", "bash", { command: "npm test && git commit -am fix" }, "ok"],
-	);
-	assert.equal(run(ownFix, { id: "r", noRerun: "npm (run )?test" }).result, "pass");
+	const none = session(["user", "q"], ["call", "delegate", { role: "general", task: "x" }, "ok"]);
+	assert.equal(run(none, { id: "i", inline: true }).result, "fail");
 });
 
 test("diffByPath needs a review given a diff path, and fails when the coordinator reads that diff", () => {

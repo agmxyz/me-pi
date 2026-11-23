@@ -534,7 +534,6 @@ const BASE_POOL: Pool = {
 		],
 	},
 	readOnlySkills: ["code-review"],
-	implementSkills: ["tdd"],
 };
 
 test("each coordinator of a matrix gets a pool with scout and worker on its own model, keeping the skills", () => {

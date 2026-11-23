@@ -1,13 +1,10 @@
 // Shared fake-pi harness and setup helpers for the delegate test files.
 // Each test file imports this in its own process, so TEST_HOME, FAKE_BIN and env snapshots are per file.
-import { execFileSync, spawn } from "node:child_process";
-import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createBashTool } from "@earendil-works/pi-coding-agent";
 
 // Scratch space for the fake pi binary, configs, and pid files.
 const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-test-"));
@@ -29,7 +26,6 @@ const {
 	workerContract,
 	LOCAL_TOOLS,
 	WEB_TOOLS,
-	IMPLEMENT_TOOLS,
 } = await import("../../packages/pi-workers/extensions/delegate-worker.ts");
 
 const {
@@ -50,8 +46,6 @@ const { progressLines } = await import("../../packages/pi-workers/extensions/del
 
 const { registerDelegateCommand } = await import("../../packages/pi-workers/extensions/delegate-command.ts");
 
-const { snapshotContent, trackCheck } = await import("../../packages/pi-workers/extensions/delegate-implement.ts");
-
 const DEFAULT_LIMITS = { ...LIMITS };
 
 // A failing lifecycle test can leave a worker running, which would keep this process alive.
@@ -62,21 +56,6 @@ after(() => {
 		} catch {}
 	}
 });
-// Every implement job in this file, however it ended, removed its gh config dir (TEST_HOME and alternate TMPDIRs).
-after(() => {
-	const roots = [
-		TEST_HOME,
-		join(TEST_HOME, "missing-tmp"),
-		...readdirSync(TEST_HOME)
-			.filter((n) => n.startsWith("not-a-dir-"))
-			.map((n) => join(TEST_HOME, n)),
-	].filter((dir) => existsSync(dir) && statSync(dir).isDirectory());
-	assert.deepEqual(
-		roots.flatMap((dir) => readdirSync(dir).filter((n) => n.startsWith("me-pi-delegate-gh-"))),
-		[],
-	);
-});
-
 const HAIKU = "anthropic/claude-haiku-5-5";
 
 const SONNET = "anthropic/claude-sonnet-5-5";
@@ -162,9 +141,8 @@ writeFileSync(
 	FAKE_BIN,
 	`#!/usr/bin/env node
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const mode = process.env.FAKE_PI_MODE || "";
@@ -190,68 +168,12 @@ const retryable = (errorMessage) => {
   emit("", { stopReason: "error", errorMessage });
   console.log(JSON.stringify({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 1, errorMessage }));
 };
-async function runAgentLoopFixture() {
-  const importFromRepo = (path) => import(pathToFileURL(join(process.env.ME_PI_TEST_ROOT, path)).href);
-  const [{ runAgentLoop }, { createBashTool }, { createAssistantMessageEventStream }] = await Promise.all([
-    importFromRepo("node_modules/@earendil-works/pi-agent-core/dist/index.js"),
-    importFromRepo("node_modules/@earendil-works/pi-coding-agent/dist/index.js"),
-    importFromRepo("node_modules/@earendil-works/pi-ai/dist/index.js"),
-  ]);
-  const commands = JSON.parse(process.env.FAKE_PI_AGENT_COMMANDS || "[]");
-  const hook = process.env.FAKE_PI_AGENT_HOOK || "";
-  const hookAt = Number(process.env.FAKE_PI_AGENT_HOOK_AT || 1);
-  let request = 0;
-  const bash = createBashTool(process.cwd(), { exposeSessionEnvironment: false });
-  const model = {
-    provider: "fixture", id: "fixture", name: "fixture", api: "openai-responses", baseUrl: "http://fixture.invalid",
-    input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    reasoning: false, contextWindow: 8192, maxTokens: 1024,
-  };
-  const streamFn = () => {
-    const step = commands[request++];
-    const message = {
-      role: "assistant",
-      content: step ? [{ type: "toolCall", id: "fixture-" + request, name: "bash", arguments: step }] : [{ type: "text", text: "Finished the local task." }],
-      api: "openai-responses", provider: "fixture", model: "fixture",
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-      stopReason: step ? "toolUse" : "stop", timestamp: Date.now(),
-    };
-    const stream = createAssistantMessageEventStream();
-    stream.push({ type: "start", partial: message });
-    stream.push({ type: "done", reason: message.stopReason, message });
-    stream.end(message);
-    return stream;
-  };
-  const config = {
-    model, convertToLlm: (messages) => messages, toolExecution: "sequential",
-    afterToolCall: ({ toolCall, result }) => {
-      if (request !== hookAt || !hook) return undefined;
-      if (hook === "drop-structured") return { content: result.content };
-      if (hook === "contradict-success") return { isError: false };
-      if (hook === "contradict-error") return { isError: true };
-      if (hook === "preserve-status") return { details: { hook: "preserved" } };
-      return undefined;
-    },
-  };
-  await runAgentLoop(
-    [{ role: "user", content: "Run this hermetic implementation fixture.", timestamp: Date.now() }],
-    { messages: [], tools: [bash] },
-    config,
-    (event) => process.stdout.write(JSON.stringify(event) + "\\n"),
-    undefined,
-    streamFn,
-  );
-}
 let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (c) => { prompt += c; });
 process.stdin.on("end", () => {
-  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), approve: args.includes("--approve"), skills: process.env.ME_PI_SKILLS, prompt }) + "\\n");
+  if (process.env.FAKE_PI_MARKER) appendFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({ model: flag("--model"), thinking: flag("--thinking"), skills: process.env.ME_PI_SKILLS, prompt }) + "\\n");
   if (process.env.FAKE_PI_PIDFILE) writeFileSync(process.env.FAKE_PI_PIDFILE, String(process.pid));
-  if (mode === "implement-agent-loop") {
-    runAgentLoopFixture().catch((error) => { console.error(error); process.exitCode = 1; });
-    return;
-  }
   if (mode === "rebuttal-rate-limit-model" && prompt.includes("## Round 2 (rebuttal)") && flag("--model") === process.env.FAKE_PI_FAIL_MODEL) {
     retryable("429 rate_limit_error: rebuttal unavailable");
     process.exit(1);
@@ -362,167 +284,14 @@ process.stdin.on("end", () => {
     emit("wrote notes/draft.md tools=" + flag("--tools") + " promptNamesDir=" + (sp.includes("only to absolute paths inside " + out + " (relative paths resolve against the project)")));
     process.exit(0);
   }
-  // implement modes: git runs in the worker's cwd, the coordinator's checkout.
-  const git = (...a) => spawnSync("git", a, { encoding: "utf8" });
-  // A tool call as Pi's JSON mode reports it: start, then end with isError.
+  // A successful tool call as Pi's JSON mode reports it: start, then end.
   let toolId = 0;
-  const tool = (toolName, args, isError = false, options = {}) => {
-    if (process.env.FAKE_PI_EVENT_MARKER) appendFileSync(process.env.FAKE_PI_EVENT_MARKER, toolName + "\\n");
-    const toolCallId = options.missingId ? undefined : (options.toolCallId || "t" + ++toolId);
-    if (!options.omitStart) console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
-    if (!options.omitEnd) console.log(JSON.stringify({
-      type: "tool_execution_end", toolCallId, toolName: options.endToolName || toolName,
-      result: options.result !== undefined ? options.result : !isError && toolName === "bash" ? { structuredContent: { exit_code: 0 } } : {}, isError,
-      ...(options.effectiveCommand !== undefined ? { effectiveCommand: options.effectiveCommand } : {}),
-    }));
-  };
-  const runBash = (command) => {
+  const tool = (toolName, args) => {
     const toolCallId = "t" + ++toolId;
-    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName: "bash", args: { command } }));
-    const executed = spawnSync("bash", ["-c", command], { encoding: "utf8" });
-    const exitCode = executed.status ?? 1;
-    console.log(JSON.stringify({
-      type: "tool_execution_end", toolCallId, toolName: "bash", isError: exitCode !== 0,
-      result: { structuredContent: { exit_code: exitCode, output: (executed.stdout || "") + (executed.stderr || "") } },
-    }));
-    return exitCode;
+    console.log(JSON.stringify({ type: "tool_execution_start", toolCallId, toolName, args }));
+    const result = toolName === "bash" ? { structuredContent: { exit_code: 0 } } : {};
+    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId, toolName, result, isError: false }));
   };
-  if (mode === "implement-content-check") {
-    const scenario = process.env.FAKE_PI_CONTENT_SCENARIO;
-    const check = process.env.FAKE_PI_RAN || "npm test";
-    if (scenario === "binary-collision") {
-      runBash("printf 'x' > a; printf 'y' > b; git add -A; git commit -m 'feat: baseline collision tree'");
-      writeFileSync("feature.txt", "fixed\\n");
-      runBash(check);
-      runBash("printf 'x\\\\0b\\\\0file\\\\0\\\\060\\\\0y' > a; rm b; false");
-      runBash("git add -A");
-      runBash("git commit -m 'feat: binary collision'");
-    } else {
-      runBash("printf 'fixed\\n' > feature.txt");
-      runBash(check);
-      if (scenario !== "unchanged") {
-        runBash("printf 'mutated\\n' > feature.txt; false");
-        runBash("git add feature.txt");
-        runBash("git commit -m 'feat: mutated content'");
-        if (scenario === "rerun") runBash(check);
-      } else {
-        runBash("git add feature.txt");
-        runBash("git commit -m 'feat: checked content'");
-      }
-    }
-    emit("Checked and committed content.");
-    process.exit(0);
-  }
-  if (mode === "implement-review-regression") {
-    const scenario = process.env.FAKE_PI_REVIEW_SCENARIO;
-    if (scenario === "reuse") {
-      tool("read", { path: "a" }, false, { toolCallId: "reused" });
-      tool("read", { path: "b" }, false, { toolCallId: "reused" });
-    } else if (["conflict", "invalid-alias", "invalid-secret", "success-conflict", "provider"].includes(scenario)) {
-      tool("bash", { command: "exit 7" }, scenario !== "success-conflict", { result: { structuredContent: { exit_code: 7 }, ...(["conflict", "success-conflict"].includes(scenario) ? { details: { exitCode: 143 } } : scenario === "invalid-alias" ? { details: { exitCode: "143" } } : scenario === "invalid-secret" ? { details: { exitCode: "TOKEN=synthetic-secret" } } : {}) } });
-      if (scenario === "provider") retryable("temporary provider failure");
-    } else if (scenario === "success-overflow") {
-      for (let i = 0; i < 21; i++) tool("bash", { command: "fixture" }, false, { result: { structuredContent: { exit_code: 0 }, details: { exitCode: "TOKEN=synthetic-secret" } } });
-    } else if (scenario === "success-multi") {
-      tool("bash", { command: "exit 7" }, false, { toolCallId: "call-seven", result: { structuredContent: { exit_code: 7 } } });
-      tool("bash", { command: "exit 8" }, false, { toolCallId: "call-eight", result: { structuredContent: { exit_code: 8 } } });
-      tool("bash", { command: "exit 9" }, false, { toolCallId: "call-" + "x".repeat(300), result: { structuredContent: { exit_code: 9 } } });
-    } else if (scenario === "success-crash") {
-      tool("bash", { command: "exit 7" }, false, { toolCallId: "call-crash", result: { structuredContent: { exit_code: 7 }, details: { exitCode: 143 } } });
-      process.stderr.write("boom: last stderr line\\n");
-      process.exit(3);
-    } else if (scenario === "duplicate-end") {
-      tool("bash", { command: "printf completed" }, false, { toolCallId: "call-completed", result: { structuredContent: { exit_code: 0 } } });
-      tool("bash", { command: "printf duplicate" }, true, { toolCallId: "call-completed", omitStart: true });
-      tool("read", { path: "unique" }, false, { toolCallId: "call-unique" });
-    }
-    writeFileSync("feature.txt", "fixed\\n");
-    git("add", "feature.txt");
-    git("commit", "-q", "-m", "feat: fixture");
-    const status = scenario === "check-missing" ? {} : scenario === "check-invalid" ? { exit_code: "0" } : { exit_code: 0 };
-    tool("bash", { command: "npm test" }, false, { result: { structuredContent: status, ...(["check-conflict", "check-success-conflict"].includes(scenario) ? { details: { exitCode: 143 } } : scenario === "check-match" ? { details: { exitCode: 0 } } : {}) } });
-    emit("Finished fixture.");
-    process.exit(0);
-  }
-  if (mode === "implement-artifacts" || mode === "implement-check-artifact-fail" || mode === "implement-read-artifact-fail") {
-    const target = "export GITHUB_TOKEN='command-fake-secret' AWS_SECRET_ACCESS_KEY='command-aws-secret' npm run targeted-test";
-    if (mode === "implement-artifacts") {
-      tool("bash", { command: target }, true, { effectiveCommand: "GITHUB_TOKEN=effective-fake-secret AWS_SECRET_ACCESS_KEY='effective-aws-secret' rtk npm run targeted-test", result: {
-        content: [{ type: "text", text: "Targeted failed: GITHUB_TOKEN=target-secret AWS_SECRET_ACCESS_KEY='target-aws-secret'" }],
-        error: "AWS_SECRET_ACCESS_KEY='error-fake-secret'",
-        structuredContent: { output: "Targeted failed: GITHUB_TOKEN=target-secret AWS_SECRET_ACCESS_KEY='target-aws-secret'", full_output_path: process.env.FAKE_PI_REF },
-        // Alias-only on purpose (no structuredContent.exit_code): the effect stays unknown, so acceptance is withheld, and the artifact records the code as not provided.
-        details: { exitCode: 7, fullOutputPath: process.env.FAKE_PI_REF },
-      } });
-      tool("bash", { command: process.env.FAKE_PI_RAN || "npm test" }, false, { result: {
-        content: [{ type: "text", text: "declared check passed" }],
-        structuredContent: { output: "declared check passed", exit_code: 0 },
-      } });
-      tool("read", { path: "success-only-argument" }, false, { result: { content: [{ type: "text", text: "success-only-result" }] } });
-    } else if (mode === "implement-check-artifact-fail") {
-      tool("bash", { command: process.env.FAKE_PI_RAN || "npm test" }, true, { result: {
-        content: [{ type: "text", text: "declared check failed" }],
-        structuredContent: { output: "declared check failed", exit_code: 1 },
-      } });
-    } else {
-      tool("read", { path: "do-not-capture-input" }, true, { result: {
-        content: [{ type: "text", text: "read result failed" }],
-        structuredContent: { code: "ENOENT", message: "missing fixture" },
-      } });
-    }
-    if (process.env.FAKE_PI_BLOCK_ARTIFACT) {
-      const id = readFileSync(".git/me-pi-implement.lock", "utf8").trim().split(" ")[1];
-      const directory = join(process.env.TMPDIR, "me-pi-delegate-" + process.ppid);
-      mkdirSync(directory, { recursive: true });
-      writeFileSync(join(directory, id + "-failed-tools.json"), "do not overwrite");
-    }
-    emit("Implemented GITHUB_TOKEN=answer-fake-secret.");
-    process.exit(0);
-  }
-  if (mode === "implement-fallback-artifacts") {
-    if ((flag("--model") || "").includes("luna")) {
-      tool("bash", { command: "npm test" }, true, { result: { content: [{ type: "text", text: "first attempt tool failure" }], structuredContent: { exit_code: 3 } } });
-      retryable("429 rate_limit_error: retry artifacts");
-      process.exit(1);
-    }
-    tool("read", { path: "not-retained" }, true, { result: { content: [{ type: "text", text: "fallback tool failure" }] } });
-    tool("bash", { command: "npm test" }, false, { result: { structuredContent: { exit_code: 0 } } });
-    emit("Fallback completed.");
-    process.exit(0);
-  }
-  if (mode === "implement-artifact-anomalies") {
-    tool("bash", { command: "first duplicate command" }, true, { toolCallId: "duplicate" , omitEnd: true });
-    tool("bash", { command: "second duplicate command" }, true, { toolCallId: "duplicate", omitEnd: true });
-    // Emit one matching end for the duplicate ID, then a failed end without an ID or start.
-    console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "duplicate", toolName: "bash", result: { structuredContent: { output: "duplicate failure", exit_code: 2 } }, isError: true }));
-    tool("read", {}, true, { missingId: true, omitStart: true, result: { content: [{ type: "text", text: "missing-id failure" }] } });
-    tool("bash", { command: "open call" }, false, { omitEnd: true, toolCallId: "never-ended" });
-    if (process.env.FAKE_PI_BLOCK_ARTIFACT) {
-      const id = readFileSync(".git/me-pi-implement.lock", "utf8").trim().split(" ")[1];
-      const directory = join(process.env.TMPDIR, "me-pi-delegate-" + process.ppid);
-      mkdirSync(directory, { recursive: true });
-      writeFileSync(join(directory, id + "-failed-tools.json"), "do not overwrite");
-    }
-    console.log("{ malformed event");
-    if (process.env.FAKE_PI_READY) writeFileSync(process.env.FAKE_PI_READY, "ready");
-    emit("working", { stopReason: "toolUse" });
-    process.on("SIGTERM", () => process.exit(143));
-    setInterval(() => {}, 1000);
-    return;
-  }
-  if (mode === "implement-commit" || mode === "move-ref") {
-    for (let i = 0; i < Number(process.env.FAKE_PI_TOOL_EVENTS || 0); i++) tool("read", { path: "sub/a.txt" });
-    writeFileSync("feature.txt", "IMPLEMENT-DIFF-BODY\\n");
-    if (process.env.FAKE_PI_TOOL_EVENTS !== undefined) tool("write", { path: "feature.txt" });
-    git("add", "-A");
-    git("commit", "-q", "-m", "feat: add feature");
-    if (mode === "move-ref") git("update-ref", "refs/heads/other", "HEAD");
-    const ran = process.env.FAKE_PI_RAN ?? "npm test";
-    if (ran) tool("bash", { command: ran }, Boolean(process.env.FAKE_PI_CHECK_FAIL));
-    if (process.env.FAKE_PI_EDIT_AFTER) tool(process.env.FAKE_PI_STALE_TOOL || "edit", { path: "feature.txt" });
-    emit("Added feature.txt.\\nIMPLEMENT-DIFF-BODY is in the details only");
-    process.exit(0);
-  }
   if (mode === "infra-flaky") {
     // Fails the first FAKE_PI_INFRA_FAILS runs with FAKE_PI_ERROR, counting runs in FAKE_PI_COUNTER.
     const runs = (existsSync(process.env.FAKE_PI_COUNTER) ? Number(readFileSync(process.env.FAKE_PI_COUNTER, "utf8")) : 0) + 1;
@@ -533,45 +302,7 @@ process.stdin.on("end", () => {
       emit("", { stopReason: "error", errorMessage: process.env.FAKE_PI_ERROR });
       process.exit(1);
     }
-    if (process.env.ME_PI_ROLE === "implement") {
-      writeFileSync("feature.txt", "fixed\\n");
-      git("add", "feature.txt");
-      git("commit", "-q", "-m", "feat: fixture");
-      tool("bash", { command: "npm test" });
-    }
     emit("Answered after run " + runs + ".");
-    process.exit(0);
-  }
-  if (mode === "implement-no-effect-failures") {
-    // Harmless failures: an edit rejected before writing, a failed read, and a fenced write.
-    const jobId = process.env.ME_PI_DELEGATE_JOB_ID;
-    const attempt = Number(process.env.ME_PI_DELEGATE_ATTEMPT);
-    tool("edit", { path: "src/cli.ts" }, true, { toolCallId: "edit-mismatch", result: { content: [{ type: "text", text: "Could not find edits[1] in /repo/src/cli.ts. The oldText must match exactly including all whitespace and newlines." }], details: {} } });
-    tool("read", { path: "missing.txt" }, true, { toolCallId: "read-missing", result: { content: [{ type: "text", text: "ENOENT" }] } });
-    const fence = { owner: "delegate-worker", jobId, attempt, toolCallId: "fenced-write", cause: "worker-fence-denial", resource: "guard", effect: "denied" };
-    tool("write", { path: "/tmp/scratch.ts" }, true, { toolCallId: "fenced-write", result: { content: [{ type: "text", text: "Blocked: /tmp/scratch.ts is outside the checkout." }], details: { __mePiDelegateProvenance: [fence] } } });
-    tool("bash", { command: "timeout 1 node --test" }, true, { toolCallId: "timed-out", result: { structuredContent: { exit_code: 124 } } });
-    if (process.env.FAKE_PI_EDIT_WRITE_FAILED) tool("edit", { path: "src/cli.ts" }, true, { toolCallId: "edit-write-failed", result: { content: [{ type: "text", text: "EACCES: permission denied, open 'src/cli.ts'" }] } });
-    writeFileSync("feature.txt", "fixed\\n");
-    git("add", "feature.txt");
-    git("commit", "-q", "-m", "feat: fixture");
-    tool("bash", { command: "npm test" });
-    emit("Implemented despite harmless tool failures.");
-    process.exit(0);
-  }
-  if (mode === "implement-dirty") { writeFileSync("left.txt", "x\\n"); tool("bash", { command: "npm test" }); emit("left it uncommitted"); process.exit(0); }
-  if (mode === "implement-hang") {
-    writeFileSync("left.txt", "x\\n");
-    // Pi's print mode exits on SIGTERM; the marker proves TERM came before any SIGKILL.
-    process.on("SIGTERM", () => { appendFileSync(process.env.FAKE_PI_TERMFILE, "TERM\\n"); process.exit(143); });
-    emit("working", { stopReason: "toolUse" });
-    setInterval(() => {}, 1000);
-    return;
-  }
-  if (mode === "echo-env") {
-    const e = process.env;
-    const keys = Object.keys(e).filter((k) => k.startsWith("GIT_CONFIG_") || k.startsWith("GH_") || k.startsWith("GITHUB_") || k === "ME_PI_ROLE" || k === "ME_PI_OUTPUT_DIR" || k === "ME_PI_DENY_DIR" || k === "ME_PI_PARENT");
-    emit("ENV " + JSON.stringify({ env: Object.fromEntries(keys.sort().map((k) => [k, e[k]])), tools: flag("--tools"), approve: args.includes("--approve"), noApprove: args.includes("--no-approve"), cwd: process.cwd(), lock: readFileSync(git("rev-parse", "--git-dir").stdout.trim() + "/me-pi-implement.lock", "utf8"), pid: process.pid }));
     process.exit(0);
   }
   if (mode === "echo-budget") { emit(process.env.ME_PI_BUDGET || "none"); process.exit(0); }
@@ -679,19 +410,12 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 		ME_PI_RUN: undefined,
 		ME_PI_OUTPUT_DIR: undefined,
 		ME_PI_BUDGET: undefined,
-		ME_PI_ROLE: undefined,
 		ME_PI_SKILLS: undefined,
 		ME_PI_DELEGATE_JOB_ID: undefined,
 		ME_PI_DELEGATE_ATTEMPT: undefined,
 		// The coordinator's opt-in status (an eval-style session sets them): off unless a test asks.
 		ME_PI_STATUS_LOG: undefined,
 		ME_PI_SPEND_BUDGET_USD: undefined,
-		ME_PI_TEST_ROOT: REPO_ROOT,
-		FAKE_PI_EVENT_MARKER: undefined,
-		FAKE_PI_TOOL_EVENTS: undefined,
-		FAKE_PI_AGENT_COMMANDS: undefined,
-		FAKE_PI_AGENT_HOOK: undefined,
-		FAKE_PI_AGENT_HOOK_AT: undefined,
 		TMPDIR: TEST_HOME,
 		...env,
 	};
@@ -830,7 +554,7 @@ const POLICY = [
 	"## Recovery (coordinator only)",
 	"- coordinator ledger",
 	"",
-	"## Approval (coordinator and implement only)",
+	"## Approval (coordinator only)",
 	"- protected actions",
 	"## Secrets",
 	"- never read keys",
@@ -897,52 +621,4 @@ function trackIntervals(t) {
 	return active;
 }
 
-// --- implement ---
-
-const CHECK = "npm test";
-
-// A temp repo on `goal/x` with one commit and a branch `other`, as test/install.test.sh sets up its fixture.
-function implementRepo() {
-	const repo = mkdtempSync(join(TEST_HOME, "impl-repo-"));
-	const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
-	git("init", "-q", "--template=", "-b", "main");
-	git("config", "core.hooksPath", "/dev/null");
-	git("config", "commit.gpgsign", "false");
-	git("config", "user.email", "implement-test@example.invalid");
-	git("config", "user.name", "Implement Test");
-	mkdirSync(join(repo, "sub"));
-	writeFileSync(join(repo, "sub", "a.txt"), "a\n");
-	writeFileSync(
-		join(repo, "verify.mjs"),
-		'import { readFileSync } from "node:fs";\nif (!["fixed", "mutated"].includes(readFileSync("feature.txt", "utf8").trim())) { console.error("fixture not repaired"); process.exitCode = 1; }\n',
-	);
-	writeFileSync(
-		join(repo, "package.json"),
-		`${JSON.stringify({ private: true, scripts: { test: "node verify.mjs" } })}\n`,
-	);
-	git("add", "-A");
-	git("commit", "-q", "-m", "initial");
-	git("branch", "other");
-	git("switch", "-q", "-c", "goal/x");
-	const real = realpathSync(repo);
-	return {
-		repo,
-		real,
-		git,
-		lock: join(real, ".git", "me-pi-implement.lock"),
-		ctx: { ...CTX, cwd: repo, isProjectTrusted: () => false },
-	};
-}
-
-const implementEnv = (mode, extra = {}) => ({
-	FAKE_PI_MODE: mode,
-	PI_CODING_AGENT_DIR: mkdtempSync(join(TEST_HOME, "agent-")),
-	...extra,
-});
-
-const implement = (extra = {}) => ({ role: "implement", task: "add a feature", check: CHECK, ...extra });
-
-// Resolves once a hang-mode worker has written the file it writes before it waits.
-const workerStarted = (repo) => waitFor(() => existsSync(join(repo, "left.txt")), "the worker to start");
-
-export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, IMPLEMENT_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, workerContract, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, trackCheck, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, snapshotContent, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, pool, modelSet, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals, CHECK, implementRepo, implementEnv, implement, workerStarted };
+export { TEST_HOME, REPO_ROOT, registerExtension, classifyProviderError, LIMITS, LOCAL_TOOLS, WEB_TOOLS, PROMPT_GUIDELINES, PROMPT_SNIPPET, ROLES, workerContract, loadModelSet, resolveRun, secretPathIn, writeBlockedIn, registerGuard, TOOL_PROVENANCE_DETAIL_KEY, progressLines, registerDelegateCommand, DEFAULT_LIMITS, HAIKU, SONNET, OPUS, LUNA, COPILOT, POOL_SET, pool, modelSet, ONE_OFF, UNAUTHENTICATED, REGISTRY_MODELS, registryFixture, FAKE_BIN, CTX, text, applyEnv, setupEnvironments, setup, run, isAlive, waitFor, waitDead, scratch, commandCtx, statusFor, POLICY, bgCtx, tuiCtx, trackIntervals };

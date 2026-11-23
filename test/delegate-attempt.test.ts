@@ -5,7 +5,6 @@ const { createAttemptLedger, infraRetryable, mergeAttempts } = await import(
 	"../packages/pi-workers/extensions/delegate-attempt.ts"
 );
 const { TOOL_PROVENANCE_DETAIL_KEY } = await import("../packages/pi-workers/extensions/delegate-provenance.ts");
-const { FailedToolArtifactCollector } = await import("../packages/pi-workers/extensions/delegate-artifacts.ts");
 
 // Array-fed ledger tests: synthetic Pi event records mirroring the fake-pi provenance modes in the harness.
 
@@ -58,41 +57,21 @@ const end = (toolCallId: string, toolName: string, isError: boolean, result: Rec
 });
 const text = (value: string) => ({ content: [{ type: "text", text: value }] });
 
-interface CollectorStub {
-	records: any[];
-	unmatched: any[];
-	anomalies: string[];
-}
-
 function ledgerFor(
 	events: unknown[],
 	{
 		role = "general",
 		budget = BUDGET,
-		implement = false,
 		model = MODEL,
 		exit = 0 as number | null,
-	}: { role?: string; budget?: typeof BUDGET; implement?: boolean; model?: string; exit?: number | null } = {},
+	}: { role?: string; budget?: typeof BUDGET; model?: string; exit?: number | null } = {},
 ) {
-	const collector: CollectorStub = { records: [], unmatched: [], anomalies: [] };
 	const job: any = { role, web: false, output: false, jobId: "job-1" };
-	if (implement)
-		job.implement = {
-			job: { check: { status: "none", command: "npm run check", runs: [] }, repoRoot: "/nonexistent" },
-			trusted: false,
-			pids: new Set<number>(),
-			artifacts: {
-				record: (input: any) => collector.records.push(input),
-				recordUnmatchedStart: (input: any) => collector.unmatched.push(input),
-				noteAnomaly: (kind: string) => collector.anomalies.push(kind),
-			},
-		};
 	const progress: unknown[] = [];
 	const kills: string[] = [];
 	const ledger = createAttemptLedger({
 		job,
 		run: { model, thinking: "low" },
-		cwd: "/work",
 		outDir: undefined,
 		budget,
 		attemptIndex: 1,
@@ -102,7 +81,7 @@ function ledgerFor(
 	for (const event of events) ledger.record(event);
 	ledger.close();
 	const result = ledger.settle(exit);
-	return { result, provenance: ledger.provenance, collector, kills, progress };
+	return { result, provenance: ledger.provenance, kills, progress };
 }
 
 test("ledger: a completed read is a replay-safe completed effect and the answer settles", () => {
@@ -123,39 +102,29 @@ test("ledger: a completed read is a replay-safe completed effect and the answer 
 	assert.deepEqual(provenance.stopFacts, []);
 });
 
-test("ledger: an edit rejected before writing is not-started, with an edit-rejected artifact", () => {
-	const { provenance, collector } = ledgerFor(
-		[
-			start("edit-mismatch", "edit", { path: "a.ts" }),
-			end("edit-mismatch", "edit", true, text("Could not find the exact text in a.ts")),
-			reply("done"),
-		],
-		{ implement: true },
-	);
+test("ledger: an edit rejected before writing is not-started", () => {
+	const { provenance } = ledgerFor([
+		start("edit-mismatch", "edit", { path: "a.ts" }),
+		end("edit-mismatch", "edit", true, text("Could not find the exact text in a.ts")),
+		reply("done"),
+	]);
 	assert.deepEqual(
 		provenance.toolEffects.map((f) => [f.effect, f.replaySafe]),
 		[["not-started", false]],
 	);
 	assert.deepEqual(provenance.stopFacts, []);
-	assert.equal(collector.records.length, 1);
-	assert.equal(collector.records[0].toolCallId, "edit-mismatch");
-	assert.equal(collector.records[0].disposition, "edit-rejected");
-	assert.equal(collector.records[0].requestedModel, MODEL);
 });
 
 test("ledger: bash exit codes decide the effect; contradictory aliases leave it unknown", () => {
-	const { provenance, result, collector } = ledgerFor(
-		[
-			start("exit-1", "bash", { command: "false" }),
-			end("exit-1", "bash", true, { ...text("failed"), structuredContent: { exit_code: 1 } }),
-			start("exit-0", "bash", { command: "true" }),
-			end("exit-0", "bash", false, { ...text("ok"), structuredContent: { exit_code: 0 }, details: { exitCode: 0 } }),
-			start("alias-mismatch", "bash", { command: "true" }),
-			end("alias-mismatch", "bash", false, { ...text("ok"), structuredContent: { exit_code: 0 }, exitCode: 2 }),
-			reply("done"),
-		],
-		{ implement: true },
-	);
+	const { provenance } = ledgerFor([
+		start("exit-1", "bash", { command: "false" }),
+		end("exit-1", "bash", true, { ...text("failed"), structuredContent: { exit_code: 1 } }),
+		start("exit-0", "bash", { command: "true" }),
+		end("exit-0", "bash", false, { ...text("ok"), structuredContent: { exit_code: 0 }, details: { exitCode: 0 } }),
+		start("alias-mismatch", "bash", { command: "true" }),
+		end("alias-mismatch", "bash", false, { ...text("ok"), structuredContent: { exit_code: 0 }, exitCode: 2 }),
+		reply("done"),
+	]);
 	assert.deepEqual(
 		provenance.toolEffects.map((f) => [f.toolCallId, f.effect]),
 		[
@@ -168,33 +137,6 @@ test("ledger: bash exit codes decide the effect; contradictory aliases leave it 
 	assert.deepEqual(
 		provenance.stopFacts.map((f) => [f.toolCallId, f.cause, f.effect]),
 		[["exit-1", "tool-failure", "completed"]],
-	);
-	assert.equal(collector.records.length, 1);
-	assert.equal(collector.records[0].disposition, "nonzero-exit");
-	assert.equal(collector.records[0].rawArgsCommand, "false");
-	assert.match(
-		result.stderr,
-		/contradictory Bash success status diagnostics:\nisError=false toolCallId=alias-mismatch/,
-	);
-});
-
-test("ledger: a failed bash result with a contradicting exit-code alias records the exit code as not provided", () => {
-	const { collector } = ledgerFor(
-		[
-			start("alias-veto", "bash", { command: "false" }),
-			end("alias-veto", "bash", true, { ...text("failed"), structuredContent: { exit_code: 0 }, exitCode: 1 }),
-			reply("done"),
-		],
-		{ implement: true },
-	);
-	assert.equal(collector.records.length, 1);
-	const artifacts = new FailedToolArtifactCollector("im-alias-veto");
-	artifacts.record(collector.records[0]);
-	const [entry] = artifacts.snapshot().entries;
-	assert.deepEqual(entry.exitCode, { state: "not-provided", value: null });
-	assert.deepEqual(
-		entry.statusDiagnostics.map((item: { text: string }) => item.text),
-		["structuredContent.exit_code=0", "exitCode=1"],
 	);
 });
 
@@ -278,19 +220,14 @@ test("ledger: reaching the hard cost cap on a continuing reply stops synchronous
 	assert.equal(final.result.failure, undefined);
 });
 
-test("ledger: close flushes an unclosed call as an unknown effect and an unmatched start", () => {
-	const { provenance, collector, result } = ledgerFor(
-		[start("unfinished", "bash", { command: "printf maybe-effect" })],
-		{ implement: true, exit: 1 },
-	);
+test("ledger: close flushes an unclosed call as an unknown effect", () => {
+	const { provenance, result } = ledgerFor([start("unfinished", "bash", { command: "printf maybe-effect" })], {
+		exit: 1,
+	});
 	assert.equal(provenance.complete, false);
 	assert.deepEqual(
 		provenance.toolEffects.map((f) => [f.toolCallId, f.effect, f.replaySafe]),
 		[["unfinished", "unknown", false]],
-	);
-	assert.deepEqual(
-		collector.unmatched.map((c) => [c.toolCallId, c.toolName, c.rawArgsCommand]),
-		[["unfinished", "bash", "printf maybe-effect"]],
 	);
 	assert.equal(result.failure, "exit 1: no error message");
 });

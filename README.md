@@ -18,7 +18,7 @@ pi install npm:@agmxyz/pi-workers
 
 Restart Pi or run `/reload`.
 
-Workers are **not sandboxed**: they run with your OS permissions, and `implement` edits and commits in your real checkout. A passing check doesn't mean the code is correct; review the change.
+Workers are **not sandboxed**: they run with your OS permissions and can read your project. They never edit it: your session makes every change.
 
 [Package README](packages/pi-workers/README.md) · [Delegation guide](packages/pi-workers/docs/delegate.md) · [Changelog](packages/pi-workers/CHANGELOG.md)
 

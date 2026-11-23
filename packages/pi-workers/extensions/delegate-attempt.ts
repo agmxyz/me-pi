@@ -1,23 +1,16 @@
 /**
  * Attempt ledger: interprets one worker attempt's Pi event records (tool capture, effect and stop provenance,
- * provider-retry correlation, usage and cost, failed-tool artifacts) into its RunResult. The caller owns the
+ * provider-retry correlation, usage and cost) into its RunResult. The caller owns the
  * process, timers, and abort signal; it feeds records here and asks the ledger to settle the result.
  */
 
-import { type ArtifactWriteResult, boundedCallId, FAILED_TOOL_ARTIFACT_LIMITS } from "./delegate-artifacts.ts";
-import { trackCheck } from "./delegate-implement.ts";
 import {
 	type AttemptProvenance,
 	bashExitCode,
-	bashStatuses,
 	type EventRecord,
-	eventField,
 	eventRecord,
-	eventText,
 	type FailureClass,
-	failedToolResult,
 	failedWithoutEffect,
-	failureDisposition,
 	isProviderRetryFact,
 	isStopFact,
 	type ProviderRetryFact,
@@ -65,7 +58,6 @@ export interface RunResult {
 	tools: string[];
 	stderr: string;
 	ms: number;
-	failedToolCapture?: Exclude<ArtifactWriteResult, { status: "empty" }>;
 }
 
 const ACCOUNT_LIMIT =
@@ -102,13 +94,6 @@ export interface AttemptBudget {
 	toolCalls: number | null;
 }
 
-type CapturedToolCall = {
-	toolCallId?: string;
-	toolName?: string;
-	startedAt: number;
-	rawArgsCommand?: string;
-};
-
 function toolLabel(name: string): string {
 	const label = name
 		.replace(/[^A-Za-z0-9_-]+/g, "_")
@@ -120,7 +105,6 @@ function toolLabel(name: string): string {
 export interface AttemptLedgerOptions {
 	job: Job;
 	run: { model?: string; thinking: string };
-	cwd: string;
 	outDir: string | undefined;
 	budget: AttemptBudget;
 	attemptIndex: number;
@@ -152,13 +136,12 @@ export interface AttemptLedger {
 export function createAttemptLedger({
 	job,
 	run,
-	cwd,
 	outDir,
 	budget,
 	attemptIndex,
 	onProgress,
 }: AttemptLedgerOptions): AttemptLedger {
-	const { web, implement } = job;
+	const { web } = job;
 	const provenance: AttemptProvenance = {
 		jobId: job.jobId,
 		attempt: attemptIndex,
@@ -184,15 +167,8 @@ export function createAttemptLedger({
 	let providerErrorClass: FailureClass | undefined;
 	let finished = false;
 	let lastStopReason: string | undefined;
-	const calls = new Map<string, { tool: string; command: string }>();
-	const captureCalls = new Map<string, CapturedToolCall[]>();
-	const anonymousCaptureCalls: CapturedToolCall[] = [];
 	const activeEffects = new Map<string, ToolEffectFact[]>();
 	const seenToolCallIds = new Set<string>();
-	// Separate from failed-tool artifacts: these are owner-reported successes with contradictory statuses.
-	// The attempt-wide cap reuses maxDiagnosticsPerCall; each artifact record has its own childDiagnostics cap.
-	const contradictorySuccesses: string[] = [];
-	let omittedContradictorySuccesses = 0;
 	let latestAssistantError: { provider: string; model: string; api: string } | undefined;
 
 	let progressTimer: NodeJS.Timeout | undefined;
@@ -221,99 +197,6 @@ export function createAttemptLedger({
 			onProgress(result);
 		}, PROGRESS_COALESCE_MS);
 	};
-	const captureToolStart = (event: EventRecord) => {
-		const collector = implement?.artifacts;
-		if (!collector) return;
-		const toolCallId = typeof event.toolCallId === "string" && event.toolCallId.length ? event.toolCallId : undefined;
-		const toolName = typeof event.toolName === "string" ? event.toolName : undefined;
-		const args = eventRecord(event.args);
-		const rawCommand = eventField(args, "command");
-		if (toolName === "bash" && rawCommand.present && typeof rawCommand.value !== "string")
-			collector.noteAnomaly("invalid-field");
-		const call: CapturedToolCall = {
-			toolCallId,
-			toolName,
-			startedAt: Date.now(),
-			...(toolName === "bash" && typeof rawCommand.value === "string" ? { rawArgsCommand: rawCommand.value } : {}),
-		};
-		if (!toolName) collector.noteAnomaly("malformed-event");
-		if (!toolCallId) {
-			collector.noteAnomaly("missing-tool-call-id");
-			anonymousCaptureCalls.push(call);
-			return;
-		}
-		const callsForId = captureCalls.get(toolCallId) ?? [];
-		callsForId.push(call);
-		captureCalls.set(toolCallId, callsForId);
-	};
-	const captureToolEnd = (event: EventRecord) => {
-		const collector = implement?.artifacts;
-		if (!collector) return;
-		const id = typeof event.toolCallId === "string" && event.toolCallId.length ? event.toolCallId : undefined;
-		let call: CapturedToolCall | undefined;
-		if (id) {
-			const callsForId = captureCalls.get(id);
-			call = callsForId?.shift();
-			if (callsForId?.length === 0) captureCalls.delete(id);
-			if (!call) collector.noteAnomaly("end-without-start");
-		} else {
-			collector.noteAnomaly("missing-tool-call-id");
-			call = anonymousCaptureCalls.shift();
-			if (!call) collector.noteAnomaly("end-without-start");
-		}
-		if (typeof event.isError !== "boolean") collector.noteAnomaly("malformed-event");
-		const endedToolName = typeof event.toolName === "string" ? event.toolName : undefined;
-		if (call?.toolName && endedToolName && call.toolName !== endedToolName) collector.noteAnomaly("malformed-event");
-		if (event.isError === false && (call?.toolName ?? endedToolName) === "bash") {
-			const status = bashStatuses(event.result);
-			if (status.exitCode !== 0 && status.diagnostics.length) {
-				if (contradictorySuccesses.length < FAILED_TOOL_ARTIFACT_LIMITS.maxDiagnosticsPerCall) {
-					const bounded = boundedCallId(call?.toolCallId ?? id ?? "(missing)");
-					const idText = bounded.truncated ? `${bounded.text} [truncated]` : bounded.text;
-					contradictorySuccesses.push(`isError=false toolCallId=${idText} ${status.diagnostics.join("; ")}`);
-				} else omittedContradictorySuccesses++;
-			}
-		}
-		if (event.isError !== true) return;
-		const endedAt = Date.now();
-		const eventResult = eventRecord(event.result);
-		const effectiveCommand =
-			eventText(event, "effectiveCommand") ??
-			eventText(eventResult, "effectiveCommand") ??
-			eventText(eventRecord(eventResult?.structuredContent), "effectiveCommand");
-		collector.record({
-			attemptIndex,
-			requestedModel: run.model,
-			toolCallId: call?.toolCallId ?? id,
-			toolName: call?.toolName ?? endedToolName,
-			startedAt: call?.startedAt,
-			endedAt,
-			cwd: typeof event.cwd === "string" ? event.cwd : cwd,
-			rawArgsCommand: call?.rawArgsCommand,
-			effectiveCommand,
-			disposition: failureDisposition(call?.toolName ?? endedToolName, event.result),
-			isError: true,
-			result: failedToolResult(event.result, call?.toolName ?? endedToolName),
-		});
-	};
-	const flushUnclosedCalls = () => {
-		const collector = implement?.artifacts;
-		if (!collector) return;
-		const retain = (call: CapturedToolCall) =>
-			collector.recordUnmatchedStart({
-				attemptIndex,
-				requestedModel: run.model,
-				...(call.toolCallId && { toolCallId: call.toolCallId }),
-				...(call.toolName && { toolName: call.toolName }),
-				startedAt: call.startedAt,
-				cwd,
-				...(call.rawArgsCommand !== undefined && { rawArgsCommand: call.rawArgsCommand }),
-			});
-		for (const callsForId of captureCalls.values()) for (const call of callsForId) retain(call);
-		for (const call of anonymousCaptureCalls) retain(call);
-		captureCalls.clear();
-		anonymousCaptureCalls.length = 0;
-	};
 	const startToolEffect = (event: EventRecord) => {
 		result.toolCallCount = (result.toolCallCount ?? 0) + 1;
 		const toolCallId = typeof event.toolCallId === "string" && event.toolCallId ? event.toolCallId : "";
@@ -321,7 +204,6 @@ export function createAttemptLedger({
 		if (!toolCallId || toolName === "unknown") provenance.complete = false;
 		if (toolCallId && seenToolCallIds.has(toolCallId)) {
 			provenance.complete = false;
-			implement?.artifacts.noteAnomaly("duplicate-tool-call-id");
 			provenance.stopFacts.push({
 				owner: "delegate-parent",
 				jobId: job.jobId,
@@ -514,15 +396,8 @@ export function createAttemptLedger({
 			if (typeof event.toolName === "string") {
 				result.tools.push(toolLabel(event.toolName));
 				if (result.tools.length > MAX_TOOL_HISTORY) result.tools.shift();
-				if (implement)
-					calls.set(event.toolCallId, { tool: event.toolName, command: String(event.args?.command ?? "") });
 				scheduleProgress();
 			}
-			if (implement) captureToolStart(event);
-		}
-		if (implement && event.type === "tool_execution_end") {
-			trackCheck(implement.job, calls, event, cwd);
-			captureToolEnd(event);
 		}
 		if (event.type === "auto_retry_start") {
 			const failed = latestAssistantError;
@@ -615,7 +490,6 @@ export function createAttemptLedger({
 	};
 	const close = () => {
 		if (finished) return;
-		flushUnclosedCalls();
 		flushUnknownToolEffects();
 		flushProgress();
 		finished = true;
@@ -625,11 +499,6 @@ export function createAttemptLedger({
 		// Derive the child's own tail before appending delegate diagnostics; appended text must not become the
 		// reported child failure when the worker crashes without a final answer.
 		const lastStderr = result.stderr.trim().split("\n").at(-1)?.slice(0, 300);
-		if (contradictorySuccesses.length) {
-			result.stderr += `\ndelegate: contradictory Bash success status diagnostics:\n${contradictorySuccesses.join("\n")}`;
-			if (omittedContradictorySuccesses)
-				result.stderr += `\ndelegate: ${omittedContradictorySuccesses} further status diagnostics omitted`;
-		}
 		// A final answer ("stop") counts even if a stop or stray pipe holder came after it.
 		const answered = lastStopReason === "stop" && !result.failure && Boolean(result.output.trim());
 		if (problem) provenance.complete = false;
@@ -656,7 +525,6 @@ export function createAttemptLedger({
 		record: (event) => processEvent(event),
 		malformed: () => {
 			provenance.complete = false;
-			implement?.artifacts.noteAnomaly("malformed-event"); // pi prints JSON lines in this mode.
 		},
 		stderr: (chunk) => {
 			result.stderr = (result.stderr + chunk).slice(-4096);

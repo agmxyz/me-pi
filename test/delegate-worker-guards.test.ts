@@ -83,18 +83,11 @@ test("opt-in coordinator status logs a provider-error stop and announces spend b
 test("registers delegate in the main session; workers get only the secret-path block", (t) => {
 	const main = setup(t);
 	assert.ok(main.tool);
-	assert.deepEqual(Object.keys(main.handlers), [
-		"session_before_switch",
-		"session_before_fork",
-		"session_shutdown",
-		"tool_call",
-	]);
+	assert.deepEqual(Object.keys(main.handlers), ["session_before_switch", "session_before_fork", "session_shutdown"]);
 	const { properties, required } = main.tool.parameters;
 	assert.deepEqual(required, ["task"]);
-	assert.deepEqual(properties.role.enum, ["general", "scout", "implement"]);
-	assert.equal(properties.check.type, "string");
-	assert.match(properties.check.description, /one unchained command/);
-	assert.match(properties.check.description, /runs it alone, exactly as given, after its final edit/);
+	assert.deepEqual(properties.role.enum, ["general", "scout"]);
+	assert.equal(properties.check, undefined);
 	assert.equal(properties.branch, undefined);
 	assert.equal(properties.web.type, "boolean");
 	assert.equal(properties.answer.maxLength, 400);
@@ -115,7 +108,6 @@ test("Pi blocked calls are reported on tool_execution_end, not tool_result", asy
 	const { handlers } = setup(t, {
 		env: {
 			ME_PI_RUN: "1",
-			ME_PI_ROLE: "general",
 			ME_PI_DELEGATE_JOB_ID: "actual-pi-job",
 			ME_PI_DELEGATE_ATTEMPT: "1",
 		},
@@ -180,7 +172,6 @@ test("Pi transports delegate-worker wrap-up denials on tool_execution_end", asyn
 	const { handlers } = setup(t, {
 		env: {
 			ME_PI_RUN: "1",
-			ME_PI_ROLE: "general",
 			ME_PI_DELEGATE_JOB_ID: "budget-pi-job",
 			ME_PI_DELEGATE_ATTEMPT: "1",
 			ME_PI_BUDGET: JSON.stringify({ tools: 0, deadline: Date.now() + 60_000, cost: 1 }),
@@ -275,32 +266,6 @@ test("workers cannot name secret paths in read, grep, find, or ls", async (t) =>
 	assert.equal(await hook({ toolName: "read", input: { path: "notes.txt" } }, { cwd: dir }), undefined);
 });
 
-test("implement workers' bash calls are checked against the worker-only rules", async (t) => {
-	const bash = (command) => ({ toolName: "bash", input: { command } });
-	const hook = setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement" } }).handlers.tool_call;
-	const blocked = await hook(bash("git push origin x"), { cwd: REPO_ROOT });
-	assert.equal(blocked?.block, true);
-	assert.match(blocked.reason, /^Blocked: git push is main-session only; list it as BLOCKED\.$/);
-	assert.equal(await hook(bash("bash -n install.sh test/install.test.sh"), { cwd: REPO_ROOT }), undefined);
-	const installerChain = await hook(bash("bash -n install.sh && bash install.sh"), { cwd: REPO_ROOT });
-	assert.equal(installerChain?.block, true);
-	assert.match(installerChain.reason, /install\.sh would change Pi's settings and live links/);
-	assert.equal(await hook(bash("npm test"), { cwd: REPO_ROOT }), undefined);
-	const checked = setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement", ME_PI_CHECK: "npm test" } }).handlers
-		.tool_call;
-	const piped = await checked(bash("npm test 2>&1 | tail -25"), { cwd: REPO_ROOT });
-	assert.equal(piped?.block, true);
-	assert.match(piped.reason, /^Blocked: run `npm test` alone, exactly as given/);
-	assert.equal(await checked(bash("npm test"), { cwd: REPO_ROOT }), undefined);
-	assert.equal(await checked(bash("npm test -- test/a.test.mjs | tail"), { cwd: REPO_ROOT }), undefined);
-	assert.match(
-		(await checked(bash("npm test -- --test-timeout=60000"), { cwd: REPO_ROOT })).reason,
-		/^Blocked: run `npm test` alone/,
-	);
-	const other = setup(t, { env: { ME_PI_RUN: "1" } }).handlers.tool_call;
-	assert.equal(await other(bash("git push origin x"), { cwd: REPO_ROOT }), undefined);
-});
-
 test("workers get a wrap-up budget: scout tool calls, 80% of the time limit and cost cap", async (t) => {
 	const { tool } = setup(t, { config: modelSet([HAIKU, OPUS]), env: { FAKE_PI_MODE: "echo-budget" } });
 	assert.equal(LIMITS.scoutToolCalls, 60);
@@ -322,8 +287,7 @@ test("workers get a wrap-up budget: scout tool calls, 80% of the time limit and 
 
 test("past the wrap-up budget, a worker's tool calls are blocked with an answer-now reason", async (t) => {
 	const far = Date.now() + 60_000;
-	const worker = (budget, role) =>
-		setup(t, { env: { ME_PI_RUN: "1", ME_PI_ROLE: role, ME_PI_BUDGET: JSON.stringify(budget) } }).handlers;
+	const worker = (budget) => setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: JSON.stringify(budget) } }).handlers;
 	const call = (h) => h.tool_call({ toolName: "read", input: { path: "README.md" } }, { cwd: REPO_ROOT });
 
 	const counted = worker({ tools: 2, deadline: far, cost: 1 });
@@ -360,29 +324,12 @@ test("past the wrap-up budget, a worker's tool calls are blocked with an answer-
 	const late = worker({ tools: null, deadline: Date.now() - 1, cost: 1 });
 	assert.match((await call(late)).reason, /budget reached \(time\)/);
 
-	const denied = worker({ tools: 1, deadline: far, cost: 1 }, "implement");
-	const risky = await denied.tool_call(
-		{ toolName: "bash", input: { command: "git push origin x" } },
-		{ cwd: REPO_ROOT },
-	);
-	assert.match(risky.reason, /git push is main-session only/);
-	assert.match((await call(denied)).reason, /budget reached \(1 tool call\)/);
-
-	const cappedScout = worker({ tools: 60, deadline: far, cost: 1 }, "scout");
+	const cappedScout = worker({ tools: 60, deadline: far, cost: 1 });
 	for (let i = 0; i < 60; i++) assert.equal(await call(cappedScout), undefined);
 	assert.match((await call(cappedScout)).reason, /budget reached \(60 tool calls\)/);
 
-	for (const role of ["general", "implement"]) {
-		const uncapped = worker({ tools: null, deadline: far, cost: 1 }, role);
-		for (let i = 0; i < 150; i++) assert.equal(await call(uncapped), undefined, role);
-	}
-	const lateImplement = worker({ tools: null, deadline: Date.now() - 1, cost: 0.5 }, "implement");
-	await lateImplement.message_end({ message: { role: "assistant", usage: usage(0.5) } });
-	assert.match((await call(lateImplement)).reason, /budget reached \(time\)/);
-	const pricedImplement = worker({ tools: null, deadline: far, cost: 0.5 }, "implement");
-	await pricedImplement.message_end({ message: { role: "assistant", usage: usage(0.2) } });
-	await pricedImplement.message_end({ message: { role: "assistant", usage: usage(0.3) } });
-	assert.match((await call(pricedImplement)).reason, /budget reached \(\$0\.50 cost\)/);
+	const uncapped = worker({ tools: null, deadline: far, cost: 1 });
+	for (let i = 0; i < 150; i++) assert.equal(await call(uncapped), undefined);
 
 	const unbounded = setup(t, { env: { ME_PI_RUN: "1", ME_PI_BUDGET: undefined } }).handlers;
 	for (let i = 0; i < 150; i++) assert.equal(await call(unbounded), undefined);
@@ -474,12 +421,6 @@ test("past the wrap-up budget, an output worker can still write into its output 
 	const writer = setup(t, { env: { ME_PI_RUN: "1", ME_PI_OUTPUT_DIR: out, ME_PI_BUDGET: budget } }).handlers.tool_call;
 	for (let i = 0; i < 3; i++) assert.equal(await writer(inside, { cwd }), undefined);
 	assert.equal((await writer(inside, { cwd })).terminate, true);
-
-	// An implement worker's output directory is its checkout, so its writes stay blocked past the budget.
-	const implementer = setup(t, {
-		env: { ME_PI_RUN: "1", ME_PI_ROLE: "implement", ME_PI_OUTPUT_DIR: out, ME_PI_BUDGET: budget },
-	}).handlers.tool_call;
-	assert.match((await implementer(inside, { cwd })).reason, /budget reached/);
 });
 
 test("output: each worker gets write and a fresh 0700 directory; the result lists files, not contents", async (t) => {

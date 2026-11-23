@@ -26,7 +26,6 @@ function run(script: string, opts: Partial<WorkerProcessOptions> = {}): Run {
 		cwd: process.cwd(),
 		stdin: "",
 		exitGraceMs: 1000,
-		termGraceMs: 3000,
 		onRecord: (r) => records.push(r),
 		onMalformed: (l) => malformed.push(l),
 		onStderr: (c) => {
@@ -78,7 +77,7 @@ test("stop from inside onRecord kills the group, is idempotent, and drops later 
 	const r = run(`process.stdout.write('{"n":1}\\n'); setInterval(() => process.stdout.write('{"n":2}\\n'), 5);`, {
 		onRecord: (rec) => {
 			r.records.push(rec);
-			stops.push(proc.stop("kill"), proc.stop("kill"));
+			stops.push(proc.stop(), proc.stop());
 		},
 	});
 	proc = r.proc;
@@ -86,35 +85,15 @@ test("stop from inside onRecord kills the group, is idempotent, and drops later 
 	assert.equal(code, null);
 	assert.deepEqual(stops.slice(0, 2), [true, false]);
 	assert.ok(stops.slice(2).every((s) => !s));
-	assert.equal(r.proc.stop("kill"), false, "stop after finish is a no-op");
+	assert.equal(r.proc.stop(), false, "stop after finish is a no-op");
 	const lateBefore = r.records.length;
 	await new Promise((ok) => setTimeout(ok, 30));
 	assert.equal(r.records.length, lateBefore, "no records after finish");
 });
 
-test("term-then-kill sends SIGTERM, then SIGKILL after termGraceMs", async () => {
-	const r = run(
-		`process.on("SIGTERM", () => console.log(JSON.stringify({ term: true })));
-		console.log(JSON.stringify({ ready: true }));
-		setInterval(() => {}, 1000);`,
-		{ termGraceMs: 500 },
-	);
-	const onReady = setInterval(() => {
-		if (r.records.length) {
-			clearInterval(onReady);
-			assert.equal(r.proc.stop("term-then-kill"), true);
-		}
-	}, 5);
-	const started = Date.now();
-	const { code } = await r.exit;
-	assert.ok(Date.now() - started >= 500);
-	assert.equal(code, null);
-	assert.deepEqual(r.records, [{ ready: true }, { term: true }]);
-});
-
 test("a missing command finishes with a start problem and stop is a no-op", async () => {
 	const r = run("", { command: "/nonexistent/me-pi-worker" });
-	assert.equal(r.proc.stop("kill"), false);
+	assert.equal(r.proc.stop(), false);
 	const { code, problem } = await r.exit;
 	assert.equal(code, null);
 	assert.match(problem ?? "", /could not start pi: .*ENOENT/);

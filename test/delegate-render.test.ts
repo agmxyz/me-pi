@@ -58,7 +58,7 @@ test("scouts are elves; other workers are chefs or farmers; every skin tone is r
 		SKIN_TONES.map((_, i) => pickPersona("general", seq(i / 5, 0.99)).emoji),
 		["🧑🏻‍🌾", "🧑🏼‍🌾", "🧑🏽‍🌾", "🧑🏾‍🌾", "🧑🏿‍🌾"],
 	);
-	for (const role of ["general", "implement"]) {
+	for (const role of ["general"]) {
 		assert.deepEqual(pickPersona(role, seq(0.99, 0)), { emoji: "🧑🏿‍🍳", phrase: "time to cook" });
 		assert.deepEqual(pickPersona(role, seq(0, 0.5)), { emoji: "🧑🏻‍🌾", phrase: "doing honest work" });
 	}
@@ -140,11 +140,6 @@ test("a foreground row shows only the model, without a call id, role, or provide
 	assert.match(row, /gpt-6-luna @low/);
 	assert.doesNotMatch(row, /\/|\bfg\d|general|call_|fc_/, "no provider, call id, or role");
 	assertFits(component, 90);
-});
-
-test("an implement call preview shows its check", () => {
-	const call = renderCall({ role: "implement", task: "Add x", check: "npm test\nmore" }, theme);
-	assert.deepEqual(draw(call, 200), ["delegate implement default check `npm test` Add x"]);
 });
 
 test("the call preview is one line: role, models with thinking, badges, the task's first line", () => {

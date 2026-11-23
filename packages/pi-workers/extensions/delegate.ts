@@ -1,6 +1,5 @@
 /**
- * delegate — runs child Pi workers for token-heavy work (code search, web research, reviews, and
- * branch-scoped edits in the coordinator's checkout).
+ * delegate — runs read-only child Pi workers for token-heavy work (code search, web research, and reviews).
  *
  * Workers run as `pi --mode json -p` child processes with role-scoped tools, model pools,
  * and internal guardrails (secret-path read blocks, write directory fencing, and wrap-up budgets).
@@ -9,9 +8,8 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type ArtifactWriteResult, FailedToolArtifactCollector } from "./delegate-artifacts.ts";
 import {
 	type AttemptBudget,
 	addUsage,
@@ -35,22 +33,7 @@ import {
 	validateOneOffModel,
 } from "./delegate-config.ts";
 import { isWorkerProcess } from "./delegate-env.ts";
-import { expandHome, realTarget, toolPath, within } from "./delegate-fence.ts";
-import {
-	type Checkout,
-	type Facts,
-	finish as finishImplement,
-	formatHandback,
-	ImplementLockRefusal,
-	nextImplementId,
-	type Outcome,
-	prepare as prepareImplement,
-	recordWorker,
-	runImplementJob,
-	worktreeRemovalBlocked,
-	writerElsewhere,
-} from "./delegate-implement.ts";
-import { killGroup, startWorkerProcess } from "./delegate-process.ts";
+import { startWorkerProcess } from "./delegate-process.ts";
 import { failureClassLine } from "./delegate-provenance.ts";
 import {
 	type ActivityWidgetRow,
@@ -74,17 +57,13 @@ import {
 	registerWorker,
 	workerLaunch,
 } from "./delegate-worker.ts";
-import { gitWorktreeRemovals, gitWriteDirs } from "./guard.ts";
 
 /** Per-worker limits; exported so tests can shorten them. The cost cap is checked after each reply. */
 export const LIMITS = {
 	scoutTimeoutSecs: 300,
 	timeoutSecs: 900,
-	implementTimeoutSecs: 2700,
 	costCapUsd: 5,
 	exitGraceMs: 1000,
-	// implement: SIGTERM first, so Pi stops its bash commands before finish commits WIP.
-	termGraceMs: 3000,
 	// Wrap-up budget, enforced inside the worker: past it, tool calls are blocked so the model answers
 	// before a hard limit kills it without one.
 	scoutToolCalls: 60,
@@ -159,18 +138,15 @@ function runWorkerAttempt(
 	outDir: string | undefined,
 	budget: AttemptBudget,
 	attemptIndex: number,
-	approve = false,
 ): Promise<RunResult> {
 	const start = Date.now();
-	const ledger = createAttemptLedger({ job, run, cwd, outDir, budget, attemptIndex, onProgress });
+	const ledger = createAttemptLedger({ job, run, outDir, budget, attemptIndex, onProgress });
 	const { result, provenance } = ledger;
-	const { implement } = job;
 	const launch = workerLaunch(job, {
 		run,
 		outDir: result.outDir,
 		attemptIndex,
 		budget: { tools: budget.toolCalls, deadline: budget.toolDeadline, cost: budget.toolCostCapUsd },
-		approve,
 	});
 	const timeoutMs = Math.max(0, budget.hardDeadline - start);
 
@@ -199,7 +175,6 @@ function runWorkerAttempt(
 			// The prompt goes on stdin: no argv size limit, and a leading "-" or "@" is not parsed as an option.
 			stdin: prompt,
 			exitGraceMs: LIMITS.exitGraceMs,
-			termGraceMs: LIMITS.termGraceMs,
 			onRecord: (event) => ledger.record(event),
 			onMalformed: () => ledger.malformed(),
 			onStderr: (chunk) => ledger.stderr(chunk),
@@ -207,19 +182,7 @@ function runWorkerAttempt(
 			onExit: (code, problem) => finish(code, problem),
 		});
 		const pid = proc.pid;
-		if (pid !== undefined && implement) {
-			implement.pids.add(pid);
-			// The lock stays held by this worker if the session dies before it (see recordWorker).
-			try {
-				recordWorker(implement.job, pid);
-			} catch (err) {
-				ledger.stderr(
-					`delegate: could not record worker ${pid} in ${implement.job.lockPath}: ${(err as Error).message}\n`,
-				);
-			}
-		}
-		// implement: Pi's print mode handles SIGTERM by stopping its bash commands, which run in their own groups.
-		ledger.attach(pid === undefined ? undefined : () => proc.stop(implement ? "term-then-kill" : "kill"));
+		ledger.attach(pid === undefined ? undefined : () => proc.stop());
 		let finished = false;
 		const finish = (code: number | null, problem?: string) => {
 			if (finished) return;
@@ -227,7 +190,6 @@ function runWorkerAttempt(
 			finished = true;
 			clearTimeout(timer);
 			signal.removeEventListener("abort", onAbort);
-			if (pid !== undefined) implement?.pids.delete(pid);
 			result.ms = Date.now() - start;
 			if (result.outDir) {
 				try {
@@ -253,14 +215,6 @@ function runWorkerAttempt(
 	});
 }
 
-function persistFailedToolCapture(
-	job: Checkout,
-	collector: FailedToolArtifactCollector,
-): Exclude<ArtifactWriteResult, { status: "empty" }> | undefined {
-	const result = collector.write(resolve(job.tmpRoot, `me-pi-delegate-${process.pid}`));
-	return result.status === "empty" ? undefined : result;
-}
-
 async function runWorker(
 	job: Job,
 	prompt: string,
@@ -270,8 +224,7 @@ async function runWorker(
 	onProgress: (r: RunResult) => void,
 ): Promise<RunResult> {
 	const start = Date.now();
-	const secs =
-		{ scout: LIMITS.scoutTimeoutSecs, implement: LIMITS.implementTimeoutSecs }[job.role] ?? LIMITS.timeoutSecs;
+	const secs = job.role === "scout" ? LIMITS.scoutTimeoutSecs : LIMITS.timeoutSecs;
 	const hardDeadline = start + secs * 1000;
 	const toolDeadline = start + LIMITS.wrapUpShare * secs * 1000;
 	const hardCostCap = LIMITS.costCapUsd;
@@ -306,18 +259,7 @@ async function runWorker(
 		toolCalls: job.role === "scout" ? LIMITS.scoutToolCalls : null,
 	};
 	const runAttempt = (index: number, attemptBudget: AttemptBudget) =>
-		runWorkerAttempt(
-			job,
-			prompt,
-			selected,
-			cwd,
-			signal,
-			onProgress,
-			outDir,
-			attemptBudget,
-			index,
-			job.implement?.trusted === true,
-		);
+		runWorkerAttempt(job, prompt, selected, cwd, signal, onProgress, outDir, attemptBudget, index);
 	let attempt = await runAttempt(1, budget);
 	for (const delayMs of LIMITS.infraRetryDelaysMs) {
 		if (!infraRetryable(attempt) || Date.now() + delayMs >= budget.toolDeadline) break;
@@ -479,7 +421,7 @@ function buildSchema() {
 				minItems: 1,
 				maxItems: MAX_RUNS,
 				description:
-					"An explicitly named model runs alone and never falls back; name one for a second opinion or to continue work on it. Not for implement.",
+					"An explicitly named model runs alone and never falls back; name one for a second opinion or to continue work on it.",
 				items: {
 					type: "object",
 					additionalProperties: false,
@@ -496,12 +438,6 @@ function buildSchema() {
 				description:
 					"In round 2 each worker sees the others' answers and keeps, revises, or retracts its claims; only round 2 returns.",
 			},
-			check: {
-				type: "string",
-				minLength: 1,
-				description:
-					"one unchained command, run from your cwd, that proves the change. The worker runs it alone, exactly as given, after its final edit.",
-			},
 			background: {
 				type: "boolean",
 				description:
@@ -513,18 +449,21 @@ function buildSchema() {
 	};
 }
 
-export const PROMPT_SNIPPET =
-	"Run read-only workers, alone or as a multi-model panel, or one committing `implement` worker; get back only their answers";
+export const PROMPT_SNIPPET = "Run read-only workers, alone or as a multi-model panel; get back only their answers";
 
 export const PROMPT_GUIDELINES = [
-	"Delegate only to keep a large read out of context or to work in the background; a few reads or a small edit stay inline, even one that needs a review. A read over ~3 files, ~300 lines, or ~12 KB (changelogs and docs run long), or of unknown scope, goes to `scout`; web research to `general` with `web: true`, not your own web tools; independent judgment to `general`; many-file changes or long test/fix loops to `implement`. User, repo (use delegate for required subagents), or skill requirements come first.",
+	"Delegate only to keep a large read out of context or to work in the background; a few reads or a small edit stay inline, even one that needs a review. A read over ~3 files, ~300 lines, or ~12 KB (changelogs and docs run long), or of unknown scope, goes to `scout`; web research to `general` with `web: true`, not your own web tools; independent judgment to `general`. Make a change yourself, however many files it spans; when it is too big for your context, say so and propose a split for the user or a chief. User, repo (use delegate for required subagents), or skill requirements come first.",
 	"Work from handbacks: read only lines you will act on; spot-check only claims a decision rests on. Give a worker any diff or log as a temp file path; do not read or print it yourself. Resolve or report each BLOCKED line.",
-	"An implement ✓ means the extension saw `check` pass on the delivered commit: do not re-run it. Read a small diff yourself; that is its review. Past ~50 changed lines, on security or data risk, a breaking public-contract change, or when asked, give one `general` reviewer the diff file with `answer` set to severity-ranked findings; send fixes to `implement`, or make small ones inline. A skill's own review replaces this.",
+	"Past ~50 changed lines of your own, on security or data risk, a breaking public-contract change, or when asked, give one `general` reviewer the diff file with `answer` set to severity-ranked findings, and fix them yourself. A skill's own review replaces this.",
 	"Workers see only the brief, not this chat or loaded skill bodies: give scope, deliverable, context, acceptance evidence, and any skill to load with `Skill`. When a skill applies, you keep its user decisions and orchestration; a handback completes only its step.",
 	"For several models on one question, make one call, one `runs` entry each, plus `rebuttal: true` to cross-check; report agreements, disagreements with evidence, and your verdict.",
-	"Until an implement worker hands back, it is the checkout's only writer: do not edit, commit, or switch branches in that checkout. New work is a branch in place by default; when the user asks for a worktree, or another session's job is writing here, run `git worktree add ../<repo>.worktrees/<name> -b <branch>` and give the user that path to start Pi in. A stash, tag move, or move of main/master in any worktree trips every running job in the repo. Surface failed handbacks; on a tripwire, stop and tell the user. Pushes, PRs, merges, and branch deletion are main-session only, with user authorization.",
+	"New work is a branch in place by default; when the user asks for a worktree, or another session is writing here, run `git worktree add ../<repo>.worktrees/<name> -b <branch>` and give the user that path to start Pi in. Surface failed handbacks. Pushes, PRs, merges, and branch deletion are main-session only, with user authorization.",
 	"Set `background: true` for work that takes minutes while you keep going with the user; tell them the job id; do not wait, poll, or repeat the call.",
 ];
+
+/** The error for a call that still uses the removed `implement` role or its `check` parameter. */
+export const IMPLEMENT_REMOVED =
+	"the implement role and its `check` parameter were removed in @agmxyz/pi-workers 0.3.0: make the change yourself (the coordinator writes, checks, and commits), using scout or general for read-only help; see docs/delegate.md#migrating-from-implement";
 
 const SPEND_WARN_SHARE = 0.8;
 
@@ -580,7 +519,7 @@ function coordinatorStatus(pi: ExtensionAPI): (cost: number) => void {
 
 export default function (pi: ExtensionAPI) {
 	// Workers never get the tool, so delegation cannot nest; they only get the wrap-up budget, the secret-path
-	// block, the output-directory write block, and for `implement` the worker-only bash rules and the orphan stop.
+	// block, and the output-directory write block.
 	if (isWorkerProcess()) {
 		registerWorker(pi);
 		return;
@@ -642,8 +581,6 @@ export default function (pi: ExtensionAPI) {
 	};
 	// Background jobs by id, for /delegate cancel and session shutdown.
 	const jobs = new Map<string, AbortController>();
-	// implement: repo root -> the job writing in it (bg3, or im3 in the foreground), for the main-session block.
-	const writing = new Map<string, string>();
 	const cancel = (id: string) => {
 		const job = jobs.get(id);
 		if (!job) return `No running background job ${id}.`;
@@ -676,52 +613,21 @@ export default function (pi: ExtensionAPI) {
 		shutdown = new AbortController();
 		await Promise.allSettled([...running]);
 	});
-	// While an implement worker writes in a checkout, the main session's edits and git tree writes there would end up
-	// in the worker's commits or move its branch. `writing` has this session's jobs; another session's job is known
-	// by the checkout's lock.
-	pi.on("tool_call", async (event, ctx) => {
-		const input = (event.input ?? {}) as { path?: unknown; command?: unknown };
-		const command = event.toolName === "bash" ? String(input.command ?? "") : "";
-		const at = (dirs: string[]) => resolve(ctx.cwd, ...dirs.map(expandHome));
-		// Where this call writes: an edit's file, or the directory of each git tree write. "unknown" when a command's
-		// text does not show it; undefined when it writes nothing.
-		let targets: string[] | "unknown" | undefined;
-		if ((event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string") {
-			const absolute = toolPath(input.path, ctx.cwd);
-			// Unresolvable (a dangling symlink): judged by its resolved parent directory.
-			const parent = realTarget(dirname(absolute));
-			targets = [realTarget(absolute) ?? (parent ? join(parent, basename(absolute)) : absolute)];
-		} else {
-			const dirs = gitWriteDirs(command);
-			targets = typeof dirs === "object" ? dirs.map((chain) => realTarget(at(chain)) ?? at(chain)) : dirs;
-		}
-		const removals = gitWorktreeRemovals(command);
-		const removal = removals.length
-			? await worktreeRemovalBlocked(removals === "unknown" ? undefined : removals.map(at), ctx.cwd)
-			: undefined;
-		if (removal) return { block: true, reason: removal };
-		if (!targets) return undefined;
-		// A write whose place is unknown may be in any checkout: this session's job blocks it.
-		for (const [root, id] of writing)
-			if (targets === "unknown" || targets.some((target) => within(root, target)))
-				return {
-					block: true,
-					reason: `implement job ${id} is writing in ${root}; wait for its handback${id.startsWith("bg") ? ` or /delegate cancel ${id}` : ""}.`,
-				};
-		const reason = await writerElsewhere(targets === "unknown" ? undefined : targets, ctx.cwd);
-		return reason ? { block: true, reason } : undefined;
-	});
-
 	pi.registerTool({
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Run Pi workers; only implement modifies the checkout. Each run uses one model; no cross-model fallback. One `implement` worker edits, runs `check`, and commits on your current branch (clean tree, not main/master, one per checkout).",
+			"Run read-only Pi workers: none of them edits the checkout. Each run uses one model; no cross-model fallback.",
 		promptSnippet: PROMPT_SNIPPET,
 		promptGuidelines: PROMPT_GUIDELINES,
 		renderCall: (args, theme, context) => renderCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderResult(result as any, options, theme, context),
 		parameters: buildSchema() as any,
+		// Pi validates arguments against the schema before execute, which knows neither the role nor `check`.
+		prepareArguments: (args: any) => {
+			if (args?.role === "implement" || args?.check !== undefined) throw new Error(IMPLEMENT_REMOVED);
+			return args;
+		},
 
 		async execute(_id, params: any, toolSignal, onUpdate, ctx) {
 			const fail = (text: string, details: Record<string, unknown> = {}) => ({
@@ -729,9 +635,9 @@ export default function (pi: ExtensionAPI) {
 				details,
 				isError: true,
 			});
-			const { role = "general", task, web, answer, output, rebuttal, background, check } = params ?? {};
+			const { role = "general", task, web, answer, output, rebuttal, background } = params ?? {};
 			const unknown = Object.keys(params ?? {}).filter(
-				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal", "background", "check"].includes(k),
+				(k) => !["role", "task", "web", "answer", "output", "runs", "rebuttal", "background"].includes(k),
 			);
 			if (unknown.length)
 				return fail(
@@ -746,25 +652,6 @@ export default function (pi: ExtensionAPI) {
 			if (output !== undefined && typeof output !== "boolean") return fail("output must be true or false");
 			if (background !== undefined && typeof background !== "boolean")
 				return fail("background must be true or false");
-			if (check !== undefined && (role !== "implement" || typeof check !== "string" || !check.trim()))
-				return fail("check is a non-empty string, for role implement only");
-			if (role === "implement") {
-				if (check === undefined) return fail("implement needs `check`: the command that proves the change");
-				if (/[|;]|&&/.test(check))
-					return fail(
-						"check must be one command without `|`, `;`, `&&`, or `||`: a chained check never matches the worker's run",
-					);
-				const refused = [
-					answer !== undefined && "answer",
-					(params.runs?.length ?? 1) > 1 && "runs with more than 1 entry",
-					rebuttal && "rebuttal",
-					output && "output",
-					web === true && "web: true",
-				].filter(Boolean);
-				if (refused.length) return fail(`implement does not take ${refused.join(", ")}`);
-				if (params.runs?.some((r: any) => r?.model !== undefined || r?.thinking !== undefined))
-					return fail("implement uses the worker pool in delegate.json; set models there");
-			}
 			const job: Job = {
 				role,
 				jobId: randomUUID(),
@@ -799,7 +686,7 @@ export default function (pi: ExtensionAPI) {
 					sessionThinking: ctx?.thinkingLevel,
 					registry: ctx?.modelRegistry,
 				});
-				job.skills = role === "implement" ? set.implementSkills : set.readOnlySkills;
+				job.skills = set.readOnlySkills;
 			} catch (err: any) {
 				return fail(err.message);
 			}
@@ -812,89 +699,14 @@ export default function (pi: ExtensionAPI) {
 					`${busy} worker(s) already running; at most ${MAX_RUNS} run at once. Wait for a background answer or stop one with /delegate cancel <id>.`,
 				);
 			const callKey = `delegate-call-${++activeCallCount}`;
-			const implementId = role === "implement" ? nextImplementId() : undefined;
-			// The session this call belongs to; a shutdown during prepare must not leave a job behind.
+			// The session this call belongs to: its shutdown stops the call and drops a background answer.
 			const ended = shutdown.signal;
-			// implement: the lock and snapshots exist before the call starts, so the start message can state the base.
-			let co: Checkout | undefined;
-			if (role === "implement") {
-				// Holds the worker slot while prepare runs, so parallel calls cannot pass the cap together.
-				// No `job` yet: a background implement gets its bg id only after prepare, so its widget row has no id.
-				const slot = callKey;
-				const preparingAt = Date.now();
-				active.set(slot, {
-					role,
-					models,
-					start: preparingAt,
-					workers: initialActivity(resolved, personas, session, preparingAt),
-					stage: "Workers",
-				});
-				updateActivityWidget(ctx, ended);
-				// Tracked through the shutdown-time finish: session_shutdown snapshots `running` once, so the finish
-				// for a session that ended during prepare must be part of the same promise.
-				let released = false;
-				const preparing = (async () => {
-					const prepared = await prepareImplement(
-						ctx?.cwd ?? process.cwd(),
-						implementId!,
-						check.trim(),
-						String(_id),
-					);
-					if (ended.aborted) {
-						released = true;
-						await finishImplement(prepared, { failure: "stopped: session ended" });
-					}
-					return prepared;
-				})();
-				const settled = preparing.then(
-					() => {},
-					() => {},
-				);
-				running.add(settled);
-				try {
-					co = await preparing;
-				} catch (err: any) {
-					updateActivityWidget(ctx, ended);
-					return fail(
-						err?.message ?? String(err),
-						err instanceof ImplementLockRefusal ? { stopFacts: [err.stopFact] } : {},
-					);
-				} finally {
-					running.delete(settled);
-					active.delete(slot);
-				}
-				// From here the lock is held: the widget update for the closed slot runs inside runImplementJob.
-				if (ended.aborted) {
-					// The session ended after prepare's own check: release the checkout here, tracked for shutdown.
-					if (!released) {
-						const finishing = finishImplement(co, { failure: "stopped: session ended" }).then(() => {});
-						running.add(finishing);
-						try {
-							await finishing;
-						} finally {
-							running.delete(finishing);
-						}
-					}
-					updateActivityWidget(ctx, ended);
-					return fail("stopped: session ended");
-				}
-				job.jobId = co.id;
-				job.implement = {
-					job: co,
-					trusted: ctx?.isProjectTrusted?.() === true,
-					pids: new Set(),
-					artifacts: new FailedToolArtifactCollector(co.id),
-				};
-			}
-			const startFacts = co ? `${co.branch} (${co.id}) from ${co.base.slice(0, 7)}` : "";
-			// implement: an earlier attempt's WIP commit is the worker's first job.
-			const prompt = `Task:\n${task}${co?.wipHead ? "\n\nHEAD is a `WIP(delegate` commit from an earlier attempt: finish that first." : ""}`;
+			const prompt = `Task:\n${task}`;
 			const call = async (
 				key: string,
 				signal: AbortSignal,
 				onUpdate: ((u: any) => void) | undefined,
 				jobId?: string,
-				end?: (outcome: Outcome) => Promise<Facts>,
 			) => {
 				const start = Date.now();
 				active.set(key, {
@@ -905,7 +717,6 @@ export default function (pi: ExtensionAPI) {
 					workers: initialActivity(resolved, personas, session, start),
 					stage: "Workers",
 				});
-				let facts: Facts | undefined;
 				try {
 					updateActivityWidget(ctx, ended);
 					const cwd = ctx?.cwd ?? process.cwd();
@@ -947,7 +758,7 @@ export default function (pi: ExtensionAPI) {
 							if (!emit) return;
 							const lines = progressLines(view);
 							onUpdate?.({
-								content: [{ type: "text", text: (startFacts ? [startFacts, ...lines] : lines).join("\n") }],
+								content: [{ type: "text", text: lines.join("\n") }],
 								details: { view },
 							});
 						};
@@ -977,29 +788,11 @@ export default function (pi: ExtensionAPI) {
 						resolved,
 						personas,
 					);
-					// implement: the worker's failure or stop reason names the WIP commit.
-					if (co && end) {
-						const r = round1[0];
-						r.failedToolCapture = job.implement
-							? persistFailedToolCapture(co, job.implement.artifacts)
-							: undefined;
-						facts = await end({
-							failure: r.failure,
-							failureClass: r.failureClass,
-							infraRetries: r.infraRetries,
-							...(r.failedToolCapture && { failedToolCapture: r.failedToolCapture }),
-							provenance: r.provenance,
-							answer: r.output,
-							label: label(r),
-							tools: r.tools,
-							stderr: r.stderr,
-						});
-					}
 					// The runs to report, in request order; a failed round-2 run keeps its round-1 answer.
 					let shown: { run: RunResult; failedRound2?: RunResult }[] = round1.map((run) => ({ run }));
 					let round2: RunResult[] = [];
 					let note = "";
-					let failed = round1.some((r) => r.failure) || facts?.failed === true;
+					let failed = round1.some((r) => r.failure);
 					if (rebuttal) {
 						const ok = round1.filter((r) => !r.failure);
 						if (ok.length < 2) {
@@ -1035,7 +828,6 @@ export default function (pi: ExtensionAPI) {
 					}
 					const all = [...round1, ...round2];
 					const cost = all.reduce((sum, r) => sum + costOf(r.usage), 0);
-					const range = facts && `${facts.base.slice(0, 7)}..${facts.tip?.slice(0, 7) ?? "?"}`;
 					addSpend(cost);
 					history.push({
 						at: Date.now(),
@@ -1044,39 +836,24 @@ export default function (pi: ExtensionAPI) {
 						cost,
 						ms: Date.now() - start,
 						failed,
-						...(facts && {
-							range: `${facts.branch} ${range}`,
-							check: facts.check.status,
-							wip: facts.wip !== undefined,
-						}),
 					});
 					if (history.length > HISTORY_SIZE) history.shift();
 					const usage: Record<string, any> = {};
 					for (const r of all) addUsage(usage, r.usage);
 					const footer =
 						all.length > 1 ? `Total: ${all.length} runs, $${costOf(usage).toFixed(4)}. ${note}` : note;
-					// implement: the handback replaces the answer; the TUI view keeps the full answer.
-					const sections = facts
-						? [formatHandback(facts)]
-						: shown.map(({ run, failedRound2: r2 }) =>
-								r2
-									? `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(run)}`
-									: formatRun(run),
-							);
+					const sections = shown.map(({ run, failedRound2: r2 }) =>
+						r2
+							? `✗ round 2 failed: ${r2.failure}${filesLine(r2)}\nRound-1 answer:\n${formatRun(run)}`
+							: formatRun(run),
+					);
 					const view: DelegateView = {
 						stage: "Done",
 						web: job.web,
 						runs: shown.map(({ run, failedRound2: r2 }) =>
 							runView(run, true, r2 && `${r2.failure}${filesLine(r2).replace("\n", "; ")}`),
 						),
-						footer:
-							[
-								facts &&
-									`${facts.branch} ${range} check ${facts.check.status}${facts.wip ? ` WIP ${facts.wip.sha}` : ""}`,
-								footer.trim(),
-							]
-								.filter(Boolean)
-								.join(" · ") || undefined,
+						footer: footer.trim() || undefined,
 					};
 					return {
 						content: [
@@ -1087,7 +864,6 @@ export default function (pi: ExtensionAPI) {
 							round1: round1.map(withoutOutput),
 							round2: round2.map(withoutOutput),
 							view,
-							...(facts && { implement: facts }),
 						},
 						// A worker that died before its first reply reported no usage; Pi reads cost.total from any usage it is given.
 						...(usage.cost && { usage: usage as any }),
@@ -1098,55 +874,9 @@ export default function (pi: ExtensionAPI) {
 					updateActivityWidget(ctx, ended);
 				}
 			};
-			// implement: finish always runs, even when the activity setup throws; `writing` is set before the first await
-			// (so it holds before a background start message returns) and cleared only after finish has settled.
-			const start = async (
-				key: string,
-				signal: AbortSignal,
-				onUpdate: ((u: any) => void) | undefined,
-				jobId: string | undefined,
-				writer: string,
-			) => {
-				const prepared = co;
-				if (!prepared) return call(key, signal, onUpdate, jobId);
-				writing.set(prepared.repoRoot, writer);
-				try {
-					return await runImplementJob(
-						prepared,
-						async (end) => {
-							updateActivityWidget(ctx, ended);
-							return await call(key, signal, onUpdate, jobId, end);
-						},
-						(err: any) => {
-							// A worker still running would keep writing while finish commits; stop its group first.
-							for (const pid of job.implement?.pids ?? []) killGroup(pid);
-							const failedToolCapture = job.implement
-								? persistFailedToolCapture(prepared, job.implement.artifacts)
-								: undefined;
-							return {
-								failure: `delegate error: ${err?.message ?? err}`,
-								...(failedToolCapture && { failedToolCapture }),
-							};
-						},
-					);
-				} finally {
-					writing.delete(prepared.repoRoot);
-				}
-			};
-			// implement: session_shutdown waits for the whole call, so finish commits WIP and releases the lock.
-			const tracked = <T>(p: Promise<T>): Promise<T> => {
-				if (!co) return p;
-				const settled = p.then(
-					() => {},
-					() => {},
-				);
-				running.add(settled);
-				settled.finally(() => running.delete(settled));
-				return p;
-			};
 			if (!background) {
 				const signal = toolSignal ? AbortSignal.any([toolSignal, ended]) : ended;
-				return tracked(start(callKey, signal, onUpdate, undefined, co?.id ?? ""));
+				return call(callKey, signal, onUpdate);
 			}
 
 			// The turn's abort does not stop a background job; /delegate cancel and session shutdown do.
@@ -1168,7 +898,7 @@ export default function (pi: ExtensionAPI) {
 					{ triggerTurn: !controller.signal.aborted, deliverAs: "followUp" },
 				);
 			};
-			tracked(start(callKey, AbortSignal.any([controller.signal, ended]), undefined, id, id))
+			call(callKey, AbortSignal.any([controller.signal, ended]), undefined, id)
 				.then((result: any) => {
 					deliver(result.content.map((c: any) => c.text).join("\n"), result.details, Boolean(result.isError));
 				})
@@ -1180,7 +910,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text" as const,
-						text: `Started background job ${id} (${models.join(", ")})${startFacts ? ` on ${startFacts}.` : "."} Its answer arrives as a later message; /delegate cancel ${id} stops it.`,
+						text: `Started background job ${id} (${models.join(", ")}). Its answer arrives as a later message; /delegate cancel ${id} stops it.`,
 					},
 				],
 				details: { background: id },
