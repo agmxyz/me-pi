@@ -9,7 +9,7 @@
 - Let unexpected errors propagate; handle only errors you can recover from, and add no silent fallbacks.
 - Verify behavior changes with a targeted check; never weaken or skip tests to pass.
 
-## Approval (coordinator and implement only)
+## Approval (coordinator only)
 - A denied action stays denied: never reproduce it through another tool, worker, path, model, account, or provider.
 
 ## Remote approval (coordinator only)

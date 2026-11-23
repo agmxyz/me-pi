@@ -70,9 +70,9 @@ export function timerDecision(input: {
 
 type State = "QUEUED" | "RUNNING" | "ASKED" | "REPORTED" | "GATED" | "MERGED" | "LEFT_OPEN" | "DROPPED";
 /** Coordinator rounds; the first is the one `launch` starts, the rest are what `round` reopens a row with. */
-const ROUNDS = ["implement", "review", "fix", "update"] as const;
+const ROUNDS = ["task", "review", "fix", "update"] as const;
 type Round = (typeof ROUNDS)[number];
-const LATER_ROUNDS = ROUNDS.filter((r) => r !== "implement");
+const LATER_ROUNDS = ROUNDS.filter((r) => r !== "task");
 /**
  * The events.jsonl format this helper writes; a run with a version outside `READS` is refused. Bump it when an older
  * helper would ignore a new field or event that changes a refusal or an effect (as `live` changes what `merge` allows);
@@ -931,9 +931,18 @@ function note(argv: string[], runner: Runner, cwd: string): string {
 	return `note recorded: ${kind} #${ticket}\nledger: ${writeLedger(run, "note", runner.now())}`;
 }
 
+/**
+ * Where the chief points a launched coordinator's `ME_PI_STATUS_LOG`. The coordinator's delegate extension appends
+ * `STOPPED`, `WARNING` and `BUDGET` lines to it; they are signals for the chief, which `status` shows and never acts on.
+ */
+const statusLogPath = (dir: string, ticket: RowId) => join(dir, `status-${ticket}.log`);
+
 /** Reconciles one row with the outside, which wins, and returns the lines to show under it. */
 function reconcile(run: Run, row: Row, runner: Runner): string[] {
 	const lines: string[] = [];
+	const log = statusLogPath(run.dir, row.ticket);
+	if (row.launch && existsSync(log))
+		for (const line of readFileSync(log, "utf8").split("\n")) if (line.trim()) lines.push(`status log: ${line}`);
 	const at = () => runner.now().toISOString();
 	const report = row.launch?.report;
 	if (row.state === "RUNNING" && report && existsSync(report) && statSync(report).mtimeMs > Date.parse(row.lastAt)) {
@@ -1094,12 +1103,6 @@ function renderLedger(run: Run, by: "status" | "note", now: Date, outside?: Map<
 
 const PR_FIELDS =
 	"number,state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,body,files,url,mergeCommit";
-// Owned by LOCK_NAME in packages/pi-workers/extensions/delegate-implement.ts; test/batch-chief.test.ts holds the contract.
-const LOCK = "me-pi-implement.lock";
-
-/** Where an implement job's lock sits in a checkout's git dir. */
-export const implementLock = (gitDir: string) => join(gitDir, LOCK);
-
 function launched(row: Row): Launch {
 	if (!row.launch) throw new Refusal(`#${row.ticket} was never launched; it has no worktree, branch or pane`);
 	return row.launch;
@@ -1516,8 +1519,8 @@ function prompt(argv: string[], runner: Runner, cwd: string): string {
 	if (!text) throw new Refusal("prompt needs the text to send");
 	const pane = launched(row).pane;
 	const contractFile = contractPath(run, row);
-	// Only the implement round needs it: later rounds follow a report, which the contract made the coordinator write.
-	if (row.state === "RUNNING" && row.round === "implement" && !existsSync(contractFile))
+	// Only the task round needs it: later rounds follow a report, which the contract made the coordinator write.
+	if (row.state === "RUNNING" && row.round === "task" && !existsSync(contractFile))
 		throw new Refusal(
 			`#${row.ticket} has no contract at ${contractFile}; write it before prompting the coordinator: batch.ts ${CONTRACT_USAGE(row.ticket)}`,
 		);
@@ -1604,7 +1607,7 @@ function contract(argv: string[], runner: Runner, cwd: string): string {
 		throw new Refusal(
 			`contract needs the launch facts: run batch.ts event ${row.ticket} launch first; ${where(row)}`,
 		);
-	if (row.state !== "RUNNING" || row.round !== "implement" || row.lastAt !== row.launchedAt)
+	if (row.state !== "RUNNING" || row.round !== "task" || row.lastAt !== row.launchedAt)
 		throw new Refusal(
 			`#${row.ticket}'s contract is fixed once the row moves past its launch; send a change with prompt; ${where(row)}`,
 		);
@@ -1761,11 +1764,6 @@ function cleanRow(
 		}
 	}
 	if (existsSync(launch.worktree)) {
-		const gitDir = gitIn(runner, launch.worktree, "rev-parse", "--path-format=absolute", "--git-dir");
-		if (gitDir.code !== 0)
-			return { lines, left: `cannot find the git dir of ${launch.worktree}: ${gitDir.stderr.trim()}` };
-		const lock = implementLock(gitDir.stdout.trim());
-		if (existsSync(lock)) return { lines, left: `${lock} is present: a worker is writing` };
 		const dirty = dirtyLines(runner, launch.worktree);
 		if (dirty.length) return { lines, left: `worktree ${launch.worktree} is not clean: ${dirty.join("; ")}` };
 		const removed = effect("git", ["worktree", "remove", launch.worktree], repo);

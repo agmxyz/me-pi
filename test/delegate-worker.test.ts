@@ -28,24 +28,18 @@ const scoped = (implement: boolean) => {
 test("scopeWorkerPrompt keeps exactly the sections each worker kind may use from the real GLOBAL_AGENTS.md", () => {
 	const all = headings(POLICY);
 	const coordinatorOnly = all.filter((h) => h.includes("(coordinator only)"));
-	const implementToo = all.filter((h) => h.includes("(coordinator and implement only)"));
-	// A renamed marker would make the filter keep the section silently; both kinds must exist.
-	assert.ok(coordinatorOnly.length > 0, "GLOBAL_AGENTS.md has a (coordinator only) section");
-	assert.ok(implementToo.length > 0, "GLOBAL_AGENTS.md has a (coordinator and implement only) section");
-	const shared = all.filter((h) => !coordinatorOnly.includes(h) && !implementToo.includes(h));
+	// A renamed marker would make the filter keep the section silently.
+	assert.ok(coordinatorOnly.includes("## Approval (coordinator only)"));
+	assert.ok(coordinatorOnly.includes("## Remote approval (coordinator only)"));
+	// The policy names coordinators only: no section is scoped to the implement role (removed in #158).
+	assert.deepEqual(
+		all.filter((h) => h.includes("implement")),
+		[],
+	);
+	const shared = all.filter((h) => !coordinatorOnly.includes(h));
 	assert.ok(shared.length > 0);
 	assert.deepEqual(scoped(false), shared);
-	assert.deepEqual(
-		scoped(true),
-		all.filter((h) => !coordinatorOnly.includes(h)),
-	);
-	// implement keeps "a denied action stays denied" but not the approval rules, which are about remote actions it can't take.
-	assert.ok(implementToo.includes("## Approval (coordinator and implement only)"));
-	assert.ok(coordinatorOnly.includes("## Remote approval (coordinator only)"));
-	const implement = { contextFiles: [{ content: POLICY }] };
-	scopeWorkerPrompt(implement, { implement: true });
-	assert.match(implement.contextFiles[0].content, /- A denied action stays denied/);
-	assert.doesNotMatch(implement.contextFiles[0].content, /require my explicit approval|force-pushing/);
+	assert.deepEqual(scoped(true), shared);
 });
 
 const BUDGET = { tools: 60, deadline: 1_700_000_000_000, cost: 4 };

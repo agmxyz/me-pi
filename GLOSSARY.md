@@ -4,22 +4,20 @@ me-pi coordinates bounded specialist work while retaining responsibility for dec
 
 ## Language
 
+**Chief**:
+The one agent a user talks to for a project; it splits work into tasks, launches one coordinator per task, watches them, and holds the user's approvals.
+_Avoid_: Supervisor, chief of staff, manager
+
 **Coordinator**:
-The agent responsible for the overall task, worker assignments, evidence evaluation, and acceptance or escalation decisions.
-_Avoid_: Lead engineer who automatically knows when to delegate
+The agent that owns one task end to end: it writes, checks, and commits the change itself, uses read-only workers for exploration and review, and decides acceptance or escalation.
+_Avoid_: Lead who delegates the writing, implementer
 
-**Planned slice**:
-A predeclared unit of authorized work with a stable identity, bounded scope, and acceptance criteria. Renaming or subdividing unfinished work does not create new authority.
+**Worker**:
+A bounded, read-only agent a coordinator or chief starts for exploration, research, or review; it never writes to the task's checkout.
+_Avoid_: Subagent that edits, implement worker
 
-**Attempt**:
-One worker execution allocation against a planned slice. Trying an eligible alternative model within that allocation does not create another allocation.
-
-**Continuation**:
-A subsequent attempt on the same planned slice that carries forward preserved work, obligations, and remaining authority.
-_Avoid_: Fresh start, automatic retry
-
-**Recovery envelope**:
-The pre-approved resource and attempt allowance shared by a planned slice and its continuations.
+**Caller**:
+Whoever starts a coordinator (the user or a chief); it sizes the task to fit one coordinator and notices a coordinator that is stuck or looping.
 
 **Failure provenance**:
 Evidence from the owner of an operation identifying why it stopped or was refused and what is known about its effects. A worker's explanation alone is not authoritative provenance.
