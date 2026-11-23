@@ -29,7 +29,7 @@ import {
 } from "../evals/ab-task.ts";
 import { piCommand, processesWith, sweepProcesses } from "../evals/live.ts";
 import { fixtureRepo, type Sandbox } from "../evals/sandbox.ts";
-import { sessionSpend } from "../evals/score.ts";
+import { completeLines, sessionSpend } from "../evals/score.ts";
 
 const lines = (...entries: object[]) => entries.map((e) => JSON.stringify(e)).join("\n");
 const call = (id: string, args: object) => ({
@@ -80,6 +80,14 @@ test("sessionSpend sums coordinator usage, and foreground results and background
 		general: { calls: 1, cost: 0.75, ms: 0 },
 		scout: { calls: 1, cost: 0.125, ms: 0 },
 	});
+});
+
+test("completeLines drops a half-written last line, so a log Pi is still writing parses", () => {
+	const whole = `${lines(said(0.5))}\n`;
+	assert.equal(completeLines(`${whole}{"type":"mess`), whole);
+	assert.equal(completeLines(whole), whole);
+	assert.equal(completeLines('{"type":"mess'), "");
+	assert.equal(sessionSpend(completeLines(`${whole}{"type":"mess`)).coordinator, 0.5);
 });
 
 test("sessionSpend is partial when a started background job never delivered, and lists it", () => {
@@ -215,11 +223,15 @@ test("the coordinator command carries no GitHub token, refuses git's ssh transpo
 	}
 });
 
-/** A temp root with HOME and TMPDIR pointed into it, as a sandbox root would be. */
+/** A temp root with HOME, TMPDIR, and PI_CODING_AGENT_DIR pointed into it, as a sandbox root would be. */
 function scratch(t: any) {
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "evals-sweep-")));
-	const saved = { HOME: process.env.HOME, TMPDIR: process.env.TMPDIR };
-	Object.assign(process.env, { HOME: dir, TMPDIR: dir });
+	const saved = {
+		HOME: process.env.HOME,
+		TMPDIR: process.env.TMPDIR,
+		PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+	};
+	Object.assign(process.env, { HOME: dir, TMPDIR: dir, PI_CODING_AGENT_DIR: join(dir, ".pi", "agent") });
 	t.after(() => {
 		for (const [k, v] of Object.entries(saved)) {
 			if (v === undefined) delete process.env[k];
@@ -582,6 +594,8 @@ test("a synth target holds the fixture plus the base overlay, and no hidden test
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const env = {
 		HOME: dir,
+		TMPDIR: dir,
+		PI_CODING_AGENT_DIR: join(dir, ".pi", "agent"),
 		PATH: process.env.PATH!,
 		GIT_CONFIG_NOSYSTEM: "1",
 		GIT_AUTHOR_NAME: "t",
@@ -604,7 +618,7 @@ test("a synth target holds the fixture plus the base overlay, and no hidden test
 	});
 	const task = loadTask(raw, SYNTH_DIR, build("one"));
 	assert.equal(task.base, loadTask(raw, SYNTH_DIR, build("two")).base, "the base commit is deterministic");
-	const files = execFileSync("git", ["ls-files"], { cwd: task.repo, encoding: "utf8" }).split("\n");
+	const files = execFileSync("git", ["ls-files"], { cwd: task.repo, encoding: "utf8", env }).split("\n");
 	assert.ok(files.includes("src/orders.ts"));
 	assert.ok(!files.some((f) => /(^|\/)(hidden|reference)\//.test(f) || f.startsWith("tasks/")), files.join(" "));
 	assert.ok(!existsSync(join(task.repo, "hidden")) && !existsSync(join(task.repo, "reference")));

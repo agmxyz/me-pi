@@ -53,7 +53,7 @@ import {
 	type Sandbox,
 	sandboxDirs,
 } from "./sandbox.ts";
-import { sessionSpend } from "./score.ts";
+import { completeLines, sessionSpend } from "./score.ts";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
 const WATCH_MS = 20_000;
@@ -465,7 +465,8 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 			if (askedAt !== undefined && Date.now() - askedAt >= NO_LOG_MS) stop("incomplete", "no session log");
 			return;
 		}
-		const { total } = sessionSpend(log);
+		// Pi is still writing the log: a half-written last line would throw here, outside any cleanup.
+		const { total } = sessionSpend(completeLines(log));
 		if (total >= cap) stop("capped", `$${total.toFixed(2)} ≥ cap $${cap}`);
 	}, WATCH_MS);
 	let orphansKilled = 0;

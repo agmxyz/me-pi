@@ -3,7 +3,7 @@
 Compares two ways a coordinator runs real implementation tasks:
 
 - **Arm A**: `implement-me-pi`, with the `implement` worker doing the edits.
-- **Arm B**: `implement-direct` (`skills/implement-direct/`, linked only into arm B's sandbox). The coordinator edits, checks, and commits itself, with read-only `scout` and `general` helpers.
+- **Arm B**: `implement-direct` (`evals/ab/skills/implement-direct/`, linked only into arm B's sandbox). The coordinator edits, checks, and commits itself, with read-only `scout` and `general` helpers.
 
 Both arms get the same brief, check, review requirement, and report format, through a contract rendered from `contract.md`. The runner judges each attempt from the worktree and logs it leaves. It does not trust the agent's report.
 
@@ -40,7 +40,7 @@ node evals/ab.ts --task <t1> --task <t2> --auth <file> --skill <dir> --n 2      
 node evals/ab.ts --task <t1> --task <t2> --auth <file> --skill <dir> --n 2 --resume <records.jsonl>
 ```
 
-`--dry-run` builds one sandbox per arm, prepares the worktree (runs `setup`), writes the contract, starts Pi, and checks that the startup screen lists the arm's skill and `delegate.ts`. It then prints the contract path. With `--keep`, the roots stay for inspection.
+`--dry-run` builds one sandbox per attempt (task × coordinator × arm, so 28 for the synthetic suite), prepares the worktree (runs `setup`), writes the contract, starts Pi, and checks that the startup screen lists the arm's skill and `delegate.ts`. It then prints the contract path. With `--keep`, the roots stay for inspection.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -59,7 +59,7 @@ node evals/ab.ts --task <t1> --task <t2> --auth <file> --skill <dir> --n 2 --res
 
 **Short TMPDIR.** Each sandbox's `TMPDIR` is its own `/tmp/mpe-XXXXXX`, not a directory under the sandbox root: under the OS temp dir it would be about 70 bytes, too long for the Unix sockets a target's tests create there (macOS caps socket paths near 104 bytes, so `listen` fails with `EINVAL`). It belongs to the sandbox: the sweep below also looks for processes in it, and it is removed with the root.
 
-**No sleep.** On macOS the runner runs `caffeinate -i -w <runner pid>` for the whole sweep and kills it at exit; without `caffeinate` it warns and goes on. If the machine sleeps anyway, the timeout counts active time only: when a 20 s watchdog tick comes more than 60 s after the previous one, the gap is added to the record's `suspendedMs` and the deadline moves by it.
+**No sleep.** On macOS the runner runs `caffeinate -i -s -w <runner pid>` for the whole sweep (`-s` also blocks system sleep on AC power) and kills it at exit; without `caffeinate` it warns and goes on. If the machine sleeps anyway, the timeout counts active time only: when a 20 s watchdog tick comes more than 60 s after the previous one, the gap is added to the record's `suspendedMs` and the deadline moves by it.
 
 Both arms' coordinators run with `ME_PI_UNATTENDED=1`. Nobody answers a dialog, so guard refuses risky commands instead of waiting.
 
@@ -75,7 +75,7 @@ The run prints one line per attempt. Then it prints a table with a row per coord
 
 ## Synthetic suite
 
-`evals/synth/` holds a TypeScript fixture repo (`fixture/`) and tasks under `tasks/<id>/`: `brief.md` (the only part an agent sees), `meta.json` (`expect`: `done` or `blocked`, and `blockedKeywords` for `blocked`), `hidden/*.test.ts`, an optional `base/` overlay, and `reference/` (a known-good result). `evals/synth/verify.sh <tasks-dir> <id>` checks one task's oracle offline (`<tasks-dir>` must be an absolute path, because the script changes directory): the hidden tests fail on the base (pass, for `blocked`), and the reference passes `npm run check` and every hidden test. `evals/synth/tasks.json` lists the sweep's tasks with both coordinators; its paths are relative to it:
+`evals/synth/` holds a TypeScript fixture repo (`fixture/`) and tasks under `tasks/<id>/`: `brief.md` (the only part an agent sees), `meta.json` (`expect`: `done` or `blocked`, and `blockedKeywords` for `blocked`), `hidden/*.test.ts`, an optional `base/` overlay, and `reference/` (a known-good result; a `blocked` task has none, its base is the reference). `evals/synth/verify.sh <tasks-dir> <id>` checks one task's oracle offline (`<tasks-dir>` must be an absolute path, because the script changes directory): the hidden tests fail on the base (pass, for `blocked`), and the reference passes `npm run check` and every hidden test. `evals/synth/tasks.json` lists the sweep's tasks with both coordinators; its paths are relative to it:
 
 ```sh
 node evals/ab.ts --tasks evals/synth/tasks.json --auth <file> --skill ~/.agents/skills/code-review --n 2

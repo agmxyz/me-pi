@@ -8,7 +8,7 @@ Run them before merging any change to that text. A 3–12-word edit has flipped 
 
 ## Isolation
 
-Each ref gets its own temp root. `HOME`, `TMPDIR`, and `PI_CODING_AGENT_DIR` (= `$HOME/.pi/agent`, where `delegate.json` and the worker auth fence also resolve) point inside it. Pi loads me-pi from a clone of the ref with no remote, through a generated `settings.json`, the same way workers load it. Pi runs under `env -i` with an allowlisted environment, on a private tmux server, and writes its session to a per-attempt `--session-dir`. Code-editing checks run in a fresh copy of `fixtures/tiny-cli`; read-only checks run in their own clone of the ref.
+Each ref gets its own temp root. `HOME` and `PI_CODING_AGENT_DIR` (= `$HOME/.pi/agent`, where `delegate.json` and the worker auth fence also resolve) point inside it; `TMPDIR` is its own `/tmp/mpe-XXXXXX`, short enough for Unix sockets. Pi loads me-pi from a clone of the ref with no remote, through a generated `settings.json`, the same way workers load it. Pi runs under `env -i` with an allowlisted environment, on a private tmux server, and writes its session to a per-attempt `--session-dir`. Code-editing checks run in a fresh copy of `fixtures/tiny-cli`; read-only checks run in their own clone of the ref.
 
 The run never touches `install.sh`, live settings, `delegate.json`, skills, `auth.json`, or the live checkout. It hashes those before and after the run and warns if any changed. One thing is shared: the `pi` launcher's managed install (`~/.pi/agent/install`), meaning the Pi binary itself.
 

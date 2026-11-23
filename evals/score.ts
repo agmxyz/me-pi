@@ -74,6 +74,9 @@ const viewSum = (details: any, key: "cost" | "ms"): number =>
 	(details?.view?.runs ?? []).reduce((sum: number, r: any) => sum + (Number(r?.[key]) || 0), 0);
 const plainText = (content: any): string => (typeof content === "string" ? content : textOf(content));
 
+/** The complete lines of a session log that Pi may still be writing: everything up to the last newline. */
+export const completeLines = (jsonl: string): string => jsonl.slice(0, jsonl.lastIndexOf("\n") + 1);
+
 /**
  * Sums coordinator and worker cost from a coordinator session. Delegate results carry no `usage`; the cost is in the
  * view: on the `delegate` toolResult for a foreground call, and on the later `custom_message` (customType `delegate`)
