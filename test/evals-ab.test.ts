@@ -27,7 +27,7 @@ import {
 	tick,
 	validateTask,
 } from "../evals/ab-task.ts";
-import { piCommand, processesWith, sweepProcesses } from "../evals/live.ts";
+import { alive, piCommand, processesWith, sweepProcesses } from "../evals/live.ts";
 import { fixtureRepo, type Sandbox } from "../evals/sandbox.ts";
 import { completeLines, sessionSpend } from "../evals/score.ts";
 
@@ -278,6 +278,41 @@ test("sweepProcesses SIGKILLs a process that ignores SIGTERM, and waits for one 
 	await new Promise((r) => setTimeout(r, 100));
 	assert.equal(await sweepProcesses([root], [], { graceMs: 5_000, termMs: 500, pollMs: 50 }), 0);
 	assert.equal(await done, null);
+});
+
+test("a process we may not signal counts as alive, a missing one as gone, and other errors propagate", (t) => {
+	const fail = (code: string) => {
+		t.mock.method(process, "kill", () => {
+			throw Object.assign(new Error(code), { code });
+		});
+	};
+	fail("EPERM");
+	assert.equal(alive(1), true, "EPERM: it exists, only not ours");
+	t.mock.restoreAll();
+	fail("ESRCH");
+	assert.equal(alive(1), false);
+	t.mock.restoreAll();
+	fail("EINVAL");
+	assert.throws(() => alive(1), /EINVAL/);
+});
+
+test("a pid we may not signal does not stop the sweep: the others are killed and it is reported", async (t) => {
+	const root = scratch(t);
+	const child = spawn("sleep", ["300"], { argv0: join(root, "worker"), detached: true, stdio: "ignore" });
+	t.after(() => child.kill("SIGKILL"));
+	const gone = exited(child);
+	await new Promise((r) => setTimeout(r, 200));
+	const foreign = 999_999_999;
+	const kill = process.kill.bind(process);
+	t.mock.method(process, "kill", (pid: number, sig?: NodeJS.Signals | number) => {
+		if (pid === foreign) throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+		return kill(pid, sig);
+	});
+	await assert.rejects(
+		sweepProcesses([root], [foreign], { graceMs: 100, termMs: 500, pollMs: 50 }),
+		new RegExp(`processes survived SIGKILL: ${foreign}$`),
+	);
+	assert.equal(await gone, "SIGTERM");
 });
 
 test("sweepProcesses finds a detached process by its working directory alone, as delegate workers run", async (t) => {

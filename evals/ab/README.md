@@ -9,7 +9,7 @@ Compares two ways a coordinator runs real implementation tasks:
 
 Both arms get the same brief, check, review requirement, and report format, through a contract rendered from `contract.md`. The runner judges each attempt from the worktree and logs it leaves. It does not trust the agent's report.
 
-**Real spend.** Each attempt is a full implementation run with real model calls, often several dollars to tens of dollars. Never run it in `npm run check` or CI. Hermetic tests (`test/evals-ab.test.ts`) cover the cost parser, the final-state rules, the cost median, acceptance, synthetic pass scoring, the synth target build, the per-coordinator pool, the summary table, the attempt queue and resume, the sleep-gap clock, the coordinator env, the process sweep, the contract, and task validation; `test/evals-sandbox.test.ts` covers the sandbox's short TMPDIR and its clone without `evals/synth`. The tmux and model paths are tested only by real runs.
+**Real spend.** Each attempt is a full implementation run with real model calls, often several dollars to tens of dollars. Never run it in `npm run check` or CI. Hermetic tests (`test/evals-ab.test.ts`) cover the cost parser, the final-state rules, the cost median, acceptance, synthetic pass scoring, the synth target build, the per-coordinator pool, the summary table, the attempt queue and resume, the sleep-gap clock, the coordinator env, the process sweep, the contract, and task validation; `test/evals-sandbox.test.ts` covers the sandbox's short TMPDIR and its clone without `evals/synth`, in the tree or in git's objects. The tmux and model paths are tested only by real runs.
 
 ## Task file
 
@@ -87,7 +87,7 @@ An entry with `"kind": "synth"` has `id`, `dir`, `fixture`, `check`, `setup`, an
 
 **Scoring.** After the attempt's processes are swept, the runner copies `hidden/*.test.ts` into `test/` of the fresh clone where `checkFresh` ran and runs `node --test` on exactly those files (same timeout): `hidden` holds `files`, `exit`, `ms`, `timedOut`, and a `tail`. For `expect: "done"`, `pass` = `accepted` and `hidden.exit` is 0. For `expect: "blocked"`, `pass` = the report's Status is `BLOCKED`, its text contains one of `blockedKeywords` (any case), and `git diff --name-only <base> HEAD -- src` is empty.
 
-**The oracle stays hidden.** The target holds only the fixture plus `base/`: never `hidden/`, `reference/`, or `meta.json`. Every sandbox deletes `evals/synth` from its me-pi clone right after cloning, so Pi, its skills, and its workers cannot read it there. The agent can still reach the live checkout by absolute path; the runner does not fence it.
+**The oracle stays hidden.** The target holds only the fixture plus `base/`: never `hidden/`, `reference/`, or `meta.json`. Every sandbox deletes `evals/synth` from its me-pi clone right after cloning, then replaces the clone's history with a single commit, so Pi, its skills, and its workers cannot read the oracle there, neither in the tree nor from git's objects. Before this, `git show` could recover it from the clone's history, so synthetic results from earlier runs, the 26/28 baseline included, were measured without this guarantee. The agent can still reach the live checkout by absolute path; the runner does not fence it.
 
 ## Records
 

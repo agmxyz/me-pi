@@ -1,16 +1,13 @@
 // Shared fake-pi harness and setup helpers for the delegate test files.
 // Each test file imports this in its own process, so TEST_HOME, FAKE_BIN and env snapshots are per file.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+// Scratch space for the fake pi binary, configs, and pid files; also the isolated HOME (see test-home.ts).
+import { TEST_HOME } from "./test-home.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
-// Scratch space for the fake pi binary, configs, and pid files.
-const TEST_HOME = mkdtempSync(join(tmpdir(), "delegate-test-"));
-
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
-process.on("exit", () => rmSync(TEST_HOME, { recursive: true, force: true }));
 
 const {
 	default: registerExtension,

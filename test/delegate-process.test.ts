@@ -1,3 +1,4 @@
+import "./helpers/test-home.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startWorkerProcess, type WorkerProcessOptions } from "../packages/pi-workers/extensions/delegate-process.ts";

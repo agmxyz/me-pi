@@ -104,7 +104,7 @@ function followFirstLink(absolute: string): string | undefined {
 
 /** The resolved path of a missing file: its nearest existing ancestor with symlinks resolved, plus the rest. */
 // Undefined when an existing entry cannot be resolved, such as a dangling symlink that a write would follow.
-export function realTarget(absolute: string): string | undefined {
+function realTarget(absolute: string): string | undefined {
 	let dir = absolute;
 	const rest: string[] = [];
 	const exists = (p: string) => {

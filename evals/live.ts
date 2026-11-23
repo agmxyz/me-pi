@@ -89,20 +89,28 @@ export async function processesWith(marker: string): Promise<number[]> {
 
 const inside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
-const alive = (pid: number) => {
+const code = (err: unknown) => (err as NodeJS.ErrnoException).code;
+/** ESRCH: no such process. EPERM: it exists but is not ours to signal, so it is alive. Anything else propagates. */
+export const alive = (pid: number) => {
 	try {
 		process.kill(pid, 0);
 		return true;
-	} catch {
-		return false;
+	} catch (err) {
+		if (code(err) === "ESRCH") return false;
+		if (code(err) === "EPERM") return true;
+		throw err;
 	}
 };
+/**
+ * Signals each pid. One that exited in between is skipped; one we may not signal (EPERM) is skipped too, so the rest
+ * are still signalled, and stays alive for the sweep to report as a survivor. Anything else propagates.
+ */
 const signal = (pids: number[], sig: NodeJS.Signals) => {
 	for (const pid of pids)
 		try {
 			process.kill(pid, sig);
-		} catch {
-			// Exited in between.
+		} catch (err) {
+			if (code(err) !== "ESRCH" && code(err) !== "EPERM") throw err;
 		}
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
