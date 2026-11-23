@@ -62,7 +62,7 @@ Everything else stays the user's: merging, closing an issue or PR, labels or com
 
 ## Sequence
 
-1. `<implementation skill>`: implement, commit, reconcile. After an interruption, check the repository's state before repeating anything; report BLOCKED when it cannot be explained.
+1. `<implementation skill>`: implement, commit, reconcile.
 2. Push the branch and open the PR.
 3. Review against the fixed review point with every lens: <lenses>. At least one independent reviewer must be from a different provider/model lineage than you, not merely a different model suffix. If identity, family or availability cannot establish independence, report BLOCKED to the user; do not silently substitute. Fix findings of Medium or higher; list the rest.
 4. A commit made after the reviews that changes behaviour (tests included) gets a delta review by an independent read-only worker before you report. A comment-only or rename-only commit needs none.

@@ -38,6 +38,7 @@ function assertCoordinatorSkill(source) {
 	assert.match(source, /exact, single, unchained repository check/);
 	assert.match(source, /independent full review/);
 	assert.match(source, /load `code-review`/i);
+	assert.match(source, /At least one reviewer must come from a different provider\/model family than you/);
 	const deltaClosure = sectionBetween(source, "## 5. ", "## 6. ");
 	assert.match(deltaClosure, /Fix required findings yourself/);
 	assert.match(deltaClosure, /corrective commit/);
