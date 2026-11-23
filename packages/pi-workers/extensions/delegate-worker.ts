@@ -1,22 +1,16 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { FailedToolArtifactCollector } from "./delegate-artifacts.ts";
 import {
 	ENV_ATTEMPT,
 	ENV_BUDGET,
-	ENV_CHECK,
-	ENV_DENY_DIR,
 	ENV_JOB_ID,
 	ENV_OUTPUT_DIR,
-	ENV_PARENT,
 	ENV_ROLE,
 	ENV_RUN,
 	ENV_SKILLS,
-	isImplementWorker,
 	workerIdentity,
 } from "./delegate-env.ts";
 import { secretPathIn, writeBlockedIn } from "./delegate-fence.ts";
-import { type Checkout, checkInCompound, workerEnv } from "./delegate-implement.ts";
 import {
 	eventRecord,
 	isStopFact,
@@ -24,7 +18,7 @@ import {
 	type StopResource,
 	TOOL_PROVENANCE_DETAIL_KEY,
 } from "./delegate-provenance.ts";
-import { GUARD_STOP_EVENT, workerRisk } from "./guard.ts";
+import { GUARD_STOP_EVENT } from "./guard.ts";
 
 // --- Wrap-up budget (enforced inside workers) ------------------------------------------------------
 
@@ -76,8 +70,6 @@ export const LOCAL_TOOLS = "read,grep,find,ls,Skill";
 // Only a call that sets `web: true` gets the network: a worker reading an untrusted
 // diff or page with both local reads and web tools could be steered into sending file contents out.
 export const WEB_TOOLS = `${LOCAL_TOOLS},web_search,fetch_content,get_search_content`;
-// implement edits, runs commands, and commits, in the coordinator's checkout; never with web tools.
-export const IMPLEMENT_TOOLS = `${LOCAL_TOOLS},edit,write,bash`;
 
 /** One attempt's launch inputs: the model and thinking, the output directory, its index, and its wrap-up budget. */
 export interface WorkerAttempt {
@@ -85,8 +77,6 @@ export interface WorkerAttempt {
 	outDir: string | undefined;
 	attemptIndex: number;
 	budget: Budget;
-	// implement only: mirror the main session's project trust (`--approve`).
-	approve?: boolean;
 }
 
 // The coordinator's opt-in supervisor status (see `coordinatorStatus` in delegate.ts): a worker, and the commands it
@@ -96,14 +86,11 @@ const COORDINATOR_ONLY_ENV = ["ME_PI_STATUS_LOG", "ME_PI_SPEND_BUDGET_USD"];
 /** The pi arguments and environment the coordinator spawns a worker with; `base` is the coordinator's env. */
 export function workerLaunch(
 	job: Job,
-	{ run, outDir, attemptIndex, budget, approve = false }: WorkerAttempt,
+	{ run, outDir, attemptIndex, budget }: WorkerAttempt,
 	base: NodeJS.ProcessEnv = process.env,
 ): { args: string[]; env: NodeJS.ProcessEnv } {
-	const { implement, web } = job;
-	const tools = implement ? IMPLEMENT_TOOLS : `${web ? WEB_TOOLS : LOCAL_TOOLS}${outDir ? ",write" : ""}`;
+	const tools = `${job.web ? WEB_TOOLS : LOCAL_TOOLS}${outDir ? ",write" : ""}`;
 	const args = ["--mode", "json", "-p", "--no-session", "--no-mcp", "--tools", tools];
-	// JSON mode cannot ask about trust: mirror the main session's, when safe.
-	if (implement) args.push(approve ? "--approve" : "--no-approve");
 	args.push("--thinking", run.thinking, "--append-system-prompt", workerSystemPrompt(job, outDir));
 	if (run.model) args.push("--model", run.model);
 	const env: NodeJS.ProcessEnv = {
@@ -117,18 +104,12 @@ export function workerLaunch(
 		[ENV_BUDGET]: JSON.stringify(budget),
 	};
 	for (const name of COORDINATOR_ONLY_ENV) delete env[name];
-	// implement overrides the role and output directory and adds its fences.
-	return { args, env: implement ? workerEnv(env, implement.job) : env };
+	return { args, env };
 }
 
 /** What a worker's hooks read from the environment the coordinator set. */
 export interface WorkerEnv {
-	implement: boolean;
 	outputDir: string | undefined;
-	denyDir: string | undefined;
-	// The coordinator's pid (implement only); NaN when unset.
-	parent: number;
-	check: string | undefined;
 	// Skills the worker may see; undefined means all.
 	skills: string[] | undefined;
 	// Undefined unless the job id and attempt are valid (see workerIdentity).
@@ -140,11 +121,7 @@ export interface WorkerEnv {
 export function readWorkerEnv(env: NodeJS.ProcessEnv = process.env): WorkerEnv {
 	const skills = env[ENV_SKILLS];
 	return {
-		implement: isImplementWorker(env),
 		outputDir: env[ENV_OUTPUT_DIR],
-		denyDir: env[ENV_DENY_DIR],
-		parent: Number(env[ENV_PARENT]),
-		check: env[ENV_CHECK],
 		skills: skills ? (JSON.parse(skills) as string[]) : undefined,
 		identity: workerIdentity(env),
 		budget: parseBudget(env[ENV_BUDGET]),
@@ -164,22 +141,12 @@ export interface Job extends Role {
 	jobId: string;
 	// Skills the worker may see and load; undefined means all.
 	skills?: string[];
-	// implement: its checkout job, and whether the main session trusts this project (for `--approve`).
-	implement?: {
-		job: Checkout;
-		trusted: boolean;
-		pids: Set<number>;
-		artifacts: FailedToolArtifactCollector;
-	};
 }
 
 export const ROLES: Record<string, Role> = {
 	general: {},
 	scout: {
 		answer: "1-3 sentences with path:line evidence per claim, or `not-found: <what you searched, where>`.",
-	},
-	implement: {
-		answer: "First line: one-sentence summary. Then BLOCKED lines. Never paste the diff or test output.",
 	},
 };
 export const ROLE_NAMES = Object.keys(ROLES);
@@ -189,7 +156,7 @@ export const ROLE_NAMES = Object.keys(ROLES);
 const CONTRACT_INTRO =
 	"You are an isolated delegated worker: you see only this task, not the coordinator's chat, and nobody can answer questions.";
 // Absolute because the global policy that points here is loaded in other repos.
-export const RECOVERY_POINTER = `Recovery rules: ${fileURLToPath(new URL("../docs/delegate.md", import.meta.url))}#bounded-coordinator-recovery`;
+export const RECOVERY_POINTER = `Recovery rules: ${fileURLToPath(new URL("../docs/delegate.md", import.meta.url))}#coordinator-recovery`;
 
 const MAX_BLOCKED = 3;
 const BLOCKED_LINE_CAP = 200;
@@ -237,30 +204,10 @@ export const workerContract = (web: boolean) =>
 		{ web },
 	);
 
-// Scratch path the implement contract teaches; `guard` lets recursive `rm` remove it, unlike a bare `$TMPDIR/…`.
-// biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion the worker types, not a JS template.
-const SCRATCH = "${TMPDIR:?}/<name>";
-
-/** The implement worker's contract; it names the branch and the check. */
-export const implementContract = (job: Checkout) =>
-	contract(
-		[
-			`- You work in the coordinator's checkout on \`${job.branch}\`; the coordinator waits. Never switch, merge, stash, reset, or rewrite history.`,
-			`- Run \`${job.check.command}\` alone, exactly as given, after your last edit. Commit passing steps (subject plus a why body), never with \`--no-verify\` or \`--amend\`. Leave failing work uncommitted: it is committed as WIP. Delete tracked directories with \`git rm -r\`.`,
-			"- Do only the task: list unrelated problems you notice instead of fixing them.",
-			"- Never weaken, skip, or delete a test or check the task does not ask you to change. If the check passes only that way, leave it failing and list it as BLOCKED.",
-			"- You cannot push, use `gh`, run `git worktree`, reach git remotes, write inside the git directory, run `./install.sh` or `pi install|remove|update|config`, or change files under `~/.pi`. If the task or repo instructions need one, list it as BLOCKED.",
-			"- While iterating, give each focused test run a per-test timeout (e.g. `node --test --test-timeout=30000 <file>`) so a hang costs seconds; run the full check at the end.",
-			`- Keep scratch and repro files out of commits: create them with Bash in \`"${SCRATCH}"\` (\`write\` and \`edit\` reach only the checkout), and remove them with \`rm -rf "${SCRATCH}"\`; a bare \`$TMPDIR\` is blocked, since it may be unset. Or delete them before committing; leftovers are swept into WIP.`,
-			"- Stop any background process you start before you answer. Paths that may hold secrets are blocked.",
-		],
-		{ web: false }, // IMPLEMENT_TOOLS has no web tools
-	);
-
 // Without an answer format (general, unless the call sets one), the task sets the format.
 // With an output directory, the worker may also write there; its answer lists the files, not their contents.
-export const workerSystemPrompt = ({ role, answer, implement, web }: Job, outDir?: string) =>
-	`${implement ? implementContract(implement.job) : workerContract(web)}\nRole: ${role}.${answer ? ` Final answer format: ${answer}` : ""}${
+export const workerSystemPrompt = ({ role, answer, web }: Job, outDir?: string) =>
+	`${workerContract(web)}\nRole: ${role}.${answer ? ` Final answer format: ${answer}` : ""}${
 		outDir
 			? `\nOutput (exception to read-only): you may also \`write\` your drafts, only to absolute paths inside ${outDir} (relative paths resolve against the project); writes elsewhere are blocked. Within your answer format, list each file you wrote with one line on what it holds, not its contents.`
 			: ""
@@ -270,22 +217,18 @@ export const workerSystemPrompt = ({ role, answer, implement, web }: Job, outDir
 const policySection = (marker: string) =>
 	new RegExp(`^## [^\\n]*\\(${marker}\\)[^\\n]*\\n(?:(?!## )[^\\n]*(?:\\n|$))*`, "gm");
 const COORDINATOR_ONLY = policySection("coordinator only");
-const COORDINATOR_AND_IMPLEMENT = policySection("coordinator and implement only");
 
 /**
- * Drops from a worker's prompt what it cannot use: coordinator-only policy for every worker, policy for
- * writers when the worker only reads, skills outside `skills` (undefined keeps all), and the subagent line
+ * Drops from a worker's prompt what it cannot use: coordinator-only policy, skills outside `skills`
+ * (undefined keeps all), and the subagent line
  * when no context file or skill is left to ask for subagents. Mutates `options` in place, so the `Skill`
  * tool, which holds the same skills array, serves only what the prompt lists.
  */
 export function scopeWorkerPrompt(
 	options: { contextFiles?: { content: string }[]; skills?: { name: string }[]; appendSystemPrompt?: string },
-	{ implement, skills }: { implement: boolean; skills?: string[] },
+	{ skills }: { skills?: string[] },
 ) {
-	for (const file of options.contextFiles ?? []) {
-		file.content = file.content.replace(COORDINATOR_ONLY, "");
-		if (!implement) file.content = file.content.replace(COORDINATOR_AND_IMPLEMENT, "");
-	}
+	for (const file of options.contextFiles ?? []) file.content = file.content.replace(COORDINATOR_ONLY, "");
 	if (skills && options.skills) {
 		const kept = options.skills.filter((s) => skills.includes(s.name));
 		options.skills.splice(0, options.skills.length, ...kept);
@@ -297,30 +240,20 @@ export function scopeWorkerPrompt(
 			.join("\n");
 }
 
-// ESRCH means gone; EPERM means alive under another user.
-const processAlive = (pid: number) => {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (err: any) {
-		return err?.code !== "ESRCH";
-	}
-};
-
 /** The USD cost a Pi usage object reports; 0 when it has none. */
 export const costOf = (usage: Record<string, any>): number => usage.cost?.total ?? 0;
 
 /**
  * Workers never get the tool, so delegation cannot nest; they only get the wrap-up budget, the secret-path
- * block, the output-directory write block, and for `implement` the worker-only bash rules and the orphan stop.
+ * block, and the output-directory write block.
  */
 export function registerWorker(pi: ExtensionAPI): void {
-	const { budget, identity, skills, implement, parent, check, outputDir, denyDir } = readWorkerEnv();
+	const { budget, identity, skills, outputDir } = readWorkerEnv();
 	let calls = 0;
 	let overBudget = 0;
 	let cost = 0;
 	const pendingStopFacts = new Map<string, StopFact[]>();
-	pi.on("before_agent_start", (event) => scopeWorkerPrompt(event.systemPromptOptions, { implement, skills }));
+	pi.on("before_agent_start", (event) => scopeWorkerPrompt(event.systemPromptOptions, { skills }));
 	const rememberStop = (toolCallId: unknown, fact: StopFact) => {
 		if (typeof toolCallId !== "string" || !toolCallId || !identity) return;
 		const facts = pendingStopFacts.get(toolCallId) ?? [];
@@ -382,19 +315,14 @@ export function registerWorker(pi: ExtensionAPI): void {
 			}
 			return { block: true, reason, terminate };
 		};
-		// An implement worker whose coordinator died would keep writing in a checkout nobody watches.
-		if (parent > 0 && (process.ppid === 1 || !processAlive(parent)))
-			return recordBlock("Blocked: the coordinator is gone; stop now.", "coordinator-lost", "coordination", true);
 		const nextCall = ++calls;
 		const spent = budget && budgetSpent(budget, nextCall, cost);
 		if (spent) {
 			// An output worker's final write into its own directory still goes through, within the same allowance.
-			// Implement workers are excluded: their output directory is the whole checkout.
 			const outputWrite =
-				!implement &&
 				event.toolName === "write" &&
 				!secretPathIn(event.toolName, event.input, ctx.cwd) &&
-				!writeBlockedIn(event.toolName, event.input, ctx.cwd, outputDir, denyDir);
+				!writeBlockedIn(event.toolName, event.input, ctx.cwd, outputDir);
 			const exhausted = ++overBudget > MAX_BLOCKED_OVER_BUDGET;
 			if (outputWrite && !exhausted) return undefined;
 			const resource = budget ? (budgetResource(budget, nextCall, cost) ?? "tool-time") : "tool-time";
@@ -405,18 +333,6 @@ export function registerWorker(pi: ExtensionAPI): void {
 				exhausted,
 			);
 		}
-		if (event.toolName === "bash" && implement) {
-			const command = String((event.input as { command?: unknown }).command ?? "");
-			const risk = workerRisk(command);
-			if (risk) return recordBlock(`Blocked: ${risk}; list it as BLOCKED.`, "worker-fence-denial", "guard");
-			// A piped, chained, or re-argued check reports another command's exit status, so it would not count as the check.
-			if (check && checkInCompound(command, check, ctx.cwd))
-				return recordBlock(
-					`Blocked: run \`${check}\` alone, exactly as given, so its exit status counts (no pipe, chain, redirect, or extra flags). Use focused commands for partial output.`,
-					"worker-fence-denial",
-					"guard",
-				);
-		}
 		const secret = secretPathIn(event.toolName, event.input, ctx.cwd);
 		if (secret)
 			return recordBlock(
@@ -424,7 +340,7 @@ export function registerWorker(pi: ExtensionAPI): void {
 				"worker-fence-denial",
 				"guard",
 			);
-		const write = writeBlockedIn(event.toolName, event.input, ctx.cwd, outputDir, denyDir);
+		const write = writeBlockedIn(event.toolName, event.input, ctx.cwd, outputDir);
 		if (write) return recordBlock(`Blocked: ${write}.`, "worker-fence-denial", "guard");
 		return undefined;
 	});

@@ -156,7 +156,6 @@ export type Assertion = { id: string } & (
 	| { noTool: string }
 	| { maxOwnRead: number }
 	| { inline: true }
-	| { noRerun: string }
 	| { diffByPath: true }
 	| { reply: string; turn?: number }
 	| { maxReplyWords: number; turn: number }
@@ -224,19 +223,7 @@ export function check(t: Transcript, a: Assertion): Verdict {
 	}
 	if ("inline" in a) {
 		const own = t.calls.filter(edits).length;
-		const impl = t.calls.filter((c) => accepted(c) && roleOf(c) === "implement").length;
-		return verdict(a.id, own > 0 && impl === 0, `${own} own edits, ${impl} implement calls`);
-	}
-	if ("noRerun" in a) {
-		const re = new RegExp(a.noRerun);
-		let armed = false;
-		for (const c of t.calls) {
-			if (accepted(c) && roleOf(c) === "implement" && /check ✓/.test(c.result!.text)) armed = true;
-			else if (edits(c)) armed = false;
-			else if (armed && c.name === "bash" && re.test(c.args.command ?? ""))
-				return verdict(a.id, false, `re-ran after implement ✓: ${short(c.args.command)}`);
-		}
-		return verdict(a.id, true, "no re-run after implement ✓");
+		return verdict(a.id, own > 0, `${own} own edits`);
 	}
 	if ("diffByPath" in a) {
 		const reviews = t.calls.filter((c) => accepted(c) && roleOf(c) === "general" && DIFF.test(c.args.task ?? ""));

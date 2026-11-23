@@ -26,8 +26,6 @@ export interface ModelSet {
 	worker: ModelPool;
 	/** Skills read-only workers may see and load; omitted means all. */
 	readOnlySkills?: string[];
-	/** Skills `implement` workers may see and load; omitted means all. */
-	implementSkills?: string[];
 }
 
 const defaultModelSet = (): ModelSet => ({
@@ -100,7 +98,11 @@ function validModelSet(raw: any, where: string): ModelSet {
 		throw new Error(
 			`${where}: review pool was removed: move its entries not already listed into worker.models (later entries keep their thinking when a run names that model) and pass runs[].model for a second-opinion review; see docs/delegate.md`,
 		);
-	const allowed = ["version", "scout", "worker", "readOnlySkills", "implementSkills"];
+	if (raw.implementSkills !== undefined)
+		throw new Error(
+			`${where}: implementSkills was removed with the implement role in 0.3.0: delete the key; coordinators write their own changes; see docs/delegate.md#migrating-from-implement`,
+		);
+	const allowed = ["version", "scout", "worker", "readOnlySkills"];
 	const unknown = Object.keys(raw).filter((k) => !allowed.includes(k));
 	if (unknown.length)
 		throw new Error(`${where}: unknown key(s) ${unknown.join(", ")} (allowed: ${allowed.join(", ")})`);
@@ -110,9 +112,6 @@ function validModelSet(raw: any, where: string): ModelSet {
 		worker: validV3Pool(raw.worker, `${where}.worker`, false),
 		...(raw.readOnlySkills !== undefined
 			? { readOnlySkills: skillNames(raw.readOnlySkills, `${where}.readOnlySkills`) }
-			: {}),
-		...(raw.implementSkills !== undefined
-			? { implementSkills: skillNames(raw.implementSkills, `${where}.implementSkills`) }
 			: {}),
 	};
 }

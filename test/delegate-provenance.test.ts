@@ -1,18 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const {
-	TOOL_PROVENANCE_DETAIL_KEY,
-	bashExitCode,
-	bashStatuses,
-	eventField,
-	eventRecord,
-	eventText,
-	failedToolResult,
-	failedWithoutEffect,
-	failureDisposition,
-	toolResultText,
-} = await import("../packages/pi-workers/extensions/delegate-provenance.ts");
+const { bashExitCode, bashStatuses, eventField, eventRecord, failedWithoutEffect, toolResultText } = await import(
+	"../packages/pi-workers/extensions/delegate-provenance.ts"
+);
 
 const text = (...parts: string[]) => ({ content: parts.map((t) => ({ type: "text", text: t })) });
 
@@ -20,14 +11,6 @@ test("eventRecord accepts plain objects only", () => {
 	for (const value of [undefined, null, 0, "x", true, [], [{ a: 1 }]]) assert.equal(eventRecord(value), undefined);
 	const obj = { a: 1 };
 	assert.equal(eventRecord(obj), obj);
-});
-
-test("eventText returns strings only", () => {
-	assert.equal(eventText(undefined, "k"), undefined);
-	assert.equal(eventText({ k: 1 }, "k"), undefined);
-	assert.equal(eventText({}, "k"), undefined);
-	assert.equal(eventText({ k: "" }, "k"), "");
-	assert.equal(eventText({ k: "v" }, "k"), "v");
 });
 
 test("eventField distinguishes present-but-undefined from absent", () => {
@@ -132,76 +115,6 @@ test("toolResultText joins text parts and ignores the rest", () => {
 	assert.equal(toolResultText(text(long)), long, "no truncation at this layer");
 });
 
-test("failedToolResult extracts bash output and error fields with first-field fallbacks", () => {
-	assert.deepEqual(failedToolResult(undefined, "bash"), {});
-	assert.deepEqual(
-		failedToolResult(
-			{
-				...text("content"),
-				structuredContent: { exitCode: 2, fullOutputPath: "/s" },
-				details: { exit_code: 9, output: "details-out", error: "details-err", childDiagnostics: ["d"] },
-				full_output_path: "/r",
-				childDiagnosticReferences: ["ref"],
-			},
-			"bash",
-		),
-		{
-			outputText: "details-out",
-			error: "details-err",
-			childDiagnostics: ["d"],
-			statusDiagnostics: ["structuredContent.exitCode=2", "details.exit_code=9"],
-			fullOutputPath: "/s",
-			childDiagnosticReferences: ["ref"],
-		},
-	);
-	assert.deepEqual(failedToolResult({ ...text("only"), output: "top", structuredContent: { output: "sc" } }, "bash"), {
-		outputText: "sc",
-	});
-	assert.deepEqual(failedToolResult(text("only"), "bash"), { outputText: "only" });
-	assert.deepEqual(failedToolResult({ error: undefined }, "bash"), { error: undefined });
-});
-
-test("failedToolResult drops a bash exit code that a contradicting alias vetoes", () => {
-	assert.deepEqual(failedToolResult({ structuredContent: { exit_code: 0 }, exitCode: 1 }, "bash"), {
-		statusDiagnostics: ["structuredContent.exit_code=0", "exitCode=1"],
-	});
-});
-
-test("failedToolResult drops a bash exit code given only by an alias", () => {
-	assert.deepEqual(failedToolResult({ structuredContent: { exitCode: 2 } }, "bash"), {
-		statusDiagnostics: ["structuredContent.exitCode=2"],
-	});
-});
-
-test("failedToolResult keeps a canonical bash exit code", () => {
-	assert.deepEqual(failedToolResult({ structuredContent: { exit_code: 7 } }, "bash"), {
-		exitCode: 7,
-		statusDiagnostics: ["structuredContent.exit_code=7"],
-	});
-	assert.deepEqual(failedToolResult({ structuredContent: { exit_code: 0 } }, "bash"), {
-		exitCode: 0,
-		statusDiagnostics: ["structuredContent.exit_code=0"],
-	});
-});
-
-test("failedToolResult summary for non-bash tools", () => {
-	assert.deepEqual(failedToolResult(text("c"), "read"), { outputText: "c", summary: "c" });
-	assert.deepEqual(failedToolResult({ ...text("c"), structuredContent: { k: 1 } }, "read"), {
-		outputText: "c",
-		summary: { k: 1 },
-	});
-	assert.deepEqual(failedToolResult({ structuredContent: { summary: "s" } }, "edit"), { summary: "s" });
-	assert.deepEqual(failedToolResult({ structuredContent: { exit_code: 1 } }, "edit"), {
-		exitCode: 1,
-		summary: { exit_code: 1 },
-	});
-	assert.deepEqual(failedToolResult({ structuredContent: { exitCode: 1 } }, "edit"), {
-		exitCode: 1,
-		summary: { exitCode: 1 },
-	});
-	assert.deepEqual(failedToolResult({}, undefined), {});
-});
-
 test("failedWithoutEffect: read-only tools always", () => {
 	for (const tool of ["read", "grep", "find", "ls", "Skill"]) assert.equal(failedWithoutEffect(tool, undefined), true);
 });
@@ -228,47 +141,4 @@ test("failedWithoutEffect: other failures may have had effects", () => {
 	assert.equal(failedWithoutEffect("write", text("Could not edit file: a.ts")), false);
 	assert.equal(failedWithoutEffect("bash", text("No changes made to a.ts")), false);
 	assert.equal(failedWithoutEffect("Read", text("x")), false, "case-sensitive tool names");
-});
-
-const marker = (...causes: string[]) => ({
-	details: {
-		[TOOL_PROVENANCE_DETAIL_KEY]: causes.map((cause) => ({
-			owner: "delegate-worker",
-			jobId: "j",
-			attempt: 1,
-			cause,
-			resource: "tool",
-			effect: "denied",
-		})),
-	},
-});
-
-test("failureDisposition: provenance markers win", () => {
-	assert.equal(failureDisposition("bash", marker("guard-denial", "wrap-up-limit")), "budget-blocked");
-	assert.equal(failureDisposition("bash", marker("guard-denial")), "guard-denied");
-	assert.equal(failureDisposition("read", marker("worker-fence-denial")), "guard-denied");
-	assert.equal(failureDisposition(undefined, marker("hard-timeout")), "blocked");
-	assert.equal(
-		failureDisposition("read", { details: { [TOOL_PROVENANCE_DETAIL_KEY]: [{ cause: "wrap-up-limit" }] } }),
-		"read-failed",
-		"invalid stop facts are ignored",
-	);
-});
-
-test("failureDisposition: bash outcomes", () => {
-	assert.equal(failureDisposition("bash", { structuredContent: { exit_code: 124 } }), "timeout");
-	assert.equal(failureDisposition("bash", text("Command timed out after 30 seconds")), "timeout");
-	assert.equal(failureDisposition("bash", { structuredContent: { exit_code: 1 } }), "nonzero-exit");
-	assert.equal(failureDisposition("bash", { structuredContent: { exit_code: 0 } }), "unknown");
-	assert.equal(failureDisposition("bash", { exitCode: 1 }), "unknown", "alias alone is not authoritative");
-	assert.equal(failureDisposition("bash", { structuredContent: { exit_code: 1 }, exitCode: 2 }), "unknown");
-});
-
-test("failureDisposition: other tools", () => {
-	assert.equal(failureDisposition(undefined, {}), "unknown");
-	assert.equal(failureDisposition("read", {}), "read-failed");
-	assert.equal(failureDisposition("Skill", {}), "read-failed");
-	assert.equal(failureDisposition("edit", text("No changes made to a.ts")), "edit-rejected");
-	assert.equal(failureDisposition("edit", text("disk full")), "unknown");
-	assert.equal(failureDisposition("write", text("x")), "unknown");
 });

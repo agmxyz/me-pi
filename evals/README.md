@@ -2,9 +2,9 @@
 
 Manual checks that the always-loaded text (`GLOBAL_AGENTS.md`, `PROMPT_GUIDELINES`, the delegate tool's description and schema) still routes natural requests the way it should. Each attempt is one request in a fresh Pi, scored from that Pi's session log. They make real model calls and spend real money, so they never run in `npm run check` or CI; only the scorer and sandbox have hermetic tests there. Tracked in #56.
 
-For comparing a coordinator that uses the `implement` worker against one that edits directly on a real task, see [`ab/README.md`](ab/README.md).
+For the A/B comparison that led to removing the `implement` worker, see [`ab/README.md`](ab/README.md).
 
-Run them before merging any change to that text. A 3–12-word edit has flipped routing before (#58: the job id dropped from check 7, check 12 went from inline to `implement`).
+Run them before merging any change to that text. A 3–12-word edit has flipped routing before (#58: the job id dropped from check 7, check 12 stopped editing inline).
 
 ## Isolation
 
@@ -62,7 +62,7 @@ The run prints one line per attempt, then a table of passes over completed attem
 
 ## Checks and records
 
-`scenarios/routing.json` lists each check's prompt, follow-up turns, working directory (`repo` or a fixture), and assertions. `score.ts` defines the assertions: `skill`, `delegate` with `count` (`named` matches runs that set a model or thinking), `noTool`, `maxOwnRead`, `inline`, `noRerun`, `diffByPath`, `reply`, `maxReplyWords`.
+`scenarios/routing.json` lists each check's prompt, follow-up turns, working directory (`repo` or a fixture), and assertions. `score.ts` defines the assertions: `skill`, `delegate` with `count` (`named` matches runs that set a model or thinking), `noTool`, `maxOwnRead`, `inline`, `diffByPath`, `reply`, `maxReplyWords`.
 
 Each record holds:
 - the commit, Pi and node versions, the coordinator and the policy;

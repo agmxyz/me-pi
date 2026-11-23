@@ -5,6 +5,8 @@ Compares two ways a coordinator runs real implementation tasks:
 - **Arm A**: `implement-me-pi`, with the `implement` worker doing the edits.
 - **Arm B**: `implement-direct` (`evals/ab/skills/implement-direct/`, linked only into arm B's sandbox). The coordinator edits, checks, and commits itself, with read-only `scout` and `general` helpers.
 
+**Arm A no longer exists as recorded.** `@agmxyz/pi-workers` 0.3.0 removed the `implement` role, and `implement-me-pi` now writes directly, so on this checkout both arms run a writing coordinator. The comparison and its evidence are in [ADR 0001](../../docs/adr/0001-coordinators-write-no-implement-worker.md); to re-run it as recorded, run the runner from a commit before 0.3.0.
+
 Both arms get the same brief, check, review requirement, and report format, through a contract rendered from `contract.md`. The runner judges each attempt from the worktree and logs it leaves. It does not trust the agent's report.
 
 **Real spend.** Each attempt is a full implementation run with real model calls, often several dollars to tens of dollars. Never run it in `npm run check` or CI. Hermetic tests (`test/evals-ab.test.ts`) cover the cost parser, the final-state rules, the cost median, acceptance, synthetic pass scoring, the synth target build, the per-coordinator pool, the summary table, the attempt queue and resume, the sleep-gap clock, the coordinator env, the process sweep, the contract, and task validation; `test/evals-sandbox.test.ts` covers the sandbox's short TMPDIR and its clone without `evals/synth`. The tmux and model paths are tested only by real runs.

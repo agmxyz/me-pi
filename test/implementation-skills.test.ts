@@ -65,23 +65,17 @@ function assertCoordinatorSkill(source) {
 test("the coordinator skill writes its own change and keeps full review with one recovery rule", () => {
 	assertCoordinatorSkill(singleTask);
 
-	const recovery = sectionBetween(delegateGuide, "### Bounded coordinator recovery", "## Configure model pools");
+	const recovery = sectionBetween(delegateGuide, "### Coordinator recovery", "## Configure model pools");
 	assert.match(recovery, /Recovery is coordinator policy, not runtime enforcement/);
-	assert.match(recovery, /repair ordinary completed failures/);
-	assert.match(recovery, /At most 2 continuations after the first attempt \(3 attempts total\)/);
-	assert.match(recovery, /same model/);
+	assert.match(recovery, /Repair ordinary completed failures/);
+	assert.match(recovery, /check the repository's state first/);
+	assert.match(recovery, /report BLOCKED with the evidence/);
 	assert.match(recovery, /A guard-denied action stays denied/);
-	assert.match(recovery, /Unknown or partial effects stop affected writes and acceptance/);
 	assert.match(recovery, /fresh passing check on committed work and the review \[the gate\]/);
-	assert.match(recovery, /At the first continuation, not before the first attempt/);
-
-	assert.match(delegateGuide, /A guard-denied action stays denied/);
-	assert.match(delegateGuide, /canonical structured `exit_code` from 1 through 127/);
-	assert.match(delegateGuide, /replaySafe: false/);
-	assert.match(
-		delegateGuide,
-		/denied\/limited\/unknown outcomes, missing or mismatched call identity, and partial\/unclosed calls remain fail-closed/,
-	);
+	assert.doesNotMatch(delegateGuide, /continuation|attempt allowance|WIP/i);
+	const migration = delegateGuide.slice(delegateGuide.indexOf("## Migrating from implement"));
+	assert.match(migration, /removed the `implement` role, its `check` parameter, and the `implementSkills` config key/);
+	assert.match(migration, /Make the change in the calling session/);
 });
 
 test("guide documents evidence-driven verification and its explicit test-first override", () => {

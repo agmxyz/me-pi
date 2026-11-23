@@ -11,10 +11,6 @@ export interface CallRecord {
 	cost: number;
 	ms: number;
 	failed: boolean;
-	// implement: range ("branch base..tip"), check status, and WIP flag.
-	range?: string;
-	check?: string;
-	wip?: boolean;
 }
 
 export interface ActiveWorker {
@@ -116,7 +112,7 @@ export function statusLines(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps
 	for (const r of [...deps.history].reverse()) {
 		const mark = r.failed ? "\u2717" : "\u2713";
 		lines.push(
-			`  ${clock(r.at)} ${mark} ${r.role} ${r.models.map(short).join(", ")} $${r.cost.toFixed(4)} ${seconds(r.ms)}${r.range ? ` ${r.range} check ${r.check ?? "?"}${r.wip ? " WIP" : ""}` : ""}`,
+			`  ${clock(r.at)} ${mark} ${r.role} ${r.models.map(short).join(", ")} $${r.cost.toFixed(4)} ${seconds(r.ms)}`,
 		);
 	}
 	return lines;

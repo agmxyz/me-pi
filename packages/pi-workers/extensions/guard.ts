@@ -13,7 +13,7 @@
 
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ENV_UNATTENDED, isImplementWorker, isUnattended, isWorkerProcess, workerIdentity } from "./delegate-env.ts";
+import { ENV_UNATTENDED, isUnattended, isWorkerProcess, workerIdentity } from "./delegate-env.ts";
 
 export const GUARD_STOP_EVENT = "me-pi:guard-stop";
 
@@ -27,7 +27,7 @@ export interface GuardStopEvent {
 	effect: "denied";
 }
 
-// Shell options accepted by installer matching and shell `-c` command-position recognition.
+// Shell options accepted by shell `-c` command-position recognition.
 const SHELL_OPTION = String.raw`(?:--(?:[\w-]+(?:=\S*)?)?|-\w+)`;
 // A command position: start of line/command, after `;`, `&`, `|`, `(`, `{`, `` ` ``, `$(`, a shell keyword
 // (`then`, `do`, `else`), a wrapper with its options (`env -i`, `xargs -0`, `sudo`, `nohup`, `time`, `exec`,
@@ -417,29 +417,6 @@ function withoutMessages(command: string): string {
 		);
 }
 
-// `V=$(mktemp -d …) && cd "$V"` opening a command: its git commands then run in a fresh temp repo.
-const FRESH_TEMP_REPO =
-	/^\s*(\w+)=\$\(mktemp -d(?:\s+-t\s+[\w.-]+)?\s*\)\s*(?:&&|;)\s*cd\s+(?:"\$\{?\1\}?"|\$\{?\1\}?)\s*(?:&&|;)/;
-// What could take git out of it: any other expansion, an absolute, home, or `..` path, a `cd` that is not one plain
-// relative path (bare `cd`, `cd -`), `popd`, or a git-dir override.
-const LEAVES_TEMP =
-	/[$\x60~]|(?:^|[\s=:"'(])(?:\/|\.\.(?:[/\s"')]|$))|(?:^|[;&|(\s])(?:cd|pushd)(?![\w-])(?!\s+["']?[\w.][^\s;&|]*)|(?:^|[;&|(\s])popd(?![\w-])|(?:^|\s)(?:-C|--git-dir|--work-tree)\b|\bGIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|OBJECT_DIRECTORY|CONFIG\w*|NAMESPACE)=/;
-
-/**
- * Whether every git command in `command` runs in the fresh temp repo it opens with; reassigning the variable or a path
- * that could leave it keeps the git rules. Only implement workers get this: their git remote protocols are cut. Git
- * options and env that run a command still ask there (see `classify`), since cutting remotes doesn't stop them.
- */
-function inFreshTempRepo(command: string): boolean {
-	if (!isImplementWorker()) return false;
-	const fresh = FRESH_TEMP_REPO.exec(command);
-	if (!fresh) return false;
-	const name = fresh[1];
-	const rest = command.slice(fresh[0].length);
-	if (new RegExp(`\\b${name}=`).test(rest)) return false;
-	return !LEAVES_TEMP.test(rest.replace(new RegExp(`"\\$\\{?${name}\\}?"|\\$\\{?${name}\\}?(?!\\w)`, "g"), "TEMP"));
-}
-
 // A redirect word, read before quotes are dropped (a quoted `">"` is an argument): `2>/dev/null`, `&>log`, `>|log`.
 const REDIRECT = /^(?:\d*|&)[<>]/;
 // A redirect operator whose file is the next word (`> log`, `2>> log`, `&> log`, `>| log`, `>& log`). `2>&1`, `>&2`,
@@ -494,8 +471,6 @@ export function classify(
 	const relativeOk = !tmpdirUnsafe && !CHANGES_DIR.test(command.replace(/"/g, ""));
 	command = withoutMessages(command);
 	const gitCommands = [...command.matchAll(GIT_COMMAND)];
-	// In a fresh temp repo, only the checks for git running a command apply.
-	const freshTemp = inFreshTempRepo(command);
 	// The session's branch is read before the command runs, so it says nothing about the target after
 	// `cd`, `git checkout`/`switch`, or `git -C`/`--git-dir`/`--work-tree`.
 	const branchMayChange = CD.test(command) || gitCommands.some(([, , sub]) => sub === "checkout" || sub === "switch");
@@ -506,7 +481,7 @@ export function classify(
 		for (const words of gitReadings(args)) {
 			const risk =
 				rewriteRunsCommand(sub, words, editorOverride) ??
-				(freshTemp ? undefined : gitRisk(sub, words, currentBranch, elsewhere, historyRewrites)) ??
+				gitRisk(sub, words, currentBranch, elsewhere, historyRewrites) ??
 				gitRunsCommand(sub, words);
 			if (risk) return risk;
 		}
@@ -528,211 +503,6 @@ export function classify(
 		if (!disposable) return "recursive rm";
 	}
 	return undefined;
-}
-
-// Worker-only implement rules: commands that leave the branch or touch shared state are always blocked.
-const GH_COMMAND = new RegExp(`${AT_COMMAND}gh(?![\\w.-])`);
-const PI_COMMAND = new RegExp(`${AT_COMMAND}pi\\s+(install|remove|uninstall|update|config)(?![\\w-])`);
-// `./install.sh`, `/abs/install.sh`, `sh|bash|zsh [opts] install.sh`, or `.`/`source install.sh`; not `install.test.sh`.
-// A simple shell `-n install.sh` invocation only parses syntax, so don't classify that filename as an execution.
-const INSTALL_SYNTAX_CHECK = String.raw`(?:ba|z)?sh\s+-n\s+(?:[\w.~-]*\/)*install\.sh(?![\w.-])`;
-const INSTALL_SH = new RegExp(
-	`${AT_COMMAND}(?!${INSTALL_SYNTAX_CHECK})(?:(?:(?:ba|z)?sh|source|\\.)\\s+(?:${SHELL_OPTION}\\s+)*(?:[\\w.~-]*\\/)*)?install\\.sh(?![\\w.-])`,
-);
-// Options that keep `git config <key>` a read: scopes and value types (`--type X` is dropped first).
-const CONFIG_READ_OPTIONS = new Set(["--local", "--global", "--system", "--worktree", "--bool", "--int", "--path"]);
-
-/**
- * Whether a call of a subcommand that can write only reads: `stash list|show`, `symbolic-ref` with one ref and no
- * `-d` (`-q HEAD`, `--short HEAD`), `submodule` alone or `status|summary`, and `sparse-checkout list`. The one rule
- * for the worker's shared-state block and the main session's tree-write block.
- */
-function gitReadOnly(sub: string, words: string[]): boolean {
-	const positional = words.filter((w) => !w.startsWith("-"));
-	switch (sub) {
-		case "stash":
-			return words[0] === "list" || words[0] === "show";
-		case "symbolic-ref":
-			return positional.length < 2 && !hasShort(words, "d", "--delete");
-		case "submodule":
-			return positional.length === 0 || positional[0] === "status" || positional[0] === "summary";
-		case "sparse-checkout":
-			return words[0] === "list";
-		default:
-			return false;
-	}
-}
-
-function workerGitRisk(sub: string, words: string[]): string | undefined {
-	switch (sub) {
-		case "push":
-			return "git push is main-session only";
-		case "worktree":
-			return "git worktree (adds checkouts that share the repo; main-session only)";
-		case "switch":
-		case "checkout":
-			return `git ${sub} (stay on the job's branch)`;
-		case "merge":
-		case "cherry-pick":
-		case "pull":
-			return `git ${sub} (commit only your own changes)`;
-		case "stash":
-			return gitReadOnly(sub, words) ? undefined : "git stash (leave failing work uncommitted)";
-		case "commit":
-			return hasShort(words, "n", "--no-verify") ? "git commit --no-verify (hooks must run)" : undefined;
-		case "config": {
-			if (words[0] === "get" || words[0] === "list" || words.some((w) => CONFIG_READS.has(w))) return undefined;
-			const rest = words.filter((w, i) => w !== "--type" && words[i - 1] !== "--type" && !w.startsWith("--type="));
-			const positional = rest.filter((w) => !w.startsWith("-"));
-			const readKey = positional.length === 1 && rest.every((w) => !w.startsWith("-") || CONFIG_READ_OPTIONS.has(w));
-			return readKey ? undefined : "git config write (shared with the main checkout)";
-		}
-		case "remote":
-			return "git remote (shared with the main checkout)";
-		case "update-ref":
-			return "git update-ref (moves shared refs)";
-		case "symbolic-ref":
-			return gitReadOnly(sub, words) ? undefined : "git symbolic-ref (moves shared refs)";
-		case "branch":
-			return hasShort(words, "[mM]", "--move") ? "git branch -m (renames shared refs)" : undefined;
-		case "tag":
-			return hasShort(words, "[fd]") || words.includes("--force") || words.includes("--delete")
-				? "git tag -f/-d (moves shared refs)"
-				: undefined;
-		default:
-			return undefined;
-	}
-}
-
-export function workerRisk(command: string): string | undefined {
-	command = withoutMessages(command);
-	for (const [, , sub, args] of inFreshTempRepo(command) ? [] : command.matchAll(GIT_COMMAND)) {
-		for (const words of gitReadings(args)) {
-			const risk = workerGitRisk(sub, words);
-			if (risk) return risk;
-		}
-	}
-	if (GH_COMMAND.test(command)) return "gh is main-session only";
-	if (INSTALL_SH.test(command)) return "install.sh would change Pi's settings and live links";
-	const pi = command.match(PI_COMMAND);
-	if (pi) return `pi ${pi[1]} would change Pi's settings`;
-	return undefined;
-}
-
-// Subcommands that change the index, the working tree, HEAD, or the branch: blocked in the main session while an
-// implement worker writes in the same checkout. Reads (`git log`, `status`, `diff`, `stash list|show`) pass.
-const TREE_WRITES = new Set([
-	"add",
-	"rm",
-	"mv",
-	"commit",
-	"merge",
-	"rebase",
-	"reset",
-	"restore",
-	"checkout",
-	"switch",
-	"stash",
-	"cherry-pick",
-	"revert",
-	"am",
-	"apply",
-	"pull",
-	"clean",
-	"update-index",
-	"read-tree",
-	"checkout-index",
-	"sparse-checkout",
-	"submodule",
-	"update-ref",
-	"symbolic-ref",
-]);
-
-// A directory-changing word anywhere, even as an argument (`builtin cd`, `sh -c 'cd …'`), and the one form whose
-// target is read: opening the command.
-const DIR_CHANGE = /(?<![\w./-])(?:cd|chdir|pushd|popd)(?![\w.-])/g;
-const DIR_WORD = String.raw`("[^"]*"|'[^']*'|[^\s;&|]+)`;
-const LEADING_CD = new RegExp(String.raw`^\s*(?:cd|pushd)\s+${DIR_WORD}\s*(?:&&|;)`);
-const GIT_C = new RegExp(String.raw`(?:^|\s)-C\s+${DIR_WORD}`, "g");
-
-// A directory word as the shell passes it on. Undefined when the shell rewrites it: an expansion, glob, escape,
-// nested quote, `~user`, `-`, or an option.
-function plainDir(word: string): string | undefined {
-	const dir = word.replace(/^(["'])(.*)\1$/, "$2");
-	return /[$\x60\\*?[\]{}"']/.test(dir) || /^(?:-|~[^/])/.test(dir) ? undefined : dir;
-}
-
-/**
- * Where a command's git calls run, read from its text: per call, the directories to resolve in turn from the cwd (an
- * opening `cd <dir> &&|;`, then the call's `-C <dir>`). The reader returns undefined when the text does not show it:
- * any other directory change (a later or nested `cd`, one not followed by `&&` or `;`), a rewritten directory word,
- * a repeated `-C`, or a repository named by `--git-dir`, `--work-tree`, `GIT_DIR`, or `GIT_WORK_TREE`.
- */
-function gitPlaces(command: string): (globals: string) => string[] | undefined {
-	const lead = command.match(LEADING_CD);
-	const start = lead ? plainDir(lead[1]) : undefined;
-	const lost =
-		(command.match(DIR_CHANGE)?.length ?? 0) > (lead ? 1 : 0) ||
-		(lead !== null && start === undefined) ||
-		/\bGIT_(?:DIR|WORK_TREE)\b/.test(command);
-	return (globals) => {
-		if (lost || /--(?:git-dir|work-tree)\b/.test(globals)) return undefined;
-		const targets = [...globals.matchAll(GIT_C)].map((m) => plainDir(m[1]));
-		if (targets.length > 1 || targets.includes(undefined)) return undefined;
-		return [start, targets[0]].filter((dir) => dir !== undefined);
-	};
-}
-
-/**
- * The worktrees a command's `git worktree remove` and `git worktree move` calls take away: per worktree, the
- * directories to resolve in turn from the cwd, its path last. "unknown" when the text does not show one: no path
- * word (`xargs` may supply it), a quoted, escaped, expanded, or globbed path, or a call whose place `gitPlaces`
- * cannot read.
- */
-export function gitWorktreeRemovals(command: string): string[][] | "unknown" {
-	command = withoutMessages(command);
-	const place = gitPlaces(command);
-	const targets: string[][] = [];
-	for (const [, globals, sub, args] of command.matchAll(GIT_COMMAND)) {
-		if (sub !== "worktree") continue;
-		for (const words of gitReadings(args)) {
-			if (words[0] !== "remove" && words[0] !== "move") continue;
-			const at = place(globals);
-			const paths = words.slice(1).filter((word) => !word.startsWith("-"));
-			if (!at || !paths.length || /["'\\$\x60*?[\]{}]/.test(args)) return "unknown";
-			// `move <worktree> <new-path>`: only the first is taken away.
-			for (const path of words[0] === "move" ? paths.slice(0, 1) : paths) targets.push([...at, path]);
-		}
-	}
-	return targets;
-}
-
-// Whether a git call changes the index, the working tree, HEAD, or a branch.
-function treeWrite(sub: string, args: string): boolean {
-	return gitReadings(args).some((words) => {
-		if (gitReadOnly(sub, words)) return false;
-		// `git branch` writes when it forces, moves, or deletes a branch; listing and creating pass.
-		if (sub === "branch")
-			return hasShort(words, "[fmMdD]") || ["--force", "--move", "--delete"].some((w) => words.includes(w));
-		return TREE_WRITES.has(sub);
-	});
-}
-
-/**
- * Where a command's git tree writes run: per write, the directories to resolve in turn from the cwd (none: the cwd
- * itself). Undefined when it has no tree write; "unknown" when the text does not show where one runs (`gitPlaces`).
- */
-export function gitWriteDirs(command: string): string[][] | "unknown" | undefined {
-	command = withoutMessages(command);
-	const place = gitPlaces(command);
-	const dirs: string[][] = [];
-	for (const [, globals, sub, args] of command.matchAll(GIT_COMMAND)) {
-		if (!treeWrite(sub, args)) continue;
-		const at = place(globals);
-		if (!at) return "unknown";
-		dirs.push(at);
-	}
-	return dirs.length ? dirs : undefined;
 }
 
 function branchIn(cwd: string): string | undefined {
