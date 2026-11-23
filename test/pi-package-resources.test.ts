@@ -109,9 +109,9 @@ test(
 		try {
 			const packageRoot = await createPackageFixture(temp);
 			const home = join(temp, "home");
-			const pilotPath = join(home, ".agents/skills/implement-spec-me-pi/SKILL.md");
+			const pilotPath = join(home, ".agents/skills/implement-me-pi/SKILL.md");
 			const pilotContent =
-				"---\nname: implement-spec-me-pi\ndescription: Isolated pilot collision fixture.\n---\n\nPilot fixture skill.\n";
+				"---\nname: implement-me-pi\ndescription: Isolated pilot collision fixture.\n---\n\nPilot fixture skill.\n";
 			await mkdir(dirname(pilotPath), { recursive: true });
 			await writeFile(pilotPath, pilotContent);
 
@@ -166,7 +166,7 @@ test(
 					);
 					assert.deepEqual(result.errors, []);
 					assert.deepEqual(result.warnings, []);
-					assert.deepEqual(result.skills, [{ name: "implement-spec-me-pi", path: pilotPath }]);
+					assert.deepEqual(result.skills, [{ name: "implement-me-pi", path: pilotPath }]);
 					assert.deepEqual(result.skillDiagnostics, []);
 				});
 			}

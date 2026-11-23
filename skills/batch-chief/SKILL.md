@@ -18,7 +18,7 @@ Each ticket is a row; its state names who owes the next move. A row is named by 
 
 | State | Next move | Leaves on |
 |---|---|---|
-| `QUEUED` | chief | `launch` → `RUNNING(implement)` |
+| `QUEUED` | chief | `launch` → `RUNNING(task)` |
 | `RUNNING(round)` | coordinator, before its deadline | report `DONE` → `REPORTED`; `BLOCKED` → `ASKED(chief)` |
 | `ASKED(chief)` | chief | `answer --basis` → `RUNNING`; `escalate` → `ASKED(user)` |
 | `ASKED(user)` | user | `answer --user` → `RUNNING` |
@@ -26,7 +26,7 @@ Each ticket is a row; its state names who owes the next move. A row is named by 
 | `GATED(sha)` | user, then chief | `merge` → `MERGED`; `leave-open` → `LEFT_OPEN`; `round` → `RUNNING`; head moved → `REPORTED` |
 | `MERGED`, `LEFT_OPEN`, `DROPPED` | nobody | terminal; `drop --user` reaches `DROPPED` from any other state |
 
-On every wake, run `batch.ts status` first and act only on what it lists; it takes the outside's word (a newer report file, the PR's state and head) over the log.
+On every wake, run `batch.ts status` first and act only on what it lists, the rows' status-log lines included; it takes the outside's word (a newer report file, the PR's state and head) over the log.
 
 ## 1. Intake
 
@@ -35,7 +35,6 @@ Collect from the user, in this session:
 - the tickets and the path of each `brief-<n>.md`, with the readiness report's order and the files each ticket touches;
 - the review lenses each coordinator runs (for example `code-review` Standards and Spec, plus an evolvability review);
 - the repo's check command, any row-specific contract check, and its implementation skill (for me-pi, `implement-me-pi`);
-- applicable documentation file paths for each implement worker brief: instruct workers to read those files, not load skills they cannot access;
 - the rows that need a live check (one against the running system), each `before-merge` or `after-merge`;
 - the merge mode: "as gated" (merge each PR once it is gated and approved) or "hold all" (merge nothing until every row is gated);
 - the user's approvals, in his own words, with the question each answered; step 2 records them.
@@ -61,12 +60,12 @@ Run at most 4 rows `RUNNING` at once. Tickets that share a file are queued behin
 1. `git -C <repo> fetch origin`, then `git -C <repo> worktree add -b <branch> <repo>.worktrees/t<n> origin/<base>`, so the worktree starts from the current base; name the branch `<type>/<n>-<slug>`.
 2. Install dependencies in the new worktree: `npm ci --prefix <worktree>`, or the repo's equivalent.
 3. `herdr pane split <chief pane> --direction right --cwd <worktree> --no-focus`; the new pane id is in its output.
-4. `herdr pane run <pane> "export ME_PI_UNATTENDED=1"`, so `guard` in the coordinator refuses instead of opening a dialog; then `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file, which `status` prints from then on with the row's pane, worktree and branch.
-5. `batch.ts event <n> launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`, with `--report <run dir>/report-<n>.md`. Start with 45 minutes for `implement`.
-6. `batch.ts contract <n> [--check "<row check>"] [--lenses "<lenses from intake>"] --skill <implementation skill> --setup "<what item 2 ran>"` writes `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md), quoting the approvals recorded in step 2; `prompt` refuses the row until it exists. Omit `--check` to use preflight's check; a supplied value must be nonblank and is preserved exactly for this contract only, without changing preflight, another row, or gate's CI checks. Regeneration before the row moves uses that call's options, not a remembered override; after movement the contract is fixed. Supply the documentation paths from intake in the implement worker brief.
+4. `herdr pane run <pane> "export ME_PI_UNATTENDED=1 ME_PI_STATUS_LOG=<run dir>/status-<n>.log"`, so `guard` in the coordinator refuses instead of opening a dialog and its spend and provider-error lines reach a file you read (step 4); add `ME_PI_SPEND_BUDGET_USD=<n>` to the export for a spend signal; then `herdr agent start coordinator-<n> --kind pi --pane <pane>`, then `herdr pane get <pane>`: its `agent_session.value` is the coordinator's session file, which `status` prints from then on with the row's pane, worktree and branch.
+5. `batch.ts event <n> launch --worktree <path> --branch <name> --pane <id> --session <file> --brief <path> --report <path> --deadline <minutes>`, with `--report <run dir>/report-<n>.md`. Start with 45 minutes for the `task` round.
+6. `batch.ts contract <n> [--check "<row check>"] [--lenses "<lenses from intake>"] --skill <implementation skill> --setup "<what item 2 ran>"` writes `<run dir>/contract-<n>.md` from [`CONTRACT.md`](CONTRACT.md), quoting the approvals recorded in step 2; `prompt` refuses the row until it exists. Omit `--check` to use preflight's check; a supplied value must be nonblank and is preserved exactly for this contract only, without changing preflight, another row, or gate's CI checks. Regeneration before the row moves uses that call's options, not a remembered override; after movement the contract is fixed.
 7. `batch.ts prompt <n> "/skill:<implementation skill> Your contract is <contract path>; it answers every question of step 1."`
 
-**Ready:** each launched row is `RUNNING(implement)` in `status`, and its coordinator has started work in its pane (`herdr agent read <pane> --source visible`).
+**Ready:** each launched row is `RUNNING(task)` in `status`, and its coordinator has started work in its pane (`herdr agent read <pane> --source visible`).
 
 ## 4. Supervise and merge
 
@@ -79,7 +78,8 @@ Per row, by state:
 - **Live check.** On a `GATED` row with one, run `batch.ts live <n> start` and run the check yourself from the clone it prints, plus a control: the same check on the base, expected to fail or differ, so that a pass means something. Record it with `batch.ts live <n> --result <pass|fail> --evidence "<text or path>"`, and write the result into the PR body before merging for `before-merge`, after the merge for `after-merge`. `merge` refuses a `before-merge` row without a pass at the gated SHA; an `after-merge` row's check is owed after its merge, and the run stays open until it is recorded.
 - **`GATED(sha)`.** Tell the user what the gate printed and what you judged, and ask for his decision. On his merge words (recorded with `approve`) run `batch.ts merge <n>`; under "hold all", wait until every open row is gated. If `merge` says "gate again when CI finishes on the new head", wait for the run on that head, then gate again. On "leave it open", run `batch.ts event <n> leave-open`.
 - **New round.** Review findings, a fix request or a base update reopen a row: `batch.ts event <n> round <review|fix|update> --deadline <minutes>`, then `prompt` with what the round must do.
-- **`OVERDUE`.** A deadline is a reason to look. herdr's `done` or `working` says nothing about a coordinator's worker or an open dialog; a present `<git-dir>/me-pi-implement.lock` (`git -C <worktree> rev-parse --git-dir`) means a worker is writing. Read the pane, then send one `prompt` asking for its state, then tell the user.
+- **`OVERDUE`.** A deadline is a reason to look. herdr's `done` or `working` says nothing about an open dialog or a coordinator that loops. Read the pane, then send one `prompt` asking for its state, then tell the user.
+- **Status log.** `status` shows a row's `<run dir>/status-<n>.log` lines as `status log:`. They are signals, not stops: nothing ends the coordinator, and `status` records no event for them. A `WARNING:` or `BUDGET:` line (estimated spend past 80% or 100% of `ME_PI_SPEND_BUDGET_USD`) or a `STOPPED:` line (a provider error after retries) is a reason to read the pane and tell the user; stopping the coordinator is the user's decision, with `/quit` as below.
 - **Dropped by the user.** `batch.ts event <n> drop --user "<his words>"`.
 
 As a row reaches a terminal state, launch the next `QUEUED` row (step 3).
@@ -90,7 +90,7 @@ The chief types into a coordinator's pane only with `batch.ts prompt`. A coordin
 
 While any coordinator is running, run only commands that `guard` lets through without asking: a coordinator's line arriving in the chief pane would answer the open dialog. A needed gated command waits until every coordinator is stopped, or the user runs it himself.
 
-Coordinators are stopped in order (`/quit`), then the worktree is removed; never `kill -9`. An interrupted coordinator is resumed with `pi --session <session file>` (at its pane's shell prompt, after the same `export ME_PI_UNATTENDED=1` when the shell is new: `herdr agent start coordinator-<n> --kind pi --pane <pane> -- --session <session file>`) and told, with `batch.ts prompt`: "You were interrupted. Check the state of the repository before repeating anything, and say which command you were about to run before you run it again."
+Coordinators are stopped in order (`/quit`), then the worktree is removed; never `kill -9`. An interrupted coordinator is resumed with `pi --session <session file>` (at its pane's shell prompt, after the same `export` as launch item 4 when the shell is new: `herdr agent start coordinator-<n> --kind pi --pane <pane> -- --session <session file>`) and told, with `batch.ts prompt`: "You were interrupted. Check the state of the repository before repeating anything, and say which command you were about to run before you run it again."
 
 From `launch` on, a worktree belongs to its coordinator: the chief writes only in the main checkout and the run directory, and a change in a worktree goes through its coordinator.
 

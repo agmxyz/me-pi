@@ -37,7 +37,6 @@ for entry in tracked.split(b"\0"):
     shutil.copy2(original, destination, follow_symlinks=False)
 for relative in (
     "skills/implement-me-pi/SKILL.md",
-    "skills/implement-spec-me-pi/SKILL.md",
     ".agents/skills/pi-live-test/SKILL.md",
     ".agents/skills/pi-live-test/pi-live.sh",
     "skills/ticket-readiness/SKILL.md",
@@ -194,7 +193,6 @@ assert_link() { [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]; }
 assert_skill_links() {
   local agent_dir="$1" repo_root="$2"
   assert_link "$agent_dir/skills/implement-me-pi" "$repo_root/skills/implement-me-pi" &&
-    assert_link "$agent_dir/skills/implement-spec-me-pi" "$repo_root/skills/implement-spec-me-pi" &&
     assert_link "$agent_dir/skills/ticket-readiness" "$repo_root/skills/ticket-readiness" &&
     assert_link "$agent_dir/skills/batch-chief" "$repo_root/skills/batch-chief"
 }
@@ -330,9 +328,9 @@ PI_AGENT="$HOME_FRESH/.pi/agent"
 AGENTS_HOME="$HOME_FRESH/.agents"
 ORIGINAL_IMPLEMENT="$AGENTS_HOME/skills/implement/SKILL.md"
 ORIGINAL_IMPLEMENT_SPEC="$AGENTS_HOME/skills/implement-spec/SKILL.md"
-PRESERVED_PILOT="$HOME_FRESH/preserved-pilot/implement-spec-me-pi.pilot-bak"
+PRESERVED_PILOT="$HOME_FRESH/preserved-pilot/implement-me-pi.pilot-bak"
 PRESERVED_PILOT_SKILL='---
-name: implement-spec-me-pi
+name: implement-me-pi
 description: Complete isolated pilot backup fixture.
 disable-model-invocation: true
 ---
@@ -386,7 +384,7 @@ mkdir -p "$TMP/target-project-one" "$TMP/target-project-two"
 check "real Pi discovers repo skills and existing originals from two projects" assert_skill_discovery "$HOME_FRESH" "$PI_AGENT" "$TMP/target-project-one" "$TMP/target-project-two"
 check "real Pi discovers repo-only pi-live-test only inside the checkout" assert_repo_skill_discovery "$HOME_FRESH" "$PI_AGENT" "$FIXTURE"
 check "install links no repo-only skill at user level" test ! -e "$PI_AGENT/skills/pi-live-test" -a ! -L "$PI_AGENT/skills/pi-live-test"
-check "preserved pilot backup remains outside discovered roots" test -d "$PRESERVED_PILOT" -a ! -e "$AGENTS_HOME/skills/implement-spec-me-pi.pilot-bak" -a ! -L "$AGENTS_HOME/skills/implement-spec-me-pi.pilot-bak"
+check "preserved pilot backup remains outside discovered roots" test -d "$PRESERVED_PILOT" -a ! -e "$AGENTS_HOME/skills/implement-me-pi.pilot-bak" -a ! -L "$AGENTS_HOME/skills/implement-me-pi.pilot-bak"
 check "preserved pilot SKILL remains intact" assert_file_text "$PRESERVED_PILOT/SKILL.md" "$PRESERVED_PILOT_SKILL"
 check "preserved pilot reference remains intact" assert_file_text "$PRESERVED_PILOT/references/plan.md" "$PRESERVED_PILOT_REFERENCE"
 check "preserved pilot support script remains intact" assert_file_text "$PRESERVED_PILOT/scripts/verify.sh" "$PRESERVED_PILOT_SCRIPT"
@@ -541,8 +539,8 @@ check "post-registration failure leaves npm fallback unused" test ! -e "$NPM_MAR
 # A renamed pilot under .agents/skills passes path preflight but must remain a visible real-loader collision.
 HOME_RENAMED="$TMP/home-renamed-pilot"
 RENAMED_AGENT="$HOME_RENAMED/.pi/agent"
-RENAMED_PILOT="$HOME_RENAMED/.agents/skills/implement-spec-me-pi.pilot-bak"
-RENAMED_PILOT_CONTENT=$'---\nname: implement-spec-me-pi\ndescription: Renamed isolated pilot collision fixture.\ndisable-model-invocation: true\n---\n\nPreserve this complete renamed pilot.'
+RENAMED_PILOT="$HOME_RENAMED/.agents/skills/implement-me-pi.pilot-bak"
+RENAMED_PILOT_CONTENT=$'---\nname: implement-me-pi\ndescription: Renamed isolated pilot collision fixture.\ndisable-model-invocation: true\n---\n\nPreserve this complete renamed pilot.'
 mkdir -p "$RENAMED_AGENT" "$HOME_RENAMED/.agents/skills/implement" "$HOME_RENAMED/.agents/skills/implement-spec" "$RENAMED_PILOT/references" "$RENAMED_PILOT/scripts" "$TMP/target-project-three" "$TMP/target-project-four"
 cp "$ORIGINAL_IMPLEMENT" "$HOME_RENAMED/.agents/skills/implement/SKILL.md"
 cp "$ORIGINAL_IMPLEMENT_SPEC" "$HOME_RENAMED/.agents/skills/implement-spec/SKILL.md"
@@ -708,13 +706,13 @@ for kind in skill-file skill-link pilot-name; do
   case "$kind" in
     skill-file)
       collision_path="$COLLISION_AGENT/skills/implement-me-pi"
-      other_skill_path="$COLLISION_AGENT/skills/implement-spec-me-pi"
+      other_skill_path="$COLLISION_AGENT/skills/ticket-readiness"
       mkdir -p "$(dirname "$collision_path")"
       printf '%s\n' 'user skill file sentinel' > "$collision_path"
       expected_collision_message="$collision_path already exists and is not a link"
       ;;
     skill-link)
-      collision_path="$COLLISION_AGENT/skills/implement-spec-me-pi"
+      collision_path="$COLLISION_AGENT/skills/ticket-readiness"
       other_skill_path="$COLLISION_AGENT/skills/implement-me-pi"
       collision_target="$TMP/user-skill-link-sentinel.md"
       mkdir -p "$(dirname "$collision_path")"
@@ -723,9 +721,9 @@ for kind in skill-file skill-link pilot-name; do
       expected_collision_message="$collision_path already exists and is not a link"
       ;;
     pilot-name)
-      collision_path="$HOME_SKILL_COLLISION/.agents/skills/implement-spec-me-pi/SKILL.md"
-      other_skill_path="$COLLISION_AGENT/skills/implement-me-pi"
-      PILOT_CONTENT=$'---\nname: implement-spec-me-pi\ndescription: Isolated personal pilot collision fixture.\ndisable-model-invocation: true\n---\n\nPersonal pilot source remains intact.'
+      collision_path="$HOME_SKILL_COLLISION/.agents/skills/implement-me-pi/SKILL.md"
+      other_skill_path="$COLLISION_AGENT/skills/ticket-readiness"
+      PILOT_CONTENT=$'---\nname: implement-me-pi\ndescription: Isolated personal pilot collision fixture.\ndisable-model-invocation: true\n---\n\nPersonal pilot source remains intact.'
       mkdir -p "$(dirname "$collision_path")"
       printf '%s\n' "$PILOT_CONTENT" > "$collision_path"
       expected_collision_message="user skill name collision at $(dirname "$collision_path")"
@@ -740,7 +738,7 @@ for kind in skill-file skill-link pilot-name; do
   check "$kind collision creates no extensions directory" test ! -e "$COLLISION_AGENT/extensions"
   check "$kind collision creates no other skill pointer" test ! -e "$other_skill_path" -a ! -L "$other_skill_path"
   if [ "$kind" = pilot-name ]; then
-    check "pilot name collision creates neither repo skill pointer" test ! -e "$COLLISION_AGENT/skills/implement-me-pi" -a ! -L "$COLLISION_AGENT/skills/implement-me-pi" -a ! -e "$COLLISION_AGENT/skills/implement-spec-me-pi" -a ! -L "$COLLISION_AGENT/skills/implement-spec-me-pi"
+    check "pilot name collision creates neither repo skill pointer" test ! -e "$COLLISION_AGENT/skills/implement-me-pi" -a ! -L "$COLLISION_AGENT/skills/implement-me-pi" -a ! -e "$COLLISION_AGENT/skills/ticket-readiness" -a ! -L "$COLLISION_AGENT/skills/ticket-readiness"
   fi
   check "$kind collision creates no global policy link" test ! -e "$COLLISION_AGENT/AGENTS.md" -a ! -L "$COLLISION_AGENT/AGENTS.md"
   check "$kind collision invokes neither Pi nor RTK" test ! -s "$PI_LOG" -a ! -s "$RTK_LOG"

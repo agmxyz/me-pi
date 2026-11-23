@@ -34,7 +34,7 @@ elif [ -e "$SKILLS_DESTINATION" ] && [ ! -d "$SKILLS_DESTINATION" ]; then
   exit 1
 fi
 
-for skill in implement-me-pi implement-spec-me-pi ticket-readiness batch-chief; do
+for skill in implement-me-pi ticket-readiness batch-chief; do
   source="$SKILLS_SOURCE/$skill"
   destination="$SKILLS_DESTINATION/$skill"
   global_name="$GLOBAL_SKILLS_DESTINATION/$skill"
@@ -107,7 +107,6 @@ install_pi_example() {
 mkdir -p "$PI_AGENT/extensions" "$SKILLS_DESTINATION"
 link_policy
 install_skill_pointer implement-me-pi
-install_skill_pointer implement-spec-me-pi
 install_skill_pointer ticket-readiness
 install_skill_pointer batch-chief
 

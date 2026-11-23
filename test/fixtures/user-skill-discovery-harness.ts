@@ -23,7 +23,6 @@ const expectedNames = [
 	"implement",
 	"implement-me-pi",
 	"implement-spec",
-	"implement-spec-me-pi",
 	...(inRepo ? ["pi-live-test"] : []),
 	"ticket-readiness",
 ];
@@ -32,20 +31,17 @@ if (mode === "--renamed-pilot-collision") {
 	assert.equal(diagnostics.length, 1);
 	assert.equal(diagnostics[0].type, "collision");
 	assert.equal(diagnostics[0].collision.resourceType, "skill");
-	assert.equal(diagnostics[0].collision.name, "implement-spec-me-pi");
-	assert.equal(
-		diagnostics[0].collision.winnerPath,
-		join(resolvedAgentDir, "skills", "implement-spec-me-pi", "SKILL.md"),
-	);
+	assert.equal(diagnostics[0].collision.name, "implement-me-pi");
+	assert.equal(diagnostics[0].collision.winnerPath, join(resolvedAgentDir, "skills", "implement-me-pi", "SKILL.md"));
 	assert.equal(
 		diagnostics[0].collision.loserPath,
-		join(process.env.HOME, ".agents", "skills", "implement-spec-me-pi.pilot-bak", "SKILL.md"),
+		join(process.env.HOME, ".agents", "skills", "implement-me-pi.pilot-bak", "SKILL.md"),
 	);
 } else {
 	assert.deepEqual(diagnostics, []);
 }
 
-for (const name of ["batch-chief", "implement-me-pi", "implement-spec-me-pi"]) {
+for (const name of ["batch-chief", "implement-me-pi"]) {
 	const skill = byName.get(name);
 	assert.equal(skill.filePath, join(resolvedAgentDir, "skills", name, "SKILL.md"));
 	assert.equal(skill.disableModelInvocation, true);
