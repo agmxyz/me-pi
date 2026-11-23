@@ -56,8 +56,9 @@ export interface Sandbox {
 	 * a target creates under TMPDIR (macOS caps socket paths near 104 bytes). Owned by the sandbox; see `removeSandbox`.
 	 */
 	tmp: string;
-	/** The clone Pi loads me-pi from. */
+	/** The copy Pi loads me-pi from: a repo of one commit, `ref`'s tree without the synthetic suite, and no history. */
 	src: string;
+	/** The commit `ref` resolved to in `repo`: what the run records. `src` has its own single commit, `HEAD`. */
 	commit: string;
 	/** The whole environment for Pi; nothing else is inherited. */
 	env: Record<string, string>;
@@ -116,8 +117,14 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
 	const src = join(root, "src");
 	mkdirSync(agentDir, { recursive: true });
 	const commit = cloneAt(opts.repo, opts.ref, src);
-	// The synthetic suite's hidden tests and references are the runner's oracle: no agent may read them from me-pi.
+	// The synthetic suite's hidden tests and references are the runner's oracle: no agent may read them from me-pi,
+	// in the tree or in git's objects. The clone's history holds them, so `src` restarts as one commit without them.
 	rmSync(join(src, "evals", "synth"), { recursive: true, force: true });
+	rmSync(join(src, ".git"), { recursive: true, force: true });
+	const id = ["-c", "user.name=me-pi eval", "-c", "user.email=eval@invalid", "-c", "commit.gpgsign=false"];
+	git(src, "init", "--quiet", "-b", "main");
+	git(src, "add", "-A");
+	git(src, ...id, "commit", "--quiet", "--no-verify", "-m", `me-pi ${commit}`);
 
 	writeFileSync(
 		join(home, ".gitconfig"),

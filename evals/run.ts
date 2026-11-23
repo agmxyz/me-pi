@@ -112,7 +112,7 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 	mkdirSync(dirname(status), { recursive: true });
 	const fixture =
 		a.scenario.cwd === "repo"
-			? cloneAt(a.sandbox.src, a.sandbox.commit, work)
+			? cloneAt(a.sandbox.src, "HEAD", work)
 			: fixtureRepo(join(HERE, "fixtures", a.scenario.cwd), work, a.sandbox.env);
 	const started = Date.now();
 	let state: "completed" | "void" | "incomplete" = "completed";
@@ -152,15 +152,16 @@ async function runAttempt(a: Attempt): Promise<Record<string, any>> {
 				: verdicts.some((v) => v.result === "fail")
 					? "fail"
 					: "unknown";
+	// Read from the source repo at the recorded commit: the sandbox copy has no history, so its hashes would not match.
 	const git = (path: string) =>
-		execFileSync("git", ["-C", a.sandbox.src, "rev-parse", `${a.sandbox.commit}:${path}`], {
+		execFileSync("git", ["-C", repo, "rev-parse", `${a.sandbox.commit}:${path}`], {
 			encoding: "utf8",
 		}).trim();
 	// Refs before the pi-workers package move keep their extensions at the root; drop this once no compared ref predates it.
 	const extensionsTree = () => {
 		const moved = spawnSync("git", [
 			"-C",
-			a.sandbox.src,
+			repo,
 			"cat-file",
 			"-e",
 			`${a.sandbox.commit}:packages/pi-workers/extensions`,

@@ -99,6 +99,13 @@ test("a full-rig sandbox loads me-pi from a remote-less clone and keeps every pa
 	// The synthetic suite's oracle is deleted from the clone Pi loads; the rest of evals stays.
 	assert.ok(!existsSync(join(s.src, "evals", "synth")));
 	assert.ok(existsSync(join(s.src, "evals", "keep.ts")));
+	// Nor can it be read back from git: the copy is one commit with no history and no object of the source repo.
+	const inSrc = (...args: string[]) => execFileSync("git", ["-C", s.src, ...args], { encoding: "utf8" }).trim();
+	assert.equal(inSrc("rev-list", "--all", "--count"), "1");
+	assert.equal(inSrc("status", "--porcelain"), "");
+	const objects = inSrc("cat-file", "--batch-all-objects", "--batch");
+	assert.ok(!objects.includes("oracle"), "no object holds the hidden test");
+	assert.throws(() => inSrc("cat-file", "-e", `${s.commit}^{commit}`), "the source commit is not in the copy");
 
 	const settings = JSON.parse(readFileSync(join(s.agentDir, "settings.json"), "utf8"));
 	assert.deepEqual(settings.packages, ["npm:pi-web-access@0.46.0", s.src]);

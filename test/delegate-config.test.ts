@@ -1,3 +1,4 @@
+import "./helpers/test-home.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
