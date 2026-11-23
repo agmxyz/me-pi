@@ -3,7 +3,7 @@
 #   - its hidden tests fail on the base (fixture plus the task's base/ overlay), or pass on it for `expect: "blocked"`;
 #   - the reference (base plus reference/) passes `npm run check` and every hidden test;
 #   - the hidden tests are biome-clean.
-# Usage: evals/synth/verify.sh <tasks-dir> <task-id>. Prints one line ending in `=> yes` or `=> no`; exits 1 on `no`.
+# Usage: evals/synth/verify.sh <tasks-dir> <task-id>, with <tasks-dir> absolute (the script changes directory). Prints one line ending in `=> yes` or `=> no`; exits 1 on `no`.
 set -u
 FX=$(cd "$(dirname "$0")/fixture" && pwd)
 T=$1/$2

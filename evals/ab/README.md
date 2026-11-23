@@ -75,7 +75,7 @@ The run prints one line per attempt. Then it prints a table with a row per coord
 
 ## Synthetic suite
 
-`evals/synth/` holds a TypeScript fixture repo (`fixture/`) and tasks under `tasks/<id>/`: `brief.md` (the only part an agent sees), `meta.json` (`expect`: `done` or `blocked`, and `blockedKeywords` for `blocked`), `hidden/*.test.ts`, an optional `base/` overlay, and `reference/` (a known-good result). `evals/synth/verify.sh <tasks-dir> <id>` checks one task's oracle offline: the hidden tests fail on the base (pass, for `blocked`), and the reference passes `npm run check` and every hidden test. `evals/synth/tasks.json` lists the sweep's tasks with both coordinators; its paths are relative to it:
+`evals/synth/` holds a TypeScript fixture repo (`fixture/`) and tasks under `tasks/<id>/`: `brief.md` (the only part an agent sees), `meta.json` (`expect`: `done` or `blocked`, and `blockedKeywords` for `blocked`), `hidden/*.test.ts`, an optional `base/` overlay, and `reference/` (a known-good result). `evals/synth/verify.sh <tasks-dir> <id>` checks one task's oracle offline (`<tasks-dir>` must be an absolute path, because the script changes directory): the hidden tests fail on the base (pass, for `blocked`), and the reference passes `npm run check` and every hidden test. `evals/synth/tasks.json` lists the sweep's tasks with both coordinators; its paths are relative to it:
 
 ```sh
 node evals/ab.ts --tasks evals/synth/tasks.json --auth <file> --skill ~/.agents/skills/code-review --n 2
