@@ -1,0 +1,1 @@
+Big prices are hard to read on the exported price list. Make formatPrice add thousands separators, like 1,234.50.

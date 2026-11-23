@@ -1,0 +1,1 @@
+Discount codes now stack. `applyCodes` adds up the percent of every code, so SAVE10 and SAVE20 together take 30% off, capped at 100%. I replaced the "more than one code is rejected" test with one for stacking; `npm test` passes.

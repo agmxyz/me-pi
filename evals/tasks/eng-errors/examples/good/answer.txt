@@ -1,0 +1,1 @@
+`total` in `src/checkout.js` now reads `freeShipping` from `config/flags.json` on every call and skips shipping when it is `true`, so edits take effect without a restart or deploy. A malformed `flags.json` throws instead of being ignored. `npm test` passes.

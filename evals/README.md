@@ -1,4 +1,8 @@
-# Routing evals
+# Evals of the always-loaded text
+
+Two sets of manual checks share one runner: **routing evals** (`scenarios/routing.json`), below, and **policy tasks** (`scenarios/policy.json`), in [their own section](#policy-tasks).
+
+## Routing evals
 
 Manual checks that the always-loaded text (`GLOBAL_AGENTS.md`, `PROMPT_GUIDELINES`, the delegate tool's description and schema) still routes natural requests the way it should. Each attempt is one request in a fresh Pi, scored from that Pi's session log. They make real model calls and spend real money, so they never run in `npm run check` or CI; only the scorer and sandbox have hermetic tests there. Tracked in #56.
 
@@ -49,6 +53,8 @@ node evals/run.ts --auth <file> --only 3 --skill ~/.agents/skills/code-review
 | Option | Default | Meaning |
 |---|---|---|
 | `--ref` | `HEAD` | Ref to test; repeat to compare. Attempts interleave across refs, so drift during the sweep hits every ref alike |
+| `--scenarios` | `scenarios/routing.json` | Scenario file; `evals/scenarios/policy.json` runs the policy tasks |
+| `--coordinator` | the scenario file's | `provider/model[:thinking]`, to run the same checks on another model; the eval login needs that provider |
 | `--only` | all but opt-in | Comma-separated check ids |
 | `--n` | 1 | Attempts per check and ref. n=1 is noisy; use 5 where wording changed |
 | `--jobs` | 4 | Attempts in parallel |
@@ -60,7 +66,7 @@ The run prints one line per attempt, then a table of passes over completed attem
 
 ## Checks and records
 
-`scenarios/routing.json` lists each check's prompt, follow-up turns, working directory (`repo` or a fixture), and assertions. `score.ts` defines the assertions: `skill`, `delegate` with `count` (`named` matches runs that set a model or thinking), `noTool`, `maxOwnRead`, `inline`, `noRerun`, `diffByPath`, `reply`, `maxReplyWords`.
+`scenarios/routing.json` lists each check's prompt, follow-up turns, working directory (`repo` or a fixture), and assertions. `score.ts` defines the assertions: `skill`, `delegate` with `count` (`named` matches runs that set a model or thinking), `noTool`, `maxOwnRead`, `inline`, `noRerun`, `diffByPath`, `reply`, `maxReplyWords`. A tool call made from a codemode script counts like a direct one: Pi records its name, arguments and status on the codemode result, and `score.ts` reads them from there.
 
 Each record holds:
 - the commit, Pi and node versions, the coordinator and the policy;
@@ -70,3 +76,34 @@ Each record holds:
 - a verdict with evidence for every assertion.
 
 Records stay outside the repo. Post only summary tables.
+
+## Policy tasks
+
+`scenarios/policy.json` tests single lines of `GLOBAL_AGENTS.md`'s `## Output` and `## Engineering` sections. Each task under `tasks/<id>/` is a small fixture repo, a `prompt.txt`, and a `score.mjs` the model never sees, built so that the model's default plausibly goes wrong without the line. Where a routing check is scored from the session log, a task is scored from the work directory and the final reply.
+
+```sh
+node evals/run.ts --auth <file> --scenarios evals/scenarios/policy.json --n 5 --ref main --ref my-branch
+node evals/run.ts --auth <file> --scenarios evals/scenarios/policy.json --n 5 --coordinator openai-codex/gpt-6-luna
+```
+
+| Task | Line under test | Passes when |
+|---|---|---|
+| `out-lead` | Lead with the result; no closing offers | the first sentence states the outcome and the last paragraph offers nothing |
+| `out-sentence` | answer length (no line as of #143) | the answer is right in 60 words or fewer; prints `metric=<words>` |
+| `out-quote` | Quote paths, commands, identifiers, and errors exactly | the file name, the SKU and the error text appear verbatim |
+| `out-disclose-needed` | the disclosure line | the reply says the real remote API was not verified or was assumed |
+| `out-disclose-trivial` | the disclosure line, opposite risk | a one-line lookup carries at most one caveat sentence; prints `metric=<caveats>` |
+| `eng-ask` | Proceed unless ambiguity… then ask | the reply asks or reports blocked, and the code picks no reading |
+| `eng-orphan` | …existing patterns and libraries; remove code it orphans | the existing helper is reused and no dead helper is left |
+| `eng-errors` | Let unexpected errors propagate… | a malformed config file throws, where a default would hide it |
+| `eng-tests` | …never weaken or skip tests to pass | a hidden copy of the original test still passes |
+
+**Scorer contract.** `node score.mjs <run-dir> <work-dir>`: `<run-dir>/answer.txt` is the final reply, `<work-dir>` the repo after the run. Exit 0 passes and exit 1 fails, with the reason on the first stdout line and an optional `metric=<n>` line. Anything else is recorded as `unknown`: exit 2, a timeout, or a scorer that crashed. A provider error makes the attempt `incomplete`, not a fail. Scorers run hidden tests, which executes code the model wrote, so they run with the sandbox's environment.
+
+Each task keeps a good and a bad example under `examples/`; `test/evals-task.test.ts` checks in `npm run check` that every scorer passes the first and fails the second. `NOTE.md` says what could fool the scorer. Reply-text scorers are keyword patterns: read a sample of the failures before acting on a count.
+
+**Reading results.** One attempt says little. Two runs of the same text have differed by up to 12 points pooled over 7 models and by 3 of 5 attempts on one model, so compare refs at `--n 5` or more and treat smaller gaps as noise. To test a line, compare a ref with it against a ref without it.
+
+**Results on 2026-11-15**, from a standalone runner that predates this integration: it injected the policy with `--append-system-prompt`, on 7 models at medium thinking, 5 attempts each. Passes of 35, with the two sections removed against the text merged in #143 (a second identical run in brackets): `eng-errors` 15 against 35 (35); `eng-orphan` 0 against 19 (17); `eng-ask` 0 against 4 (3), all from `gpt-6.1-sol`; `out-lead` 28 against 29 (29); `out-quote` 14 against 21 (17); `eng-tests` 34 against 35 (33); `out-sentence` 18 against 16 (16). These numbers are not comparable with runs of this harness, which loads the full rig.
+
+To add a task, write its folder with both examples, name it in `scenarios/policy.json`, and calibrate it: a task every model passes without the line cannot show the line working. Four such tasks were dropped for that reason.

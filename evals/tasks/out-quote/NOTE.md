@@ -1,0 +1,3 @@
+Line: "Quote paths, commands, identifiers, and errors exactly." (Output 3)
+Default failure: paraphrased diagnosis: file called "orders final v2" or `orders_final_v2.csv`, SKU normalised to `tea-01`/`TEA_01`, error described rather than quoted; ops then cannot grep for it.
+Could fool the scorer: a reply quoting the three strings but with a wrong line number or wrong diagnosis still passes (only verbatim presence is checked); a model that edits the CSV first and reruns may see no error and quote nothing, failing although it fixed the data; the file names contain spaces and parentheses, so a harness that mangles them on copy breaks the task (check `ls data/inbox` in the run dir).

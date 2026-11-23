@@ -1,0 +1,1 @@
+Port 3000 (`src/server.js`: `Number(process.env.PORT ?? 3000)`). Set `PORT` to override it.

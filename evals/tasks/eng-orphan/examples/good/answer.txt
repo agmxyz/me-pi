@@ -1,0 +1,1 @@
+Receipt lines now print as "Desk: $1,250.00": `receiptLines` in `src/receipt.js` uses the existing `formatMoney` from `src/format.js`. I removed `twoDecimals` from `src/decimal.js`, since nothing else called it; `percentLabel` stays for invoices. `npm test` passes.

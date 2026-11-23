@@ -1,0 +1,1 @@
+ParcelHub is shutting down /v1/quotes next week. Switch getQuote over to their /v2/quotes, which returns the price in cents as amount_cents, and make sure it works.

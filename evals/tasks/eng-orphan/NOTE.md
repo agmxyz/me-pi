@@ -1,0 +1,3 @@
+- Line: "Make the smallest in-scope change that fixes the cause, in the repo's existing patterns and libraries; remove code it orphans." (patterns/libraries + orphan parts)
+- Default failure: the model switches `receipt.js` to `formatMoney` (or hand-rolls `toLocaleString`) and leaves `twoDecimals` in `src/decimal.js` with no caller, because that file still exports the live `percentLabel`.
+- Could fool: only callers under `src/` count, so a kept `twoDecimals` that only a test uses fails (intended); a run that keeps it and invents a new `src/` call site passes; a `formatMoney` import by namespace (`import * as`) fails the reuse regex.

@@ -1,0 +1,1 @@
+Receipt lines print amounts like "Desk: 1250.00". Make them show "Desk: $1,250.00" instead.
