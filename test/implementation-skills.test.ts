@@ -38,7 +38,11 @@ function assertCoordinatorSkill(source) {
 	assert.match(source, /exact, single, unchained repository check/);
 	assert.match(source, /independent full review/);
 	assert.match(source, /load `code-review`/i);
-	assert.match(source, /At least one reviewer must come from a different provider\/model family than you/);
+	assert.match(source, /at least one reviewer from a different provider\/model family than you/);
+	// A pool of one family reviews anyway and reports the gap: the rule must not turn into a blocker.
+	assert.match(source, /report `no cross-family reviewer`/);
+	assert.match(source, /that gap alone does not block acceptance/);
+	assert.doesNotMatch(sectionBetween(source, "## 4. ", "## 5. "), /family[^.]*report BLOCKED/);
 	const deltaClosure = sectionBetween(source, "## 5. ", "## 6. ");
 	assert.match(deltaClosure, /Fix required findings yourself/);
 	assert.match(deltaClosure, /corrective commit/);

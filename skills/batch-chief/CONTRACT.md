@@ -64,7 +64,7 @@ Everything else stays the user's: merging, closing an issue or PR, labels or com
 
 1. `<implementation skill>`: implement, commit, reconcile.
 2. Push the branch and open the PR.
-3. Review against the fixed review point with every lens: <lenses>. At least one independent reviewer must be from a different provider/model lineage than you, not merely a different model suffix. If identity, family or availability cannot establish independence, report BLOCKED to the user; do not silently substitute. Fix findings of Medium or higher; list the rest.
+3. Review against the fixed review point with every lens: <lenses>. Include at least one independent reviewer from a different provider/model family than you, not merely a different model suffix, whenever your delegate models offer one. When none does, review with the models you have and report `no cross-family reviewer` under Not verified; that gap alone does not block acceptance. Fix findings of Medium or higher; list the rest.
 4. A commit made after the reviews that changes behaviour (tests included) gets a delta review by an independent read-only worker before you report. A comment-only or rename-only commit needs none.
 5. Wait for the PR's CI: poll `gh pr checks <pr> --json name,state` every 30 seconds until a check is listed and none has state `QUEUED` (the plain output shows a queued check as `pending`, like a running one), then `gh pr checks <pr> --watch` for the result. A check still `QUEUED`, or no check listed, after 5 minutes of polling is BLOCKED: report it, naming the check.
 6. Report, then stop.
