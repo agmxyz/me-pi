@@ -47,7 +47,7 @@ Inspect the branch, starting and ending SHAs, status, diffstat, commits, check r
 
 Freeze the committed result. Validate that the pinned baseline still resolves to the recorded SHA and that the diff is nonempty. Capture the full diff, commit list, task/spec, and standards sources at accessible paths.
 
-Load `code-review` with `Skill`, providing the fixed baseline SHA and originating task/spec. Complete its full **Standards** and **Spec** axes independently and in parallel, using its required read-only reviewers and standards/smell baseline. At least one reviewer must come from a different provider/model family than you, not merely a different model suffix; when identity, family, or availability cannot establish that, report BLOCKED. Self-review or a success label does not replace this. Missing reviewer capability, an invalid baseline, or an empty diff blocks acceptance.
+Load `code-review` with `Skill`, providing the fixed baseline SHA and originating task/spec. Complete its full **Standards** and **Spec** axes independently and in parallel, using its required read-only reviewers and standards/smell baseline. Include at least one reviewer from a different provider/model family than you, not merely a different model suffix, whenever your delegate models offer one. When none does, review with the models you have and report `no cross-family reviewer`, naming each reviewer's model, under Not verified; that gap alone does not block acceptance. Self-review or a success label does not replace this. Missing reviewer capability, an invalid baseline, or an empty diff blocks acceptance.
 
 **Ready:** both axes have findings or explicit clean dispositions for the frozen delivered result.
 
