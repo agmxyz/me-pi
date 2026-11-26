@@ -1,142 +1,144 @@
-# Watch: background-work status in the main session (design proposal)
+# Watch: background-work status in the managing session (design, v2)
 
-**Recommendation.** Add one small private extension, `extensions/watch.ts` (about 180 lines plus tests). It watches a process the launcher started and needs nothing new beyond two things the launcher already has or can add in one line: a **pid** and an **exit file**. The model registers a watch once with a `watch` tool call (`label`, `pid`, optionally `progress` file, `total` and `exitFile`). From then on a timer in the extension, which costs no tokens, updates **one footer status** (`ctx.ui.setStatus`; Pi's footer already truncates it to the terminal width). It decides "alive" from the process table, not from how fresh a file is: the pid has to exist *and* keep the start time it had when the watch began, so a reboot or a reused pid reads as dead. When the work finishes or dies, the extension wakes the model **exactly once** with one custom message. The watch is stored as a session entry, so it survives `/reload` and resume. The extension never runs a model-chosen command.
+**Recommendation.** Add one small private extension, `extensions/watch.ts`, with an estimated 150 lines of code and 200 lines of tests.
 
-## Why not a convention alone
+- **Registration.** When the model starts long background work, it calls a `watch` tool once with a label and the pid of the launcher's wrapper shell. It can also give a progress file, an item total, and an exit file.
+- **Liveness.** A 30 s timer in the extension checks the process table and costs no tokens. "Alive" means the pid exists *and* has the same start time it had at registration. That makes a reboot or a reused pid read as dead.
+- **Display.** Everything shows as one combined footer status, `ctx.ui.setStatus`, which Pi truncates to the terminal width.
+- **End.** When the work ends, the extension wakes the model once.
+- **Persistence.** Watches are stored as session entries, so they survive `/reload` and resume.
+- **What it never does.** It never runs a command the model chose, and it never signals a process.
+
+v1 of this design was reviewed by Fable 5.2 (high). This v2 applies that review's cuts and fixes, plus the results of the feasibility checks at the end.
+
+## Rejected options
 
 | Option | What it cannot do |
 | --- | --- |
-| Launcher prompts the main pane per item (`herdr agent prompt`) | Each prompt costs a model turn. It says nothing during a silent hour-long attempt. A launcher that died (sleep, panic, reboot) sends nothing, so silence looks the same as progress. |
-| herdr pane metadata (`herdr pane report-metadata --title`) | It shows in herdr's pane chrome, not in the main session (how herdr draws it: not verified). It is written by the launcher, so when the launcher dies the title freezes at its last value. That is the silent-stale failure from today. |
-| A status file the launcher rewrites | Something still has to read it and notice it stopped changing. "Stopped changing" cannot tell an hour-long attempt from a dead sweep. |
-| The user glances at the other pane | That means leaving the main session, which is what the user wants to avoid. |
+| Launcher runs `herdr agent prompt` per item | Each prompt costs a turn. There is nothing during an hour-long silent attempt. A dead launcher sends nothing, so silence reads as progress. |
+| herdr pane metadata or title written by the launcher | Shows in herdr, not in the session. It freezes at its last value when the launcher dies. |
+| A status file the extension reads | Something still has to tie the file to this session and to whoever gets woken. "Stopped changing" cannot tell a long attempt from a dead one. |
+| `/watch` run by the user | The user must type a pid and paths that the model already knows. |
+| A model-set shell command run on a timer | An unattended recurring exec outside the guard (the guard sees only the `bash` tool). |
+| A widget like `steps`, or a merge into `steps` or delegate's activity widget | A custom component is what can overflow the width and crash the TUI. `steps` follows the model's turns. Delegate's widget tracks child processes it owns. |
 
-The one thing no convention gives is an independent check that the process is still alive. That check is the core of the extension; everything else stays minimal.
+Cut from v1 after review: a "quiet" state; the claim file for two sessions; the `/watch` command; the secret-path check; persisted byte offsets; the 90 s self-staleness rule (it could not fire, because only the same timer rewrites the line); and `deliverAs: "nextTurn"` on resume (it is held in memory only, so `/reload` before the next prompt would lose it).
 
-Also rejected:
-- **A model-set shell command run on a timer.** It makes a model turn into a recurring, unattended exec that the guard never sees (the guard checks only the `bash` tool). Not needed for the cases at hand.
-- **A below-editor widget like `steps`.** It needs its own component, its own width handling and a render timer. That is the class of code that crashed the TUI with a too-wide line. The footer status already gets truncated by Pi's footer (`dist/modes/interactive/components/footer.js:253-260`) and by this repo's `minimal-footer.ts`.
-- **Folding it into `steps` or delegate's activity widget.** `steps` is model-driven and hides when the model is idle, which is the opposite lifecycle. Delegate's widget tracks child processes it owns, while watch tracks processes it does not own. Sharing code would couple them for about 10 lines of overlap.
-- **Watching a herdr pane's `agent_status`.** It would fit "another agent in a pane" and is a natural second source (see open questions). v1 keeps to pid and files so it has no herdr dependency.
+## Observed inputs
 
-## What it observes, and who chooses it
+The model chooses these when it writes the launch command, and registers them with `watch`:
 
-The **launcher's author** (usually the model, writing the launch command) chooses what is observed. The **model** registers it with the `watch` tool. The user can list and drop watches with `/watch`.
+- **`pid`** (required): the wrapper shell, not the job inside it. The wrapper writes the exit file before it exits, so "pid gone and no exit file" can only mean the wrapper was killed, or the machine went down.
+- **`progress`** (optional): a file that gains one line per finished item. The extension counts its newlines and reads its mtime. It never puts file content in a message.
+- **`total`** (optional): the item count.
+- **`exitFile`** (optional): where the wrapper writes `$?`. **The tool refuses an `exitFile` that already exists.** A rerun into the same directory would otherwise read the old file as a clean finish.
 
-- `pid` (required): the process whose life defines the work. When it is registered, the extension records the process's start time (`ps -o lstart= -p <pid>`, run with `execFile`, fixed argv, no shell). It refuses the watch if the pid does not exist.
-- `progress` (optional): a file that gains one line per finished item, such as the sweep's `<record>.jsonl`. The extension counts newlines incrementally from a stored byte offset (it recounts if the file shrinks) and reads its mtime. It never reads content into the model's context.
-- `total` (optional): the item count, for `7/24`.
-- `exitFile` (optional): where the launcher writes `$?`. This is the only way to get the exit code of a process that is not our child.
-
-Launcher shape for the sweep. The pid to watch is the wrapper shell, so the exit file always exists before that pid disappears:
+Launcher, for example the sweep:
 
 ```sh
-sh -c 'echo $$ > run/pid; node evals/ab.ts … --resume run/record.jsonl > run/log 2>&1; echo $? > run/exit'
+rm -f run/exit; sh -c 'echo $$ > run/pid; node evals/ab.ts … --resume run/record.jsonl > run/log 2>&1; echo $? > run/exit' &
 ```
 
-## States and behaviour
+A watched launcher drops its final `herdr agent prompt`, because the extension owns the end signal.
 
-The extension checks every 30 s, at once on `session_start`, and right after the `watch` call. Each check produces one of these states:
+## States
 
-| State | Rule | Footer (one status per watch) | Wakes the model |
-| --- | --- | --- | --- |
-| running | pid present with the recorded start time | `⏵ sweep 7/24 · last +1 23m ago · 2h41m` | no |
-| quiet | running, and the progress file is older than `quietAfter` (optional) | same line in warning colour, `quiet 1h12m` | no (a long silent attempt is legitimate) |
-| finished | pid gone (or its start time changed) and `exitFile` holds an integer | `✓ sweep exit 0 · 24/24 · 3h02m` (error colour when the exit code is not 0) | once |
-| died | pid gone, and there is no `exitFile`, or it is missing or unparsable | `✗ sweep died, no exit status · 7/24 · last +1 14:02` | once |
-| unknown | `ps` failed or timed out (2 s) | `? sweep unchecked 3m (<error>)` | no |
+| State | Rule | Footer fragment |
+| --- | --- | --- |
+| running | pid has its recorded start time | `⏵ sweep 7/24 · last +1 23m · 2h41m` |
+| finished | pid gone or start time changed; `exitFile` holds an integer | `✓ sweep exit 0 · 24/24 · 3h02m` (`✗ … exit 1` when non-zero) |
+| died | pid gone on **two checks in a row**, and no valid `exitFile` | `✗ sweep died, no exit status · 7/24` |
+| unknown | `ps` failed for a reason other than "no such pid", or timed out (2 s) | `? sweep unchecked (<reason>)` |
 
-The cases from the brief:
-- **Finish.** The wrapper writes `run/exit`, then exits. The next check reads `finished`, and the model is woken with `[watch] sweep finished: exit 0, 24/24 items, 3h02m. progress: run/record.jsonl`.
-- **Death mid-run** (SIGKILL of the wrapper, pane closed). The pid is gone and there is no exit file, so the state is `died`. Without `exitFile` every end reads as `died, no exit status`. That is true, and it is shown that way on purpose.
-- **Reboot.** The pid is gone, or it was reused by an unrelated process with a different start time. Either way the state is `died` on the first check after Pi starts again.
-- **Sleep.** Pi's timer sleeps too. The first check after wake reports the truth: still running, or died while asleep (for example, network failures). The footer also turns `unknown`/stale by itself if no check has succeeded within 90 s, so a stalled checker cannot keep showing an old `running` line. A blocked event loop also stops footer renders. That is acceptable, because the next render shows the gap.
-- **Stale progress.** "Last item 1h ago" is shown, never judged as death. Only the process table decides death.
+- **"Last +1 23m"** is the age of the progress file's mtime. For a serial sweep this is the age of the current item. With parallel workers it is the time since any item finished, and the label claims no more than that.
+- **The second check before "died"** covers the window between the job's exit and the wrapper's `echo $? > exit`. A finish read on the second check still counts as `finished`.
+- **Sleep and reboot.** The timer pauses with the machine. The first check after wake or restart reports the truth: still running, finished, or died (the pid is gone, or was reused with a different start time).
+- **Stale progress** is shown as an age, and never judged as death.
 
-"How long the current item has run" is shown as *time since the last progress line* (`last +1 23m ago`). For a serial sweep that is exactly the current item's age. For `ab.ts` with parallel workers it is the time since any attempt last finished. I chose that label so it never claims more than it knows.
+## Footer
 
-## Waking the model, once
+- One status key, `watch`. Each watch contributes one fragment, joined with `  `; ended watches come first, then running ones.
+- At most 3 watches; the tool refuses a fourth.
+- Labels are stripped of control characters and newlines and capped at 24 characters. Pi's footer and `minimal-footer.ts` truncate the line to the width (`footer.js:253-260`; `minimal-footer.ts:55-58`).
+- No custom component, so no `render(width)` code that could overflow.
 
-- Each watch moves to a terminal state at most once. The extension first appends a `watch` session entry with `{ state, notified: true }`, then calls `pi.sendMessage({ customType: "watch", content, display: true }, { triggerTurn: true, deliverAs: "followUp" })`. While idle this starts a turn; while streaming it queues after the current turn (`docs/extensions.md:1642-1649`).
-- **Two sessions watching the same work.** Before sending, the extension creates a claim file, `<agent dir>/watch/<pid>-<starttime>.notified`, with the `wx` flag. Only the session that creates it wakes its model. The others show the final status line and record `notified` without a turn.
-- **Resume or startup after the end.** If the work ended while no Pi was watching, the status line shows the end at once. The message goes out with `deliverAs: "nextTurn"`, so the model learns it on the user's next prompt instead of starting a surprise turn on resume. (The claim file still applies.)
-- Running states never wake the model. There is no per-item wake.
+## Waking the model
+
+- **End seen while the session is live.** The extension first appends a `watch` entry with `{ state, notified: true }`, then calls `pi.sendMessage({ customType: "watch", content, display: true }, { triggerTurn: true, deliverAs: "followUp" })`. While idle this starts a turn; while streaming it queues after the current turn.
+- **End found on `session_start`** (the work ended while no Pi was watching). The extension sends the same message without `triggerTurn`. When idle, that appends the message to the session at once, durably, without a turn (`agent-session.js:1976-1990`). The model reads it on the user's next prompt.
+- A watch reaches an end state once. Running states never wake the model.
+- **Two sessions watching one pid** each wake their own model once. That is rare and harmless, so there is no lock.
+- Message text: `[watch] sweep finished: exit 0, 24/24 items, 3h02m (progress: run/record.jsonl)`.
 
 ## Lifecycle
 
-- **`session_start`** (any reason, `ctx.mode === "tui"` only, so delegate workers and print/JSON runs get no tool and no timer): restore watches from the latest `watch` entries on `ctx.sessionManager.getBranch()`, start one `setInterval` (`unref`), and check now.
-- **`session_shutdown`** (fires on `/reload` and exit): clear the interval and clear the statuses. Module state is not trusted across `/reload`; it is rebuilt from entries.
-- **`/fork`, `/tree`** (`session_tree`): restore from the new branch, as `steps` does.
-- A finished or dead watch stays in the footer until it is dropped, or until the next user prompt after it has been notified, whichever comes first. Exact rule: open question 3.
-- Pi gone entirely means nothing watches. The next session started on the same session file catches up on its first check.
+- **`session_start`**, any reason, `ctx.mode === "tui"` only (no tool and no timer in delegate workers or print/JSON):
+  - Rebuild the watches from the latest `watch` entries on `ctx.sessionManager.getBranch()`.
+  - Check at once, then every 30 s with an `unref` interval.
+  - Skip a tick while the previous one is still pending.
+  - Wrap each watch's check in its own try/catch, so a failed check sets that watch to `unknown`.
+- **`session_shutdown`** fires on `/reload`, exit, `/new`, `/fork` and resume: clear the interval. In-memory state is never trusted across `session_start`.
+- **`/fork`** starts a new instance through `session_start` with reason `"fork"`, which restores from the branch. No `session_tree` handling is needed beyond `steps`-style restore for `/tree`.
+- **`/new`** starts with no watches; the work continues unwatched. This is documented.
+- **Clearing.** An ended watch leaves the footer on the next user prompt after its message. `watch({ label, drop: true })` removes any watch.
 
 ## Interface
 
-Tool (TUI only):
-
 ```ts
-watch({
-  label: string,          // ≤ 24 chars after control chars and newlines are stripped
-  pid?: number,           // required to add; omit with drop
-  progress?: string,      // path, resolved against cwd
-  total?: number,
-  exitFile?: string,
-  quietAfter?: number,    // minutes
-  drop?: boolean,         // remove the watch with this label
-})
-// → "watching sweep (pid 4242, started 14:05)" or an error; adding a label that exists replaces it.
+watch({ label: string, pid?: number, progress?: string, total?: number, exitFile?: string, drop?: boolean })
+// → "watching sweep (pid 4242, started Thu Nov 26 14:57:15 2026)" | an error
 ```
 
-Prompt guideline (one line): "After starting long background work, call `watch` once with its pid, and its progress and exit files when it has them. Do not poll it; you will get a message when it ends."
+Guideline: "After starting long background work, call `watch` once with the wrapper shell's pid and, when it has them, its progress and exit files. Don't poll it: a message arrives when it ends."
 
-Command: `/watch` lists the watches and their states; `/watch drop <label>` removes one. No settings file. There is no on/off switch: no watch means no footer and no timer.
-
-## Width and robustness
-
-- Output goes only through `ctx.ui.setStatus`. No custom component means no `render(width)` that could overflow. The label is sanitised and capped, and the status text has no newlines. Pi's footer truncates; so does `minimal-footer.ts` (`truncateToWidth`).
-- Every check is async (`execFile` with a timeout, `fs.promises`), runs inside one try/catch per watch, and skips a run while the previous one is still pending. A failed check makes that watch `unknown`. It never throws into Pi's timer and never touches other watches.
-- At most 8 watches. Beyond that the tool returns an error.
-
-## Placement and relations
-
-- `extensions/watch.ts` in the private root package, listed in `package.json` `pi.extensions`, with one row in `README.md` `## Extensions`, like `steps` and `minimal-footer`. It may move to `packages/pi-workers/` later if it proves useful outside this rig. Nothing in it is worker-specific.
-- Independent of `steps` (model checklist) and of delegate's `delegate-activity` widget (its own child jobs). Delegate jobs need no watch: delegate already reports them.
+There are no settings and no command. Without a watch there is nothing on screen and no timer.
 
 ## Security
 
-- **Reads.** `progress` and `exitFile` are paths the model chose. The extension reads only their size, mtime and newline count, plus one integer from `exitFile`. File content never enters a model message. All the message contains is the label, the counts, the exit code and the paths the model itself supplied. Even so, the tool should refuse paths that the repo's secret-path rule flags (`secretPathIn` in `packages/pi-workers/extensions/delegate-fence.ts`). I have not checked that its `(toolName, input, cwd)` signature fits a non-file tool; it may need a small path-level export.
-- **Runs.** Only `ps -o lstart= -p <int>`, through `execFile`, with an integer pid and no shell. The pid is only read, never signalled: `/watch drop` does not kill anything.
-- **Writes.** Session entries, and claim files under `<agent dir>/watch/`.
-- **Guard.** Not involved. The guard checks `bash` tool calls, and the extension executes nothing the model wrote. The launcher itself is started through `bash`, or through herdr from `bash`, so the guard already sees it.
+- **Runs:** only `ps -o lstart= -p <int>` through `execFile`, with fixed argv, no shell, `LC_ALL=C`, and a 2 s timeout.
+- **Reads:** the size, mtime and newline count of `progress`, and one integer from `exitFile`. No content enters a model message.
+- **Writes:** only session entries.
+- **Guard:** not involved. The launcher itself goes through the `bash` tool, which the guard sees.
 
-## Tests (`test/watch.test.ts`, node:test)
+## Tests
 
-- A pure `assess(watch, observation, now) → state` function covers every row of the state table: running, quiet, finished (exit 0 and non-zero), died (no exit file, unparsable exit file), pid reused (same pid, different start time), unknown (ps error or timeout), and a check older than 90 s.
-- Extension tests with a fake Pi, as in `test/steps.test.ts`, inside a `mkdtemp` fixture with `HOME`, `TMPDIR` and `PI_CODING_AGENT_DIR` pointed there:
-  - A real `sh -c 'sleep …; echo 0 > exit'` child, through the paths finished, killed (died) and running with a growing progress file.
-  - Exactly one `sendMessage` per terminal state, and none after `/reload` or restore from entries that are already notified.
-  - Two extension instances on one pid: one wake, through the claim file.
-  - On resume after the end, `deliverAs: "nextTurn"` and no triggered turn.
-  - `session_shutdown` clears the interval (no open handles).
-  - No tool and no timer outside `tui` mode.
-  - A label with newlines and ANSI codes is sanitised.
-- `mock.timers` drives the interval. `ps` is injectable, for the unknown and pid-reuse cases.
+The file is `test/watch.test.ts` (node:test), using a fake Pi as in `test/steps.test.ts`, inside a `mkdtemp` fixture with `HOME`, `TMPDIR` and `PI_CODING_AGENT_DIR` pointed there.
 
-## Size
+- **Pure state function.** `assess(watch, observation)` covers each state: a non-zero exit, pid reuse, `ps` errors, the first and second missing check, and a finish read on the second check.
+- **Real processes.** A real `sh -c 'echo $$ > pid; sleep …; echo 0 > exit'` child, run through finished, killed (died after two checks) and running with a growing progress file.
+- **Single wake.**
+  - Exactly one `sendMessage` with `triggerTurn` per end.
+  - None after a restore from entries already marked notified.
+  - An end found on `session_start` sends without `triggerTurn`.
+- **Refusals.** An existing `exitFile`, a missing pid, a fourth watch, and non-`tui` mode (which also has no timer).
+- **Lifecycle and footer.**
+  - `session_shutdown` clears the interval.
+  - A label with ANSI codes and newlines is sanitised.
+  - The footer orders ended watches first.
+- **Timers.** `mock.timers` drives the interval, and `ps` is injectable.
 
-About 180 lines in `extensions/watch.ts`, about 250 lines of tests, one README row and one `package.json` line. Optionally, about 10 lines in `delegate-fence.ts` for a path-level secret check.
+Done when `npm run check --prefix extensions` passes. Add one README row under `## Extensions` and one line in the root `package.json` `pi.extensions`.
 
-## Not verified
+## Feasibility checks (2026-11-26, Pi 1.6.0, macOS 27)
 
-- How `sendMessage` with `deliverAs: "nextTurn"` renders a `display: true` message before the next prompt. I read the docs summary, not the code.
-- Whether `setStatus` triggers a footer re-render without other activity. Likely, but not checked.
-- `ps -o lstart=` format stability. It is compared only for equality, within one boot, so the format only has to stay the same within a boot.
-- How herdr displays `report-metadata`.
-- What the agent in `w3:pCT` would want. I did not ask it: no design decision depended on its answer.
+| Check | Result |
+| --- | --- |
+| `ps -o lstart= -p <pid>` on a live pid / a gone pid | Prints the start time, exit 0 / prints nothing, exit 1. The exit code tells "gone" from "error". |
+| `ps` locale | **Locale-dependent**: `LC_ALL=de_DE.UTF-8` prints `Mi. 25 Nov. …`. It must run with `LC_ALL=C`. |
+| `ps -o etimes` | Not available on macOS; `lstart` is the portable choice. |
+| Wrapper `sh -c 'echo $$ > pid; …; echo $? > exit'` | The pid file matches the wrapper. A normal end writes `exit` before the pid is gone. After `kill -9` the pid is gone and there is no `exit`. |
+| Live prototype in Pi TUI (tmux, `-e` extension): timer and `setStatus` | The footer line updated every tick with no turn and no other activity. |
+| Same prototype: `sendMessage` with `triggerTurn` and `followUp` while idle | The `[watch]` message was shown and a turn started. The model call itself failed for an account reason that has nothing to do with the design. |
+| `sendMessage` without `triggerTurn` on `session_start` (`reason: "reload"`) | The message was shown, with no turn. |
+| Session persistence | Pi writes the session file only once an assistant message exists (`session-manager.js:802-819`). A watch is created by a tool call, so one always exists. |
 
-## Open questions for the user
+**Not verified:**
+- `lstart` staying equal across a real sleep and wake. It is expected to, because the process start time is kernel-fixed.
+- A real reboot.
+- Whether a triggered turn disturbs half-typed editor text.
+- Colour codes inside status text.
 
-1. **Exit file vs the launcher's `herdr agent prompt`.** With both, the model is woken twice when the work ends. I propose that launchers write `exit` and drop the prompt when they are watched. Or should the extension stay silent on `finished` and wake only on `died`, leaving the normal end to the launcher's prompt?
-2. **A herdr pane as a second source** (`pane: "w3:pCT"`, done when `agent_status` leaves `working`), for watching other agents. Should it be in v1, or added when needed?
-3. **When an ended watch leaves the footer:** on the next user prompt after notification, or only on `/watch drop`?
-4. **Resume behaviour:** is "show it now, tell the model on the next prompt" right, or should a resume wake the model at once?
+## Open questions (decided defaults, change if wrong)
+
+1. Clear an ended watch on the next user prompt (the default), not only on `drop`.
+2. A herdr-pane source (`agent_status`) for watching other agents: deferred to after v1.
