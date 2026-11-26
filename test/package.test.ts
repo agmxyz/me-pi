@@ -12,6 +12,7 @@ const workerExtensions = ["extensions/delegate.ts", "extensions/guard.ts", "exte
 // Rig-only extensions: the root package loads them; pi-workers does not publish them.
 const rigExtensions = [
 	"extensions/steps.ts",
+	"extensions/watch.ts",
 	"extensions/minimal-footer.ts",
 	"extensions/autocompact.ts",
 	"extensions/compact-tools.ts",

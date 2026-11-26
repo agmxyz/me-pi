@@ -1,0 +1,375 @@
+// Watch: background work the model started (a sweep, a long build) shows as one footer status line, and the
+// model is woken once when it ends. The model registers the work with the `watch` tool: the pid of the wrapper
+// shell, and optionally a progress file (one line per finished item), an item total, and an exit file the
+// wrapper writes `$?` to. A 30 s timer checks the process table (no tokens); a pid that is gone or was reused
+// (its start time changed) has ended. Watches live in session entries, so they survive /reload and resume.
+// It runs only `ps -o lstart= -p <pid>`, reads only sizes, mtimes, newline counts and one integer, and never
+// signals a process. Off outside the TUI, including delegate workers: no tool, no timer. Design: docs/watch/design.md.
+import { execFile } from "node:child_process";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+
+const KEY = "watch";
+const MAX_WATCHES = 3;
+const MAX_LABEL = 24;
+const INTERVAL_MS = 30_000;
+const PS_TIMEOUT_MS = 2_000;
+
+/** What `ps` says about a pid: alive with its start time, gone, or not known (ps failed or timed out). */
+export type Ps = { lstart: string } | "gone" | { error: string };
+/** One check of a watch: the process table, and the exit file's integer when it holds one. */
+export type Observation = { ps: Ps; exit?: number };
+/** Where a check leaves a watch; `misses` counts checks in a row that found the pid gone with no exit status. */
+export type Assessment =
+	| { state: "running"; misses: number }
+	| { state: "finished"; exit: number }
+	| { state: "died" }
+	| { state: "unknown"; reason: string; misses: number };
+
+/** A watch as stored in its session entry. An ended one holds its end; `notified` is set before the wake. */
+type Watch = {
+	label: string;
+	pid: number;
+	lstart: string;
+	since: number;
+	progress?: string;
+	total?: number;
+	exitFile?: string;
+	state: "running" | "finished" | "died";
+	exit?: number;
+	endedAt?: number;
+	count?: number;
+	notified?: boolean;
+};
+type Dropped = { label: string; dropped: true };
+/** What only this session's checks know, never stored: the miss count, an unknown reason, the progress read. */
+type Live = { misses: number; unknown?: string; count?: number; mtime?: number };
+
+/** The rule for a watch's next state from one check; the only place that decides running, finished or died. */
+export function assess(watch: { lstart: string; misses: number }, observation: Observation): Assessment {
+	const { ps, exit } = observation;
+	if (typeof ps === "object" && "error" in ps) return { state: "unknown", reason: ps.error, misses: watch.misses };
+	if (ps !== "gone" && ps.lstart === watch.lstart) return { state: "running", misses: 0 };
+	// The wrapper writes its exit file before it exits, so a gone pid with one finished, even on the second check.
+	if (exit !== undefined) return { state: "finished", exit };
+	// One miss can be the moment between the job's exit and the wrapper's `echo $? > exit`.
+	const misses = watch.misses + 1;
+	return misses >= 2 ? { state: "died" } : { state: "running", misses };
+}
+
+/** `ps -o lstart= -p <pid>` with fixed argv, no shell, the C locale and a 2 s timeout. Exit 1 with no output is a gone pid. */
+export function runPs(pid: number): Promise<Ps> {
+	return new Promise((done) => {
+		execFile(
+			"ps",
+			["-o", "lstart=", "-p", String(pid)],
+			{ env: { ...process.env, LC_ALL: "C" }, timeout: PS_TIMEOUT_MS },
+			(err, stdout, stderr) => {
+				const out = stdout.trim();
+				if (!err && out) return done({ lstart: out.replace(/\s+/g, " ") });
+				const code = (err as (Error & { code?: unknown; killed?: boolean }) | null)?.code;
+				if (code === 1 && !out) return done("gone");
+				if (err && (err as { killed?: boolean }).killed) return done({ error: "ps timed out" });
+				done({ error: (stderr.trim() || err?.message || "ps printed nothing").split("\n")[0] });
+			},
+		);
+	});
+}
+
+/** The integer the wrapper wrote, or undefined when there is no file yet or it holds no integer. */
+function readExit(path: string): number | undefined {
+	let text: string;
+	try {
+		text = readFileSync(path, "utf8");
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw err;
+	}
+	return /^-?\d+$/.test(text.trim()) ? Number(text.trim()) : undefined;
+}
+
+/** The progress file's newline count and mtime; undefined until the file exists. Its content is never kept. */
+function readProgress(path: string): { count: number; mtime: number } | undefined {
+	let bytes: Buffer;
+	let mtime: number;
+	try {
+		mtime = statSync(path).mtimeMs;
+		bytes = readFileSync(path);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw err;
+	}
+	let count = 0;
+	for (let i = bytes.indexOf(10); i !== -1; i = bytes.indexOf(10, i + 1)) count++;
+	return { count, mtime };
+}
+
+/** Strip ANSI codes, control characters and newlines from a label, and cap it at 24 characters. */
+export function sanitizeLabel(label: string): string {
+	const plain = stripVTControlCharacters(label)
+		.replace(/\p{Cc}+/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return [...plain].slice(0, MAX_LABEL).join("");
+}
+
+/** `45s`, `23m`, `2h41m`. */
+export function duration(ms: number): string {
+	const seconds = Math.max(0, Math.floor(ms / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m`;
+	return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+const ended = (watch: Watch) => watch.state !== "running";
+const items = (count: number | undefined, total: number | undefined) =>
+	count === undefined ? undefined : total === undefined ? `${count}` : `${count}/${total}`;
+
+/** One watch's part of the footer line. */
+function fragment(watch: Watch, live: Live, now: number): string {
+	const done = items(watch.count ?? live.count, watch.total);
+	if (watch.state === "finished") {
+		const glyph = watch.exit === 0 ? "✓" : "✗";
+		const age = duration((watch.endedAt ?? now) - watch.since);
+		return [`${glyph} ${watch.label} exit ${watch.exit}`, done, age].filter(Boolean).join(" · ");
+	}
+	if (watch.state === "died") return [`✗ ${watch.label} died, no exit status`, done].filter(Boolean).join(" · ");
+	if (live.unknown) return `? ${watch.label} unchecked (${live.unknown})`;
+	const last = live.mtime === undefined ? undefined : `last +1 ${duration(now - live.mtime)}`;
+	return [`⏵ ${watch.label}`, done, last, duration(now - watch.since)].filter(Boolean).join(" · ");
+}
+
+/** The message that wakes the model: `[watch] sweep finished: exit 0, 24/24 items, 3h02m (progress: run/record.jsonl)`. */
+function wakeText(watch: Watch): string {
+	const what = watch.state === "finished" ? `finished: exit ${watch.exit}` : "died: no exit status";
+	const done = items(watch.count, watch.total);
+	const parts = [what, done && `${done} items`, duration((watch.endedAt ?? watch.since) - watch.since)];
+	const progress = watch.progress ? ` (progress: ${watch.progress})` : "";
+	return `[watch] ${watch.label} ${parts.filter(Boolean).join(", ")}${progress}`;
+}
+
+function parseEntry(value: unknown): Watch | Dropped | undefined {
+	const data = (value ?? {}) as Partial<Watch & Dropped>;
+	if (typeof data.label !== "string") return undefined;
+	if (data.dropped === true) return { label: data.label, dropped: true };
+	if (!Number.isInteger(data.pid) || typeof data.lstart !== "string" || typeof data.since !== "number")
+		return undefined;
+	if (data.state !== "running" && data.state !== "finished" && data.state !== "died") return undefined;
+	return data as Watch;
+}
+
+/** The extension, with `ps` and the check interval injectable for tests. */
+export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
+	return (pi: ExtensionAPI) => {
+		// Label → watch, in registration order. Rebuilt from session entries on every session_start.
+		let watches = new Map<string, { watch: Watch; live: Live }>();
+		let ui: ExtensionContext["ui"] | undefined;
+		let cwd = process.cwd();
+		let timer: NodeJS.Timeout | undefined;
+		let pending = false;
+		// Bumped on shutdown, so a check still awaiting `ps` from the old session does nothing when it returns.
+		let generation = 0;
+
+		const render = () => {
+			if (!ui) return;
+			const now = Date.now();
+			const all = [...watches.values()];
+			const ordered = [...all.filter(({ watch }) => ended(watch)), ...all.filter(({ watch }) => !ended(watch))];
+			const text = ordered.map(({ watch, live }) => fragment(watch, live, now)).join("  ");
+			ui.setStatus(KEY, text || undefined);
+		};
+
+		const stopTimer = () => {
+			clearInterval(timer);
+			timer = undefined;
+		};
+		// The timer runs only while some watch is running.
+		const syncTimer = () => {
+			const running = [...watches.values()].some(({ watch }) => !ended(watch));
+			if (!running) return stopTimer();
+			if (timer) return;
+			timer = setInterval(() => void check(true), interval);
+			timer.unref();
+		};
+
+		const observe = async (watch: Watch, live: Live): Promise<Assessment> => {
+			if (watch.progress) {
+				const progress = readProgress(watch.progress);
+				live.count = progress?.count;
+				live.mtime = progress?.mtime;
+			}
+			const result = await ps(watch.pid);
+			// The exit file matters only once the wrapper is gone; while it runs, the file can't be this run's.
+			const alive = typeof result === "object" && !("lstart" in result && result.lstart !== watch.lstart);
+			const exit = watch.exitFile && !alive ? readExit(watch.exitFile) : undefined;
+			return assess({ lstart: watch.lstart, misses: live.misses }, { ps: result, exit });
+		};
+
+		// Check every running watch once. An end found while live wakes the model; one found on session_start
+		// (it ended while no Pi watched) is only added to the session, for the model to read on the next prompt.
+		const check = async (live: boolean) => {
+			if (pending) return;
+			pending = true;
+			const at = generation;
+			try {
+				for (const [label, entry] of [...watches]) {
+					if (ended(entry.watch)) continue;
+					let result: Assessment;
+					try {
+						result = await observe(entry.watch, entry.live);
+					} catch (err) {
+						result = {
+							state: "unknown",
+							reason: (err as Error).message.split("\n")[0],
+							misses: entry.live.misses,
+						};
+					}
+					if (at !== generation || watches.get(label) !== entry) return;
+					if (result.state === "running" || result.state === "unknown") {
+						entry.live.misses = result.misses;
+						entry.live.unknown = result.state === "unknown" ? result.reason : undefined;
+						continue;
+					}
+					const watch: Watch = {
+						...entry.watch,
+						state: result.state,
+						exit: result.state === "finished" ? result.exit : undefined,
+						endedAt: Date.now(),
+						count: entry.live.count,
+						notified: true,
+					};
+					entry.watch = watch;
+					// Marked notified before the wake, so a restore never wakes the model a second time.
+					pi.appendEntry(KEY, watch);
+					const message = { customType: KEY, content: wakeText(watch), display: true };
+					if (live) await pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
+					else await pi.sendMessage(message);
+				}
+			} finally {
+				if (at === generation) {
+					pending = false;
+					render();
+					syncTimer();
+				}
+			}
+		};
+
+		const restore = (ctx: ExtensionContext) => {
+			watches = new Map();
+			for (const entry of ctx.sessionManager.getBranch()) {
+				if (entry.type !== "custom" || entry.customType !== KEY) continue;
+				const data = parseEntry(entry.data);
+				if (!data) continue;
+				watches.delete(data.label);
+				if (!("dropped" in data)) watches.set(data.label, { watch: data, live: { misses: 0 } });
+			}
+		};
+
+		const drop = (label: string) => {
+			watches.delete(label);
+			pi.appendEntry(KEY, { label, dropped: true } satisfies Dropped);
+		};
+
+		pi.on("session_start", async (_event, ctx) => {
+			if (ctx.mode !== "tui") return;
+			ui = ctx.ui;
+			cwd = ctx.cwd;
+			restore(ctx);
+			render();
+			pi.registerTool({
+				name: KEY,
+				label: "Watch",
+				description:
+					"Watch background work: its wrapper shell's pid, optional progress file (one line per item), item total and exit file (the wrapper writes $? there). Shows in the footer; a message arrives when it ends. `drop: true` removes a watch.",
+				promptGuidelines: [
+					"After starting long background work, call `watch` once with the wrapper shell's pid and, when it has them, its progress and exit files. Don't poll it: a message arrives when it ends.",
+				],
+				parameters: Type.Object({
+					label: Type.String(),
+					pid: Type.Optional(Type.Integer({ minimum: 1 })),
+					progress: Type.Optional(Type.String()),
+					total: Type.Optional(Type.Integer({ minimum: 1 })),
+					exitFile: Type.Optional(Type.String()),
+					drop: Type.Optional(Type.Boolean()),
+				}),
+				async execute(_id, params) {
+					const label = sanitizeLabel(params.label);
+					if (!label) throw new Error("watch: label is empty");
+					if (params.drop) {
+						if (!watches.has(label)) throw new Error(`watch: no watch named ${label}`);
+						drop(label);
+						render();
+						syncTimer();
+						return { content: [{ type: "text", text: `dropped ${label}` }], details: undefined };
+					}
+					if (params.pid === undefined) throw new Error("watch: pid is required (the wrapper shell's pid)");
+					const existing = watches.get(label);
+					if (existing && !ended(existing.watch)) throw new Error(`watch: ${label} is already watched`);
+					const others = [...watches.keys()].filter((name) => name !== label);
+					if (others.length >= MAX_WATCHES)
+						throw new Error(
+							`watch: at most ${MAX_WATCHES} watches; drop one first (watch({ label, drop: true }))`,
+						);
+					const exitFile = params.exitFile === undefined ? undefined : resolve(cwd, params.exitFile);
+					// An exit file left by an earlier run would read as this run's clean finish.
+					if (exitFile && existsSync(exitFile))
+						throw new Error(
+							`watch: exit file ${params.exitFile} already exists; remove it before the run starts`,
+						);
+					const found = await ps(params.pid);
+					if (found === "gone") throw new Error(`watch: pid ${params.pid} is not running`);
+					if ("error" in found) throw new Error(`watch: could not check pid ${params.pid} (${found.error})`);
+					const watch: Watch = {
+						label,
+						pid: params.pid,
+						lstart: found.lstart,
+						since: Date.now(),
+						progress: params.progress === undefined ? undefined : resolve(cwd, params.progress),
+						total: params.total,
+						exitFile,
+						state: "running",
+					};
+					watches.delete(label);
+					watches.set(label, { watch, live: { misses: 0 } });
+					pi.appendEntry(KEY, watch);
+					render();
+					syncTimer();
+					return {
+						content: [{ type: "text", text: `watching ${label} (pid ${watch.pid}, started ${found.lstart})` }],
+						details: undefined,
+					};
+				},
+			});
+			await check(false);
+		});
+
+		pi.on("session_shutdown", () => {
+			generation++;
+			pending = false;
+			stopTimer();
+			ui = undefined;
+		});
+
+		pi.on("session_tree", (_event, ctx) => {
+			if (!ui) return;
+			restore(ctx);
+			render();
+			syncTimer();
+		});
+
+		// An ended watch leaves the footer on the user's next prompt after its message.
+		pi.on("message_start", (event) => {
+			if (!ui || event.message.role !== "user") return;
+			const done = [...watches.values()].filter(({ watch }) => ended(watch) && watch.notified);
+			if (!done.length) return;
+			for (const { watch } of done) drop(watch.label);
+			render();
+		});
+	};
+}
+
+export default createWatch();
