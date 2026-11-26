@@ -141,6 +141,8 @@ export function createSandbox(opts: SandboxOptions): Sandbox {
 				defaultThinkingLevel: opts.coordinator.thinking,
 				enableInstallTelemetry: false,
 				lastChangelogVersion: opts.piVersion,
+				// The clone holds `.agents/skills`, so Pi 1.6 asks to trust it and never reaches the prompt; the live rig trusts me-pi.
+				defaultProjectTrust: "always",
 			},
 			null,
 			2,
