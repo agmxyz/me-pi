@@ -44,12 +44,14 @@ import {
 	progressLines,
 	type RunView,
 	renderCall,
+	renderHandback,
 	renderResult,
 } from "./delegate-render.ts";
 import {
 	blockedLines,
-	capBlocked,
 	costOf,
+	formatCutBlocked,
+	handbackBlocked,
 	type Job,
 	RECOVERY_POINTER,
 	ROLE_NAMES,
@@ -350,7 +352,7 @@ function runView(
 	};
 }
 
-/** Cuts an answer past `HANDBACK_CEILING` to its head and tail, keeping the BLOCKED lines it cut (see `capBlocked`) and a path to the rest. */
+/** Cuts an answer past `HANDBACK_CEILING` to its head and tail, keeping the BLOCKED lines it cut (see `formatCutBlocked`) and a path to the rest. */
 function trimMiddle(answer: string): string {
 	const buf = Buffer.from(answer, "utf8");
 	if (buf.length <= HANDBACK_CEILING) return answer;
@@ -360,10 +362,8 @@ function trimMiddle(answer: string): string {
 	while (tailStart < buf.length && (buf[tailStart] & 0xc0) === 0x80) tailStart++;
 	const head = buf.subarray(0, headEnd).toString("utf8");
 	const tail = buf.subarray(tailStart).toString("utf8");
-	const cut = capBlocked(blockedLines(answer).filter((l) => !head.includes(l) && !tail.includes(l)));
-	const blocked = cut.kept.map((l) => `${l}\n`).join("");
-	const more = cut.more ? `+${cut.more} more BLOCKED in the full answer\n` : "";
-	return `${head}\n[${tailStart - headEnd} bytes cut]\n${blocked}${more}${tail}\nFull answer: ${saveFull(answer)}`;
+	const blocked = formatCutBlocked(blockedLines(answer).filter((l) => !head.includes(l) && !tail.includes(l)));
+	return `${head}\n[${tailStart - headEnd} bytes cut]\n${blocked}${tail}\nFull answer: ${saveFull(answer)}`;
 }
 
 function formatRun(r: RunResult): string {
@@ -612,6 +612,13 @@ export default function (pi: ExtensionAPI) {
 		shutdown.abort(SESSION_ENDED);
 		shutdown = new AbortController();
 		await Promise.allSettled([...running]);
+	});
+	pi.registerMessageRenderer("delegate", (message, options, theme) => {
+		const text =
+			typeof message.content === "string"
+				? message.content
+				: message.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+		return renderHandback(text, message.details, handbackBlocked(text), options, theme);
 	});
 	pi.registerTool({
 		name: "delegate",
@@ -892,7 +899,8 @@ export default function (pi: ExtensionAPI) {
 						customType: "delegate",
 						content: `Background delegate job ${id}${isError ? " failed" : ""}:\n\n${text}`,
 						display: true,
-						details,
+						// The renderer's job line reads these; evals/score.ts reads the view.
+						details: { ...(details as object), job: id, failed: isError },
 					},
 					// A cancelled job reports without starting a turn: the user stopped it.
 					{ triggerTurn: !controller.signal.aborted, deliverAs: "followUp" },

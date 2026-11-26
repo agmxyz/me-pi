@@ -453,7 +453,11 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 	};
 	const commands = {};
 	const messages = [];
+	const messageRenderers = {};
 	const pi = {
+		registerMessageRenderer: (type, renderer) => {
+			messageRenderers[type] = renderer;
+		},
 		events,
 		sendMessage: (message, options) => messages.push({ message, options }),
 		registerTool: (d) => {
@@ -485,7 +489,7 @@ function setup(t, { env = {}, config, limits = {}, keepHistory = false, withGuar
 	}
 	registerExtension(pi);
 	if (withGuard) registerGuard(pi);
-	return { tool: tools.delegate, handlers, commands, pi, events, messages };
+	return { tool: tools.delegate, handlers, commands, pi, events, messages, messageRenderers };
 }
 
 const run = (tool, params, signal, onUpdate, ctx = CTX) => tool.execute("call", params, signal, onUpdate, ctx);

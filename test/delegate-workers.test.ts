@@ -695,7 +695,7 @@ test("normal main-process exit SIGKILLs live workers", { timeout: 20000 }, async
 import register from ${JSON.stringify(new URL("../packages/pi-workers/extensions/delegate.ts", import.meta.url).href)};
 import { existsSync } from "node:fs";
 let delegate;
-register({ registerTool: (d) => { delegate = d; }, registerCommand: () => {}, on: () => {} });
+register({ registerTool: (d) => { delegate = d; }, registerCommand: () => {}, registerMessageRenderer: () => {}, on: () => {} });
 void delegate.execute("p", { role: "scout", task: "hold" }, undefined, undefined, { cwd: ${JSON.stringify(REPO_ROOT)}, thinkingLevel: "low" });
 const deadline = Date.now() + 10000;
 while (!existsSync(${JSON.stringify(pidFile)}) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));

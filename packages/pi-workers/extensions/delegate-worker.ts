@@ -169,11 +169,28 @@ export function blockedLines(text: string): string[] {
 }
 
 /** What a handback shows of its BLOCKED lines: the first few, each cut to a line, and how many it left out. */
-export function capBlocked(lines: string[]): { kept: string[]; more: number } {
+function capBlocked(lines: string[]): { kept: string[]; more: number } {
 	return {
 		kept: lines.slice(0, MAX_BLOCKED).map((l) => l.slice(0, BLOCKED_LINE_CAP)),
 		more: Math.max(0, lines.length - MAX_BLOCKED),
 	};
+}
+
+const CUT_BLOCKED = (n: number) => `+${n} more BLOCKED in the full answer`;
+const CUT_BLOCKED_LINE = /^\+(\d+) more BLOCKED in the full answer$/;
+
+/** The BLOCKED lines a trimmed answer keeps from its cut middle, and a count line for the rest; empty when none. */
+export function formatCutBlocked(cut: string[]): string {
+	const { kept, more } = capBlocked(cut);
+	return [...kept, ...(more ? [CUT_BLOCKED(more)] : [])].map((l) => `${l}\n`).join("");
+}
+
+/** A handback's BLOCKED lines as shown collapsed: the first few, and how many more, counting those a trim cut away. */
+export function handbackBlocked(text: string): { kept: string[]; more: number } {
+	const lines = text.split("\n").map((l) => l.trim());
+	const cut = lines.reduce((n, l) => n + Number(CUT_BLOCKED_LINE.exec(l)?.[1] ?? 0), 0);
+	const shown = capBlocked(lines.filter((l) => BLOCKED_LINE.test(l)));
+	return { ...shown, more: shown.more + cut };
 }
 
 // Only for repos whose instructions demand subagents: scopeWorkerPrompt drops it when the worker has no
