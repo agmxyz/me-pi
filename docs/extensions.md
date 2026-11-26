@@ -1,6 +1,6 @@
 # Small extensions
 
-Full behaviour of each small extension in this repo. The [README](../README.md#small-extensions) has one line for each and how to install them.
+Full behaviour of each small extension in this repo. The [README](../README.md#extensions) has one line for each and how to install them.
 
 ## `steps`
 
