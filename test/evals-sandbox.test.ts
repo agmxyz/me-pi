@@ -111,6 +111,7 @@ test("a full-rig sandbox loads me-pi from a remote-less clone and keeps every pa
 	assert.deepEqual(settings.packages, ["npm:pi-web-access@0.46.0", s.src]);
 	assert.equal(settings.defaultModel, "gpt-6.1-sol");
 	assert.equal(settings.enableInstallTelemetry, false);
+	assert.equal(settings.defaultProjectTrust, "always");
 	assert.deepEqual(JSON.parse(readFileSync(join(s.agentDir, "delegate.json"), "utf8")), { version: 3 });
 	assert.equal(readlinkSync(join(s.agentDir, "AGENTS.md")), join(s.src, "GLOBAL_AGENTS.md"));
 	assert.equal(readlinkSync(join(s.agentDir, "skills", "one")), join(s.src, "skills", "one"));

@@ -112,6 +112,19 @@
 				{ "id": "no implement call", "delegate": { "role": "implement" }, "count": 0 },
 				{ "id": "one review", "delegate": { "role": "general" }, "count": 1 }
 			]
+		},
+		{
+			"id": "14",
+			"cwd": "repo",
+			"turns": [
+				{
+					"prompt": "Survey how errors are handled across packages/pi-workers/extensions and list the spots that are inconsistent with each other. Don't change anything."
+				}
+			],
+			"expect": [
+				{ "id": "scout for the survey", "delegate": { "role": "scout" }, "count": [1, 3] },
+				{ "id": "no large own read", "maxOwnRead": 12000 }
+			]
 		}
 	]
 }
