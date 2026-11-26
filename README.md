@@ -24,6 +24,8 @@ Workers are **not sandboxed**: they run with your OS permissions and can read yo
 
 ### Small extensions
 
+![A demo run: Pi plans four steps, reads and tests a small cache, fixes its LRU bug, and re-runs the tests; steps, compact-tools and minimal-footer draw the checklist, the one-line rows and the footer.](docs/img/demo.gif)
+
 | Extension | What it does | Filter entry |
 |---|---|---|
 | [`steps`](docs/extensions.md#steps) | Live checklist below the editor set by the model via a `plan` tool, with elapsed time on the current step and a transcript heading when each step starts. Toggle with `/steps on` and `/steps off`. | `"extensions/steps.ts"` |
