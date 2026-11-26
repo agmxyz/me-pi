@@ -2,7 +2,7 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
-## [Unreleased]
+## [0.3.0] - 2026-11-26
 
 - A background job's answer now shows collapsed in the transcript: a `delegate job bgN` line and one line per run (model, cost, time, the answer's first line), like a foreground result, plus up to three of its `BLOCKED:` lines; expand tool output to read it in full. Before, Pi drew the whole answer in a `[delegate]` box (26 lines on average over 30 days, 40 over the last 7), which a coordinator reply follows in 97% of cases. The model still receives the full answer.
 - The routing guidance no longer sends a coordinator's own brief, or the files it will edit, to `scout` when they exceed the ~3 files / ~300 lines / ~12 KB threshold. Sessions read those inline anyway, because a summary can't replace them, and the rule was knowingly skipped.

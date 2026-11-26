@@ -1,6 +1,6 @@
 {
   "name": "me-pi",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "My Pi setup: global policy, skills, the pi-workers extensions, and the steps, watch, minimal-footer, autocompact, compact-tools, and hide-thinking-label extensions",
   "license": "MIT",
