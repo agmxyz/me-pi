@@ -48,12 +48,22 @@ function assertCoordinatorSkill(source) {
 	assert.match(exits, /\(4\) a stop condition your contract names itself/);
 	assert.match(exits, /Nothing else stops the run/);
 	assert.match(source, /Do not judge the task's size first; start/);
+
+	// The goal predicate: all three parts, so the loop cannot end on less.
+	const goal = source.slice(source.indexOf("**Goal.**"), source.indexOf("**BLOCKED, the closed list.**"));
+	assert.match(goal, /the exact check passes on `HEAD`/);
+	assert.match(goal, /`HEAD` is committed with a clean tree/);
+	assert.match(goal, /every acceptance criterion has evidence/);
 	assert.doesNotMatch(source, /propose a split|do not start a part of it/);
 
 	// Verification: the exact check on a committed tree, an early first green commit, the review point as a SHA.
 	const ground = sectionBetween(source, "## 1. ", "## 2. ");
 	assert.match(ground, /fixed review point as a SHA \(never a moving `HEAD`\)/);
 	assert.match(ground, /run the exact check once on the untouched tree/);
+	assert.match(
+		ground,
+		/Start from a clean tree on a branch other than `main` or `master`, keeping a supplied branch and its commits/,
+	);
 	const loop = sectionBetween(source, "## 2. ", "## 3. ");
 	assert.match(loop, /Run the exact check alone\. When it passes, \*\*commit at once\*\*/);
 	assert.match(loop, /Your first green commit should come early/);
@@ -74,6 +84,7 @@ function assertCoordinatorSkill(source) {
 	assert.match(safety, /A guard-denied action stays denied/);
 	assert.match(safety, /check the repository's state/);
 	assert.match(safety, /never repeat a destructive or external command until that state shows its outcome/);
+	assert.match(safety, /A state you cannot explain stops further writes: it is an environment impasse \(reason 3\)/);
 	assert.doesNotMatch(source, /continuation|allowance|ledger|WIP/i);
 }
 
@@ -87,6 +98,8 @@ test("the coordinator skill writes its own change and keeps full review with one
 	assert.match(recovery, /report BLOCKED with the evidence/);
 	assert.match(recovery, /A guard-denied action stays denied/);
 	assert.match(recovery, /fresh passing check on committed work and the review \[the gate\]/);
+	// The guide defers unattended stopping to the skill's closed list instead of restating a rule that conflicts with it.
+	assert.match(recovery, /stops only for its closed list of reasons/);
 	assert.doesNotMatch(delegateGuide, /continuation|attempt allowance|WIP/i);
 	const migration = delegateGuide.slice(delegateGuide.indexOf("## Migrating from implement"));
 	assert.match(migration, /removed the `implement` role, its `check` parameter, and the `implementSkills` config key/);

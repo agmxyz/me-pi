@@ -25,7 +25,7 @@ You are the task's **coordinator** and its only writer: you edit, run the check,
 
 ## 1. Ground (four facts, then go)
 
-Record the branch and tip, the fixed review point as a SHA (never a moving `HEAD`), the exact check, and the acceptance criteria as a numbered list. Read the repository instructions and the code the task owns. Then run the exact check once on the untouched tree, so you know its baseline output. Do not judge the task's size first; start.
+Record the branch and tip, the fixed review point as a SHA (never a moving `HEAD`), the exact check, and the acceptance criteria as a numbered list. Start from a clean tree on a branch other than `main` or `master`, keeping a supplied branch and its commits; in an interactive session without one, agree a branch with the user first. Read the repository instructions and the code the task owns. Then run the exact check once on the untouched tree, so you know its baseline output. Do not judge the task's size first; start.
 
 ## 2. Loop until the goal holds
 
@@ -47,4 +47,4 @@ First re-check the goal: if it does not hold and no closed-list reason applies, 
 
 ## Safety
 
-Never silently switch branches, reset, rebase, stash, discard, or create a worktree. A guard-denied action stays denied: never retry or relay it through another tool, worker, path, session, model, account, or provider. After an interruption, check the repository's state (branch, tip, status, what your last commands changed) before acting, and never repeat a destructive or external command until that state shows its outcome.
+Never silently switch branches, reset, rebase, stash, discard, or create a worktree. A guard-denied action stays denied: never retry or relay it through another tool, worker, path, session, model, account, or provider. After an interruption, check the repository's state (branch, tip, status, what your last commands changed) before acting, and never repeat a destructive or external command until that state shows its outcome. A state you cannot explain stops further writes: it is an environment impasse (reason 3), reported with that evidence.
