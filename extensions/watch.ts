@@ -8,7 +8,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -120,9 +119,15 @@ function readProgress(path: string): { count: number; mtime: number } | undefine
 	return { count, mtime };
 }
 
+// Terminal escape sequences, matched by their ECMA-48 shape: CSI (`ESC [` or C1 CSI, parameters, a final byte),
+// OSC (`ESC ]` up to BEL or `ESC \`), and other `ESC` sequences. Node's `stripVTControlCharacters` is not used:
+// its pattern differs across versions (Node 22 reads `ESC[31mswe BEL` as one sequence and eats "swe").
+const ESCAPES = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[ -/]*[0-~]/g;
+
 /** Strip ANSI codes, control and format characters (bidi, zero-width) and newlines from a label; cap it at 24. */
 export function sanitizeLabel(label: string): string {
-	const plain = stripVTControlCharacters(label)
+	const plain = label
+		.replace(ESCAPES, "")
 		.replace(/[\p{Cc}\p{Cf}]+/gu, " ")
 		.replace(/\s+/g, " ")
 		.trim();

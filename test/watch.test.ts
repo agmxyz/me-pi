@@ -125,6 +125,8 @@ test("duration and label: short forms, and a label loses ANSI codes and newlines
 	assert.equal(duration((2 * 60 + 41) * 60_000), "2h41m");
 	assert.equal(sanitizeLabel("\u001b[31mswe\u0007ep\u001b[0m\nrun\r\t2"), "swe ep run 2");
 	assert.equal(sanitizeLabel("x".repeat(40)).length, 24);
+	assert.equal(sanitizeLabel("\u001b]8;;https://x.test\u0007link\u001b]8;;\u001b\\ \u009b1mC1"), "link C1");
+	assert.equal(sanitizeLabel("a\u001b(Bb\u001b"), "ab", "a charset switch and a lone ESC");
 });
 
 // A real wrapper as the design's launcher writes it: its pid file, a progress file, and `$?` into the exit file.
