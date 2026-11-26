@@ -5,7 +5,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Box, type Component, Container, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
 /** The emoji and phrase a running worker shows; picked once per worker so rerenders keep it. */
 export interface Persona {
@@ -196,6 +196,45 @@ export function renderCall(args: any, theme: Theme, context?: RenderStatus): Com
 		(badges.length ? ` ${fg("warning", `[${badges.join(", ")}]`)}` : "") +
 		` ${fg("dim", task)}`;
 	return new Lines([line], ellipsis);
+}
+
+/**
+ * A background job's answer, delivered as a `delegate` custom message: collapsed, one line naming the job plus the
+ * collapsed result (one line per run) and the answer's BLOCKED lines, which need the reader; expanded, the full
+ * result. A view-less handback (an error path) shows its first lines and then the BLOCKED lines, so one may show twice.
+ * Indented by `outputPad`, like a tool result; Pi's custom message component adds the blank line above.
+ */
+export function renderHandback(
+	text: string,
+	details: any,
+	blocked: { kept: string[]; more: number },
+	options: { expanded: boolean; outputPad: number },
+	theme: Theme,
+): Component {
+	const fg: Fg = theme.fg.bind(theme);
+	const [head = "", ...rest] = text.split("\n");
+	// Sessions from before `details.job` existed carry the job only in the content's first line.
+	const old = /^Background delegate job (\S+?)( failed)?:$/.exec(head);
+	const job = typeof details?.job === "string" ? details.job : old?.[1];
+	const failed = typeof details?.failed === "boolean" ? details.failed : Boolean(old?.[2]);
+	const label = fg(failed ? "error" : "toolTitle", `delegate job ${job ?? "?"}${failed ? " failed" : ""}`);
+	const box = new Box(options.outputPad, 0);
+	box.addChild(new Lines([label]));
+	const body = details?.view
+		? renderResult({ content: [], details }, { expanded: options.expanded, isPartial: false }, theme)
+		: renderResult(
+				{ content: [{ type: "text", text: (old ? rest : [head, ...rest]).join("\n").trim() }] },
+				{ expanded: options.expanded, isPartial: false },
+				theme,
+			);
+	box.addChild(body);
+	if (!options.expanded && blocked.kept.length) {
+		const more = blocked.more
+			? [fg("dim", `… ${blocked.more} more BLOCKED line${blocked.more === 1 ? "" : "s"}`)]
+			: [];
+		box.addChild(new Lines([...blocked.kept.map((l) => fg("warning", l)), ...more]));
+	}
+	return box;
 }
 
 export function renderResult(

@@ -287,7 +287,7 @@ test("non-TUI worker execution creates no widget or elapsed timer", async (t) =>
 });
 
 test("background: returns a job id at once, then delivers the answer as a message that starts a turn", async (t) => {
-	const { tool, messages } = setup(t);
+	const { tool, messages, messageRenderers } = setup(t);
 	const { ctx, statuses } = bgCtx();
 	const res = await run(tool, { role: "scout", task: "look around", background: true }, undefined, undefined, ctx);
 	assert.equal(res.isError, undefined);
@@ -302,7 +302,54 @@ test("background: returns a job id at once, then delivers the answer as a messag
 	assert.equal(message.display, true);
 	assert.match(message.content, /^Background delegate job bg1:\n\n/);
 	assert.ok(message.details.view, "details keep the run view");
+	const plain = { fg: (_c, t) => t, bg: (_c, t) => t, bold: (t) => t };
+	assert.equal(message.details.job, "bg1");
+	assert.equal(message.details.failed, false);
+	const drawn = messageRenderers.delegate(message, { expanded: false, outputPad: 1 }, plain).render(200);
+	assert.deepEqual(
+		drawn.map((l) => l.trimEnd().replace(/\$[\d.]+ \d+s DONE .*/, "$X Ns DONE")),
+		[" delegate job bg1", " ✓ claude-session @low $X Ns DONE"],
+		"the handback collapses to its job line and its run",
+	);
 	assert.deepEqual(statuses, [], "no footer status line: the activity widget shows running jobs");
+});
+
+test("the registered handback renderer keeps BLOCKED lines, counts ones trimmed away, and reads array content", (t) => {
+	const { messageRenderers } = setup(t);
+	const plain = { fg: (_c, t) => t, bg: (_c, t) => t, bold: (t) => t };
+	const view = {
+		stage: "Done",
+		web: false,
+		runs: [{ model: "m", thinking: "low", web: false, done: true, turns: 1, cost: 0, ms: 0, output: "Answer" }],
+	};
+	const body =
+		"Answer\n- BLOCKED: a: x\n[9 bytes cut]\nBLOCKED: b: y\n+4 more BLOCKED in the full answer\nBLOCKED: c: z\nBLOCKED: d: w";
+	const content = [{ type: "text", text: `Background delegate job bg2:\n\n${body}` }];
+	const drawn = messageRenderers
+		.delegate({ content, details: { view } }, { expanded: false, outputPad: 0 }, plain)
+		.render(200);
+	assert.deepEqual(
+		drawn.map((l) => l.trimEnd()),
+		[
+			"delegate job bg2",
+			"✓ m @low $0.0000 0s Answer",
+			"- BLOCKED: a: x",
+			"BLOCKED: b: y",
+			"BLOCKED: c: z",
+			"… 5 more BLOCKED lines",
+		],
+	);
+	const failed = messageRenderers
+		.delegate(
+			{ content: "Background delegate job bg3 failed:\n\n✗ boom", details: {} },
+			{ expanded: false, outputPad: 0 },
+			plain,
+		)
+		.render(200);
+	assert.deepEqual(
+		failed.map((l) => l.trimEnd()),
+		["delegate job bg3 failed", "✗ boom"],
+	);
 });
 
 test("background: the turn's abort does not stop a job; /delegate cancel does, without starting a turn", async (t) => {

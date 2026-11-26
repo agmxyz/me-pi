@@ -7,9 +7,8 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 // Pi sets up its theme before any tool renders; the Markdown theme needs it.
 initTheme(undefined, false);
 
-const { activityWidget, pickPersona, progressLines, renderCall, renderResult, SKIN_TONES } = await import(
-	"../packages/pi-workers/extensions/delegate-render.ts"
-);
+const { activityWidget, pickPersona, progressLines, renderCall, renderHandback, renderResult, SKIN_TONES } =
+	await import("../packages/pi-workers/extensions/delegate-render.ts");
 
 // Colours as real ANSI codes, so width checks measure only visible text.
 const theme = { fg: (_color, text) => `\x1b[31m${text}\x1b[39m`, bold: (text) => `\x1b[1m${text}\x1b[22m` };
@@ -331,6 +330,63 @@ test("an expanded result shows each answer as Markdown, its problem, and its fil
 	assert.ok(text.replace(/\s/g, "").includes(`Filesin/tmp/${long}:nonewritten`), text);
 	assert.match(text, /Round-1 answers:/);
 	for (const width of [20, 60]) assertFits(result, width);
+});
+
+const none = { kept: [], more: 0 };
+const handback = (text, details, expanded = false, blocked = none, outputPad = 0) =>
+	renderHandback(text, details, blocked, { expanded, outputPad }, theme);
+
+test("a background handback collapses to its job line and one line per run; expanded shows the full answer", () => {
+	const answer = `# Findings\n\n${"- point\n".repeat(40)}`;
+	const view = { stage: "Done", web: false, runs: [run({ output: answer })], footer: "Total: $0.0017." };
+	const text = `Background delegate job bg3:\n\n${answer}`;
+	const collapsed = handback(text, { view });
+	assert.deepEqual(
+		draw(collapsed, 200).map((l) => l.trimEnd()),
+		["delegate job bg3", "✓ claude-haiku-5-5 @low $0.0017 6s Findings", "Total: $0.0017."],
+	);
+	assertFits(collapsed, 12);
+	// Indented like a tool result; details name the job, and win over the content's first line.
+	assert.deepEqual(
+		draw(handback(text, { view, job: "bg7", failed: true }, false, none, 2), 200).map((l) => l.trimEnd()),
+		["  delegate job bg7 failed", "  ✓ claude-haiku-5-5 @low $0.0017 6s Findings", "  Total: $0.0017."],
+	);
+	assertFits(handback(text, { view }, false, none, 2), 12);
+	const expanded = draw(handback(text, { view }, true), 80);
+	assert.equal(expanded.filter((l) => l.includes("point")).length, 40);
+	assertFits(handback(text, { view }, true), 30);
+});
+
+test("a collapsed handback keeps the BLOCKED lines it is given, counts the rest, and drops them when expanded", () => {
+	const output = "Done.\n\n- BLOCKED: step 2: no access\n- BLOCKED: step 3: no key";
+	const view = { stage: "Done", web: false, runs: [run({ output })] };
+	const blocked = { kept: ["BLOCKED: step 2: no access", `BLOCKED: step 3: ${long}`], more: 2 };
+	const collapsed = handback("Background delegate job bg6:\n\nx", { view }, false, blocked);
+	assert.deepEqual(
+		draw(collapsed, 60)
+			.slice(2)
+			.map((l) => l.trimEnd()),
+		["BLOCKED: step 2: no access", `BLOCKED: step 3: ${"x".repeat(40)}...`, "… 2 more BLOCKED lines"],
+	);
+	assertFits(collapsed, 20);
+	// Expanded, the answer itself shows each BLOCKED line once, as Markdown, with no warning lines added.
+	const warn = { ...theme, fg: (color, text) => (color === "warning" ? `<w>${text}</w>` : text) };
+	const lines = renderHandback("x", { view }, blocked, { expanded: true, outputPad: 0 }, warn).render(60).map(strip);
+	assert.equal(lines.filter((l) => l.includes("BLOCKED: step 2: no access")).length, 1);
+	assert.equal(lines.filter((l) => l.includes("BLOCKED: step 3: no key")).length, 1);
+	assert.ok(!lines.some((l) => l.includes("<w>") || l.includes("more BLOCKED")), lines.join("\n"));
+});
+
+test("a failed handback without a view names the failure and shows its text, capped when collapsed", () => {
+	const lines = draw(handback("Background delegate job bg4 failed:\n\n✗ worker died\n1\n2\n3\n4\n5\n6", {}), 200);
+	assert.deepEqual(
+		lines.map((l) => l.trimEnd()),
+		["delegate job bg4 failed", "✗ worker died", "1", "2", "3", "4", "\u2026 (2 more lines)"],
+	);
+	assert.deepEqual(
+		draw(handback("Background delegate job bg5:\n\nplain", undefined), 200).map((l) => l.trimEnd()),
+		["delegate job bg5", "plain"],
+	);
 });
 
 test("results without a view (refused calls, older sessions) show their text", () => {
