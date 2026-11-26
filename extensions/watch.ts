@@ -45,8 +45,18 @@ type Watch = {
 	notified?: boolean;
 };
 type Dropped = { label: string; dropped: true };
-/** What only this session's checks know, never stored: the miss count, an unknown reason, the progress read. */
-type Live = { misses: number; unknown?: string; count?: number; mtime?: number };
+/**
+ * What only this session's checks know, never stored: the miss count, whether the first miss came from the
+ * check on session_start (the work ended while no Pi watched), an unknown reason, and the progress read.
+ */
+type Live = {
+	misses: number;
+	missedAtStart?: boolean;
+	unknown?: string;
+	count?: number;
+	mtime?: number;
+	progressError?: string;
+};
 
 /** The rule for a watch's next state from one check; the only place that decides running, finished or died. */
 export function assess(watch: { lstart: string; misses: number }, observation: Observation): Assessment {
@@ -60,13 +70,16 @@ export function assess(watch: { lstart: string; misses: number }, observation: O
 	return misses >= 2 ? { state: "died" } : { state: "running", misses };
 }
 
-/** `ps -o lstart= -p <pid>` with fixed argv, no shell, the C locale and a 2 s timeout. Exit 1 with no output is a gone pid. */
+/**
+ * `ps -o lstart= -p <pid>` with fixed argv, no shell, the C locale, UTC (so a Pi restored under another TZ
+ * reads the same start time) and a 2 s timeout. Exit 1 with no output is a gone pid.
+ */
 export function runPs(pid: number): Promise<Ps> {
 	return new Promise((done) => {
 		execFile(
 			"ps",
 			["-o", "lstart=", "-p", String(pid)],
-			{ env: { ...process.env, LC_ALL: "C" }, timeout: PS_TIMEOUT_MS },
+			{ env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: PS_TIMEOUT_MS },
 			(err, stdout, stderr) => {
 				const out = stdout.trim();
 				if (!err && out) return done({ lstart: out.replace(/\s+/g, " ") });
@@ -107,10 +120,10 @@ function readProgress(path: string): { count: number; mtime: number } | undefine
 	return { count, mtime };
 }
 
-/** Strip ANSI codes, control characters and newlines from a label, and cap it at 24 characters. */
+/** Strip ANSI codes, control and format characters (bidi, zero-width) and newlines from a label; cap it at 24. */
 export function sanitizeLabel(label: string): string {
 	const plain = stripVTControlCharacters(label)
-		.replace(/\p{Cc}+/gu, " ")
+		.replace(/[\p{Cc}\p{Cf}]+/gu, " ")
 		.replace(/\s+/g, " ")
 		.trim();
 	return [...plain].slice(0, MAX_LABEL).join("");
@@ -138,9 +151,12 @@ function fragment(watch: Watch, live: Live, now: number): string {
 		return [`${glyph} ${watch.label} exit ${watch.exit}`, done, age].filter(Boolean).join(" · ");
 	}
 	if (watch.state === "died") return [`✗ ${watch.label} died, no exit status`, done].filter(Boolean).join(" · ");
-	if (live.unknown) return `? ${watch.label} unchecked (${live.unknown})`;
+	const unknown = live.unknown ?? (live.progressError && `progress: ${live.progressError}`);
+	if (unknown) return `? ${watch.label} unchecked (${unknown})`;
 	const last = live.mtime === undefined ? undefined : `last +1 ${duration(now - live.mtime)}`;
-	return [`⏵ ${watch.label}`, done, last, duration(now - watch.since)].filter(Boolean).join(" · ");
+	return [["⏵", watch.label, done].filter(Boolean).join(" "), last, duration(now - watch.since)]
+		.filter(Boolean)
+		.join(" · ");
 }
 
 /** The message that wakes the model: `[watch] sweep finished: exit 0, 24/24 items, 3h02m (progress: run/record.jsonl)`. */
@@ -197,15 +213,19 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 		};
 
 		const observe = async (watch: Watch, live: Live): Promise<Assessment> => {
+			// An unreadable progress file is shown, but never keeps the check from seeing the end.
 			if (watch.progress) {
-				const progress = readProgress(watch.progress);
-				live.count = progress?.count;
-				live.mtime = progress?.mtime;
+				try {
+					const progress = readProgress(watch.progress);
+					live.count = progress?.count;
+					live.mtime = progress?.mtime;
+					live.progressError = undefined;
+				} catch (err) {
+					live.progressError = (err as Error).message.split("\n")[0];
+				}
 			}
 			const result = await ps(watch.pid);
-			// The exit file matters only once the wrapper is gone; while it runs, the file can't be this run's.
-			const alive = typeof result === "object" && !("lstart" in result && result.lstart !== watch.lstart);
-			const exit = watch.exitFile && !alive ? readExit(watch.exitFile) : undefined;
+			const exit = watch.exitFile ? readExit(watch.exitFile) : undefined;
 			return assess({ lstart: watch.lstart, misses: live.misses }, { ps: result, exit });
 		};
 
@@ -228,8 +248,11 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 							misses: entry.live.misses,
 						};
 					}
-					if (at !== generation || watches.get(label) !== entry) return;
+					if (at !== generation) return;
+					// Dropped or replaced while `ps` ran: the result is for a watch that is gone.
+					if (watches.get(label) !== entry) continue;
 					if (result.state === "running" || result.state === "unknown") {
+						if (entry.live.misses === 0 && result.misses === 1) entry.live.missedAtStart = !live;
 						entry.live.misses = result.misses;
 						entry.live.unknown = result.state === "unknown" ? result.reason : undefined;
 						continue;
@@ -246,7 +269,9 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 					// Marked notified before the wake, so a restore never wakes the model a second time.
 					pi.appendEntry(KEY, watch);
 					const message = { customType: KEY, content: wakeText(watch), display: true };
-					if (live) await pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
+					// A death confirmed by the timer whose first miss was on session_start also ended unwatched.
+					const wake = live && !(result.state === "died" && entry.live.missedAtStart);
+					if (wake) await pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
 					else await pi.sendMessage(message);
 				}
 			} finally {
@@ -307,13 +332,16 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 						return { content: [{ type: "text", text: `dropped ${label}` }], details: undefined };
 					}
 					if (params.pid === undefined) throw new Error("watch: pid is required (the wrapper shell's pid)");
-					const existing = watches.get(label);
-					if (existing && !ended(existing.watch)) throw new Error(`watch: ${label} is already watched`);
-					const others = [...watches.keys()].filter((name) => name !== label);
-					if (others.length >= MAX_WATCHES)
-						throw new Error(
-							`watch: at most ${MAX_WATCHES} watches; drop one first (watch({ label, drop: true }))`,
-						);
+					const room = () => {
+						const existing = watches.get(label);
+						if (existing && !ended(existing.watch)) throw new Error(`watch: ${label} is already watched`);
+						const others = [...watches.keys()].filter((name) => name !== label);
+						if (others.length >= MAX_WATCHES)
+							throw new Error(
+								`watch: at most ${MAX_WATCHES} watches; drop one first (watch({ label, drop: true }))`,
+							);
+					};
+					room();
 					const exitFile = params.exitFile === undefined ? undefined : resolve(cwd, params.exitFile);
 					// An exit file left by an earlier run would read as this run's clean finish.
 					if (exitFile && existsSync(exitFile))
@@ -323,6 +351,8 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 					const found = await ps(params.pid);
 					if (found === "gone") throw new Error(`watch: pid ${params.pid} is not running`);
 					if ("error" in found) throw new Error(`watch: could not check pid ${params.pid} (${found.error})`);
+					// A parallel `watch` call may have taken the label or the last slot while `ps` ran.
+					room();
 					const watch: Watch = {
 						label,
 						pid: params.pid,

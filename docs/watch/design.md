@@ -48,7 +48,7 @@ A watched launcher drops its final `herdr agent prompt`, because the extension o
 | running | pid has its recorded start time | `⏵ sweep 7/24 · last +1 23m · 2h41m` |
 | finished | pid gone or start time changed; `exitFile` holds an integer | `✓ sweep exit 0 · 24/24 · 3h02m` (`✗ … exit 1` when non-zero) |
 | died | pid gone on **two checks in a row**, and no valid `exitFile` | `✗ sweep died, no exit status · 7/24` |
-| unknown | `ps` failed for a reason other than "no such pid", or timed out (2 s) | `? sweep unchecked (<reason>)` |
+| unknown | `ps` failed for a reason other than "no such pid", or timed out (2 s); or the progress file can't be read (the end is still detected) | `? sweep unchecked (<reason>)` |
 
 - **"Last +1 23m"** is the age of the progress file's mtime. For a serial sweep this is the age of the current item. With parallel workers it is the time since any item finished, and the label claims no more than that.
 - **The second check before "died"** covers the window between the job's exit and the wrapper's `echo $? > exit`. A finish read on the second check still counts as `finished`.
@@ -65,7 +65,7 @@ A watched launcher drops its final `herdr agent prompt`, because the extension o
 ## Waking the model
 
 - **End seen while the session is live.** The extension first appends a `watch` entry with `{ state, notified: true }`, then calls `pi.sendMessage({ customType: "watch", content, display: true }, { triggerTurn: true, deliverAs: "followUp" })`. While idle this starts a turn; while streaming it queues after the current turn.
-- **End found on `session_start`** (the work ended while no Pi was watching). The extension sends the same message without `triggerTurn`. When idle, that appends the message to the session at once, durably, without a turn (`agent-session.js:1976-1990`). The model reads it on the user's next prompt.
+- **End found on `session_start`** (the work ended while no Pi was watching). The extension sends the same message without `triggerTurn`. When idle, that appends the message to the session at once, durably, without a turn (`agent-session.js:1976-1990`). The model reads it on the user's next prompt. This includes a death whose first miss came from the `session_start` check and whose second came from the timer: the work still ended unwatched. *(Added in implementation review: without it, resuming an old session whose launcher was killed started a turn on its own.)*
 - A watch reaches an end state once. Running states never wake the model.
 - **Two sessions watching one pid** each wake their own model once. That is rare and harmless, so there is no lock.
 - Message text: `[watch] sweep finished: exit 0, 24/24 items, 3h02m (progress: run/record.jsonl)`.
@@ -95,7 +95,7 @@ There are no settings and no command. Without a watch there is nothing on screen
 
 ## Security
 
-- **Runs:** only `ps -o lstart= -p <int>` through `execFile`, with fixed argv, no shell, `LC_ALL=C`, and a 2 s timeout.
+- **Runs:** only `ps -o lstart= -p <int>` through `execFile`, with fixed argv, no shell, `LC_ALL=C`, `TZ=UTC` (so a Pi restored under another time zone reads the same start time, not a reused pid), and a 2 s timeout.
 - **Reads:** the size, mtime and newline count of `progress`, and one integer from `exitFile`. No content enters a model message.
 - **Writes:** only session entries.
 - **Guard:** not involved. The launcher itself goes through the `bash` tool, which the guard sees.
@@ -137,6 +137,7 @@ Done when `npm run check --prefix extensions` passes. Add one README row under `
 - A real reboot.
 - Whether a triggered turn disturbs half-typed editor text.
 - Colour codes inside status text.
+- A wake queued as `followUp` while a turn streams is dropped if the user aborts that turn: Pi's abort clears the agent's queue (`interactive-mode.js` `restoreQueuedMessagesToEditor`, which puts back only typed prompts), but the entry is already `notified`. Read from code, not reproduced live. The footer still shows the end until the next prompt. Accepted for v1.
 
 ## Open questions (decided defaults, change if wrong)
 
