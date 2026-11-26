@@ -1,8 +1,10 @@
 // Minimal one-line footer: "folder (branch)  ctx%/window (auto)" left, "model • thinking" right.
+// "(auto)" is Pi's default compaction point; "(auto 50%)" a setting that moves it for this model (see /autocompact).
 // Extension statuses (e.g. delegate jobs) still get their own line when present.
 import { basename } from "node:path";
-import { type ExtensionAPI, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { compactionLabel } from "./autocompact.ts";
 
 // Same token format and 70/90% colour thresholds as Pi's built-in footer
 // (dist/modes/interactive/components/footer.js, not exported); copied, so they can drift from Pi.
@@ -17,12 +19,24 @@ function formatTokens(count: number): string {
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (!ctx.hasUI) return;
-		let autoCompact = true;
-		try {
-			autoCompact = SettingsManager.create(ctx.cwd).getCompactionEnabled();
-		} catch (error) {
-			ctx.ui.notify(`minimal-footer: could not read compaction setting (${String(error)})`, "warning");
-		}
+		// Recomputed only when the model or the session's compaction settings change (a model switch, the settings menu's
+		// auto-compact toggle, a reload); a broken setting warns once per change.
+		let labelFor: string | undefined;
+		let label: string | undefined;
+		const compaction = () => {
+			const model = ctx.model;
+			const settings = pi.getSettings();
+			const key = JSON.stringify([model?.provider, model?.id, model?.contextWindow, settings.compaction]);
+			if (key === labelFor) return label;
+			labelFor = key;
+			try {
+				label = compactionLabel(settings, model);
+			} catch (error) {
+				label = "auto ?";
+				ctx.ui.notify(`minimal-footer: could not read compaction setting (${String(error)})`, "warning");
+			}
+			return label;
+		};
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
@@ -36,7 +50,8 @@ export default function (pi: ExtensionAPI) {
 					const usage = ctx.getContextUsage();
 					const window = usage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
 					const percent = usage?.percent;
-					const contextText = `${percent == null ? "?" : `${percent.toFixed(1)}%`}/${formatTokens(window)}${autoCompact ? " (auto)" : ""}`;
+					const auto = compaction();
+					const contextText = `${percent == null ? "?" : `${percent.toFixed(1)}%`}/${formatTokens(window)}${auto ? ` (${auto})` : ""}`;
 					const color = (percent ?? 0) > 90 ? "error" : (percent ?? 0) > 70 ? "warning" : "dim";
 					const left = `${theme.fg("dim", `${location}  `)}${theme.fg(color, contextText)}`;
 

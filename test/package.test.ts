@@ -13,6 +13,7 @@ const workerExtensions = ["extensions/delegate.ts", "extensions/guard.ts", "exte
 const rigExtensions = [
 	"extensions/steps.ts",
 	"extensions/minimal-footer.ts",
+	"extensions/autocompact.ts",
 	"extensions/compact-tools.ts",
 	"extensions/hide-thinking-label.ts",
 ];
