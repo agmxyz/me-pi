@@ -17,6 +17,7 @@ const {
 	parseRequest,
 	reserveTokensFor,
 	setModelReserve,
+	writeGlobalReserve,
 	default: register,
 } = await import("../extensions/autocompact.ts");
 
@@ -153,10 +154,10 @@ test("auto removes only reserveTokens, and drops the entry once it is empty", as
 	assert.match(again.text, /Active now\./);
 });
 
-test("a value already active, or already saved, offers no reload", async () => {
+test("a value already saved and active is reported as active and offers no reload", async () => {
 	reset({ compaction: { modelOverrides: { [KEY]: { reserveTokens: 500_000 } } } });
 	const result = await run("50");
-	assert.match(result.text, /is already at 50%/);
+	assert.match(result.text, /^50% for anthropic\/claude-opus was already saved in /);
 	assert.match(result.text, /Active now\./);
 	assert.deepEqual(result.selects, []);
 	assert.equal(result.reloads, 0);
@@ -175,7 +176,9 @@ test("when idle, the reload is offered with No first, and runs only on Yes", asy
 	assert.doesNotMatch(accepted.text, /Not active yet/);
 	// Saved earlier but declined: asking again offers the reload again.
 	const again = await run("50", { settings: {} });
-	assert.match(again.text, /is already at 50%/);
+	assert.match(again.text, /^50% for anthropic\/claude-opus was already saved in .*\.\n/);
+	assert.doesNotMatch(again.text, /already at/);
+	assert.match(again.text, /Not active yet: this session still compacts at 98%/);
 	assert.equal(again.selects.length, 1);
 	// A bare /autocompact only reports.
 	assert.deepEqual((await run("")).selects, []);
@@ -201,7 +204,9 @@ test("with no argument it reports the model, window, threshold and source withou
 	const result = await run("");
 	assert.match(
 		result.text,
-		/^anthropic\/claude-opus compacts at 90% \(above 900,000 of 1,000,000 tokens\), from compaction\.reserveTokens/,
+		new RegExp(
+			`^anthropic/claude-opus compacts at 90% \\(above 900,000 of 1,000,000 tokens\\), from compaction\\.reserveTokens in ${GLOBAL} `,
+		),
 	);
 	assert.match(result.text, /Active now\./);
 	assert.deepEqual(readGlobal(), { compaction: { reserveTokens: 100_000 } });
@@ -258,4 +263,41 @@ test("a settings file with a BOM is read, and a later Pi save from the session k
 		theme: "dark",
 		compaction: { modelOverrides: { [KEY]: { reserveTokens: 500_000 } }, enabled: false },
 	});
+});
+
+test("a reserve not below the window is described as compacting on every turn", async () => {
+	reset({ compaction: { reserveTokens: 1_500_000 } });
+	const result = await run("");
+	assert.match(
+		result.text,
+		/compacts on every turn \(its reserve of 1,500,000 tokens is not below its 1,000,000-token window\), from compaction\.reserveTokens/,
+	);
+	assert.doesNotMatch(result.text, /-\d|0% \(above/);
+	assert.equal(compactionLabel({ compaction: { reserveTokens: 1_500_000 } }, OPUS), "auto every turn");
+	assert.equal(compactionLabel({ compaction: { reserveTokens: 1_000_000 } }, OPUS), "auto every turn");
+});
+
+test("an ordinary reserveTokens in the project file is named as the source", async () => {
+	reset({}, { compaction: { reserveTokens: 100_000 } });
+	assert.match((await run("")).text, new RegExp(`from compaction\\.reserveTokens in ${PROJECT_FILE} `));
+});
+
+test("the write fails loudly when Pi's lock does not run the update, and writes nothing", async () => {
+	reset({ theme: "dark" });
+	const manager: any = SettingsManager.create(PROJECT, AGENT);
+	manager.storage = { withLock: () => undefined };
+	await assert.rejects(writeGlobalReserve(manager, KEY, 500_000), /settings lock returned without running the update/);
+	manager.storage = {};
+	await assert.rejects(writeGlobalReserve(manager, KEY, 500_000), /no settings storage to lock/);
+	// An async lock is awaited, so its result is reported, not lost.
+	let written: string | undefined;
+	manager.storage = {
+		withLock: async (_scope: string, fn: (current: string | undefined) => string | undefined) => {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			written = fn("{}");
+		},
+	};
+	assert.equal(await writeGlobalReserve(manager, KEY, 500_000), true);
+	assert.deepEqual(JSON.parse(written!), { compaction: { modelOverrides: { [KEY]: { reserveTokens: 500_000 } } } });
+	assert.deepEqual(readGlobal(), { theme: "dark" });
 });

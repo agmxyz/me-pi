@@ -1,13 +1,22 @@
 // /autocompact <35-80|auto>: sets where Pi auto-compacts the current model, as a percentage of its context window.
 // Pi does the compacting; this only writes compaction.modelOverrides["provider/id"].reserveTokens in the global
-// settings file, since Pi compacts when context tokens exceed window - reserveTokens.
+// settings file (~/.pi/agent/settings.json, never a project file), since Pi compacts when context tokens exceed
+// window - reserveTokens. The value follows the model across projects, but a project .pi/settings.json entry for the
+// same model wins; the reply says so.
+// - The write is a read-modify-write under Pi's own settings lock and keeps every other key; `auto` removes only
+//   reserveTokens and drops an entry left empty.
+// - A threshold under 60,000 tokens is refused: Pi keeps the last 20,000 tokens unsummarised by default, so it would
+//   compact almost every turn.
+// - A running session reads settings only on /reload, which ends background delegate jobs. So the command never
+//   reloads unasked: the reply says whether the value is active now, and when the agent is idle it offers the reload
+//   with "No" first.
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 
-export const MIN_PERCENT = 35;
-export const MAX_PERCENT = 80;
+const MIN_PERCENT = 35;
+const MAX_PERCENT = 80;
 // Pi keeps the most recent 20,000 tokens unsummarised by default; a threshold near that compacts almost every turn.
-export const MIN_THRESHOLD_TOKENS = 60_000;
+const MIN_THRESHOLD_TOKENS = 60_000;
 
 type ModelRef = { provider: string; id: string };
 type Settings = ReturnType<SettingsManager["getSettings"]>;
@@ -22,12 +31,12 @@ export function reserveTokensFor(window: number, percent: number): number {
 	return Math.round(window * (1 - percent / 100));
 }
 
-/** The share of `window` at which Pi compacts with `reserve` tokens reserved. */
-export function thresholdPercent(window: number, reserve: number): number {
+/** The share of `window` at which Pi compacts with `reserve` tokens reserved; 0 when it compacts on any context. */
+function thresholdPercent(window: number, reserve: number): number {
 	return Math.max(0, Math.round((100 * (window - reserve)) / window));
 }
 
-export type Request = { kind: "show" } | { kind: "auto" } | { kind: "set"; percent: number } | { kind: "invalid" };
+type Request = { kind: "show" } | { kind: "auto" } | { kind: "set"; percent: number } | { kind: "invalid" };
 
 export function parseRequest(args: string): Request {
 	const arg = args.trim();
@@ -53,7 +62,12 @@ export function compactionLabel(settings: Settings, model: (ModelRef & { context
 	const custom =
 		settings.compaction?.reserveTokens !== undefined ||
 		settings.compaction?.modelOverrides?.[modelKey(model)]?.reserveTokens !== undefined;
-	return custom ? `auto ${thresholdPercent(model.contextWindow, resolveReserve(settings, model))}%` : "auto";
+	if (!custom) return "auto";
+	const reserve = resolveReserve(settings, model);
+	// A reserve at or above the window makes Pi compact on every turn.
+	return reserve >= model.contextWindow
+		? "auto every turn"
+		: `auto ${thresholdPercent(model.contextWindow, reserve)}%`;
 }
 
 /**
@@ -84,22 +98,34 @@ export function setModelReserve(settings: Record<string, any>, key: string, rese
 }
 
 /** Read-modify-write of the global settings file under Pi's own settings lock, so concurrent Pi writes are not lost. */
-function writeGlobalReserve(manager: SettingsManager, key: string, reserve: number | undefined): boolean {
-	// SettingsManager has no public setter for modelOverrides; its storage is private, so check the shape we rely on.
+export async function writeGlobalReserve(
+	manager: SettingsManager,
+	key: string,
+	reserve: number | undefined,
+): Promise<boolean> {
+	// SettingsManager has no public setter for modelOverrides, so this reaches its private storage; replace it with that
+	// setter, and drop these checks, once Pi has one.
 	const storage = (manager as any).storage;
 	if (typeof storage?.withLock !== "function")
 		throw new Error("this Pi version's SettingsManager has no settings storage to lock; nothing was written.");
+	let ran = false;
 	let changed = false;
-	storage.withLock("global", (current: string | undefined) => {
+	// Pi 1.6's withLock is synchronous; awaiting also covers an async one, and `ran` catches one that never calls back.
+	await storage.withLock("global", (current: string | undefined) => {
+		ran = true;
 		const settings = current ? JSON.parse(current.replace(/^\uFEFF/, "")) : {};
 		if (!isObject(settings)) throw new Error("settings.json is not a JSON object; nothing was written.");
 		changed = setModelReserve(settings, key, reserve);
 		return changed ? JSON.stringify(settings, null, 2) : undefined;
 	});
+	if (!ran) throw new Error("Pi's settings lock returned without running the update; nothing was written.");
 	return changed;
 }
 
-type Saved = { reserve: number; source: "project" | "global" | "setting" | "default" };
+type Saved = {
+	reserve: number;
+	source: "project" | "global" | "project setting" | "global setting" | "default";
+};
 
 /** What the settings files on disk give `model`, and which part of them decides it. */
 function savedReserve(manager: SettingsManager, model: ModelRef): Saved {
@@ -109,7 +135,11 @@ function savedReserve(manager: SettingsManager, model: ModelRef): Saved {
 		return { reserve, source: "project" };
 	if (manager.getGlobalSettings().compaction?.modelOverrides?.[key]?.reserveTokens !== undefined)
 		return { reserve, source: "global" };
-	return { reserve, source: manager.getSettings().compaction?.reserveTokens !== undefined ? "setting" : "default" };
+	if (manager.getProjectSettings().compaction?.reserveTokens !== undefined)
+		return { reserve, source: "project setting" };
+	if (manager.getGlobalSettings().compaction?.reserveTokens !== undefined)
+		return { reserve, source: "global setting" };
+	return { reserve, source: "default" };
 }
 
 const RELOAD_COST = "/reload restarts extensions and ends running background delegate jobs";
@@ -135,7 +165,9 @@ export default function (pi: ExtensionAPI) {
 			const window = model.contextWindow;
 			if (!(window > 0)) return reply(`${key} reports no context window, so a percentage cannot be set.`, "error");
 			const describe = (reserve: number) =>
-				`${thresholdPercent(window, reserve)}% (above ${tokens(window - reserve)} of ${tokens(window)} tokens)`;
+				reserve >= window
+					? `on every turn (its reserve of ${tokens(reserve)} tokens is not below its ${tokens(window)}-token window)`
+					: `at ${thresholdPercent(window, reserve)}% (above ${tokens(window - reserve)} of ${tokens(window)} tokens)`;
 
 			let reserve: number | undefined;
 			if (request.kind === "set") {
@@ -153,7 +185,7 @@ export default function (pi: ExtensionAPI) {
 			const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 			let changed = false;
 			try {
-				if (request.kind !== "show") changed = writeGlobalReserve(load(), key, reserve);
+				if (request.kind !== "show") changed = await writeGlobalReserve(load(), key, reserve);
 			} catch (error) {
 				return reply(`/autocompact: nothing was written: ${message(error)}`, "error");
 			}
@@ -162,7 +194,7 @@ export default function (pi: ExtensionAPI) {
 				lines.push(
 					changed
 						? `Saved ${request.percent}% for ${key} in ${globalPath}.`
-						: `${key} is already at ${request.percent}%.`,
+						: `${request.percent}% for ${key} was already saved in ${globalPath}.`,
 				);
 			if (request.kind === "auto")
 				lines.push(
@@ -176,10 +208,11 @@ export default function (pi: ExtensionAPI) {
 				const from = {
 					project: `the override in ${projectPath}`,
 					global: `the override in ${globalPath}`,
-					setting: "compaction.reserveTokens (no per-model override)",
+					"project setting": `compaction.reserveTokens in ${projectPath} (no per-model override)`,
+					"global setting": `compaction.reserveTokens in ${globalPath} (no per-model override)`,
 					default: "Pi's default (no override)",
 				}[saved.source];
-				lines.push(`${key} compacts at ${describe(saved.reserve)}, from ${from}.`);
+				lines.push(`${key} compacts ${describe(saved.reserve)}, from ${from}.`);
 				if (saved.source === "project" && request.kind !== "show")
 					lines.push(`${projectPath} overrides this model, so the global value does not apply in this project.`);
 				if (!manager.getCompactionEnabled()) lines.push("Auto-compaction is off (compaction.enabled is false).");
@@ -188,7 +221,7 @@ export default function (pi: ExtensionAPI) {
 				// The write may already have happened: report it beside the failure, not as a failure alone.
 				return reply([...lines, `Could not read the resulting threshold: ${message(error)}`].join("\n"), "error");
 			}
-			lines.push(`Not active yet: this session still compacts at ${describe(active)} until /reload.`);
+			lines.push(`Not active yet: this session still compacts ${describe(active)} until /reload.`);
 			// Never reload unasked: it ends background delegate jobs. Offer it after a change, only when it can run now.
 			if (request.kind === "show" || !ctx.hasUI || !ctx.isIdle())
 				return reply(`${lines.join("\n")}\n(${RELOAD_COST}.)`);
