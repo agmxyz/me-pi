@@ -26,12 +26,12 @@ Workers are **not sandboxed**: they run with your OS permissions and can read yo
 
 | Extension | What it does | Filter entry |
 |---|---|---|
-| [`steps`](extensions/steps.ts) | Live checklist below the editor set by the model via a `plan` tool, with elapsed time on the current step and a transcript heading when each step starts. Toggle with `/steps on` and `/steps off`. | `"extensions/steps.ts"` |
-| [`watch`](extensions/watch.ts) | Tracks long-running background commands in the footer by polling `ps` (no tokens) and wakes the model once when they finish. Design: [docs/watch/design.md](docs/watch/design.md). | `"extensions/watch.ts"` |
-| [`minimal-footer`](extensions/minimal-footer.ts) | One-line footer showing `folder (branch)  ctx%/window (auto)` left, `model • thinking` right, and extension statuses on a second line. | `"extensions/minimal-footer.ts"` |
-| [`autocompact`](extensions/autocompact.ts) | Sets Pi's auto-compaction threshold for the current model as a percentage of its context window (`/autocompact 50`, `/autocompact auto`, or `/autocompact` to inspect). | `"extensions/autocompact.ts"` |
-| [`compact-tools`](extensions/compact-tools.ts) | Replaces Pi's tool boxes with one-line collapsed rows and a compact live area above the editor, hiding no-op lookups and showing output only on failure (or expanded with `ctrl+o`). | `"extensions/compact-tools.ts"` |
-| [`hide-thinking-label`](extensions/hide-thinking-label.ts) | Removes the `Thinking...` label, and the blank lines around it, that Pi shows for a hidden thinking block. | `"extensions/hide-thinking-label.ts"` |
+| [`steps`](docs/extensions.md#steps) | Live checklist below the editor set by the model via a `plan` tool, with elapsed time on the current step and a transcript heading when each step starts. Toggle with `/steps on` and `/steps off`. | `"extensions/steps.ts"` |
+| [`watch`](docs/extensions.md#watch) | Tracks long-running background commands in the footer by polling `ps` (no tokens) and wakes the model once when they finish. | `"extensions/watch.ts"` |
+| [`minimal-footer`](docs/extensions.md#minimal-footer) | One-line footer showing `folder (branch)  ctx%/window (auto)` left, `model • thinking` right, and extension statuses on a second line. | `"extensions/minimal-footer.ts"` |
+| [`autocompact`](docs/extensions.md#autocompact) | Sets Pi's auto-compaction threshold for the current model as a percentage of its context window (`/autocompact 50`, `/autocompact auto`, or `/autocompact` to inspect). | `"extensions/autocompact.ts"` |
+| [`compact-tools`](docs/extensions.md#compact-tools) | Replaces Pi's tool boxes with one-line collapsed rows and a compact live area above the editor, hiding no-op lookups and showing output only on failure (or expanded with `ctrl+o`). | `"extensions/compact-tools.ts"` |
+| [`hide-thinking-label`](docs/extensions.md#hide-thinking-label) | Removes the `Thinking...` label, and the blank lines around it, that Pi shows for a hidden thinking block. | `"extensions/hide-thinking-label.ts"` |
 
 To install any of them, add this repo to `packages` in `~/.pi/agent/settings.json` with the filter entries you want, then run `/reload`:
 
@@ -39,7 +39,7 @@ To install any of them, add this repo to `packages` in `~/.pi/agent/settings.jso
 { "packages": [{ "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/steps.ts", "extensions/minimal-footer.ts"] }] }
 ```
 
-Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all six plus the pi-workers extensions, so don't combine it with the npm install above. Each extension's full behaviour: [docs/extensions.md](docs/extensions.md).
+Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all six plus the pi-workers extensions, so don't combine it with the npm install above.
 
 ## Setup
 
