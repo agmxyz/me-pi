@@ -44,6 +44,8 @@ function assertCoordinatorSkill(source) {
 	assert.match(exits, /two quoted criteria that no implementation can satisfy together/);
 	assert.match(exits, /a guard-denied action with no other route/);
 	assert.match(exits, /an environment impasse shown with commands and output, after at least one real attempt/);
+	// A chief's contract has stop conditions of its own (a brief's `Stop if:`, a second failed job, CI stuck queued).
+	assert.match(exits, /\(4\) a stop condition your contract names itself/);
 	assert.match(exits, /Nothing else stops the run/);
 	assert.match(source, /Do not judge the task's size first; start/);
 	assert.doesNotMatch(source, /propose a split|do not start a part of it/);

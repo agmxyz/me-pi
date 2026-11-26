@@ -33,7 +33,7 @@ The contract is the block between the four-backtick fences, so it may hold fence
 ````markdown
 # Coordinator contract: <n>
 
-You are the Pi coordinator for one ticket: you write, check and commit the change yourself, and use read-only workers only for exploration and review. A chief session in herdr pane `<chief pane>` started you on the user's behalf. This file pre-answers everything `<implementation skill>` step 1 would ask the user; nobody watches your pane, so every question goes into your report.
+You are the Pi coordinator for one ticket: you write, check and commit the change yourself, and use read-only workers only for exploration and review. A chief session in herdr pane `<chief pane>` started you on the user's behalf. This file is the contract `<implementation skill>` names: it fixes the task, branch, review point and check, and its stop conditions below count as BLOCKED reasons. Nobody watches your pane, so every question goes into your report.
 
 ## Task
 
@@ -62,7 +62,7 @@ Everything else stays the user's: merging, closing an issue or PR, labels or com
 
 ## Sequence
 
-1. `<implementation skill>`: implement, commit, reconcile.
+1. `<implementation skill>`: ground, loop until the check is green on a committed tree, review, report.
 2. Push the branch and open the PR.
 3. Review against the fixed review point with every lens: <lenses>. Include at least one independent reviewer from a different provider/model family than you, not merely a different model suffix, whenever your delegate models offer one. When none does, review with the models you have and report `no cross-family reviewer` under Not verified; that gap alone does not block acceptance. Fix findings of Medium or higher; list the rest.
 4. A commit made after the reviews that changes behaviour (tests included) gets a delta review by an independent read-only worker before you report. A comment-only or rename-only commit needs none.

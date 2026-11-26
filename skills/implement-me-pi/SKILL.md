@@ -1,6 +1,6 @@
 ---
 name: implement-me-pi
-description: Run one implementation task as its coordinator, writing the change yourself with mandatory independent review.
+description: "Coordinator for one implementation task: writes and commits the change on a green check, then gets independent review; runs unattended under a contract."
 disable-model-invocation: true
 metadata:
   credits:
@@ -13,7 +13,7 @@ metadata:
 
 # Implement one task with me-pi
 
-User entry: `/skill:implement-me-pi` followed by one ticket, issue, or task, its repository, and any execution constraints, or a contract (a chief's, or an unattended run's) that answers them. This skill owns one task; running a ticket graph is the chief's job.
+User entry: `/skill:implement-me-pi` followed by one ticket, issue, or task, its repository, and any execution constraints, or a contract (a chief's, or an unattended run's) that answers them. This skill owns one task.
 
 You are the task's **coordinator** and its only writer: you edit, run the check, and commit yourself. Use `delegate` with `scout` or `general` only for read-only help: exploration, research, and review.
 
@@ -21,7 +21,7 @@ You are the task's **coordinator** and its only writer: you edit, run the check,
 
 **Goal.** You are done when all three hold: the exact check passes on `HEAD`, `HEAD` is committed with a clean tree, and every acceptance criterion has evidence. Until then, keep looping. Reading, a plan, or partial work is not a stopping point; unfinished is not BLOCKED.
 
-**BLOCKED, the closed list.** End with BLOCKED only for one of these, quoting the evidence: (1) two quoted criteria that no implementation can satisfy together; (2) a guard-denied action with no other route; (3) an environment impasse shown with commands and output, after at least one real attempt. Nothing else stops the run.
+**BLOCKED, the closed list.** End with BLOCKED only for one of these, quoting the evidence: (1) two quoted criteria that no implementation can satisfy together; (2) a guard-denied action with no other route; (3) an environment impasse shown with commands and output, after at least one real attempt; (4) a stop condition your contract names itself. Nothing else stops the run.
 
 ## 1. Ground (four facts, then go)
 
