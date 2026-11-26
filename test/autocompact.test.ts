@@ -272,7 +272,8 @@ test("a reserve not below the window is described as compacting on every turn", 
 		result.text,
 		/compacts on every turn \(its reserve of 1,500,000 tokens is not below its 1,000,000-token window\), from compaction\.reserveTokens/,
 	);
-	assert.doesNotMatch(result.text, /-\d|0% \(above/);
+	// No negative number or "0% (above" in the reply; the settings path is left out, since its random temp suffix can hold "-<digit>".
+	assert.doesNotMatch(result.text.replaceAll(ROOT, "<root>"), /-\d|0% \(above/);
 	assert.equal(compactionLabel({ compaction: { reserveTokens: 1_500_000 } }, OPUS), "auto every turn");
 	assert.equal(compactionLabel({ compaction: { reserveTokens: 1_000_000 } }, OPUS), "auto every turn");
 });

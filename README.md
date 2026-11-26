@@ -10,7 +10,7 @@ My [Pi](https://github.com/earendil-works/pi) setup, shared as a reference rathe
 
 [![npm](https://img.shields.io/npm/v/@agmxyz/pi-workers)](https://www.npmjs.com/package/@agmxyz/pi-workers)
 
-[`@agmxyz/pi-workers`](packages/pi-workers/README.md) hands searches, reviews and code changes to separate workers, so your main session stays focused.
+[`@agmxyz/pi-workers`](packages/pi-workers/README.md) hands searches, research and reviews to separate read-only workers, so your main session stays focused.
 
 ```sh
 pi install npm:@agmxyz/pi-workers
@@ -26,12 +26,12 @@ Workers are **not sandboxed**: they run with your OS permissions and can read yo
 
 | Extension | What it does | Filter entry |
 |---|---|---|
-| [`steps`](extensions/steps.ts) | Live checklist below the editor, set by the model through a `plan` tool; the current step shows how long it has run. Each step the model starts also leaves one heading in the transcript (`▸ 2/5 Wire the parser`), drawn once and never changed, and so does the last step when the model marks the plan finished from an earlier one. `/steps off` turns it off for new sessions and this one (others on `/reload`); `/steps on` turns it back on. | `"extensions/steps.ts"` |
-| [`watch`](extensions/watch.ts) | Background work the model started shows in the footer, and the model is woken once when it ends. The model registers the work with a `watch` tool: the wrapper shell's pid, and optionally a progress file (one line per finished item), an item total, and an exit file the wrapper writes `$?` to. Every 30 s the extension checks the process table (no tokens): `⏵ sweep 7/24 · last +1 23m · 2h41m` while running, then `✓ sweep exit 0`, or `✗ sweep died, no exit status` when the pid is gone (or reused) on two checks in a row with no exit file. Watches survive `/reload` and resume; `/new` starts with none. An ended watch leaves the footer on your next prompt; `watch({ label, drop: true })` removes one. It runs only `ps` and never signals a process. Design: [docs/watch/design.md](docs/watch/design.md). | `"extensions/watch.ts"` |
-| [`minimal-footer`](extensions/minimal-footer.ts) | One-line footer: `folder (branch)  ctx%/window (auto)` left, `model • thinking` right; extension statuses on a second line. `(auto)` means Pi auto-compacts at its default point; `(auto 50%)` means a setting moves that point for the current model. | `"extensions/minimal-footer.ts"` |
-| [`autocompact`](extensions/autocompact.ts) | `/autocompact 50` makes Pi auto-compact the current model at 50% of its context window (whole numbers 35 to 80), in every project; `/autocompact auto` returns it to Pi's default; `/autocompact` alone shows the current threshold and where it comes from. | `"extensions/autocompact.ts"` |
-| [`compact-tools`](extensions/compact-tools.ts) | One-line rows for tool calls while tool output is collapsed, with no background box. The transcript shows what was done, not what came back: a status glyph (`●` running, `✓` done, `✗` failed, `?` a passing `;` or newline sequence without `set -e`, whose earlier statements may have failed unseen), what ran, and facts such as `40 lines · 4.2s`. `bash` drops a leading `cd` (the directory is named, as `in web`, only when it differs from the command row above; a row too wide for the terminal keeps the directory's last folders, as `in …/pi-tui/dist`), `set -e`, `2>&1` and a closing `\| tail -N` from the command and cuts a long one in the middle (at its end when only a few characters over); `edit` shows `+added -removed`; `read` and `write` show a short path and a line count. Only a failure shows output: a failed command keeps its end from the first error-like line in its last 20 lines, and at least 5; an end longer than 8 lines shows only its error-like lines and the values of failed comparisons (`expected: …`), each once, and one line takes two rows at most; a line that reports a pass (`✔ …`, `fail 0`) is not error-like, with the error-like lines in red and `file:line` references as links where the terminal supports them. A duration of 30s or more is yellow. While the agent works, a call shows only in a three-line area above the editor, the running one with its elapsed time and the end of its output. A row enters the transcript once the next step shows what became of it. Followed by another step, a call known to change nothing (`read`, `rg`, `git log`, a passing `npm test`) keeps no line, and those that open a stretch of work are one count (`⋮ 5 calls, nothing changed`); any command the extension does not know keeps its line, and so does a passing run of a command that failed earlier. Writing to a file under `/tmp` counts as changing nothing, unless the work is done there. A step followed by text keeps its line, and a line once drawn is never taken back, so a row that has scrolled away does not change and Pi does not have to repaint the screen. Failures, writes, and edits show as soon as the call ends and stay, and a call made before one of them, or before a tool that draws its own row, in the same message shows with it, running or not; a failed command still on screen shrinks to `✗ … · passed later` once the same command passes, also behind a runner such as `uv run` or as one command of a passing `&&` chain (one that has scrolled away stays as drawn); a passing run that ends in a pipe does not count, since the shell reports only the last program's exit code. When the agent stops, the area becomes one line that sums up the run: `✗ open: npm run lint · exit 1 · 2 files changed · 6 calls · 1m 12s`, naming the newest failure still open. Other tools keep their own lines behind the glyph; the line of a tool that draws its own shell, such as a `plan` step heading, stands above the first row of its message, wherever in the message the tool was called. Failed `write` and `edit` calls and expanded rows (`ctrl+o`) show everything. | `"extensions/compact-tools.ts"` |
-| [`hide-thinking-label`](extensions/hide-thinking-label.ts) | Removes the `Thinking...` label, and the blank lines around it, that Pi shows for a hidden thinking block. | `"extensions/hide-thinking-label.ts"` |
+| [`steps`](docs/extensions.md#steps) | Live checklist below the editor set by the model via a `plan` tool, with elapsed time on the current step and a transcript heading when each step starts. Toggle with `/steps on` and `/steps off`. | `"extensions/steps.ts"` |
+| [`watch`](docs/extensions.md#watch) | Tracks long-running background commands in the footer by polling `ps` (no tokens) and wakes the model once when they finish. | `"extensions/watch.ts"` |
+| [`minimal-footer`](docs/extensions.md#minimal-footer) | One-line footer showing `folder (branch)  ctx%/window (auto)` left, `model • thinking` right, and extension statuses on a second line. | `"extensions/minimal-footer.ts"` |
+| [`autocompact`](docs/extensions.md#autocompact) | Sets Pi's auto-compaction threshold for the current model as a percentage of its context window (`/autocompact 50`, `/autocompact auto`, or `/autocompact` to inspect). | `"extensions/autocompact.ts"` |
+| [`compact-tools`](docs/extensions.md#compact-tools) | Replaces Pi's tool boxes with one-line collapsed rows and a compact live area above the editor, hiding no-op lookups and showing output only on failure (or expanded with `ctrl+o`). | `"extensions/compact-tools.ts"` |
+| [`hide-thinking-label`](docs/extensions.md#hide-thinking-label) | Removes the `Thinking...` label, and the blank lines around it, that Pi shows for a hidden thinking block. | `"extensions/hide-thinking-label.ts"` |
 
 To install any of them, add this repo to `packages` in `~/.pi/agent/settings.json` with the filter entries you want, then run `/reload`:
 
@@ -39,7 +39,7 @@ To install any of them, add this repo to `packages` in `~/.pi/agent/settings.jso
 { "packages": [{ "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/steps.ts", "extensions/minimal-footer.ts"] }] }
 ```
 
-Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all six plus the pi-workers extensions.
+Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all six plus the pi-workers extensions, so don't combine it with the npm install above.
 
 ## Setup
 
@@ -62,12 +62,12 @@ node --test test/guard.test.ts   # one test file
 ```
 
 - Follow [docs/coding-standards.md](docs/coding-standards.md) and [GLOSSARY.md](GLOSSARY.md).
-- A user-visible change to an extension package adds a line under `## [Unreleased]` in its changelog (create the heading if missing).
+- A user-visible change to `packages/pi-workers/` adds a line under `## [Unreleased]` in [its changelog](packages/pi-workers/CHANGELOG.md) (create the heading if missing).
 - Before changing `GLOBAL_AGENTS.md` or the delegate tool's prompt, description or schema, run the [routing evals](evals/README.md). They cost real money and don't run in CI.
 
 ## Credits
 
-The skills adapt or build on Matt Pocock's [skills](https://github.com/mattpocock/skills) and Lauren Tan's [pstack](https://github.com/cursor/plugins), both MIT; pinned sources are in each skill's frontmatter `metadata.credits`.
+The skills adapt or build on Matt Pocock's [skills](https://github.com/mattpocock/skills) and Lauren Tan's [pstack](https://github.com/cursor/plugins), both MIT; pinned sources are in each adapted skill's frontmatter `metadata.credits`.
 
 ## License
 
