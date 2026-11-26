@@ -41,6 +41,14 @@ function assertCoordinatorSkill(source) {
 	assert.match(source, /at least one reviewer from a different provider\/model family than you/);
 	// A pool of one family reviews anyway and reports the gap: the rule must not turn into a blocker.
 	assert.match(source, /report `no cross-family reviewer`/);
+	// Unattended coordinators blocked on a brief's length and on readings a contract pre-answers (synthetic s2, s3, s7).
+	const contract = sectionBetween(source, "## 1. ", "## 2. ");
+	assert.match(contract, /the contract pre-answers what you would otherwise ask/);
+	assert.match(contract, /take the one that satisfies every stated criterion and record that choice/);
+	assert.match(contract, /Report BLOCKED only for a contradiction/);
+	assert.match(contract, /Judge size by evidence/);
+	assert.match(contract, /A brief's length or its number of parts is not that evidence/);
+	assert.doesNotMatch(contract, /do not start a part of it/);
 	assert.match(source, /that gap alone does not block acceptance/);
 	assert.doesNotMatch(sectionBetween(source, "## 4. ", "## 5. "), /family[^.]*report BLOCKED/);
 	const deltaClosure = sectionBetween(source, "## 5. ", "## 6. ");
