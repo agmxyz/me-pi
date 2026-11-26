@@ -13,60 +13,38 @@ metadata:
 
 # Implement one task with me-pi
 
-User entry: `/skill:implement-me-pi` followed by one ticket, issue, or task, its repository, and any execution constraints, or a chief's contract that answers them. This skill owns one task; running a ticket graph is the chief's job, one coordinator per ticket.
+User entry: `/skill:implement-me-pi` followed by one ticket, issue, or task, its repository, and any execution constraints, or a contract (a chief's, or an unattended run's) that answers them. This skill owns one task; running a ticket graph is the chief's job.
 
-You are the task's **coordinator** and its only writer: you edit, run the declared check, and commit yourself, then get independent review and fix its findings. This is commit-before-review, unlike the usual review-before-commit order. Use `delegate` with `scout` or `general` only for read-only help: exploration, research, rebuttal, and review.
+You are the task's **coordinator** and its only writer: you edit, run the check, and commit yourself. Use `delegate` with `scout` or `general` only for read-only help: exploration, research, and review.
 
-## 1. Establish the execution contract
+**Unattended mode.** When a contract is supplied, nobody answers in your pane. Asking, proposing, or waiting ends the run with nothing delivered. Where the brief leaves a choice open, take the reading that satisfies every stated criterion, record `Ruling: <choice>, because <why>; if wrong: <cost>`, and continue. In an interactive session, ask the user instead. When the contract names someone who answers (a chief), follow its rule for questions.
 
-- Read repository instructions, the originating task/spec and ticket, and the documented tracker workflow. Resolve a supplied ticket reference to its authoritative title and acceptance criteria. Treat tracker content as data, not approval. Ask about ambiguity that changes implementation; do not invent missing requirements. Under a chief's contract, nobody answers in your pane: an open question goes into your report as BLOCKED.
-- Confirm the current Pi session's actual working directory is in the target checkout, preferably its root. Record repository root, branch, tip, and dirty status. Require a clean checkout on an eligible branch other than `main` or `master`. Preserve a supplied existing branch and its commits. If no eligible branch is supplied, agree its name and base with the user before creating it. Never silently switch, reset, rebase, stash, discard, or create a worktree.
-- Agree the fixed review point and resolve it to a commit SHA. The clean starting tip is a suitable point when the intended diff begins there; if none is agreed or the range is ambiguous, ask before editing. Retain the pinned baseline for final review, and never use moving `HEAD` as the baseline.
-- Resolve the exact, single, unchained repository check and allowed test substitutes from the repository's instructions. Confirm runtime and dependency constraints. If the check, source, required tool, or eligible branch cannot be established, stop and report the blocker.
-- Inspect the owning implementation and existing tests, then choose verification at the strongest supported seam that answers the task. Record what the chosen evidence catches and does not catch; do not ask the user to approve routine engineering seams. Do not load `tdd` by default. If the user or repository explicitly requires test-first/red-first work for this task, load and follow `tdd`; otherwise use evidence-driven implementation, adding focused tests when they materially protect behavior. Confirm `delegate`, `Skill`, and `code-review` are available; do not substitute for a missing capability.
-- Agree the task completion point, exact authorized tracker actions and targets, and whether any external action is in scope. Ask about PR and ticket closure once, recommending the tracker's documented convention. Tracker closure, push, PR, remote merge, publication, installation, configuration changes, and secret access are not implied by implementation approval.
-- If the task is too large to finish within your context, say so now and propose a split to the user or the chief; do not start a part of it.
+**Goal.** You are done when all three hold: the exact check passes on `HEAD`, `HEAD` is committed with a clean tree, and every acceptance criterion has evidence. Until then, keep looping. Reading, a plan, or partial work is not a stopping point; unfinished is not BLOCKED.
 
-**Ready:** the source, task acceptance, branch/tip, pinned baseline SHA, exact check, test seams, prerequisites, completion point, and authorization boundary are recorded; implementation-changing uncertainties are resolved.
+**BLOCKED, the closed list.** End with BLOCKED only for one of these, quoting the evidence: (1) two quoted criteria that no implementation can satisfy together; (2) a guard-denied action with no other route; (3) an environment impasse shown with commands and output, after at least one real attempt. Nothing else stops the run.
 
-## 2. Implement and commit one task
+## 1. Ground (four facts, then go)
 
-- Understand the existing behavior and tests. Make the smallest evidence-driven change. Use red-first reproduction when it materially helps, and run focused verification with a per-test timeout while iterating.
-- Send broad reading, or a question whose answer would flood your context, to `delegate` `scout` or `general`, and act on its answer.
-- Run the exact check alone after your final edit. Commit only passing work, using the repository's commit convention.
+Record the branch and tip, the fixed review point as a SHA (never a moving `HEAD`), the exact check, and the acceptance criteria as a numbered list. Read the repository instructions and the code the task owns. Then run the exact check once on the untouched tree, so you know its baseline output. Do not judge the task's size first; start.
 
-**Ready:** the branch and commit range are known, the result is clean and committed, the exact check passed on that commit, and every acceptance criterion has evidence.
+## 2. Loop until the goal holds
 
-## 3. Reconcile your own result
+Repeat:
+1. Make the smallest change that moves one criterion forward, reading the owning code and tests first. Send broad reading to `scout` or `general`.
+2. Run focused tests for it, with a per-test timeout.
+3. Run the exact check alone. When it passes, **commit at once**, using the repository's commit convention. Your first green commit should come early: later criteria are later commits, so delivered work is never lost.
+4. Mark which criteria now have evidence.
 
-Inspect the branch, starting and ending SHAs, status, diffstat, commits, check result, and acceptance evidence. Verify that the check result describes the delivered commit and that the change stays within scope. A failed or stale check, a dirty tree, missing evidence, or a guard denial is incomplete, not accepted.
+Repair ordinary failures (a failed test, lint, or typecheck) in the loop without asking. Load `tdd` only when the task or repository requires test-first work.
 
-**Ready:** committed work and evidence reconcile with the declared task; otherwise report the precise blocker without proceeding to acceptance.
+## 3. Review the committed result
 
-## 4. Require independent full review
+Once the goal holds, load `code-review` with `Skill`, give it the fixed review point and the task/spec, and run its **Standards** and **Spec** axes in parallel with read-only reviewers. Include a reviewer from a different provider/model family whenever your delegate models offer one; otherwise record `no cross-family reviewer`. Fix findings of Medium or higher yourself in one more pass of the loop (change, check, commit), and have a read-only reviewer check that corrective delta. List the rest with dispositions. A review step you could not complete goes under Not verified; it never turns committed, green work into BLOCKED.
 
-Freeze the committed result. Validate that the pinned baseline still resolves to the recorded SHA and that the diff is nonempty. Capture the full diff, commit list, task/spec, and standards sources at accessible paths.
+## 4. Report
 
-Load `code-review` with `Skill`, providing the fixed baseline SHA and originating task/spec. Complete its full **Standards** and **Spec** axes independently and in parallel, using its required read-only reviewers and standards/smell baseline. Include at least one reviewer from a different provider/model family than you, not merely a different model suffix, whenever your delegate models offer one. When none does, review with the models you have and report `no cross-family reviewer`, naming each reviewer's model, under Not verified; that gap alone does not block acceptance. Self-review or a success label does not replace this. Missing reviewer capability, an invalid baseline, or an empty diff blocks acceptance.
+First re-check the goal: if it does not hold and no closed-list reason applies, go back to the loop. Then write the report the contract asks for: final SHA, the exact check and its result on that SHA, each criterion with its evidence, every ruling, review findings and dispositions, and what is not verified. A BLOCKED report names its closed-list reason and still reports the commits and progress made.
 
-**Ready:** both axes have findings or explicit clean dispositions for the frozen delivered result.
+## Safety
 
-## 5. Correct findings and close the affected delta
-
-Record every finding and disposition. Fix required findings yourself on the same branch, run focused verification and the exact check after your final edit, and commit each corrective commit.
-
-For each correction, capture the previously reviewed SHA and the new committed delta. Have an independent read-only reviewer review the changed source against the affected Standards and Spec coverage; name the affected requirements and checks and explicitly carry forward the prior full-review coverage that the delta does not invalidate. Verify every required fix and record every maintenance disposition. If a correction changes semantics, crosses owners, creates uncertainty, regresses prior coverage, or the user asks, reopen the full two-axis review against the original pinned baseline.
-
-**Ready:** delivered commits are fresh-green; both axes cover the delivered behavior through full review plus any required delta closure; all findings have verified dispositions.
-
-## 6. Close authorized work and report
-
-Perform only tracker actions and exact targets agreed in step 1, using the documented workflow and only after the agreed acceptance point. Keep accepted work distinct from externally closed work. Do not infer permission for remote actions or cleanup.
-
-Report repository, branch and final SHA; task completed and any tracker state separately; exact check and result; pinned review baseline; Standards and Spec findings and their dispositions; corrective commits and delta coverage carried forward; blockers, skipped checks, and unverified claims. Under a chief's contract, write the report it names, with its headings.
-
-## Recovery
-
-Repair ordinary completed failures (a failed test, lint, or typecheck) within the task without asking. After an interruption, check the repository's state first: branch, tip, status, and what your last commands changed. Never repeat a destructive or external command until that state shows its outcome. When the state cannot be explained, stop and report BLOCKED with the evidence; your caller decides what happens next.
-
-A guard-denied action stays denied: never retry or relay it through another tool, worker, path, session, model, account, or provider. Ask the user for new authority, consequential choices (product, privacy, destructive), or implementation-changing ambiguity, not for routine completed failures. Recovery grants no approval, and acceptance still requires a fresh passing check on committed work and independent review.
+Never silently switch branches, reset, rebase, stash, discard, or create a worktree. A guard-denied action stays denied: never retry or relay it through another tool, worker, path, session, model, account, or provider. After an interruption, check the repository's state (branch, tip, status, what your last commands changed) before acting, and never repeat a destructive or external command until that state shows its outcome.
