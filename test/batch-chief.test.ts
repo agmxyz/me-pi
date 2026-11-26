@@ -1456,6 +1456,13 @@ test("contract keeps local writes bounded and external writes conditional on rec
 	);
 });
 
+test("contract names its stop conditions as BLOCKED reasons for the coordinator skill's closed list", () => {
+	// implement-me-pi stops only for its closed list; reason (4) is a stop condition the contract names itself.
+	assert.match(CONTRACT_SOURCE, /its stop conditions below count as BLOCKED reasons/);
+	assert.match(CONTRACT_SOURCE, /ground, loop until the check is green on a committed tree, review, report/);
+	assert.doesNotMatch(CONTRACT_SOURCE, /step 1 would ask|implement, commit, reconcile/);
+});
+
 test("contract check override is exact, row-local, ephemeral and refused when blank or fixed", () => {
 	const f = fixture();
 	const path = contractable(f);
