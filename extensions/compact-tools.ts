@@ -995,7 +995,8 @@ function indented(child: Component | string[], state: RowState, theme: Theme, co
 		const rows = Array.isArray(child)
 			? child.flatMap((line) => (state.failed ? wrapped(line, room) : [truncateToWidth(line, room, "…")]))
 			: child.render(room).filter((line) => stripVTControlCharacters(line).trim());
-		return rows.map((line) => indent + line);
+		// The minimum room can exceed a very narrow terminal: the finished line is cut to the terminal's width.
+		return rows.map((line) => truncateToWidth(indent + line, width, "…"));
 	});
 }
 /** A component with the glyph in front of its first line, for a tool that draws its own call. */
@@ -1003,7 +1004,9 @@ function glyphed(child: Component, state: RowState, theme: Theme, context: Conte
 	return lines((width) => {
 		const pad = " ".repeat(context.outputPad);
 		const rows = child.render(Math.max(8, width - context.outputPad * 2 - 2));
-		return rows.map((line, index) => `${pad}${index === 0 ? glyph(state, theme) : " "} ${line}`);
+		return rows.map((line, index) =>
+			truncateToWidth(`${pad}${index === 0 ? glyph(state, theme) : " "} ${line}`, width, "…"),
+		);
 	});
 }
 /** Half of the shell Pi draws around a tool: the status background, with a blank line on the outer edge. */
@@ -1014,7 +1017,10 @@ function piShell(child: Component, theme: Theme, context: Context, edge: "top" |
 			const background = context.isPartial ? "toolPendingBg" : context.isError ? "toolErrorBg" : "toolSuccessBg";
 			const pad = " ".repeat(context.outputPad);
 			const paint = (line: string) =>
-				theme.bg(background, line + " ".repeat(Math.max(0, width - visibleWidth(line))));
+				theme.bg(
+					background,
+					truncateToWidth(line, width, "…") + " ".repeat(Math.max(0, width - visibleWidth(line))),
+				);
 			const rows = child.render(Math.max(1, width - context.outputPad * 2)).map((line) => paint(pad + line));
 			return edge === "top" ? [paint(""), ...rows] : [...rows, paint("")];
 		},

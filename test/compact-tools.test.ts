@@ -1025,3 +1025,21 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 		assert.match(slot.lines()?.[0] ?? "", /^✗ open: \.\/check\.sh/, `${JSON.stringify(command)} settles nothing`);
 	}
 });
+
+test("no row draws past a terminal narrower than its minimum room", () => {
+	const rows = [
+		rawRow(
+			"bash",
+			{ command: "make" },
+			{ content: text("Error: boom\n\nCommand exited with code 2"), isError: true },
+			{ width: 4 },
+		),
+		rawRow("bash", { command: "make" }, { content: text("step 1\nstep 2") }, { width: 4, partial: true }),
+		rawRow("Skill", { name: "tdd" }, { content: text("loaded") }, { width: 4 }),
+	];
+	for (const lines of rows)
+		assert.ok(
+			lines.every((line) => visibleWidth(line) <= 4),
+			JSON.stringify(lines),
+		);
+});
