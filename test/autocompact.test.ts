@@ -171,7 +171,14 @@ test("when idle, the reload is offered with No first, and runs only on Yes", asy
 	reset();
 	const accepted = await run("50", { choose: "Yes, reload now" });
 	assert.equal(accepted.reloads, 1);
-	assert.match(accepted.text, /Not active yet/, "the reply before the reload says what was true then");
+	assert.match(accepted.text, /Saved 50%[\s\S]*Reloading to make it active\.$/);
+	assert.doesNotMatch(accepted.text, /Not active yet/);
+	// Saved earlier but declined: asking again offers the reload again.
+	const again = await run("50", { settings: {} });
+	assert.match(again.text, /is already at 50%/);
+	assert.equal(again.selects.length, 1);
+	// A bare /autocompact only reports.
+	assert.deepEqual((await run("")).selects, []);
 	const failed = await run("auto", {
 		choose: "Yes, reload now",
 		reloadError: "Wait for compaction to finish before reloading.",
@@ -218,4 +225,37 @@ test("the footer label is auto on the default and names the percentage when move
 	assert.equal(compactionLabel({ compaction: { reserveTokens: 400_000 } }, OPUS), "auto 60%");
 	assert.equal(compactionLabel({ compaction: { enabled: false } }, OPUS), undefined);
 	assert.equal(compactionLabel({}, undefined), "auto");
+});
+
+test("a write that succeeds is reported even when reading the result back fails", async () => {
+	reset({}, { compaction: { reserveTokens: "x" } });
+	const result = await run("50", { settings: {} });
+	assert.equal(readGlobal().compaction.modelOverrides[KEY].reserveTokens, 500_000);
+	assert.match(
+		result.text,
+		/^Saved 50% for anthropic\/claude-opus[\s\S]*Could not read the resulting threshold: Invalid compaction\.reserveTokens/,
+	);
+});
+
+test("the reply says when auto-compaction is off", async () => {
+	reset({ compaction: { enabled: false } });
+	const result = await run("50", { idle: false });
+	assert.match(result.text, /Auto-compaction is off \(compaction\.enabled is false\)\./);
+});
+
+test("a settings file with a BOM is read, and a later Pi save from the session keeps the override", async () => {
+	reset();
+	writeFileSync(GLOBAL, `\uFEFF${JSON.stringify({ theme: "dark" })}`);
+	const session = SettingsManager.create(PROJECT, AGENT);
+	await run("50", { idle: false });
+	assert.deepEqual(readGlobal(), {
+		theme: "dark",
+		compaction: { modelOverrides: { [KEY]: { reserveTokens: 500_000 } } },
+	});
+	session.setCompactionEnabled(false);
+	await session.flush();
+	assert.deepEqual(readGlobal(), {
+		theme: "dark",
+		compaction: { modelOverrides: { [KEY]: { reserveTokens: 500_000 } }, enabled: false },
+	});
 });

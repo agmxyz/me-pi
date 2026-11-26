@@ -150,56 +150,61 @@ export default function (pi: ExtensionAPI) {
 			const globalPath = join(getAgentDir(), "settings.json");
 			const projectPath = join(ctx.cwd, CONFIG_DIR_NAME, "settings.json");
 			const load = () => SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
+			const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 			let changed = false;
-			const lines: string[] = [];
 			try {
 				if (request.kind !== "show") changed = writeGlobalReserve(load(), key, reserve);
-				const saved = savedReserve(load(), model);
-				const active = resolveReserve(pi.getSettings(), model);
+			} catch (error) {
+				return reply(`/autocompact: nothing was written: ${message(error)}`, "error");
+			}
+			const lines: string[] = [];
+			if (request.kind === "set")
+				lines.push(
+					changed
+						? `Saved ${request.percent}% for ${key} in ${globalPath}.`
+						: `${key} is already at ${request.percent}%.`,
+				);
+			if (request.kind === "auto")
+				lines.push(
+					changed ? `Removed the ${key} override from ${globalPath}.` : `${key} has no override in ${globalPath}.`,
+				);
+			let active: number;
+			try {
+				const manager = load();
+				const saved = savedReserve(manager, model);
+				active = resolveReserve(pi.getSettings(), model);
 				const from = {
 					project: `the override in ${projectPath}`,
 					global: `the override in ${globalPath}`,
 					setting: "compaction.reserveTokens (no per-model override)",
 					default: "Pi's default (no override)",
 				}[saved.source];
-				if (request.kind === "set")
-					lines.push(
-						changed
-							? `Saved ${request.percent}% for ${key} in ${globalPath}.`
-							: `${key} is already at ${request.percent}%.`,
-					);
-				if (request.kind === "auto")
-					lines.push(
-						changed
-							? `Removed the ${key} override from ${globalPath}.`
-							: `${key} has no override in ${globalPath}.`,
-					);
 				lines.push(`${key} compacts at ${describe(saved.reserve)}, from ${from}.`);
 				if (saved.source === "project" && request.kind !== "show")
 					lines.push(`${projectPath} overrides this model, so the global value does not apply in this project.`);
+				if (!manager.getCompactionEnabled()) lines.push("Auto-compaction is off (compaction.enabled is false).");
 				if (active === saved.reserve) return reply(`${lines.join("\n")}\nActive now.`);
-				lines.push(`Not active yet: this session still compacts at ${describe(active)} until /reload.`);
 			} catch (error) {
-				return reply(`/autocompact: ${error instanceof Error ? error.message : String(error)}`, "error");
+				// The write may already have happened: report it beside the failure, not as a failure alone.
+				return reply([...lines, `Could not read the resulting threshold: ${message(error)}`].join("\n"), "error");
 			}
-			reply(`${lines.join("\n")}\n(${RELOAD_COST}.)`);
-			// Never reload unasked: it ends background delegate jobs. Offer it only when it can run now.
-			if (!changed || !ctx.hasUI || !ctx.isIdle()) return;
+			lines.push(`Not active yet: this session still compacts at ${describe(active)} until /reload.`);
+			// Never reload unasked: it ends background delegate jobs. Offer it after a change, only when it can run now.
+			if (request.kind === "show" || !ctx.hasUI || !ctx.isIdle())
+				return reply(`${lines.join("\n")}\n(${RELOAD_COST}.)`);
 			// No comes first, so a reflexive Enter keeps running work; Escape keeps it too.
 			const now = "Yes, reload now";
 			const choice = await ctx.ui.select(`Reload to apply it? ${RELOAD_COST}.`, [
 				"No, apply on the next /reload",
 				now,
 			]);
-			if (choice !== now) return;
+			if (choice !== now) return reply(`${lines.join("\n")}\n(${RELOAD_COST}.)`);
+			reply(`${lines.slice(0, -1).join("\n")}\nReloading to make it active.`);
 			try {
 				await ctx.reload();
 			} catch (error) {
 				// Pi refuses a reload while streaming or compacting before it shuts anything down, so this ctx still works.
-				reply(
-					`Reload failed, so it is not active yet: ${error instanceof Error ? error.message : String(error)}`,
-					"warning",
-				);
+				reply(`Reload failed, so it is not active yet: ${message(error)}`, "warning");
 			}
 			// After a reload this ctx is stale: nothing may follow it.
 		},

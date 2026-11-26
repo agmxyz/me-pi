@@ -19,16 +19,18 @@ function formatTokens(count: number): string {
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (!ctx.hasUI) return;
-		// The session's settings change only on reload, which restarts this footer; the model can change any time.
+		// Recomputed only when the model or the session's compaction settings change (a model switch, the settings menu's
+		// auto-compact toggle, a reload); a broken setting warns once per change.
 		let labelFor: string | undefined;
 		let label: string | undefined;
 		const compaction = () => {
 			const model = ctx.model;
-			const key = model ? `${model.provider}/${model.id}/${model.contextWindow}` : "";
+			const settings = pi.getSettings();
+			const key = JSON.stringify([model?.provider, model?.id, model?.contextWindow, settings.compaction]);
 			if (key === labelFor) return label;
 			labelFor = key;
 			try {
-				label = compactionLabel(pi.getSettings(), model);
+				label = compactionLabel(settings, model);
 			} catch (error) {
 				label = "auto ?";
 				ctx.ui.notify(`minimal-footer: could not read compaction setting (${String(error)})`, "warning");

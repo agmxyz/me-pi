@@ -51,6 +51,12 @@ test("the footer shows (auto) on Pi's default and (auto N%) when an override app
 	ctx.model = { ...OPUS, id: "other", contextWindow: 200_000 };
 	assert.match(footer.render(120)[0], /12\.5%\/200k \(auto\) +other/);
 	assert.match(mountFooter({}, OPUS, plainData).footer.render(120)[0], /\(auto\) +claude/);
+	// The settings menu's auto-compact toggle changes the session's settings without a reload.
+	const live: any = {};
+	const toggled = mountFooter(live, OPUS, plainData).footer;
+	assert.match(toggled.render(120)[0], /\(auto\)/);
+	live.compaction = { enabled: false };
+	assert.doesNotMatch(toggled.render(120)[0], /auto/);
 	assert.doesNotMatch(mountFooter({ compaction: { enabled: false } }, OPUS, plainData).footer.render(120)[0], /auto/);
 });
 
