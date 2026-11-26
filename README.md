@@ -6,26 +6,9 @@ My [Pi](https://github.com/earendil-works/pi) setup, shared as a reference rathe
 
 ## Extensions
 
-### pi-workers
-
-[![npm](https://img.shields.io/npm/v/@agmxyz/pi-workers)](https://www.npmjs.com/package/@agmxyz/pi-workers)
-
-[`@agmxyz/pi-workers`](packages/pi-workers/README.md) hands searches, research and reviews to separate read-only workers, so your main session stays focused.
-
-```sh
-pi install npm:@agmxyz/pi-workers
-```
-
-Restart Pi or run `/reload`.
-
-Workers are **not sandboxed**: they run with your OS permissions and can read your project. They never edit it: your session makes every change.
-
-[Package README](packages/pi-workers/README.md) · [Delegation guide](packages/pi-workers/docs/delegate.md) · [Changelog](packages/pi-workers/CHANGELOG.md)
-
-### Small extensions
-
-| Extension | What it does | Filter entry |
+| Extension | What it does | Install |
 |---|---|---|
+| [`pi-workers`](packages/pi-workers/README.md) [![npm](https://img.shields.io/npm/v/@agmxyz/pi-workers)](https://www.npmjs.com/package/@agmxyz/pi-workers) | Hands searches, research and reviews to separate read-only workers, so your main session stays focused. [Delegation guide](packages/pi-workers/docs/delegate.md) · [Changelog](packages/pi-workers/CHANGELOG.md) | `pi install npm:@agmxyz/pi-workers` |
 | [`steps`](docs/extensions.md#steps) | Live checklist below the editor set by the model via a `plan` tool, with elapsed time on the current step and a transcript heading when each step starts. Toggle with `/steps on` and `/steps off`. | `"extensions/steps.ts"` |
 | [`watch`](docs/extensions.md#watch) | Tracks long-running background commands in the footer by polling `ps` (no tokens) and wakes the model once when they finish. | `"extensions/watch.ts"` |
 | [`minimal-footer`](docs/extensions.md#minimal-footer) | One-line footer showing `folder (branch)  ctx%/window (auto)` left, `model • thinking` right, and extension statuses on a second line. | `"extensions/minimal-footer.ts"` |
@@ -33,13 +16,15 @@ Workers are **not sandboxed**: they run with your OS permissions and can read yo
 | [`compact-tools`](docs/extensions.md#compact-tools) | Replaces Pi's tool boxes with one-line collapsed rows and a compact live area above the editor, hiding no-op lookups and showing output only on failure (or expanded with `ctrl+o`). | `"extensions/compact-tools.ts"` |
 | [`hide-thinking-label`](docs/extensions.md#hide-thinking-label) | Removes the `Thinking...` label, and the blank lines around it, that Pi shows for a hidden thinking block. | `"extensions/hide-thinking-label.ts"` |
 
-To install any of them, add this repo to `packages` in `~/.pi/agent/settings.json` with the filter entries you want, then run `/reload`:
+pi-workers' workers are **not sandboxed**: they run with your OS permissions and can read your project. They never edit it: your session makes every change.
+
+Install pi-workers with its command, then restart Pi or run `/reload`. For the others, add this repo to `packages` in `~/.pi/agent/settings.json` with the filter entries you want, then run `/reload`:
 
 ```json
 { "packages": [{ "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/steps.ts", "extensions/minimal-footer.ts"] }] }
 ```
 
-Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all six plus the pi-workers extensions, so don't combine it with the npm install above.
+Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all six plus the pi-workers extensions, so don't combine it with the npm install.
 
 ## Setup
 
