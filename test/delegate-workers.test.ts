@@ -725,7 +725,7 @@ test("package-default guidelines retain delegation capabilities and safety, not 
 	assert.match(all, /a small edit stay inline, even one that needs a review/);
 	assert.match(
 		all,
-		/A read over ~3 files, ~300 lines, or ~12 KB \(changelogs and docs run long\), or of unknown scope/,
+		/A read over ~3 files, ~300 lines, or ~12 KB \(changelogs and docs run long\), or of unknown scope, goes to `scout`, except your own brief and the files you will edit;/,
 	);
 	assert.match(all, /User, repo \(use delegate for required subagents\), or skill requirements come first/);
 	assert.match(all, /Work from handbacks: read only lines you will act on/);
