@@ -13,7 +13,16 @@ process.env.TMPDIR = ROOT;
 process.env.PI_CODING_AGENT_DIR = join(ROOT, "agent");
 process.on("exit", () => rmSync(ROOT, { recursive: true, force: true }));
 
-const { assess, createWatch, duration, runPs, sanitizeLabel } = await import("../extensions/watch.ts");
+const {
+	assess,
+	createWatch,
+	duration,
+	readLastTool,
+	runPs,
+	sanitizeLabel,
+	STREAM_FIRST_TAIL_BYTES,
+	STREAM_TAIL_BYTES,
+} = await import("../extensions/watch.ts");
 type Ps = Awaited<ReturnType<typeof runPs>>;
 
 const INTERVAL = 1000;
@@ -529,4 +538,129 @@ test("the footer sanitises labels and puts ended watches first", async (t) => {
 	t.mock.timers.tick(INTERVAL);
 	await settle();
 	assert.match(s.footer() ?? "", /^✓ sweep exit 0 · \d+s {2}⏵ build now · \d+s$/);
+});
+
+// A Pi JSON event stream as `pi -p --mode json` writes it: one event per line.
+const toolStart = (id: string, toolName: string, args: Record<string, unknown>) =>
+	`${JSON.stringify({ type: "tool_execution_start", toolCallId: id, toolName, args })}\n`;
+const delta = (text: string) =>
+	`${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } })}\n`;
+
+test("readLastTool: the last tool call's name and one short argument, collapsed, sanitised and capped", () => {
+	const dir = fresh();
+	const path = join(dir, "stream.jsonl");
+	writeFileSync(path, toolStart("1", "read", { path: "a.ts" }) + delta("x"));
+	assert.deepEqual(readLastTool(path), { id: "1", name: "read", arg: "a.ts" });
+	appendFileSync(path, toolStart("2", "bash", { command: "npm  run\n\tcheck \u001b[31m--prefix\u001b[0m x" }));
+	assert.deepEqual(readLastTool(path), { id: "2", name: "bash", arg: "npm run check --prefix x" });
+	appendFileSync(path, toolStart("3", "delegate", { task: "y".repeat(100) }));
+	const capped = readLastTool(path);
+	assert.equal(capped?.arg, `${"y".repeat(39)}…`);
+	appendFileSync(path, toolStart("4", "Skill", { name: "tdd", other: 1 }) + toolStart("5", "plan", { steps: [] }));
+	assert.deepEqual(readLastTool(path), { id: "5", name: "plan", arg: undefined });
+	assert.equal(readLastTool(join(dir, "missing")), undefined);
+});
+
+test("readLastTool: skips a half-written last line, a line that is not JSON and the marker inside a message", () => {
+	const dir = fresh();
+	const path = join(dir, "stream.jsonl");
+	writeFileSync(path, delta("no tool yet"));
+	assert.equal(readLastTool(path), undefined, "a tail with no tool call");
+	appendFileSync(path, toolStart("1", "read", { path: "a.ts" }));
+	appendFileSync(path, '{"type":"tool_execution_start" not json\n');
+	appendFileSync(path, delta('quoting {"type":"tool_execution_start","toolName":"fake"}'));
+	appendFileSync(path, toolStart("2", "bash", { command: "ls" }).slice(0, 40));
+	assert.deepEqual(readLastTool(path), { id: "1", name: "read", arg: "a.ts" });
+});
+
+test("readLastTool: reads only the tail, so a tool call before the window is not found", () => {
+	const dir = fresh();
+	const path = join(dir, "stream.jsonl");
+	writeFileSync(path, toolStart("1", "read", { path: "a.ts" }) + delta("z".repeat(2000)));
+	assert.equal(readLastTool(path, 1000), undefined, "the window starts after the tool call");
+	const cut = toolStart("2", "bash", { command: "ls" });
+	writeFileSync(path, delta("z".repeat(2000)) + cut + delta("w"));
+	assert.equal(readLastTool(path, cut.length + delta("w").length - 5), undefined, "a line cut by the window");
+	assert.equal(readLastTool(path, cut.length + delta("w").length + 1)?.id, "2");
+	assert.equal(STREAM_TAIL_BYTES <= STREAM_FIRST_TAIL_BYTES, true);
+});
+
+test("a stream shows the last tool and its age in the footer, and changes at the next check", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const { table, ps } = fakePs();
+	const dir = fresh();
+	const s = setup({ ps, cwd: dir });
+	await s.start();
+	table.set(42, { lstart: START });
+	await s.watch({ label: "t181", pid: 42, stream: "stream.jsonl" });
+	assert.match(s.footer() ?? "", /^⏵ t181 · \d+s$/, "a missing stream shows nothing yet");
+	writeFileSync(join(dir, "stream.jsonl"), toolStart("1", "read", { path: "docs/watch/design.md" }));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · read docs\/watch\/design\.md \d+s ago · \d+s$/);
+	appendFileSync(join(dir, "stream.jsonl"), toolStart("2", "bash", { command: "npm run check" }) + delta("…"));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · bash npm run check \d+s ago · \d+s$/);
+	// More than a tail of deltas after the last tool call: the window holds none, and the last one seen stays.
+	appendFileSync(join(dir, "stream.jsonl"), delta("d".repeat(STREAM_TAIL_BYTES + 10)));
+	appendFileSync(join(dir, "stream.jsonl"), '{"type":"message_upd');
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · bash npm run check \d+s ago · \d+s$/);
+	assert.equal(s.sent.length, 0);
+});
+
+test("stream text never enters the wake message or a watch entry", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const { table, ps } = fakePs();
+	const dir = fresh();
+	const s = setup({ ps, cwd: dir });
+	await s.start();
+	const MARKER = "MARKER-7f3a";
+	writeFileSync(join(dir, "stream.jsonl"), toolStart(MARKER, `${MARKER}tool`, { command: `echo ${MARKER}` }));
+	table.set(42, { lstart: START });
+	const result = await s.watch({ label: "t181", pid: 42, stream: "stream.jsonl", exitFile: "exit" });
+	assert.ok(!JSON.stringify(result).includes(MARKER));
+	assert.match(s.footer() ?? "", new RegExp(`${MARKER}tool echo ${MARKER}`), "the footer shows it");
+	table.delete(42);
+	writeFileSync(join(dir, "exit"), "0\n");
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.equal(s.sent.length, 1);
+	assert.ok(!JSON.stringify(s.sent).includes(MARKER), "the wake message");
+	assert.ok(!JSON.stringify(s.branch).includes(MARKER), "the session entries");
+});
+
+test("an unreadable stream is shown as unchecked and does not hide the end", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const { table, ps } = fakePs();
+	const dir = fresh();
+	const s = setup({ ps, cwd: dir });
+	await s.start();
+	mkdirSync(join(dir, "stream.jsonl"));
+	table.set(42, { lstart: START });
+	await s.watch({ label: "t181", pid: 42, stream: "stream.jsonl", exitFile: "exit" });
+	assert.match(s.footer() ?? "", /^\? t181 unchecked \(stream: EISDIR.*\)$/);
+	table.delete(42);
+	writeFileSync(join(dir, "exit"), "0\n");
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.equal(s.sent.length, 1);
+	assert.match(s.sent[0].message.content, /^\[watch\] t181 finished: exit 0/);
+});
+
+test("after /reload a watch with a stream shows the last tool again, even past the short tail", async () => {
+	const { table, ps } = fakePs();
+	const dir = fresh();
+	const s = setup({ ps, cwd: dir });
+	await s.start();
+	table.set(42, { lstart: START });
+	await s.watch({ label: "t181", pid: 42, stream: "stream.jsonl" });
+	writeFileSync(join(dir, "stream.jsonl"), toolStart("1", "edit", { path: "x.ts" }));
+	appendFileSync(join(dir, "stream.jsonl"), delta("d".repeat(STREAM_TAIL_BYTES + 10)));
+	await s.fire("session_shutdown");
+	const again = setup({ ps, branch: s.branch, cwd: dir });
+	await again.start("reload");
+	assert.match(again.footer() ?? "", /^⏵ t181 · edit x\.ts \d+s ago · \d+s$/);
 });
