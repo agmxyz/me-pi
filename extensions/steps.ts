@@ -1,5 +1,6 @@
-// Steps: a live checklist below the editor, set by the model with the `plan` tool; the current step shows how
-// long it has run. Each step the model starts also leaves a heading in the transcript.
+// Steps: a live checklist below the editor, set by the model with the `plan` tool, while the agent runs; the
+// current step shows how long it has run. Between prompts a paused or finished plan shows as one summary row.
+// Each step the model starts also leaves a heading in the transcript.
 // Pi's tool blocks already show what is running, so without a plan this prompt shows nothing.
 // Off outside the TUI, including delegate workers (JSON mode): no tool, no prompt text, no tokens.
 // `/steps off` turns it off the same way for every session; the choice lives in <agent dir>/steps.json.
@@ -13,6 +14,8 @@ type Plan = { steps: string[]; done: number };
 /** What a `plan` call leaves in the session: the plan after it, and the step whose heading the call draws. */
 type Called = Plan & { heading?: number };
 const WIDGET = "steps";
+// The most rows the running checklist takes; a longer plan shows a window around the current step.
+const MAX_ROWS = 8;
 const TOOL = "plan";
 
 const settingsPath = () => join(getAgentDir(), "steps.json");
@@ -23,6 +26,12 @@ function parsePlan(value: unknown): Plan | undefined {
 	if (!Array.isArray(steps) || !steps.every((step) => typeof step === "string")) return undefined;
 	return { steps, done: clampDone(Number.isInteger(done) ? (done as number) : 0, steps) };
 }
+
+/**
+ * Step text on one row: a newline would take a terminal row the renderer does not count, and other control
+ * characters move the cursor or start escape sequences.
+ */
+const oneLine = (step: string) => step.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ");
 
 const clampDone = (done: number, steps: string[]) => Math.max(0, Math.min(done, steps.length));
 
@@ -67,7 +76,7 @@ function heading(called: Called | undefined, theme: Theme, pad: number): string[
 	const step = called?.heading;
 	if (step === undefined || !called?.steps[step]) return [];
 	const count = theme.fg("dim", `${step + 1}/${called.steps.length}`);
-	return [`${" ".repeat(pad)}${theme.fg("accent", "▸")} ${count} ${theme.bold(called.steps[step])}`];
+	return [`${" ".repeat(pad)}${theme.fg("accent", "▸")} ${count} ${theme.bold(oneLine(called.steps[step]))}`];
 }
 
 const elapsed = (ms: number) => {
@@ -113,13 +122,21 @@ export default function (pi: ExtensionAPI) {
 						// last step shows as the current one until the agent stops.
 						const finished = done >= steps.length;
 						if (finished && !running) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
-						if (!running) return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${steps[done]}`))];
+						if (!running)
+							return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${oneLine(steps[done])}`))];
 						const current = Math.min(done, steps.length - 1);
-						return steps.map((step, i) => {
-							if (i < current) return line(theme.fg("dim", `✓ ${step}`));
-							if (i > current) return line(theme.fg("dim", `○ ${step}`));
+						// A window of MAX_ROWS around the current step; its edge rows count the steps cut off.
+						const start = Math.max(0, Math.min(current - 2, steps.length - MAX_ROWS));
+						const end = Math.min(steps.length, start + MAX_ROWS);
+						return steps.slice(start, end).map((step, offset) => {
+							const i = start + offset;
+							if (offset === 0 && start > 0) return line(theme.fg("dim", `✓ ${start + 1} earlier`));
+							if (i === end - 1 && end < steps.length)
+								return line(theme.fg("dim", `○ ${steps.length - i} more`));
+							if (i < current) return line(theme.fg("dim", `✓ ${oneLine(step)}`));
+							if (i > current) return line(theme.fg("dim", `○ ${oneLine(step)}`));
 							const timer = theme.fg("dim", ` · ${elapsed(Date.now() - stepStartedAt)}`);
-							return line(`${theme.fg("accent", "●")} ${step}${timer}`);
+							return line(`${theme.fg("accent", "●")} ${oneLine(step)}${timer}`);
 						});
 					},
 				};
@@ -143,6 +160,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		ui = ctx.ui;
+		// A session switched mid-run gets no agent_end from the old one; the next agent_start sets it again.
+		running = false;
 		const saved = readEnabled();
 		enabled = saved.enabled;
 		if (saved.error)

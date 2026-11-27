@@ -99,6 +99,41 @@ test("a running plan shows every step with the current one timed", async () => {
 	assert.equal(s.show().split("\n")[0], "● A · 1m 27s");
 });
 
+test("a long plan shows eight rows around the current step, counting the steps cut off", async () => {
+	const s = setup();
+	s.prompt();
+	const steps = (count: number) => Array.from({ length: count }, (_, i) => `S${i + 1}`);
+	await s.plan({ steps: steps(8), done: 7 });
+	assert.equal(s.show(), "✓ S1\n✓ S2\n✓ S3\n✓ S4\n✓ S5\n✓ S6\n✓ S7\n● S8 · 0s", "eight fit whole");
+	await s.plan({ steps: steps(9) });
+	await s.plan({ done: 2 });
+	assert.equal(s.show(), "✓ S1\n✓ S2\n● S3 · 0s\n○ S4\n○ S5\n○ S6\n○ S7\n○ 2 more");
+	await s.plan({ done: 3 });
+	assert.equal(s.show(), "✓ 2 earlier\n✓ S3\n● S4 · 0s\n○ S5\n○ S6\n○ S7\n○ S8\n○ S9");
+	await s.plan({ steps: steps(12), done: 11 });
+	assert.equal(s.show().split("\n")[0], "✓ 5 earlier");
+	assert.equal(s.show().split("\n").at(-1), "● S12 · 0s");
+});
+
+test("step text with a newline, a tab or another control character stays on one row", async () => {
+	const s = setup();
+	s.prompt();
+	await s.plan({ steps: ["Multi\nline\tstep\x07", "B"] });
+	assert.equal(s.show(), "● Multi line step  · 0s\n○ B");
+	s.end();
+	await s.plan({ done: 0 });
+	assert.equal(s.show(), "◐ 0/2 · next: Multi line step ");
+});
+
+test("a session started mid-run shows a paused plan, not a frozen timer", async () => {
+	const s = setup({ branch: [planResult({ steps: ["A", "B"], done: 0 })] });
+	s.prompt();
+	await s.plan({ done: 0 });
+	s.fire("session_start");
+	await s.plan({ done: 0 });
+	assert.equal(s.show(), "◐ 0/2 · next: A");
+});
+
 test("a plan marked finished shows its last step as current until the agent stops", async () => {
 	const s = setup();
 	s.prompt();

@@ -588,6 +588,48 @@ test("a failure, a write and an edit show as soon as they end, and stay", () => 
 	assert.deepEqual(s.screen(), [...kept, "✓ $ make · 1 line"], "the next prompt changes nothing above it");
 });
 
+test("control characters in a command, a path or output do not reach the screen", () => {
+	const raw = (lines: string[]) => lines.some((line) => /[\x00-\x08\x0b-\x1f\x7f]/.test(line));
+	const failed = rawRow(
+		"bash",
+		{ command: "make\bx\x07" },
+		{ content: text("spin\b\b\x07done\rok\nCommand exited with code 1"), isError: true },
+	);
+	assert.ok(!raw(failed), JSON.stringify(failed));
+	assert.ok(
+		failed.some((line) => line.includes("spindoneok")),
+		"the printable text stays",
+	);
+	const place = rawRow("bash", { command: "cd /srv/a\x07b && make" }, { content: text("no"), isError: true });
+	assert.ok(!raw(place) && place[0].includes("in /srv/ab"), JSON.stringify(place));
+	const slot = widgetSlot();
+	handlers.agent_start({}, slot.ctx);
+	handlers.tool_execution_start({ toolCallId: "c", toolName: "bash", args: { command: "mak\x07e" } }, slot.ctx);
+	handlers.tool_execution_end({ toolCallId: "c", toolName: "bash", result: { content: text("x") }, isError: true });
+	handlers.agent_end({}, slot.ctx);
+	assert.ok(!raw(slot.lines() ?? []) && slot.lines()?.[0].includes("✗ open: make"), JSON.stringify(slot.lines()));
+	const read = rawRow("read", { path: "a\x07b\nc.ts" }, { content: text("ENOENT"), isError: true });
+	assert.ok(!raw(read) && read[0].includes("read ab c.ts"), JSON.stringify(read));
+});
+
+test("a write or edit that failed and Pi draws ends the run of folded rows above it", () => {
+	const failedEdit: [string, any, any] = [
+		"edit",
+		{ path: "a.ts", edits: [{ oldText: "a", newText: "b" }] },
+		{ content: text("oldText not found"), isError: true },
+	];
+	const s = session();
+	s.step([ran("ls", "a"), failedEdit]);
+	const screen = s.screen();
+	assert.ok(screen.includes("✓ $ ls · 1 line"), screen.join("\n"));
+	assert.ok(screen.includes("oldText not found"));
+	const tally = screen.indexOf("✓ $ ls · 1 line");
+	assert.ok(
+		tally < screen.findIndex((line) => line.includes("oldText not found")),
+		"the ls row stays above the failure",
+	);
+});
+
 test("a call that changes nothing keeps no line once a step follows; a stretch that opens with such calls counts them", () => {
 	const s = session();
 	s.step([ran("ls", "a\nb"), ["read", { path: "a.ts" }, { content: text("one\ntwo") }]]);
@@ -661,6 +703,8 @@ test("only a command made of programs known to change nothing loses its line", (
 		"shellcheck install.sh",
 		"git diff main > /tmp/pr.diff",
 		"mkdir -p /tmp/lab && npm test 2>&1 | tee /tmp/lab/test.log | tail -3",
+		"sleep 2 & wait",
+		"fd -e ts src",
 	];
 	const changes = [
 		"npm install",
@@ -716,6 +760,12 @@ test("only a command made of programs known to change nothing loses its line", (
 		"echo x > /tmp/../etc/hosts",
 		"echo x > /tmp/$DIR/hosts",
 		`ls > ${ROOT.replace(/^\/private/, "")}/list.txt`,
+		"ls & rm -rf x",
+		"fd -e tmp -x rm",
+		"fd -e tmp -X rm",
+		"fd -e tmp --exec rm",
+		"npm run lint -- --fix",
+		"cargo clippy --fix",
 	];
 	assert.deepEqual(nothing.filter(kept), [], "these change nothing");
 	assert.deepEqual(
