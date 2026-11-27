@@ -8,7 +8,7 @@
 // `stream` (a Pi JSON event stream the run writes), the footer also shows the run's last tool call, read from a
 // bounded tail; that text goes to the footer only, never into a message or an entry. Design: docs/watch/design.md.
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -19,12 +19,11 @@ const MAX_LABEL = 24;
 const INTERVAL_MS = 30_000;
 const PS_TIMEOUT_MS = 2_000;
 /**
- * How much of a stream's end one check reads. A stream is mostly `message_update` lines, each repeating the whole
- * partial message (up to a few 100 KB); one long turn can put over 2 MB between two tool calls. A check reads the
- * short tail once it knows a tool, and the long one while it knows none yet (the first check, after /reload).
+ * The most of a stream one check reads. A stream is mostly `message_update` lines, each repeating the whole
+ * partial message (up to a few 100 KB), and one long turn can put over 2 MB between two tool calls. A check reads
+ * only what was appended since the previous one, and at most this much of the file's end.
  */
-export const STREAM_TAIL_BYTES = 1024 * 1024;
-export const STREAM_FIRST_TAIL_BYTES = 8 * 1024 * 1024;
+export const STREAM_MAX_READ = 8 * 1024 * 1024;
 const MAX_TOOL_NAME = 24;
 const MAX_TOOL_ARG = 40;
 
@@ -56,8 +55,8 @@ type Watch = {
 	notified?: boolean;
 };
 type Dropped = { label: string; dropped: true };
-/** The last tool call read from a stream: footer text only. `seenAt` is when this session first saw it. */
-export type ToolCall = { id: string; name: string; arg?: string };
+/** A tool call read from a stream: footer text only. */
+export type ToolCall = { name: string; arg?: string };
 /**
  * What only this session's checks know, never stored: the miss count, whether the first miss came from the
  * check on session_start (the work ended while no Pi watched), an unknown reason, the progress read, and the
@@ -70,7 +69,9 @@ type Live = {
 	count?: number;
 	mtime?: number;
 	progressError?: string;
-	tool?: ToolCall & { seenAt: number };
+	/** `seenAt` is unset when the call's age is unknown; `stale` when a newer call may have gone unread. */
+	tool?: ToolCall & { seenAt?: number; stale?: boolean };
+	streamRead?: number;
 	streamError?: string;
 };
 
@@ -137,64 +138,79 @@ function readProgress(path: string): { count: number; mtime: number } | undefine
 }
 
 /**
- * The last `tool_execution_start` in the final `maxBytes` of a Pi JSON event stream; undefined when the
- * file is missing or the tail holds none. A line cut by the window's start, a half-written last line and a line
- * that is not JSON are skipped. Only the tool's name and one short argument are kept, sanitised and capped.
+ * The last `tool_execution_start` in a Pi JSON event stream from byte `from` on, reading at most `maxBytes` of the
+ * file's end. Also `next`, where the following read starts (the start of a half-written last line), and `skipped`
+ * when the cap left bytes after `from` unread. No tool when the file is missing or the bytes hold none. A line cut
+ * by the read's start, a half-written last line and a line that is not JSON are skipped. Only the tool's name and
+ * one short argument are kept, sanitised and capped. Anything but a regular file throws.
  */
-export function readLastTool(path: string, maxBytes = STREAM_TAIL_BYTES): ToolCall | undefined {
+export function readLastTool(
+	path: string,
+	from = 0,
+	maxBytes = STREAM_MAX_READ,
+): { tool?: ToolCall; next: number; skipped?: boolean } {
 	let fd: number;
 	try {
-		fd = openSync(path, "r");
+		// Non-blocking, so a FIFO given as the stream cannot hang the check; only a regular file is read.
+		fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { next: 0 };
 		throw err;
 	}
-	let tail: Buffer;
+	let bytes: Buffer;
 	let start: number;
+	let skipped: boolean;
 	try {
-		const size = fstatSync(fd).size;
-		start = Math.max(0, size - maxBytes);
-		tail = Buffer.alloc(size - start);
+		const stat = fstatSync(fd);
+		if (!stat.isFile()) throw new Error("not a regular file");
+		// A stream that shrank was rewritten: read it again from its end.
+		const resume = from > stat.size ? 0 : from;
+		const begin = Math.max(resume, stat.size - maxBytes);
+		skipped = begin > resume;
+		// One byte before `begin` tells whether the first line starts exactly there.
+		start = Math.max(0, begin - 1);
+		bytes = Buffer.alloc(stat.size - start);
 		let read = 0;
-		while (read < tail.length) {
-			const n = readSync(fd, tail, read, tail.length - read, start + read);
+		while (read < bytes.length) {
+			const n = readSync(fd, bytes, read, bytes.length - read, start + read);
 			if (n === 0) break;
 			read += n;
 		}
-		tail = tail.subarray(0, read);
+		bytes = bytes.subarray(0, read);
 	} finally {
 		closeSync(fd);
 	}
+	// Complete lines only: from the first line that starts in the bytes read to the last newline.
+	const first = start === 0 ? 0 : bytes.indexOf(10) + 1;
+	// One line longer than the read, cut at both ends: nothing to parse, and the next read starts after it.
+	if (start > 0 && first === 0) return { next: start + bytes.length, skipped };
+	const end = bytes.lastIndexOf(10) + 1;
 	const marker = Buffer.from('"tool_execution_start"');
-	for (let at = tail.lastIndexOf(marker); at !== -1; ) {
-		const lineStart = tail.lastIndexOf(10, at) + 1;
-		const lineEnd = tail.indexOf(10, at);
-		// The window's first line may be cut, so it is only trusted when the window starts the file.
-		if (lineEnd !== -1 && (lineStart > 0 || start === 0)) {
-			const tool = toolCall(tail.subarray(lineStart, lineEnd).toString("utf8"), start + lineStart);
-			if (tool) return tool;
-		}
+	for (let at = end ? bytes.lastIndexOf(marker, end - 1) : -1; at !== -1; ) {
+		const lineStart = bytes.lastIndexOf(10, at) + 1;
+		if (lineStart < first) break;
+		const tool = parseToolStart(bytes.subarray(lineStart, bytes.indexOf(10, at)).toString("utf8"));
+		if (tool) return { tool, next: start + end, skipped };
 		if (lineStart === 0) break;
-		at = tail.lastIndexOf(marker, lineStart - 1);
+		at = bytes.lastIndexOf(marker, lineStart - 1);
 	}
-	return undefined;
+	return { next: start + end, skipped };
 }
 
-function toolCall(line: string, offset: number): ToolCall | undefined {
-	let event: { type?: unknown; toolCallId?: unknown; toolName?: unknown; args?: Record<string, unknown> };
+function parseToolStart(line: string): ToolCall | undefined {
+	let event: { type?: unknown; toolName?: unknown; args?: Record<string, unknown> };
 	try {
 		event = JSON.parse(line);
 	} catch {
 		return undefined;
 	}
 	if (event?.type !== "tool_execution_start" || typeof event.toolName !== "string") return undefined;
-	const name = plain(event.toolName, MAX_TOOL_NAME);
+	const name = sanitize(event.toolName, MAX_TOOL_NAME);
 	if (!name) return undefined;
 	const args = event.args && typeof event.args === "object" ? event.args : {};
 	const raw = ["command", "path", "task", "name"].map((key) => args[key]).find((v) => typeof v === "string");
-	const arg = typeof raw === "string" ? plain(raw, MAX_TOOL_ARG) : undefined;
-	const id = typeof event.toolCallId === "string" ? event.toolCallId : `@${offset}`;
-	return { id, name, arg: arg || undefined };
+	const arg = typeof raw === "string" ? sanitize(raw, MAX_TOOL_ARG) : undefined;
+	return { name, arg: arg || undefined };
 }
 
 // Terminal escape sequences, matched by their ECMA-48 shape: CSI (`ESC [` or C1 CSI, parameters, a final byte),
@@ -203,7 +219,7 @@ function toolCall(line: string, offset: number): ToolCall | undefined {
 const ESCAPES = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[ -/]*[0-~]/g;
 
 /** Strip ANSI codes, control and format characters (bidi, zero-width) and newlines; cap at `max`, marking a cut. */
-function plain(text: string, max: number, mark = "…"): string {
+function sanitize(text: string, max: number, mark = "…"): string {
 	const chars = [
 		...text
 			.replace(ESCAPES, "")
@@ -216,7 +232,7 @@ function plain(text: string, max: number, mark = "…"): string {
 
 /** A label without ANSI codes, control characters or newlines, capped at 24. */
 export function sanitizeLabel(label: string): string {
-	return plain(label, MAX_LABEL, "");
+	return sanitize(label, MAX_LABEL, "");
 }
 
 /** `45s`, `23m`, `2h41m`. */
@@ -228,6 +244,7 @@ export function duration(ms: number): string {
 	return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
 }
 
+const firstLine = (err: unknown) => (err as Error).message.split("\n")[0];
 const ended = (watch: Watch) => watch.state !== "running";
 const items = (count: number | undefined, total: number | undefined) =>
 	count === undefined ? undefined : total === undefined ? `${count}` : `${count}/${total}`;
@@ -242,12 +259,18 @@ function fragment(watch: Watch, live: Live, now: number): string {
 	}
 	if (watch.state === "died") return [`✗ ${watch.label} died, no exit status`, done].filter(Boolean).join(" · ");
 	const unknown =
-		live.unknown ??
-		(live.progressError && `progress: ${live.progressError}`) ??
+		live.unknown ||
+		(live.progressError && `progress: ${live.progressError}`) ||
 		(live.streamError && `stream: ${live.streamError}`);
 	if (unknown) return `? ${watch.label} unchecked (${unknown})`;
 	const last = live.mtime === undefined ? undefined : `last +1 ${duration(now - live.mtime)}`;
-	const tool = live.tool && [live.tool.name, live.tool.arg, `${duration(now - live.tool.seenAt)} ago`];
+	const seen = live.tool?.seenAt;
+	const tool = live.tool && [
+		live.tool.stale && "?",
+		live.tool.name,
+		live.tool.arg,
+		seen !== undefined && `${duration(now - seen)} ago`,
+	];
 	return [
 		["⏵", watch.label, done].filter(Boolean).join(" "),
 		last,
@@ -311,15 +334,20 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 			timer.unref();
 		};
 
-		// The same for the stream. A tail without a tool call keeps the last one seen; a new call restarts the age.
+		// Read what the stream gained since the last check. Bytes with no tool call keep the last one seen. A call
+		// found in appended bytes is dated from now; one found by the first read (at registration, after /reload)
+		// may be of any age, so it shows none. After a capped read with no call, a newer one may have gone unread:
+		// the last one stays, marked `?`, without an age.
 		const readStream = (watch: Watch, live: Live) => {
 			if (!watch.stream) return;
 			try {
-				const tool = readLastTool(watch.stream, live.tool ? STREAM_TAIL_BYTES : STREAM_FIRST_TAIL_BYTES);
-				if (tool && tool.id !== live.tool?.id) live.tool = { ...tool, seenAt: Date.now() };
+				const { tool, next, skipped } = readLastTool(watch.stream, live.streamRead);
+				if (tool) live.tool = { ...tool, seenAt: live.streamRead === undefined ? undefined : Date.now() };
+				else if (skipped && live.tool) live.tool = { ...live.tool, seenAt: undefined, stale: true };
+				live.streamRead = next;
 				live.streamError = undefined;
 			} catch (err) {
-				live.streamError = (err as Error).message.split("\n")[0];
+				live.streamError = firstLine(err);
 			}
 		};
 
@@ -332,7 +360,7 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 					live.mtime = progress?.mtime;
 					live.progressError = undefined;
 				} catch (err) {
-					live.progressError = (err as Error).message.split("\n")[0];
+					live.progressError = firstLine(err);
 				}
 			}
 			readStream(watch, live);
@@ -356,7 +384,7 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 					} catch (err) {
 						result = {
 							state: "unknown",
-							reason: (err as Error).message.split("\n")[0],
+							reason: firstLine(err),
 							misses: entry.live.misses,
 						};
 					}
@@ -402,7 +430,12 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 				const data = parseEntry(entry.data);
 				if (!data) continue;
 				watches.delete(data.label);
-				if (!("dropped" in data)) watches.set(data.label, { watch: data, live: { misses: 0 } });
+				if ("dropped" in data) continue;
+				const live: Live = { misses: 0 };
+				watches.set(data.label, { watch: data, live });
+			}
+			for (const { watch, live } of watches.values()) {
+				if (!ended(watch)) readStream(watch, live);
 			}
 		};
 

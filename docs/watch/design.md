@@ -30,7 +30,7 @@ The model chooses these when it writes the launch command, and registers them wi
 
 - **`pid`** (required): the wrapper shell, not the job inside it. The wrapper writes the exit file before it exits, so "pid gone and no exit file" can only mean the wrapper was killed, or the machine went down.
 - **`progress`** (optional): a file that gains one line per finished item. The extension counts its newlines and reads its mtime. It never puts file content in a message.
-- **`stream`** (optional, added for #195): the Pi JSON event stream of a headless run (`pi -p --mode json … > stream.jsonl`). While the watch runs, its footer fragment also shows the run's last tool call. See [Stream](#stream).
+- **`stream`** (optional): the Pi JSON event stream of a headless run (`pi -p --mode json … > stream.jsonl`). While the watch runs, its footer fragment also shows the run's last tool call. See [Stream](#stream).
 - **`total`** (optional): the item count.
 - **`exitFile`** (optional): where the wrapper writes `$?`. **The tool refuses an `exitFile` that already exists.** A rerun into the same directory would otherwise read the old file as a clean finish.
 
@@ -61,10 +61,12 @@ A watched launcher drops its final `herdr agent prompt`, because the extension o
 A headless Pi run is silent for tens of minutes; `stream` shows what it is doing without a second process.
 
 - **What is shown.** The last `tool_execution_start` event in the stream: its `toolName` and one short argument, the first of `command`, `path`, `task` or `name` that is a string. Both are stripped of escape sequences and control characters, whitespace is collapsed, and they are capped at 24 and 40 characters (a cut ends in `…`). Then the age: `⏵ t181 · bash npm run check 2m ago · 25m`.
-- **Age.** Counted from when this session's check first saw that tool call (by its `toolCallId`), so it is accurate to one 30 s check. The file's mtime cannot date a call: it moves with every `message_update` delta. After `/reload` or resume the age restarts at the first check.
-- **Bounded read.** A stream is mostly `message_update` lines, each repeating the whole partial message (lines of up to ~270 KB; one 12.7 MB sample run had 41 tool calls in 23,700 lines, with up to 2.4 MB between two calls). A check reads only the last 1 MiB; the first check after registration or `/reload`, while no call is known yet, reads the last 8 MiB. A tail with no tool call keeps the last call seen. The window's first line (cut by the window), a half-written last line, a line that is not JSON and the marker text quoted inside a message are all skipped. A tool call before the window is not found.
-- **No count.** With `stream` and no `progress`, no item count is shown: counting tool calls would mean reading the whole file, or every byte as it grows and the whole file again after `/reload`. Pass a `progress` file for a count.
-- **Errors.** A missing stream shows nothing yet. An unreadable one shows the watch as `? t181 unchecked (stream: <reason>)`, like an unreadable progress file, and never keeps the check from seeing the end.
+- **Age.** Counted from the check that first read the call, so it is accurate to one 30 s check. The file's mtime cannot date a call: every `message_update` delta moves it. A call found by the first read (at registration, after `/reload` or resume) may be of any age, so it is shown with none: `⏵ t181 · bash npm run check · 25m`.
+- **Bounded read.** A stream is mostly `message_update` lines, each repeating the whole partial message. One 12.7 MB sample run had 41 tool calls in 23,700 lines, lines of up to ~270 KB, and up to 2.4 MB between two calls. Each check reads only the bytes appended since the previous check, from the start of the line that was half-written then, and never more than the file's last 8 MiB. The offset is held in memory, not in entries, so the first read after `/reload` reads the last 8 MiB, and a call before that is not found.
+- **Capped read.** When more than 8 MiB arrived since the last check and held no tool call, a newer call may have gone unread. The last call stays, marked `?` and with no age: `⏵ t181 · ? bash npm run check · 25m`.
+- **Skipped lines.** The line cut by the read's start, a half-written last line (read again on the next check), a line that is not JSON and the marker text quoted inside a message are all skipped. Bytes with no tool call keep the last call seen.
+- **No count.** With `stream` and no `progress`, no item count is shown. A count kept from appended bytes would be wrong after `/reload` and after a capped read. Pass a `progress` file for a count.
+- **Errors.** A missing stream shows nothing yet. A stream that cannot be read, or is not a regular file (it is opened non-blocking, so a FIFO cannot hang the check), shows the watch as `? t181 unchecked (stream: <reason>)`, like an unreadable progress file, and never keeps the check from seeing the end.
 - **Never in a message.** The tool name and argument go to the footer only. They are held in memory, not in the `watch` entries, and never enter the wake message or the tool result. `stream` and `progress` are independent.
 
 ## Footer
@@ -108,7 +110,7 @@ There are no settings and no command. Without a watch there is nothing on screen
 ## Security
 
 - **Runs:** only `ps -o lstart= -p <int>` through `execFile`, with fixed argv, no shell, `LC_ALL=C`, `TZ=UTC` (so a Pi restored under another time zone reads the same start time, not a reused pid), and a 2 s timeout.
-- **Reads:** the size, mtime and newline count of `progress`, one integer from `exitFile`, and a bounded tail of `stream`. No content enters a model message: the stream's tool name and argument reach the footer only.
+- **Reads:** the size, mtime and newline count of `progress`, one integer from `exitFile`, and the bytes `stream` gained since the last check (at most its last 8 MiB). No content enters a model message: the stream's tool name and argument reach the footer only.
 - **Writes:** only session entries.
 - **Guard:** not involved. The launcher itself goes through the `bash` tool, which the guard sees.
 
