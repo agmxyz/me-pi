@@ -7,3 +7,4 @@
 - A user-visible change to `packages/pi-workers/` adds its line under `## [Unreleased]` in that package's `CHANGELOG.md` (create the heading if missing).
 - A code change is done when `npm run check --prefix extensions` passes.
 - When changing or reviewing code, follow [`docs/coding-standards.md`](docs/coding-standards.md).
+- Issues, specs and tickets are GitHub issues on `agmxyz/me-pi` (use `gh`); "publish to the issue tracker" means create one. Triage labels: `ready-for-agent` and `wontfix` exist; create `needs-triage`, `needs-info` or `ready-for-human` only when first needed. Domain docs are single-context: `GLOSSARY.md` and `docs/adr/` at the root.
