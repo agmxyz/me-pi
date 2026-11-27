@@ -495,7 +495,8 @@ function outputEnd(result: Result | undefined): string[] {
 	const text = resultText(result);
 	if (text.length <= OUTPUT_END) return textLines(text);
 	const end = text.slice(-OUTPUT_END);
-	return textLines(end.slice(end.indexOf("\n") + 1));
+	// With no line break in the cut there is no whole line to show.
+	return end.includes("\n") ? textLines(end.slice(end.indexOf("\n") + 1)) : [];
 }
 function formatDuration(ms: number): string {
 	const seconds = ms / 1000;
@@ -572,9 +573,12 @@ const SEARCH = /^(?:rg|grep|git\s+grep)\s/;
  */
 function lookedUpNothing(tried: string, output: string[]): boolean {
 	if (tried.startsWith("read ")) return output.some((line) => /ENOENT|no such file/i.test(line));
-	const command = tried.startsWith("bash ") ? tried.slice("bash ".length) : undefined;
-	if (command === undefined || output.length !== 1 || exitCode(output) !== "1") return false;
-	return SEARCH.test(command) && changesNothing(command, []);
+	if (!tried.startsWith("bash ") || output.length !== 1 || exitCode(output) !== "1") return false;
+	let command = tried.slice("bash ".length);
+	for (let lead = leadingPlumbing(command); lead; lead = leadingPlumbing(command))
+		command = command.slice(lead.length);
+	// One search alone: in a sequence or chain the exit code may be another program's.
+	return SEARCH.test(command) && !/[;\n]|&&|\|\|/.test(bareCommand(command)) && changesNothing(command, []);
 }
 /** The run in one line, what needs attention first; nothing for a run that called no tool. */
 function receipt(run: Run, theme: Theme): string | undefined {
@@ -948,7 +952,7 @@ const SUMMARIES: Record<string, Summarize> = {
 		// Pi draws the image under the row as soon as the call ends; a head line added later would push it down.
 		if (blocks.some((block) => block.type === "image"))
 			return { head, meta: [theme.fg("muted", "image")], keep: true };
-		const text = blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+		const text = resultText(result);
 		// Pi ends a partial read with a bracketed note on how to continue; it is not a line of the file.
 		const count = text
 			.replace(/\n+\[[^\n]*\]\s*$/, "")
@@ -1224,6 +1228,13 @@ function compactRenderers(
 		},
 		renderResult(result, options, theme, context) {
 			const state = rowState(context);
+			/** Notes the result's lines: a tool that draws its own row has no Row here, so its height is known from them. */
+			const resultDrawn = (drawn: string[]) => {
+				state.resultRows = drawn.length;
+				if (!summarize)
+					ownLines.set(context.toolCallId, { ...ownLines.get(context.toolCallId), result: drawn.length });
+				return drawn;
+			};
 			state.result = options.isPartial ? undefined : result;
 			state.failed = context.isError;
 			state.durationMs = context.durationMs;
@@ -1254,14 +1265,7 @@ function compactRenderers(
 				// A running row that shows beside a drawn one is one line: its output would move the rows below it.
 				const hidden = () =>
 					held(context.args, state, theme, context) || (summarize !== undefined && overtaken(context.toolCallId));
-				return lines((width) => {
-					const drawn = hidden() ? [] : partial.render(width);
-					state.resultRows = drawn.length;
-					// A tool that draws its own row has no Row here: its height is known from what it drew.
-					if (!summarize)
-						ownLines.set(context.toolCallId, { ...ownLines.get(context.toolCallId), result: drawn.length });
-					return drawn;
-				});
+				return lines((width) => resultDrawn(hidden() ? [] : partial.render(width)));
 			}
 			const output = (width: number) => {
 				if (held(context.args, state, theme, context)) return [];
@@ -1272,11 +1276,7 @@ function compactRenderers(
 					state.bodyLines = { key, rows: indented(body, state, theme, context).render(width) };
 				return state.bodyLines.rows;
 			};
-			return lines((width) => {
-				const drawn = output(width);
-				state.resultRows = drawn.length;
-				return drawn;
-			});
+			return lines((width) => resultDrawn(output(width)));
 		},
 	};
 }

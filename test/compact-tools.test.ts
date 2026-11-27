@@ -944,6 +944,22 @@ test("a row a tool with its own shell drew counts by its lines, so a failure abo
 		renderCall: () => ({ invalidate() {}, render: () => ["progress"] }),
 		renderResult: () => ({ invalidate() {}, render: () => ["done"] }),
 	};
+	PI.bare = { renderCall: () => ({ invalidate() {}, render: () => ["bare"] }) };
+	const bare = session();
+	bare.step([ran("make", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+	bare.step([["bare", {}, { content: text(numbered(40)), isError: true }]]);
+	bare.step([ran("make", "ok")]);
+	bare.step([ran("true", "")]);
+	assert.ok(bare.screen().includes("line 40"), "a failed tool without a result renderer shows its end");
+	Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
+	const tall = session();
+	tall.step([ran("make", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+	tall.step([["bare", {}, { content: text(numbered(40)), isError: true }]]);
+	tall.screen();
+	tall.step([ran("make", "ok")]);
+	tall.step([ran("true", "")]);
+	assert.ok(!tall.screen().includes("✗ $ make · exit 1 · passed later"), "its end counts toward the screen");
+	Object.defineProperty(process.stdout, "rows", { value: 60, configurable: true });
 	for (const tool of ["mark", "progress"]) {
 		const s = session();
 		s.step([ran("make", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
@@ -1111,12 +1127,19 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 	failed("s1", "rg x src", 2);
 	handlers.tool_execution_start({ toolCallId: "s2", toolName: "bash", args: { command: "rg x src" } }, slot.ctx);
 	handlers.tool_execution_end({ toolCallId: "s2", toolName: "bash", result: none, isError: true });
+	for (const [id, command] of [
+		["cd", "cd web && rg x src"],
+		["chain", "rg -q x src && test -f a.ts"],
+	]) {
+		handlers.tool_execution_start({ toolCallId: id, toolName: "bash", args: { command } }, slot.ctx);
+		handlers.tool_execution_end({ toolCallId: id, toolName: "bash", result: none, isError: true });
+	}
 	failed("t", "test -f a.ts", 1);
 	handlers.agent_end({}, slot.ctx);
 	assert.deepEqual(
 		slot.lines(),
-		["✗ open: test -f a.ts · exit 1 · 3 calls · 0.0s"],
-		"a search that then found nothing settles its earlier failure; a check that failed stays open",
+		["✗ open: test -f a.ts · exit 1 (+1 more) · 5 calls · 0.0s"],
+		"a search that then found nothing settles its earlier failure, also after a cd; a check, or a chain with one, stays open",
 	);
 
 	handlers.agent_start({}, slot.ctx);
