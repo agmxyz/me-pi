@@ -940,12 +940,18 @@ test("a row a tool with its own shell drew counts by its lines, so a failure abo
 		renderCall: () => ({ invalidate() {}, render: () => [" ▸ a step"] }),
 		renderResult: () => ({ invalidate() {}, render: () => [] }),
 	};
-	const s = session();
-	s.step([ran("make", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
-	s.step([["mark", {}, { content: text("ok") }]]);
-	s.step([ran("make", "ok")]);
-	s.step([ran("true", "")]);
-	assert.ok(s.screen().includes("✗ $ make · exit 1 · passed later"), s.screen().join("\n"));
+	PI.progress = {
+		renderCall: () => ({ invalidate() {}, render: () => ["progress"] }),
+		renderResult: () => ({ invalidate() {}, render: () => ["done"] }),
+	};
+	for (const tool of ["mark", "progress"]) {
+		const s = session();
+		s.step([ran("make", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+		s.step([[tool, {}, { content: text("ok") }]]);
+		s.step([ran("make", "ok")]);
+		s.step([ran("true", "")]);
+		assert.ok(s.screen().includes("✗ $ make · exit 1 · passed later"), `${tool}:\n${s.screen().join("\n")}`);
+	}
 });
 
 /** A stand-in for Pi's widget slot: `lines()` is what the slot shows at 60 columns. */
@@ -985,6 +991,9 @@ test("while the agent works, three lines above the editor show its last calls an
 	t.mock.timers.tick(12_000);
 	assert.ok(slot.redraws() >= 12, "the area redraws every second");
 	assert.deepEqual(slot.lines(), ["", "", " ● $ make · 12s"]);
+	const long = `\x1b[31m${"x".repeat(9000)}\x1b[0m\nstep 1`;
+	handlers.tool_execution_update({ toolCallId: "1", partialResult: { content: text(long) } });
+	assert.deepEqual(slot.lines(), ["", " ● $ make · 12s", " │ step 1"], "a long output is read from its end only");
 	handlers.tool_execution_update({ toolCallId: "1", partialResult: { content: text("step 1\nstep 2\nstep 3") } });
 	assert.deepEqual(slot.lines(), [" ● $ make · 12s", " │ step 2", " │ step 3"], "with the end of its output");
 	end("1", "bash", "step 1\nstep 2\nstep 3", { durationMs: 12_300 });
@@ -1074,7 +1083,9 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 	);
 
 	handlers.agent_start({}, slot.ctx);
-	call("r", "read", { path: "missing.ts" }, true);
+	handlers.tool_execution_start({ toolCallId: "r", toolName: "read", args: { path: "missing.ts" } }, slot.ctx);
+	const missing = { content: text("ENOENT: no such file or directory") };
+	handlers.tool_execution_end({ toolCallId: "r", toolName: "read", result: missing, isError: true });
 	handlers.tool_execution_start({ toolCallId: "g", toolName: "bash", args: { command: "rg nothing src" } }, slot.ctx);
 	const none = { content: text("(no output)\n\nCommand exited with code 1") };
 	handlers.tool_execution_end({ toolCallId: "g", toolName: "bash", result: none, isError: true });
@@ -1094,6 +1105,18 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 		slot.lines(),
 		["2 calls · 0.0s"],
 		"a lookup that found nothing, and a call made inside another tool, leave nothing open",
+	);
+
+	handlers.agent_start({}, slot.ctx);
+	failed("s1", "rg x src", 2);
+	handlers.tool_execution_start({ toolCallId: "s2", toolName: "bash", args: { command: "rg x src" } }, slot.ctx);
+	handlers.tool_execution_end({ toolCallId: "s2", toolName: "bash", result: none, isError: true });
+	failed("t", "test -f a.ts", 1);
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(
+		slot.lines(),
+		["✗ open: test -f a.ts · exit 1 · 3 calls · 0.0s"],
+		"a search that then found nothing settles its earlier failure; a check that failed stays open",
 	);
 
 	handlers.agent_start({}, slot.ctx);

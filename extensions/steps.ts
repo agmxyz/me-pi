@@ -6,6 +6,7 @@
 // `/steps off` turns it off the same way for every session; the choice lives in <agent dir>/steps.json.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -24,14 +25,19 @@ const settingsPath = () => join(getAgentDir(), "steps.json");
 function parsePlan(value: unknown): Plan | undefined {
 	const { steps, done } = (value ?? {}) as Partial<Plan>;
 	if (!Array.isArray(steps) || !steps.every((step) => typeof step === "string")) return undefined;
-	return { steps, done: clampDone(Number.isInteger(done) ? (done as number) : 0, steps) };
+	const lines = steps.map(oneLine);
+	return { steps: lines, done: clampDone(Number.isInteger(done) ? (done as number) : 0, lines) };
 }
 
 /**
- * Step text on one row: a newline would take a terminal row the renderer does not count, and other control
- * characters move the cursor or start escape sequences.
+ * Step text on one row: a newline or tab becomes a space, since it would take a terminal row the renderer does
+ * not count; escape sequences and other control characters, which move the cursor, are dropped.
  */
-const oneLine = (step: string) => step.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ");
+const oneLine = (step: string) =>
+	stripVTControlCharacters(step)
+		.replace(/[\n\r\t]+/g, " ")
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+		.trim();
 
 const clampDone = (done: number, steps: string[]) => Math.max(0, Math.min(done, steps.length));
 
@@ -76,7 +82,7 @@ function heading(called: Called | undefined, theme: Theme, pad: number): string[
 	const step = called?.heading;
 	if (step === undefined || !called?.steps[step]) return [];
 	const count = theme.fg("dim", `${step + 1}/${called.steps.length}`);
-	return [`${" ".repeat(pad)}${theme.fg("accent", "▸")} ${count} ${theme.bold(oneLine(called.steps[step]))}`];
+	return [`${" ".repeat(pad)}${theme.fg("accent", "▸")} ${count} ${theme.bold(called.steps[step])}`];
 }
 
 const elapsed = (ms: number) => {
@@ -122,8 +128,7 @@ export default function (pi: ExtensionAPI) {
 						// last step shows as the current one until the agent stops.
 						const finished = done >= steps.length;
 						if (finished && !running) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
-						if (!running)
-							return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${oneLine(steps[done])}`))];
+						if (!running) return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${steps[done]}`))];
 						const current = Math.min(done, steps.length - 1);
 						// A window of MAX_ROWS around the current step; its edge rows count the steps cut off.
 						const start = Math.max(0, Math.min(current - 2, steps.length - MAX_ROWS));
@@ -133,10 +138,10 @@ export default function (pi: ExtensionAPI) {
 							if (offset === 0 && start > 0) return line(theme.fg("dim", `✓ ${start + 1} earlier`));
 							if (i === end - 1 && end < steps.length)
 								return line(theme.fg("dim", `○ ${steps.length - i} more`));
-							if (i < current) return line(theme.fg("dim", `✓ ${oneLine(step)}`));
-							if (i > current) return line(theme.fg("dim", `○ ${oneLine(step)}`));
+							if (i < current) return line(theme.fg("dim", `✓ ${step}`));
+							if (i > current) return line(theme.fg("dim", `○ ${step}`));
 							const timer = theme.fg("dim", ` · ${elapsed(Date.now() - stepStartedAt)}`);
-							return line(`${theme.fg("accent", "●")} ${oneLine(step)}${timer}`);
+							return line(`${theme.fg("accent", "●")} ${step}${timer}`);
 						});
 					},
 				};
@@ -185,7 +190,7 @@ export default function (pi: ExtensionAPI) {
 				const before = plan.done;
 				const pickedUp = !fresh;
 				fresh = true;
-				if (params.steps) plan = { steps: params.steps, done: 0 };
+				if (params.steps) plan = { steps: params.steps.map(oneLine), done: 0 };
 				if (params.done !== undefined) plan = { ...plan, done: clampDone(params.done, plan.steps) };
 				const started = pickedUp || params.steps !== undefined || plan.done !== before;
 				if (started) stepStartedAt = Date.now();
@@ -214,9 +219,9 @@ export default function (pi: ExtensionAPI) {
 				},
 			}),
 			renderResult: (result, _options, theme, context) => {
-				context.state.called = context.isError
-					? undefined
-					: parsePlan(result.details) && (result.details as Called);
+				const parsed = context.isError ? undefined : parsePlan(result.details);
+				// A plan saved before its steps were made one-line has them made so here.
+				context.state.called = parsed && { ...(result.details as Called), ...parsed };
 				return new Text(context.isError ? theme.fg("error", `plan failed: ${textOf(result)}`) : "", 0, 0);
 			},
 		});

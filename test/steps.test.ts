@@ -118,11 +118,11 @@ test("a long plan shows eight rows around the current step, counting the steps c
 test("step text with a newline, a tab or another control character stays on one row", async () => {
 	const s = setup();
 	s.prompt();
-	await s.plan({ steps: ["Multi\nline\tstep\x07", "B"] });
-	assert.equal(s.show(), "● Multi line step  · 0s\n○ B");
+	await s.plan({ steps: ["Multi\nline\tstep\x07", "\x1b[31mB\x1b[0m"] });
+	assert.equal(s.show(), "● Multi line step · 0s\n○ B");
 	s.end();
 	await s.plan({ done: 0 });
-	assert.equal(s.show(), "◐ 0/2 · next: Multi line step ");
+	assert.equal(s.show(), "◐ 0/2 · next: Multi line step");
 });
 
 test("a session started mid-run shows a paused plan, not a frozen timer", async () => {
@@ -357,6 +357,7 @@ test("a plan call that starts a step leaves its heading in the transcript; any o
 		[" ▸ 1/1 Only"],
 		"also for steps set and finished at once",
 	);
+	assert.deepEqual(await drawn({ steps: ["Two\nlines", "B"] }), [" ▸ 1/2 Two lines"], "a heading is one row too");
 	const long = await drawn({ steps: ["x".repeat(100), "B"] });
 	const cut = stripVTControlCharacters(long[0]);
 	assert.ok(cut.length === 80 && cut.endsWith("…"), "a long step is cut to the width");
