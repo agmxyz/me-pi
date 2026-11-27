@@ -1,0 +1,12 @@
+Entry tree of the session two print-mode runs shared (ids shortened; from the session file, which is not kept here).
+4e1fab8b user  "Reply with only: base"
+e3e2154b <- 4e1fab8b assistant "base"
+f94b9068 <- e3e2154b user  run A prompt            10:21:09.172
+9a603da1 <- f94b9068 user  run B prompt            10:21:11.224   (B chained onto A's prompt)
+0b3da5bc <- f94b9068 assistant bash (run A)        10:21:13.915   (fork: f94b9068 now has two children)
+96f37bae <- 9a603da1 assistant bash, bash (run B)  10:21:16.504
+ce6f3aa2 <- 0b3da5bc toolResult "A-done"           (run A branch)
+01a27f8b <- ce6f3aa2 assistant "A"                 (run A branch ends; abandoned)
+fc1dd185 <- 96f37bae toolResult "A-done"           (run B ran A's command again)
+3829bf43 <- fc1dd185 toolResult "B-done"
+9b9bb337 <- 3829bf43 assistant "A\nB"              (leaf the next run continued from)

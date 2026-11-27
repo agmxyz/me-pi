@@ -1,0 +1,1 @@
+ticket-readiness, code-review, codebase-design, diagnosing-bugs, domain-modeling, git-guardrails-claude-code, grilling, migrate-to-shoehorn, pr, prototype, research, scaffold-exercises, setup-pre-commit, tdd, wizard, writing-for-agents

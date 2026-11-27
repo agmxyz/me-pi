@@ -1,0 +1,4 @@
+E3 exit=0
+[('message_end', 'stop', None), ('turn_end', 'stop', None), ('agent_end', None, None), ('agent_settled', None, False)]
+tool delegate isError False {'content': [{'type': 'text', 'text': '`/tmp/chief-spike2/repo/file.txt:1` contains:\n\n```text\nhello\n```\n[gpt-6.1-terra @low $0.0053 6s]'}], 'details': {'round1': [{'requested': {'model': 'openai/gpt-6.1-terra', 'thinking': 'low'}, 'web': False, 'provenance': [{'jobId': '3f1cd38e-2e69-4bff-8ffa-
+final [{'type': 'text', 'text': '`/tmp/chief-spike2/repo/file.txt:1` contains:\n\n```text\nhello\n```'}]

@@ -1,0 +1,4 @@
+A exit 0
+B exit 0
+file /Users/mmo/.pi/agent/sessions/--private-tmp-chief-spike-repo--/2026-11-27T10-21-05-830Z_chief-spike-b-88405.jsonl
+after exit 0

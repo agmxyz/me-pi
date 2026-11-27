@@ -1,0 +1,3 @@
+default exit=0
+approve exit=0
+worktree exit=0

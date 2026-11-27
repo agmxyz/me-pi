@@ -1,0 +1,1 @@
+Incomplete Claude Code upstream response (status 400, capture incomplete, native retries denied 1, upstream said: messages.2: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_01Mts645xf85FyFkvVF3kx5t. Each `tool_use` block must have a corresponding `tool_result` block in the next message.)

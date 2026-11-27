@@ -28,7 +28,7 @@ Pi loads this checkout as a local path, so it runs whichever branch and working 
 1. Run `/login` in Pi for each provider you use.
 2. For the `claude-code` provider (a Claude subscription), run `pi install https://github.com/earendil-works/pi-claude-code`.
 3. Optionally create `~/.pi/agent/delegate.json` to choose worker models; without it, workers use the session's model. See [Configure model pools](../packages/pi-workers/docs/delegate.md#configure-model-pools).
-4. Verify: run `/reload`, then `/delegate status` resolves the pools, `/guard` reports `guard on`, and the skills list shows `implement-me-pi`, `ticket-readiness`, and `batch-chief` (plus `pi-live-test` when Pi runs inside this checkout).
+4. Verify: run `/reload`, then `/delegate status` resolves the pools, `/guard` reports `guard on` (the command is absent when your settings exclude `extensions/guard.ts`), and the skills list shows `implement-me-pi`, `ticket-readiness`, and `batch-chief` (plus `pi-live-test` when Pi runs inside this checkout).
 
 ## Undo
 

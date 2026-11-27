@@ -1,0 +1,11 @@
+E1a SIGTERM exit=143
+sleep children alive after TERM: 0
+[('message_end', None, None), ('message_end', None, None), ('message_end', 'toolUse', None)]
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"toolu_01762WthHodm5qDWcCZHCQZZ","name":"bash","arguments":{"command":"sl
+{"type":"tool_execution_start","toolCallId":"toolu_01762WthHodm5qDWcCZHCQZZ","toolName":"bash","args":{"command":"sleep 60; echo SLEPT > /tmp/chief-spike2/out/e
+{"type":"tool_execution_update","toolCallId":"toolu_01762WthHodm5qDWcCZHCQZZ","toolName":"bash","args":{"command":"sleep 60; echo SLEPT > /tmp/chief-spike2/out/
+E1b SIGKILL exit=137
+sleep children alive after KILL: 2
+[('message_end', None, None), ('message_end', None, None), ('message_end', 'toolUse', None)]
+E1b resume exit=1
+E1c bad model exit=1
