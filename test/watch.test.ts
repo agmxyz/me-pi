@@ -578,8 +578,16 @@ test("readLastTool: reads only from `from`, at most `maxBytes` of the end, so a 
 	const call = toolStart("1", "read", { path: "a.ts" });
 	writeFileSync(path, call + delta("z".repeat(2000)));
 	const size = readFileSync(path).length;
-	assert.deepEqual(readLastTool(path, 0, 1000), { next: size, skipped: true }, "the cap starts after the call");
-	assert.deepEqual(readLastTool(path, call.length), { next: size, skipped: false }, "`from` starts after it");
+	assert.deepEqual(
+		readLastTool(path, 0, 1000),
+		{ next: size, skipped: true, rewritten: false },
+		"the cap starts after the call",
+	);
+	assert.deepEqual(
+		readLastTool(path, call.length),
+		{ next: size, skipped: false, rewritten: false },
+		"`from` starts after it",
+	);
 	assert.deepEqual(readLastTool(path, call.length - 1).tool, undefined, "a line cut by `from`");
 	assert.deepEqual(readLastTool(path, 0).tool, { name: "read", arg: "a.ts" });
 	const cut = toolStart("2", "bash", { command: "ls" });
@@ -588,13 +596,21 @@ test("readLastTool: reads only from `from`, at most `maxBytes` of the end, so a 
 	assert.equal(readLastTool(path, 0, exact - 1).tool, undefined, "a line cut by the cap");
 	assert.deepEqual(readLastTool(path, 0, exact).tool, { name: "bash", arg: "ls" }, "a line starting at the cap");
 	assert.deepEqual(readLastTool(path, 1e9).tool, { name: "bash", arg: "ls" }, "a shrunk file is read again");
-	assert.deepEqual(readLastTool(path, 0, 10), { next: readFileSync(path).length, skipped: true }, "inside a line");
+	assert.equal(readLastTool(path, 1e9).rewritten, true);
+	writeFileSync(path, cut + delta("w"));
+	assert.equal(readLastTool(path, 0, exact - 1).tool, undefined, "a call at byte 0, one byte before the cap");
+	assert.equal(readLastTool(path, 1).tool, undefined, "a call at byte 0, one byte before `from`");
+	assert.deepEqual(
+		readLastTool(path, 0, 10),
+		{ next: readFileSync(path).length, skipped: true, rewritten: false },
+		"inside a line",
+	);
 });
 
 test("readLastTool: a FIFO or a directory is refused at once, without blocking", () => {
 	const dir = fresh();
 	const fifo = join(dir, "fifo");
-	spawnSync("mkfifo", [fifo]);
+	assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
 	assert.throws(() => readLastTool(fifo), /not a regular file/);
 	mkdirSync(join(dir, "d"));
 	assert.throws(() => readLastTool(join(dir, "d")), /not a regular file|EISDIR/);
@@ -629,6 +645,11 @@ test("a stream shows the last tool and its age in the footer, and changes at the
 	t.mock.timers.tick(INTERVAL);
 	await settle();
 	assert.match(s.footer() ?? "", /^⏵ t181 · \? bash npm run check · \d+s$/);
+	// A rewritten (shorter) stream drops the old call and is read as new.
+	writeFileSync(stream, delta("fresh run"));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · \d+s$/);
 	assert.equal(s.sent.length, 0);
 });
 
@@ -659,7 +680,7 @@ test("an unreadable stream is shown as unchecked and does not hide the end", asy
 	const dir = fresh();
 	const s = setup({ ps, cwd: dir });
 	await s.start();
-	spawnSync("mkfifo", [join(dir, "stream.jsonl")]);
+	assert.equal(spawnSync("mkfifo", [join(dir, "stream.jsonl")]).status, 0);
 	table.set(42, { lstart: START });
 	await s.watch({ label: "t181", pid: 42, stream: "stream.jsonl", exitFile: "exit" });
 	assert.match(s.footer() ?? "", /^\? t181 unchecked \(stream: not a regular file\)$/);
@@ -687,4 +708,10 @@ test("after /reload and /tree a watch with a stream shows the last tool again, w
 	assert.match(again.footer() ?? "", /^⏵ t181 · edit x\.ts · \d+s$/);
 	await again.fire("session_tree");
 	assert.match(again.footer() ?? "", /^⏵ t181 · edit x\.ts · \d+s$/);
+	// A call before the last read's cap is not found after /reload; the footer says it does not know.
+	appendFileSync(join(dir, "stream.jsonl"), delta("d".repeat(STREAM_MAX_READ)));
+	await again.fire("session_shutdown");
+	const third = setup({ ps, branch: s.branch, cwd: dir });
+	await third.start("reload");
+	assert.match(third.footer() ?? "", /^⏵ t181 · \? · \d+s$/);
 });

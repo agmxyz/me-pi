@@ -71,6 +71,8 @@ type Live = {
 	progressError?: string;
 	/** `seenAt` is unset when the call's age is unknown; `stale` when a newer call may have gone unread. */
 	tool?: ToolCall & { seenAt?: number; stale?: boolean };
+	/** A capped read found no call and none is known: there may be one before the bytes read. */
+	toolUnknown?: boolean;
 	streamRead?: number;
 	streamError?: string;
 };
@@ -140,7 +142,7 @@ function readProgress(path: string): { count: number; mtime: number } | undefine
 /**
  * The last `tool_execution_start` in a Pi JSON event stream from byte `from` on, reading at most `maxBytes` of the
  * file's end. Also `next`, where the following read starts (the start of a half-written last line), and `skipped`
- * when the cap left bytes after `from` unread. No tool when the file is missing or the bytes hold none. A line cut
+ * when the cap left bytes after `from` unread, and `rewritten` when the file is shorter than `from`. No tool when the file is missing or the bytes hold none. A line cut
  * by the read's start, a half-written last line and a line that is not JSON are skipped. Only the tool's name and
  * one short argument are kept, sanitised and capped. Anything but a regular file throws.
  */
@@ -148,7 +150,7 @@ export function readLastTool(
 	path: string,
 	from = 0,
 	maxBytes = STREAM_MAX_READ,
-): { tool?: ToolCall; next: number; skipped?: boolean } {
+): { tool?: ToolCall; next: number; skipped?: boolean; rewritten?: boolean } {
 	let fd: number;
 	try {
 		// Non-blocking, so a FIFO given as the stream cannot hang the check; only a regular file is read.
@@ -158,14 +160,17 @@ export function readLastTool(
 		throw err;
 	}
 	let bytes: Buffer;
+	let begin: number;
 	let start: number;
 	let skipped: boolean;
+	let rewritten: boolean;
 	try {
 		const stat = fstatSync(fd);
 		if (!stat.isFile()) throw new Error("not a regular file");
 		// A stream that shrank was rewritten: read it again from its end.
-		const resume = from > stat.size ? 0 : from;
-		const begin = Math.max(resume, stat.size - maxBytes);
+		rewritten = from > stat.size;
+		const resume = rewritten ? 0 : from;
+		begin = Math.max(resume, stat.size - maxBytes);
 		skipped = begin > resume;
 		// One byte before `begin` tells whether the first line starts exactly there.
 		start = Math.max(0, begin - 1);
@@ -181,20 +186,20 @@ export function readLastTool(
 		closeSync(fd);
 	}
 	// Complete lines only: from the first line that starts in the bytes read to the last newline.
-	const first = start === 0 ? 0 : bytes.indexOf(10) + 1;
+	const first = begin === 0 ? 0 : bytes.indexOf(10) + 1;
 	// One line longer than the read, cut at both ends: nothing to parse, and the next read starts after it.
-	if (start > 0 && first === 0) return { next: start + bytes.length, skipped };
+	if (begin > 0 && first === 0) return { next: start + bytes.length, skipped, rewritten };
 	const end = bytes.lastIndexOf(10) + 1;
 	const marker = Buffer.from('"tool_execution_start"');
 	for (let at = end ? bytes.lastIndexOf(marker, end - 1) : -1; at !== -1; ) {
 		const lineStart = bytes.lastIndexOf(10, at) + 1;
 		if (lineStart < first) break;
 		const tool = parseToolStart(bytes.subarray(lineStart, bytes.indexOf(10, at)).toString("utf8"));
-		if (tool) return { tool, next: start + end, skipped };
+		if (tool) return { tool, next: start + end, skipped, rewritten };
 		if (lineStart === 0) break;
 		at = bytes.lastIndexOf(marker, lineStart - 1);
 	}
-	return { next: start + end, skipped };
+	return { next: start + end, skipped, rewritten };
 }
 
 function parseToolStart(line: string): ToolCall | undefined {
@@ -265,12 +270,14 @@ function fragment(watch: Watch, live: Live, now: number): string {
 	if (unknown) return `? ${watch.label} unchecked (${unknown})`;
 	const last = live.mtime === undefined ? undefined : `last +1 ${duration(now - live.mtime)}`;
 	const seen = live.tool?.seenAt;
-	const tool = live.tool && [
-		live.tool.stale && "?",
-		live.tool.name,
-		live.tool.arg,
-		seen !== undefined && `${duration(now - seen)} ago`,
-	];
+	const tool = live.toolUnknown
+		? ["?"]
+		: live.tool && [
+				live.tool.stale && "?",
+				live.tool.name,
+				live.tool.arg,
+				seen !== undefined && `${duration(now - seen)} ago`,
+			];
 	return [
 		["⏵", watch.label, done].filter(Boolean).join(" "),
 		last,
@@ -337,13 +344,17 @@ export function createWatch({ ps = runPs, interval = INTERVAL_MS } = {}) {
 		// Read what the stream gained since the last check. Bytes with no tool call keep the last one seen. A call
 		// found in appended bytes is dated from now; one found by the first read (at registration, after /reload)
 		// may be of any age, so it shows none. After a capped read with no call, a newer one may have gone unread:
-		// the last one stays, marked `?`, without an age.
+		// the last one stays, marked `?`, without an age. A rewritten stream is read as if for the first time.
 		const readStream = (watch: Watch, live: Live) => {
 			if (!watch.stream) return;
 			try {
-				const { tool, next, skipped } = readLastTool(watch.stream, live.streamRead);
-				if (tool) live.tool = { ...tool, seenAt: live.streamRead === undefined ? undefined : Date.now() };
+				const { tool, next, skipped, rewritten } = readLastTool(watch.stream, live.streamRead);
+				if (rewritten) live.tool = undefined;
+				const first = live.streamRead === undefined || rewritten;
+				if (tool) live.tool = { ...tool, seenAt: first ? undefined : Date.now() };
 				else if (skipped && live.tool) live.tool = { ...live.tool, seenAt: undefined, stale: true };
+				if (rewritten || live.tool) live.toolUnknown = undefined;
+				if (skipped && !live.tool) live.toolUnknown = true;
 				live.streamRead = next;
 				live.streamError = undefined;
 			} catch (err) {
