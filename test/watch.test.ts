@@ -551,7 +551,8 @@ test("readLastTool: the last tool call's name and one short argument, collapsed,
 	assert.equal(readLastTool(path).tool?.arg, `${"y".repeat(39)}…`);
 	appendFileSync(path, toolStart("4", "Skill", { name: "tdd", other: 1 }) + toolStart("5", "plan", { steps: [] }));
 	assert.deepEqual(readLastTool(path).tool, { name: "plan", arg: undefined });
-	assert.deepEqual(readLastTool(join(dir, "missing")), { next: 0 });
+	assert.deepEqual(readLastTool(join(dir, "missing")), { next: 0, rewritten: false });
+	assert.deepEqual(readLastTool(join(dir, "missing"), 5), { next: 0, rewritten: true }, "a stream removed");
 });
 
 test("readLastTool: skips a half-written last line, a line that is not JSON and the marker inside a message", () => {
@@ -650,6 +651,24 @@ test("a stream shows the last tool and its age in the footer, and changes at the
 	t.mock.timers.tick(INTERVAL);
 	await settle();
 	assert.match(s.footer() ?? "", /^⏵ t181 · \d+s$/);
+	// A removed stream drops it too; a call in a new file seen after that is dated from the check that read it.
+	appendFileSync(stream, toolStart("3", "grep", { path: "src" }));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · grep src \d+s ago · \d+s$/);
+	rmSync(stream);
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · \d+s$/);
+	writeFileSync(stream, toolStart("4", "ls", { path: "." }));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · ls \. \d+s ago · \d+s$/);
+	// A shorter replacement read in one check may hold a call of any age: no age.
+	writeFileSync(stream, toolStart("", "rg", { path: "y" }));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · rg y · \d+s$/);
 	assert.equal(s.sent.length, 0);
 });
 

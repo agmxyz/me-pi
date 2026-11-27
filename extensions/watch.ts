@@ -156,7 +156,7 @@ export function readLastTool(
 		// Non-blocking, so a FIFO given as the stream cannot hang the check; only a regular file is read.
 		fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { next: 0 };
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { next: 0, rewritten: from > 0 };
 		throw err;
 	}
 	let bytes: Buffer;
