@@ -1,10 +1,12 @@
-// Steps: a live checklist below the editor, set by the model with the `plan` tool; the current step shows how
-// long it has run. Each step the model starts also leaves a heading in the transcript.
+// Steps: a live checklist below the editor, set by the model with the `plan` tool, while the agent runs; the
+// current step shows how long it has run. Between prompts a paused or finished plan shows as one summary row.
+// Each step the model starts also leaves a heading in the transcript.
 // Pi's tool blocks already show what is running, so without a plan this prompt shows nothing.
 // Off outside the TUI, including delegate workers (JSON mode): no tool, no prompt text, no tokens.
 // `/steps off` turns it off the same way for every session; the choice lives in <agent dir>/steps.json.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -13,6 +15,8 @@ type Plan = { steps: string[]; done: number };
 /** What a `plan` call leaves in the session: the plan after it, and the step whose heading the call draws. */
 type Called = Plan & { heading?: number };
 const WIDGET = "steps";
+// The most rows the running checklist takes; a longer plan shows a window around the current step.
+const MAX_ROWS = 8;
 const TOOL = "plan";
 
 const settingsPath = () => join(getAgentDir(), "steps.json");
@@ -21,8 +25,19 @@ const settingsPath = () => join(getAgentDir(), "steps.json");
 function parsePlan(value: unknown): Plan | undefined {
 	const { steps, done } = (value ?? {}) as Partial<Plan>;
 	if (!Array.isArray(steps) || !steps.every((step) => typeof step === "string")) return undefined;
-	return { steps, done: clampDone(Number.isInteger(done) ? (done as number) : 0, steps) };
+	const lines = steps.map(oneLine);
+	return { steps: lines, done: clampDone(Number.isInteger(done) ? (done as number) : 0, lines) };
 }
+
+/**
+ * Step text on one row: a newline or tab becomes a space, since it would take a terminal row the renderer does
+ * not count; escape sequences and other control characters, which move the cursor, are dropped.
+ */
+const oneLine = (step: string) =>
+	stripVTControlCharacters(step)
+		.replace(/[\n\r\t]+/g, " ")
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+		.trim();
 
 const clampDone = (done: number, steps: string[]) => Math.max(0, Math.min(done, steps.length));
 
@@ -115,7 +130,14 @@ export default function (pi: ExtensionAPI) {
 						if (finished && !running) return [line(theme.fg("dim", `✓ ${done}/${steps.length} steps`))];
 						if (!running) return [line(theme.fg("dim", `◐ ${done}/${steps.length} · next: ${steps[done]}`))];
 						const current = Math.min(done, steps.length - 1);
-						return steps.map((step, i) => {
+						// A window of MAX_ROWS around the current step; its edge rows count the steps cut off.
+						const start = Math.max(0, Math.min(current - 2, steps.length - MAX_ROWS));
+						const end = Math.min(steps.length, start + MAX_ROWS);
+						return steps.slice(start, end).map((step, offset) => {
+							const i = start + offset;
+							if (offset === 0 && start > 0) return line(theme.fg("dim", `✓ ${start + 1} earlier`));
+							if (i === end - 1 && end < steps.length)
+								return line(theme.fg("dim", `○ ${steps.length - i} more`));
 							if (i < current) return line(theme.fg("dim", `✓ ${step}`));
 							if (i > current) return line(theme.fg("dim", `○ ${step}`));
 							const timer = theme.fg("dim", ` · ${elapsed(Date.now() - stepStartedAt)}`);
@@ -143,6 +165,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		ui = ctx.ui;
+		// A session switched mid-run gets no agent_end from the old one; the next agent_start sets it again.
+		running = false;
 		const saved = readEnabled();
 		enabled = saved.enabled;
 		if (saved.error)
@@ -166,7 +190,7 @@ export default function (pi: ExtensionAPI) {
 				const before = plan.done;
 				const pickedUp = !fresh;
 				fresh = true;
-				if (params.steps) plan = { steps: params.steps, done: 0 };
+				if (params.steps) plan = { steps: params.steps.map(oneLine), done: 0 };
 				if (params.done !== undefined) plan = { ...plan, done: clampDone(params.done, plan.steps) };
 				const started = pickedUp || params.steps !== undefined || plan.done !== before;
 				if (started) stepStartedAt = Date.now();
@@ -195,9 +219,9 @@ export default function (pi: ExtensionAPI) {
 				},
 			}),
 			renderResult: (result, _options, theme, context) => {
-				context.state.called = context.isError
-					? undefined
-					: parsePlan(result.details) && (result.details as Called);
+				const parsed = context.isError ? undefined : parsePlan(result.details);
+				// A plan saved before its steps were made one-line has them made so here.
+				context.state.called = parsed && { ...(result.details as Called), ...parsed };
 				return new Text(context.isError ? theme.fg("error", `plan failed: ${textOf(result)}`) : "", 0, 0);
 			},
 		});

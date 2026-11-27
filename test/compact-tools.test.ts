@@ -588,6 +588,48 @@ test("a failure, a write and an edit show as soon as they end, and stay", () => 
 	assert.deepEqual(s.screen(), [...kept, "✓ $ make · 1 line"], "the next prompt changes nothing above it");
 });
 
+test("control characters in a command, a path or output do not reach the screen", () => {
+	const raw = (lines: string[]) => lines.some((line) => /[\x00-\x08\x0b-\x1f\x7f]/.test(line));
+	const failed = rawRow(
+		"bash",
+		{ command: "make\bx\x07" },
+		{ content: text("spin\b\b\x07done\rok\nCommand exited with code 1"), isError: true },
+	);
+	assert.ok(!raw(failed), JSON.stringify(failed));
+	assert.ok(
+		failed.some((line) => line.includes("spindoneok")),
+		"the printable text stays",
+	);
+	const place = rawRow("bash", { command: "cd /srv/a\x07b && make" }, { content: text("no"), isError: true });
+	assert.ok(!raw(place) && place[0].includes("in /srv/ab"), JSON.stringify(place));
+	const slot = widgetSlot();
+	handlers.agent_start({}, slot.ctx);
+	handlers.tool_execution_start({ toolCallId: "c", toolName: "bash", args: { command: "mak\x07e" } }, slot.ctx);
+	handlers.tool_execution_end({ toolCallId: "c", toolName: "bash", result: { content: text("x") }, isError: true });
+	handlers.agent_end({}, slot.ctx);
+	assert.ok(!raw(slot.lines() ?? []) && slot.lines()?.[0].includes("✗ open: make"), JSON.stringify(slot.lines()));
+	const read = rawRow("read", { path: "a\x07b\nc.ts" }, { content: text("ENOENT"), isError: true });
+	assert.ok(!raw(read) && read[0].includes("read ab c.ts"), JSON.stringify(read));
+});
+
+test("a write or edit that failed and Pi draws ends the run of folded rows above it", () => {
+	const failedEdit: [string, any, any] = [
+		"edit",
+		{ path: "a.ts", edits: [{ oldText: "a", newText: "b" }] },
+		{ content: text("oldText not found"), isError: true },
+	];
+	const s = session();
+	s.step([ran("ls", "a"), failedEdit]);
+	const screen = s.screen();
+	assert.ok(screen.includes("✓ $ ls · 1 line"), screen.join("\n"));
+	assert.ok(screen.includes("oldText not found"));
+	const tally = screen.indexOf("✓ $ ls · 1 line");
+	assert.ok(
+		tally < screen.findIndex((line) => line.includes("oldText not found")),
+		"the ls row stays above the failure",
+	);
+});
+
 test("a call that changes nothing keeps no line once a step follows; a stretch that opens with such calls counts them", () => {
 	const s = session();
 	s.step([ran("ls", "a\nb"), ["read", { path: "a.ts" }, { content: text("one\ntwo") }]]);
@@ -661,6 +703,8 @@ test("only a command made of programs known to change nothing loses its line", (
 		"shellcheck install.sh",
 		"git diff main > /tmp/pr.diff",
 		"mkdir -p /tmp/lab && npm test 2>&1 | tee /tmp/lab/test.log | tail -3",
+		"sleep 2 & wait",
+		"fd -e ts src",
 	];
 	const changes = [
 		"npm install",
@@ -716,6 +760,12 @@ test("only a command made of programs known to change nothing loses its line", (
 		"echo x > /tmp/../etc/hosts",
 		"echo x > /tmp/$DIR/hosts",
 		`ls > ${ROOT.replace(/^\/private/, "")}/list.txt`,
+		"ls & rm -rf x",
+		"fd -e tmp -x rm",
+		"fd -e tmp -X rm",
+		"fd -e tmp --exec rm",
+		"npm run lint -- --fix",
+		"cargo clippy --fix",
 	];
 	assert.deepEqual(nothing.filter(kept), [], "these change nothing");
 	assert.deepEqual(
@@ -867,6 +917,59 @@ test("a failed command that has scrolled away keeps its output when the command 
 	assert.ok(spoken.screen().includes("Error: boom"), "text below the row counts toward the screen as well");
 });
 
+test("only the first pass after a failure keeps its line; later passes change nothing again", () => {
+	const failure = "Error: boom\n\nCommand exited with code 1";
+	const s = session();
+	s.step([ran("npm test", failure, { isError: true })]);
+	s.step([ran("npm test", "ok")]);
+	s.step([ran("npm test", "ok")]);
+	s.step([ran("true", "")]);
+	const screen = s.screen();
+	assert.equal(screen.filter((line) => line === "✓ $ npm test · 1 line").length, 1, screen.join("\n"));
+});
+
+test("a row a tool with its own shell drew counts by its lines, so a failure above it still shrinks", (t) => {
+	const rows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+	Object.defineProperty(process.stdout, "rows", { value: 60, configurable: true });
+	t.after(() => {
+		if (rows) Object.defineProperty(process.stdout, "rows", rows);
+		else delete (process.stdout as any).rows;
+	});
+	PI.mark = {
+		renderShell: "self",
+		renderCall: () => ({ invalidate() {}, render: () => [" ▸ a step"] }),
+		renderResult: () => ({ invalidate() {}, render: () => [] }),
+	};
+	PI.progress = {
+		renderCall: () => ({ invalidate() {}, render: () => ["progress"] }),
+		renderResult: () => ({ invalidate() {}, render: () => ["done"] }),
+	};
+	PI.bare = { renderCall: () => ({ invalidate() {}, render: () => ["bare"] }) };
+	const bare = session();
+	bare.step([ran("make", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+	bare.step([["bare", {}, { content: text(numbered(40)), isError: true }]]);
+	bare.step([ran("make", "ok")]);
+	bare.step([ran("true", "")]);
+	assert.ok(bare.screen().includes("line 40"), "a failed tool without a result renderer shows its end");
+	Object.defineProperty(process.stdout, "rows", { value: 40, configurable: true });
+	const tall = session();
+	tall.step([ran("make", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+	tall.step([["bare", {}, { content: text(numbered(40)), isError: true }]]);
+	tall.screen();
+	tall.step([ran("make", "ok")]);
+	tall.step([ran("true", "")]);
+	assert.ok(!tall.screen().includes("✗ $ make · exit 1 · passed later"), "its end counts toward the screen");
+	Object.defineProperty(process.stdout, "rows", { value: 60, configurable: true });
+	for (const tool of ["mark", "progress"]) {
+		const s = session();
+		s.step([ran("make", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+		s.step([[tool, {}, { content: text("ok") }]]);
+		s.step([ran("make", "ok")]);
+		s.step([ran("true", "")]);
+		assert.ok(s.screen().includes("✗ $ make · exit 1 · passed later"), `${tool}:\n${s.screen().join("\n")}`);
+	}
+});
+
 /** A stand-in for Pi's widget slot: `lines()` is what the slot shows at 60 columns. */
 function widgetSlot() {
 	const theme = { fg: (_role: string, value: string) => value, bold: (value: string) => value };
@@ -904,6 +1007,9 @@ test("while the agent works, three lines above the editor show its last calls an
 	t.mock.timers.tick(12_000);
 	assert.ok(slot.redraws() >= 12, "the area redraws every second");
 	assert.deepEqual(slot.lines(), ["", "", " ● $ make · 12s"]);
+	const long = `\x1b[31m${"x".repeat(9000)}\x1b[0m\nstep 1`;
+	handlers.tool_execution_update({ toolCallId: "1", partialResult: { content: text(long) } });
+	assert.deepEqual(slot.lines(), ["", " ● $ make · 12s", " │ step 1"], "a long output is read from its end only");
 	handlers.tool_execution_update({ toolCallId: "1", partialResult: { content: text("step 1\nstep 2\nstep 3") } });
 	assert.deepEqual(slot.lines(), [" ● $ make · 12s", " │ step 2", " │ step 3"], "with the end of its output");
 	end("1", "bash", "step 1\nstep 2\nstep 3", { durationMs: 12_300 });
@@ -988,8 +1094,52 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 	handlers.agent_end({}, slot.ctx);
 	assert.deepEqual(
 		slot.lines(),
-		["✗ open: pytest tests/a_long_name.py tes… · exit 1 (+1 more) · 2 calls · 0.0s"],
-		"the newest open failure is named with its exit code, cut short; the others are counted",
+		["✗ open: pytest tests/a_long_n…ng_name.py · exit 1 (+1 more) · 2 calls · 0.0s"],
+		"the newest open failure is named with its exit code, cut in the middle; the others are counted",
+	);
+
+	handlers.agent_start({}, slot.ctx);
+	handlers.tool_execution_start({ toolCallId: "r", toolName: "read", args: { path: "missing.ts" } }, slot.ctx);
+	const missing = { content: text("ENOENT: no such file or directory") };
+	handlers.tool_execution_end({ toolCallId: "r", toolName: "read", result: missing, isError: true });
+	handlers.tool_execution_start({ toolCallId: "g", toolName: "bash", args: { command: "rg nothing src" } }, slot.ctx);
+	const none = { content: text("(no output)\n\nCommand exited with code 1") };
+	handlers.tool_execution_end({ toolCallId: "g", toolName: "bash", result: none, isError: true });
+	handlers.tool_execution_start(
+		{ toolCallId: "n", toolName: "bash", args: { command: "x" }, parentToolCallId: "p" },
+		slot.ctx,
+	);
+	handlers.tool_execution_end({
+		toolCallId: "n",
+		toolName: "bash",
+		result: { content: [] },
+		isError: true,
+		parentToolCallId: "p",
+	});
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(
+		slot.lines(),
+		["2 calls · 0.0s"],
+		"a lookup that found nothing, and a call made inside another tool, leave nothing open",
+	);
+
+	handlers.agent_start({}, slot.ctx);
+	failed("s1", "rg x src", 2);
+	handlers.tool_execution_start({ toolCallId: "s2", toolName: "bash", args: { command: "rg x src" } }, slot.ctx);
+	handlers.tool_execution_end({ toolCallId: "s2", toolName: "bash", result: none, isError: true });
+	for (const [id, command] of [
+		["cd", "cd web && rg x src"],
+		["chain", "rg -q x src && test -f a.ts"],
+	]) {
+		handlers.tool_execution_start({ toolCallId: id, toolName: "bash", args: { command } }, slot.ctx);
+		handlers.tool_execution_end({ toolCallId: id, toolName: "bash", result: none, isError: true });
+	}
+	failed("t", "test -f a.ts", 1);
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(
+		slot.lines(),
+		["✗ open: test -f a.ts · exit 1 (+1 more) · 5 calls · 0.0s"],
+		"a search that then found nothing settles its earlier failure, also after a cd; a check, or a chain with one, stays open",
 	);
 
 	handlers.agent_start({}, slot.ctx);
