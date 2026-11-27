@@ -917,6 +917,37 @@ test("a failed command that has scrolled away keeps its output when the command 
 	assert.ok(spoken.screen().includes("Error: boom"), "text below the row counts toward the screen as well");
 });
 
+test("only the first pass after a failure keeps its line; later passes change nothing again", () => {
+	const failure = "Error: boom\n\nCommand exited with code 1";
+	const s = session();
+	s.step([ran("npm test", failure, { isError: true })]);
+	s.step([ran("npm test", "ok")]);
+	s.step([ran("npm test", "ok")]);
+	s.step([ran("true", "")]);
+	const screen = s.screen();
+	assert.equal(screen.filter((line) => line === "✓ $ npm test · 1 line").length, 1, screen.join("\n"));
+});
+
+test("a row a tool with its own shell drew counts by its lines, so a failure above it still shrinks", (t) => {
+	const rows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+	Object.defineProperty(process.stdout, "rows", { value: 60, configurable: true });
+	t.after(() => {
+		if (rows) Object.defineProperty(process.stdout, "rows", rows);
+		else delete (process.stdout as any).rows;
+	});
+	PI.mark = {
+		renderShell: "self",
+		renderCall: () => ({ invalidate() {}, render: () => [" ▸ a step"] }),
+		renderResult: () => ({ invalidate() {}, render: () => [] }),
+	};
+	const s = session();
+	s.step([ran("make", "Error: boom\n\nCommand exited with code 1", { isError: true })]);
+	s.step([["mark", {}, { content: text("ok") }]]);
+	s.step([ran("make", "ok")]);
+	s.step([ran("true", "")]);
+	assert.ok(s.screen().includes("✗ $ make · exit 1 · passed later"), s.screen().join("\n"));
+});
+
 /** A stand-in for Pi's widget slot: `lines()` is what the slot shows at 60 columns. */
 function widgetSlot() {
 	const theme = { fg: (_role: string, value: string) => value, bold: (value: string) => value };
@@ -1038,8 +1069,31 @@ test("when the agent stops, one line sums up the run: open failures, files chang
 	handlers.agent_end({}, slot.ctx);
 	assert.deepEqual(
 		slot.lines(),
-		["✗ open: pytest tests/a_long_name.py tes… · exit 1 (+1 more) · 2 calls · 0.0s"],
-		"the newest open failure is named with its exit code, cut short; the others are counted",
+		["✗ open: pytest tests/a_long_n…ng_name.py · exit 1 (+1 more) · 2 calls · 0.0s"],
+		"the newest open failure is named with its exit code, cut in the middle; the others are counted",
+	);
+
+	handlers.agent_start({}, slot.ctx);
+	call("r", "read", { path: "missing.ts" }, true);
+	handlers.tool_execution_start({ toolCallId: "g", toolName: "bash", args: { command: "rg nothing src" } }, slot.ctx);
+	const none = { content: text("(no output)\n\nCommand exited with code 1") };
+	handlers.tool_execution_end({ toolCallId: "g", toolName: "bash", result: none, isError: true });
+	handlers.tool_execution_start(
+		{ toolCallId: "n", toolName: "bash", args: { command: "x" }, parentToolCallId: "p" },
+		slot.ctx,
+	);
+	handlers.tool_execution_end({
+		toolCallId: "n",
+		toolName: "bash",
+		result: { content: [] },
+		isError: true,
+		parentToolCallId: "p",
+	});
+	handlers.agent_end({}, slot.ctx);
+	assert.deepEqual(
+		slot.lines(),
+		["2 calls · 0.0s"],
+		"a lookup that found nothing, and a call made inside another tool, leave nothing open",
 	);
 
 	handlers.agent_start({}, slot.ctx);

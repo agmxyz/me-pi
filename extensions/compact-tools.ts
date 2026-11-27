@@ -286,6 +286,16 @@ function showsOwn(call: Call): boolean {
 	if ((drawn?.result ?? 0) > 0) return true;
 	return (drawn?.call ?? 0) > 0 && !(ownShell.has(call.name) && drawnElsewhere(call.id));
 }
+/**
+ * The lines a tool with its own shell took, the blank one above it included: both its parts are measured.
+ * Unknown for any other call.
+ */
+function ownHeight(call: Call): number {
+	const drawn = ownLines.get(call.id);
+	if (!ownShell.has(call.name) || !drawn) return Number.POSITIVE_INFINITY;
+	const lines = (drawn.call ?? 0) + (drawn.result ?? 0);
+	return lines > 0 ? lines + 1 : 0;
+}
 /** True for a call that leaves nothing at its place: its row is empty, or another row draws its line. */
 const placeless = (call: Call) => ownShell.has(call.name) && !showsOwn(call);
 /** The headings a row draws above its line: the call lines of the tools with their own shell in its message. */
@@ -346,18 +356,22 @@ function superseded(toolCallId: string): boolean {
 	if (!call || transcript.spoken.has(call.turn)) return false;
 	return call.turn < (transcript.newest.get(call.run) ?? 0);
 }
-/** Lines below the transcript that the screen also holds: the status line, the live area, the editor, the footer. */
-const BELOW_TRANSCRIPT = 14;
+/**
+ * Lines below the transcript that the screen also holds: the status line, the live area, the editor, widgets
+ * such as the steps checklist (up to nine lines), and the footer.
+ */
+const BELOW_TRANSCRIPT = 22;
 /**
  * True when the call's row and all that follows it surely fit on the screen, so the row can change without
- * Pi repainting. Text is estimated high; a row Pi draws itself, and one not drawn yet, count as too far.
+ * Pi repainting. Text is estimated high; a tool that draws its own row counts the lines it drew; a row Pi draws
+ * itself, and one not drawn yet, count as too far.
  * Messages of other roles are not counted, which the room left below the transcript has to cover.
  */
 function onScreen(call: Call): boolean {
 	let rows = transcript.textSoFar - call.textAbove + BELOW_TRANSCRIPT;
 	for (const later of transcript.order.slice(call.index)) {
 		if (placeless(later)) continue;
-		rows += transcript.rows.get(later.id)?.height() ?? Number.POSITIVE_INFINITY;
+		rows += transcript.rows.get(later.id)?.height() ?? ownHeight(later);
 	}
 	// Without a terminal there is no screen to repaint.
 	return rows <= (process.stdout.rows ?? Number.POSITIVE_INFINITY);
@@ -381,14 +395,22 @@ function passedLater(toolCallId: string): boolean {
 	}
 	return false;
 }
-/** True for a command an earlier call ran and failed: this run of it is the one that shows how that ended. */
+/**
+ * True for a command an earlier call ran and failed, with no pass of it in between: this run of it is the one
+ * that shows how that ended. Later passes show nothing new.
+ */
 function failedBefore(toolCallId: string): boolean {
 	const call = transcript.calls.get(toolCallId);
 	const command = transcript.rows.get(toolCallId)?.command;
 	if (!call || command === undefined) return false;
-	for (const part of proved(command))
-		for (const id of transcript.failed.get(part) ?? [])
-			if ((transcript.calls.get(id)?.index ?? call.index) < call.index) return true;
+	const indexOf = (id: string) => transcript.calls.get(id)?.index ?? call.index;
+	for (const part of proved(command)) {
+		const passes = [...(transcript.passed.get(part) ?? [])].map(indexOf);
+		for (const id of transcript.failed.get(part) ?? []) {
+			const failed = indexOf(id);
+			if (failed < call.index && !passes.some((passed) => failed < passed && passed < call.index)) return true;
+		}
+	}
 	return false;
 }
 /**
@@ -449,6 +471,15 @@ const printable = (text: string) =>
 	stripVTControlCharacters(text)
 		.replace(/\t/g, "   ")
 		.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, "");
+/** The exit code Pi's last line of a failed command's output reports, if it is that line. */
+const exitCode = (output: string[]) => output.at(-1)?.match(/^Command exited with code (\d+)$/)?.[1];
+/** Characters of running output kept to find its last lines: far more than three lines take. */
+const OUTPUT_END = 8192;
+/** A running call's output cut to its end, so each update strips only that much. */
+const outputEnd = (result: Result | undefined): Result => {
+	const text = (result?.content ?? []).map((block) => (block.type === "text" ? block.text : "")).join("\n");
+	return { content: [{ type: "text", text: text.slice(-OUTPUT_END) }] } as Result;
+};
 /** Non-blank output lines: a collapsed row spends no row on a blank one. */
 function outputLines(result: Result | undefined): string[] {
 	const text = (result?.content ?? []).map((block) => (block.type === "text" ? block.text : "")).join("\n");
@@ -475,6 +506,8 @@ function filePath(args: any, theme: Theme, cwd: string): string {
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 const title = (theme: Theme, text: string) => theme.fg("toolTitle", theme.bold(text));
 
+/** True for a finished call whose row does not wait for the next step: a failure, a write, an edit. */
+const showsAtOnce = (failed: boolean | undefined, summary: Summary) => failed === true || summary.keep === true;
 /** A call as the live area shows it. */
 interface Shown {
 	toolName: string;
@@ -485,6 +518,8 @@ interface Shown {
 	durationMs?: number;
 	/** The end of what a running call has printed so far. */
 	output: string[];
+	/** The finished call's summary: its arguments and result no longer change. */
+	summary?: Summary;
 }
 /** What one run did, from the prompt to the agent stopping. */
 interface Run {
@@ -519,17 +554,28 @@ function attempt(toolName: string, args: any): string {
 	const target = toolName === "bash" ? sameCommand(args?.command) : (args?.path ?? args?.file_path ?? "");
 	return `${toolName} ${target}`;
 }
+/**
+ * True for a failed lookup, by what the call tried, that only found nothing: a `read`, or a command known to change nothing that
+ * printed nothing but its exit code 1, as `rg` and `grep` do without a match.
+ */
+function lookedUpNothing(tried: string, output: string[]): boolean {
+	if (tried.startsWith("read ")) return true;
+	// Pi's stand-in for a command that printed nothing is not a line of output.
+	const printed = output.filter((line) => line !== "(no output)");
+	if (!tried.startsWith("bash ") || printed.length !== 1 || exitCode(printed) !== "1") return false;
+	return changesNothing(tried.slice("bash ".length), []);
+}
 /** The run in one line, what needs attention first; nothing for a run that called no tool. */
 function receipt(run: Run, theme: Theme): string | undefined {
 	if (run.calls === 0) return undefined;
 	// The newest open failure is named, so it need not be looked up in the transcript.
 	const [tried, ending] = [...run.open].at(-1) ?? [];
-	const named = `${truncateToWidth(
+	// Cut in the middle, so a file's name stays.
+	const named = `${middleCut(
 		printable(tried ?? "")
 			.replace(/^bash /, "")
 			.split("\n")[0],
 		OPEN_WIDTH,
-		"…",
 	)}${ending ? ` · ${ending}` : ""}`;
 	const others = run.open.size > 1 ? ` (+${run.open.size - 1} more)` : "";
 	const facts = [
@@ -554,9 +600,10 @@ function liveArea(run: Run, theme: Theme, cwd: string, width: number): string[] 
 		if (overtaken(id)) continue;
 		const context = { cwd, isError: call.failed === true, outputPad: 1, state: { compactTools: call } } as Context;
 		const summarize = SUMMARIES[call.toolName] ?? plainSummary(call.toolName);
-		const summary = summarize(call.args, call.result, theme, context);
+		const summary = call.summary ?? summarize(call.args, call.result, theme, context);
+		if (call.result) call.summary = summary;
 		// A failure, a write and an edit are in the transcript as soon as they end.
-		if (call.result && (call.failed || summary.keep)) continue;
+		if (call.result && showsAtOnce(call.failed, summary)) continue;
 		const head = headLine(summary, call, theme, context).render(width);
 		// A read's result is the file, not something the call printed: it has no count.
 		rows.unshift({ head, call, context, printed: !call.result || (summary.count ?? 0) > 0 });
@@ -582,12 +629,18 @@ const RUNNER = /^(?:uv\s+run(?:\s+--[\w-]+)*|npx(?:\s+--?[\w-]+)*|poetry\s+run|b
  * without its output plumbing and without a runner in front of it.
  */
 function sameCommand(command: unknown): string {
-	const [first, ...rest] = String(command ?? "")
-		.trim()
-		.replace(SHELL_OPTIONS, "")
-		.split("\n");
-	const merged = first.replace(STDERR_MERGE, "");
-	return [((rest.length === 0 && merged.replace(OUTPUT_CAP, "")) || merged).replace(RUNNER, ""), ...rest].join("\n");
+	const { first, rest } = commandLines(
+		String(command ?? "")
+			.trim()
+			.replace(SHELL_OPTIONS, ""),
+	);
+	return [first.replace(RUNNER, ""), ...rest].join("\n");
+}
+/** A command's first line without its output plumbing, and the lines after it. */
+function commandLines(command: string): { first: string; rest: string[] } {
+	const [firstLine, ...rest] = command.split("\n");
+	const merged = firstLine.replace(STDERR_MERGE, "");
+	return { first: (rest.length === 0 && merged.replace(OUTPUT_CAP, "")) || merged, rest };
 }
 /**
  * The commands a passing run proves passed: itself, and each command of an `&&` chain, since the chain stops
@@ -850,9 +903,7 @@ const SUMMARIES: Record<string, Summarize> = {
 			const dir = shortPath(printable(where), context.cwd);
 			if (dir !== HERE) place = dir;
 		}
-		const [firstLine, ...rest] = printable(command).split("\n");
-		const merged = firstLine.replace(STDERR_MERGE, "");
-		const first = (rest.length === 0 && merged.replace(OUTPUT_CAP, "")) || merged;
+		const { first, rest } = commandLines(printable(command));
 		const more = rest.length > 0 ? ` ⏎${rest.length}` : "";
 		// The prompt is dim so the eye lands on the command.
 		const head = (room: number) =>
@@ -863,7 +914,7 @@ const SUMMARIES: Record<string, Summarize> = {
 		const silent = !context.isError && changesNothing(command, [context.cwd, where]);
 		const output = outputLines(result);
 		// Pi ends a failed command's output with this line; the head line carries the code instead.
-		const exit = context.isError ? output.at(-1)?.match(/^Command exited with code (\d+)$/)?.[1] : undefined;
+		const exit = context.isError ? exitCode(output) : undefined;
 		if (exit) output.pop();
 		// Pi's stand-in for a command that printed nothing is not a line of output.
 		if (output.length === 1 && output[0] === "(no output)") output.pop();
@@ -1075,7 +1126,7 @@ function compactRenderers(
 	const held = (args: any, state: RowState, theme: Theme, context: Context): boolean => {
 		if (drawsOwn || showsPi(context) || !unsettled(context.toolCallId)) return false;
 		if (overtaken(context.toolCallId)) return false;
-		return !state.result || !(state.failed || summary(args, state, theme, context).keep);
+		return !state.result || !showsAtOnce(state.failed, summary(args, state, theme, context));
 	};
 	/** Pi updated the row: what was kept from its last state is stale. */
 	const refresh = (state: RowState) => {
@@ -1126,8 +1177,7 @@ function compactRenderers(
 						!overtaken(id),
 					place: () => summary(args, state, theme, context).place ?? HERE,
 					atOnce: () =>
-						state.result !== undefined &&
-						(state.failed === true || summary(args, state, theme, context).keep === true),
+						state.result !== undefined && showsAtOnce(state.failed, summary(args, state, theme, context)),
 					height() {
 						if (showsPi(context)) return Number.POSITIVE_INFINITY;
 						// Pi puts the blank line only above a row that draws something.
@@ -1263,6 +1313,8 @@ export default function (pi: ExtensionAPI) {
 		// A call made by another tool, such as a codemode script, shows inside that tool's row.
 		if (event.parentToolCallId) return;
 		run.calls++;
+		// A call whose row the transcript now has never shows in the live area again.
+		for (const id of run.shown.keys()) if (transcript.calls.has(id) && !unsettled(id)) run.shown.delete(id);
 		run.shown.set(event.toolCallId, {
 			toolName: event.toolName,
 			args: event.args,
@@ -1288,7 +1340,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_execution_update", (event) => {
 		const call = run.shown.get(event.toolCallId);
 		if (!call) return;
-		call.output = outputLines(event.partialResult).slice(-AREA_LINES);
+		call.output = outputLines(outputEnd(event.partialResult)).slice(-AREA_LINES);
 		redraw?.();
 	});
 	pi.on("tool_execution_end", (event) => {
@@ -1298,9 +1350,11 @@ export default function (pi: ExtensionAPI) {
 		redraw?.();
 		const tried = run.tried.get(event.toolCallId) ?? event.toolCallId;
 		if (event.isError) {
-			const exit = outputLines(event.result)
-				.at(-1)
-				?.match(/^Command exited with code (\d+)$/)?.[1];
+			const output = outputLines(event.result);
+			const exit = exitCode(output);
+			// A call made by another tool fails inside that tool's row, and a lookup that found nothing, such as
+			// `rg` without a match or a `read` of a missing file, left nothing to fix.
+			if (event.parentToolCallId || lookedUpNothing(tried, output)) return;
 			// Set again so the newest failure is the last one.
 			run.open.delete(tried);
 			run.open.set(tried, exit ? `exit ${exit}` : "");
