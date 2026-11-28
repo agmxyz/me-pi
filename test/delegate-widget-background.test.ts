@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import {
 	bgCtx,
@@ -22,12 +22,18 @@ import {
 
 test(
 	"the TUI widget shows coalesced foreground and background tool activity by stable ID without payloads",
-	{ timeout: 10000 },
+	{ timeout: 20000 },
 	async (t) => {
-		const { tool, messages } = setup(t, {
-			config: POOL_SET,
-			env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_DELAY: "1200" },
+		const release = scratch("activity-release");
+		let shutdown: (() => Promise<void>) | undefined;
+		t.after(async () => {
+			await shutdown?.();
 		});
+		const { tool, messages, handlers } = setup(t, {
+			config: POOL_SET,
+			env: { FAKE_PI_MODE: "tool-activity", FAKE_PI_ACTIVITY_RELEASE: release },
+		});
+		shutdown = () => handlers.session_shutdown();
 		const intervals = trackIntervals(t);
 		const ui = tuiCtx();
 		const first = await run(
@@ -60,20 +66,14 @@ test(
 				foregroundDone = true;
 				return result;
 			});
-		await waitFor(
-			() => {
-				const panel = ui.widget().join("\n");
-				return (
-					panel.includes("bg1 claude-haiku-5-5 @off") &&
-					panel.includes("bg2 claude-opus-5-5 @max") &&
-					panel.split("\n").some((line) => /^\S+ gpt-6-luna @low/u.test(line)) &&
-					panel.includes("read") &&
-					panel.includes("grep")
-				);
-			},
-			"widget tool-start updates before turn completion",
-			2000,
-		);
+		await waitFor(() => {
+			const rows = ui.widget();
+			return (
+				rows.some((line) => line.includes("bg1 claude-haiku-5-5 @off") && line.includes("read")) &&
+				rows.some((line) => line.includes("bg2 claude-opus-5-5 @max") && line.includes("grep")) &&
+				rows.some((line) => /^\S+ gpt-6-luna @low/u.test(line) && line.includes("grep"))
+			);
+		}, "widget tool-start updates before turn completion");
 		assert.equal(foregroundDone, false, "foreground tool call is still waiting on its answer");
 		const live = ui.widget().join("\n");
 		assert.doesNotMatch(
@@ -87,8 +87,12 @@ test(
 		timer.callback();
 		assert.equal(ui.requests.length, rendersBeforeTick + 1, "each one-second tick refreshes elapsed time");
 
+		writeFileSync(release, "release");
 		assert.equal((await foreground).isError, false);
 		await waitFor(() => messages.length === 2, "both background answers");
+		for (const id of ["bg1", "bg2"]) {
+			assert.ok(messages.some(({ message }) => message.content.startsWith(`Background delegate job ${id}:`)));
+		}
 		assert.deepEqual(ui.widget(), [], "the widget hides when every worker is idle");
 		assert.equal(intervals.size, 0, "completion clears the elapsed timer");
 	},
