@@ -2,7 +2,7 @@
   "name": "me-pi",
   "version": "0.3.0",
   "private": true,
-  "description": "My Pi setup: global policy, skills, the pi-workers extensions, and the steps, watch, minimal-footer, autocompact, compact-tools, and hide-thinking-label extensions",
+  "description": "My Pi setup: global policy, skills, the pi-workers extensions, and the steps, watch, minimal-footer, autocompact, compact-tools, hide-thinking-label, and chief extensions",
   "license": "MIT",
   "repository": "https://github.com/agmxyz/me-pi",
   "keywords": [
@@ -26,7 +26,8 @@
       "extensions/minimal-footer.ts",
       "extensions/autocompact.ts",
       "extensions/compact-tools.ts",
-      "extensions/hide-thinking-label.ts"
+      "extensions/hide-thinking-label.ts",
+      "extensions/chief.ts"
     ],
     "skills": [],
     "changelogPath": "packages/pi-workers/CHANGELOG.md"

@@ -9,6 +9,7 @@ My [Pi](https://github.com/earendil-works/pi) setup, shared as a reference rathe
 | Extension | What it does | Install |
 |---|---|---|
 | [`pi-workers`](packages/pi-workers/README.md) [![npm](https://img.shields.io/npm/v/@agmxyz/pi-workers)](https://www.npmjs.com/package/@agmxyz/pi-workers) | Hands searches, research and reviews to separate read-only workers, so your main session stays focused. [Delegation guide](packages/pi-workers/docs/delegate.md) · [Changelog](packages/pi-workers/CHANGELOG.md) | `pi install npm:@agmxyz/pi-workers` |
+| [`/chief`](docs/chief/slice-1.md) | Coordinates repository tasks through headless Pi sessions, tracking runs and their results. | `"extensions/chief.ts"` |
 | [`steps`](docs/extensions.md#steps) | Live checklist below the editor set by the model via a `plan` tool, with elapsed time on the current step and a transcript heading when each step starts. Toggle with `/steps on` and `/steps off`. | `"extensions/steps.ts"` |
 | [`watch`](docs/extensions.md#watch) | Tracks long-running background commands in the footer by polling `ps` (no tokens) and wakes the model once when they finish. | `"extensions/watch.ts"` |
 | [`minimal-footer`](docs/extensions.md#minimal-footer) | One-line footer showing `folder (branch)  ctx%/window (auto)` left, `model • thinking` right, and extension statuses on a second line. | `"extensions/minimal-footer.ts"` |
@@ -24,7 +25,7 @@ Install pi-workers with its command, then restart Pi or run `/reload`. For the o
 { "packages": [{ "source": "git:github.com/agmxyz/me-pi", "extensions": ["extensions/steps.ts", "extensions/minimal-footer.ts"] }] }
 ```
 
-Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all six plus the pi-workers extensions, so don't combine it with the npm install.
+Without a filter, `pi install git:github.com/agmxyz/me-pi` loads all seven plus the pi-workers extensions, so don't combine it with the npm install.
 
 ## Setup
 

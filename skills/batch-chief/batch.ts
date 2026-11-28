@@ -26,7 +26,7 @@ export interface Result {
 	stderr: string;
 }
 
-/** Every external effect goes through here: `git`, `gh`, `herdr` (code 127 when the tool is missing), and the clock. */
+/** Every external effect goes through here: `git`, `gh`, `herdr` and the chief's script (code 127 when the tool is missing), and the clock. */
 export interface Runner {
 	exec(cmd: string, args: string[], options?: { cwd?: string; timeoutMs?: number }): Result;
 	startTimer(dir: string, ticket: string, deadline: string): number;
@@ -621,6 +621,60 @@ function parseRules(json: string): Rules {
 	return result;
 }
 
+/**
+ * Why the repo's current run is unfinished, or undefined when it has none or that run is finished: a row that is
+ * not terminal, a live check still owed, or a log of another helper version, which is never replayed here and so
+ * cannot be told to be finished. `preflight` starts no new run over one, and the chief (`skills/chief/chief.ts`)
+ * supervises nothing in the repo beside one.
+ */
+export function unfinishedRun(repo: string): string | undefined {
+	const batch = batchDir(repo);
+	const pointer = join(batch, "current");
+	if (!existsSync(pointer)) return undefined;
+	const id = readFileSync(pointer, "utf8").trim();
+	const version = logVersion(join(batch, id));
+	if (!READS.includes(version as number)) return otherVersion(id, version);
+	const rows = [...rebuild(id, join(batch, id)).rows.values()];
+	const open = rows.filter((r) => !TERMINAL.includes(r.state));
+	if (open.length)
+		return `run ${id} still has rows that are not terminal: ${open.map((r) => `#${r.ticket}`).join(", ")}`;
+	const owed = rows.filter(liveOwed);
+	if (owed.length)
+		return `run ${id} still owes a live check: ${owed.map((r) => `#${r.ticket} (batch.ts ${liveResultUsage(r.ticket)})`).join(", ")}`;
+	return undefined;
+}
+
+/** The chief's script, beside this skill in the repo; a copy of this skill alone has none. */
+const CHIEF_SCRIPT = join(import.meta.dirname, "..", "chief", "chief.ts");
+
+/**
+ * Why no batch may start while the chief (`skills/chief/chief.ts`) has work in the repo, or undefined: a chief task
+ * with a live run, an unexplained one included, whether or not any session holds the chief lease. The chief's state
+ * is the chief script's to read (`state`, which needs no lease and changes nothing); state that cannot be read is
+ * a reason too, never taken as no live run. Where the chief keeps its log is asked of nobody: a copy of this skill
+ * without the chief's script beside it must still start a batch in a repo the chief never worked in.
+ */
+function chiefBusy(runner: Runner, repo: string): string | undefined {
+	const log = join(`${repo}.worktrees`, ".chief", "events.jsonl");
+	if (!existsSync(log)) return undefined;
+	const unread = (why: string) =>
+		`the repo has chief state (${log}), and whether a chief task has a live run could not be read: ${why}`;
+	const out = runner.exec(process.execPath, [CHIEF_SCRIPT, "state"], { cwd: repo });
+	if (out.code !== 0) return unread((out.stdout.trim() || out.stderr.trim() || `exit ${out.code}`).slice(0, 500));
+	let tasks: { id: string; state: string; run: number; live: boolean }[];
+	try {
+		tasks = JSON.parse(out.stdout).tasks;
+		if (!Array.isArray(tasks)) throw new Error("it names no tasks");
+	} catch (error) {
+		return unread((error as Error).message);
+	}
+	if (!tasks.every((task) => typeof task?.live === "boolean"))
+		return unread("a task does not say whether its run is live");
+	const live = tasks.filter((task) => task.live);
+	if (live.length === 0) return undefined;
+	return `the chief has ${live.length === 1 ? "a task with a run" : "tasks with runs"} that ${live.length === 1 ? "is" : "are"} not over in this repo: ${live.map((task) => `${task.id} (${task.state}, run ${task.run})`).join(", ")}; the chief and batch-chief do not supervise one repo together`;
+}
+
 function preflight(argv: string[], runner: Runner, cwd: string): string {
 	const { values } = parse(argv, {
 		repo: "string",
@@ -645,6 +699,8 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 	if (base === "HEAD") throw new Refusal(`${repo} is on a detached HEAD; check out the base branch first`);
 	const dirty = git("status", "--porcelain");
 	if (dirty) throw new Refusal(`the main checkout ${repo} is not clean:\n${dirty}`);
+	const busy = chiefBusy(runner, repo);
+	if (busy) throw new Refusal(busy);
 	const batch = batchDir(repo);
 	const pointer = join(batch, "current");
 	let setAside: PreflightEvent["setAside"];
@@ -662,17 +718,8 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 			setAside = { run: id, version: version ?? null, user: setAsideWords };
 			setAsideText = `set aside run ${id} (version ${version ?? "none"}), not checked; it stays in ${old}, and any worktree, branch or pane it left is not cleaned up; the user's words: ${JSON.stringify(setAsideWords)}`;
 		} else {
-			const rows = [...rebuild(id, old).rows.values()];
-			const open = rows.filter((r) => !TERMINAL.includes(r.state));
-			if (open.length)
-				throw new Refusal(
-					`run ${id} still has rows that are not terminal: ${open.map((r) => `#${r.ticket}`).join(", ")}`,
-				);
-			const owed = rows.filter(liveOwed);
-			if (owed.length)
-				throw new Refusal(
-					`run ${id} still owes a live check: ${owed.map((r) => `#${r.ticket} (batch.ts ${liveResultUsage(r.ticket)})`).join(", ")}`,
-				);
+			const unfinished = unfinishedRun(repo);
+			if (unfinished) throw new Refusal(unfinished);
 		}
 	}
 	const now = runner.now();
@@ -710,9 +757,21 @@ function preflight(argv: string[], runner: Runner, cwd: string): string {
 		...(live ? { live } : {}),
 		...(setAside ? { setAside } : {}),
 	};
+	const previous = existsSync(pointer) ? readFileSync(pointer, "utf8") : undefined;
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(join(dir, "events.jsonl"), `${JSON.stringify(event)}\n`);
 	writeFileSync(pointer, `${id}\n`);
+	// Asked again now that the run is published. The chief looks for a published run again once its reservation is
+	// in its log: of a preflight and a reservation made at the same moment, at least one sees the other.
+	const since = chiefBusy(runner, repo);
+	if (since) {
+		// Only this run's own pointer is taken back.
+		if (existsSync(pointer) && readFileSync(pointer, "utf8").trim() === id) {
+			if (previous === undefined) unlinkSync(pointer);
+			else writeFileSync(pointer, previous);
+		}
+		throw new Refusal(`${since}; run ${id} was not started, and ${dir} holds only its preflight`);
+	}
 	const missing = TOOLS.filter((tool) => !tools[tool]);
 	return [
 		`run ${id} created in ${dir}`,
@@ -2016,6 +2075,8 @@ function cleanup(argv: string[], runner: Runner, cwd: string): string {
 	if (finished && !dryRun) {
 		const pointer = join(dirname(run.dir), "current");
 		try {
+			// A preflight since this cleanup began has made another run the current one: that pointer is its own.
+			if (readFileSync(pointer, "utf8").trim() !== run.id) throw new Error("it names another run by now");
 			unlinkSync(pointer);
 			out.push(`current run cleared: ${pointer} removed; ${run.dir} stays; the next batch starts with preflight`);
 		} catch (error) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import {
 	bgCtx,
@@ -11,6 +12,7 @@ import {
 	POOL_SET,
 	run,
 	SONNET,
+	scratch,
 	setup,
 	text,
 	trackIntervals,
@@ -312,6 +314,68 @@ test("background: returns a job id at once, then delivers the answer as a messag
 		"the handback collapses to its job line and its run",
 	);
 	assert.deepEqual(statuses, [], "no footer status line: the activity widget shows running jobs");
+});
+
+// ME_PI_UNATTENDED does not decide either way: the refusal holds with it unset and set, and the test below starts jobs with it set.
+for (const unattended of [undefined, "1"])
+	test(`background: print and JSON modes refuse a job and launch no worker; a foreground call then runs (ME_PI_UNATTENDED=${unattended})`, async (t) => {
+		const marker = scratch("background-refusal-marker");
+		const { tool, messages, commands } = setup(t, {
+			env: { FAKE_PI_MARKER: marker, ME_PI_UNATTENDED: unattended },
+		});
+		assert.equal(process.env.ME_PI_UNATTENDED, unattended);
+		// The fake worker appends a line once it has read its prompt.
+		const launches = () => (existsSync(marker) ? readFileSync(marker, "utf8").trim().split("\n").length : 0);
+		const ctxFor = (mode: string) => ({ ...CTX, mode, hasUI: false, ui: {} });
+		for (const mode of ["print", "json"]) {
+			const refused = await run(
+				tool,
+				{ role: "scout", task: "x", background: true },
+				undefined,
+				undefined,
+				ctxFor(mode),
+			);
+			assert.equal(refused.isError, true);
+			assert.equal(
+				text(refused),
+				`background: true is refused in ${mode} mode: the run exits when its reply ends, so the job's answer would be lost. Run it in the foreground: call delegate again without background and wait for the answer.`,
+			);
+		}
+		const { ctx: cmd, notes } = commandCtx();
+		await commands.delegate.handler("status", cmd);
+		assert.match(notes[0][0], /^Running: none\nLast calls: none$/m, "the refused calls recorded no job and no call");
+
+		// The same session's foreground calls are unaffected, with background unset or false.
+		for (const mode of ["print", "json"])
+			for (const params of [
+				{ role: "scout", task: "x" },
+				{ role: "scout", task: "x", background: false },
+			]) {
+				const foreground = await run(tool, params, undefined, undefined, ctxFor(mode));
+				assert.equal(foreground.isError, false, `${mode} foreground`);
+				assert.equal(foreground.details.background, undefined);
+				assert.match(text(foreground), /DONE/, "the worker's answer came back in the tool result");
+			}
+		// Four workers ran to their answers after the refusals: a worker of a refused call would add a fifth line.
+		assert.equal(launches(), 4, "only the four foreground calls launched a worker");
+		assert.equal(messages.length, 0, "no background answer was delivered");
+	});
+
+test("background: the refusal follows the mode, not ME_PI_UNATTENDED", async (t) => {
+	const { tool, messages } = setup(t, { env: { ME_PI_UNATTENDED: "1" } });
+	assert.equal(process.env.ME_PI_UNATTENDED, "1");
+	const tui = await run(tool, { role: "scout", task: "x", background: true }, undefined, undefined, {
+		...tuiCtx().ctx,
+		hasUI: true,
+	});
+	assert.match(text(tui), /^Started background job bg1 /);
+	const rpc = await run(tool, { role: "scout", task: "y", background: true }, undefined, undefined, {
+		...bgCtx().ctx,
+		mode: "rpc",
+		hasUI: true,
+	});
+	assert.match(text(rpc), /^Started background job bg2 /);
+	await waitFor(() => messages.length === 2, "both background answers");
 });
 
 test("the registered handback renderer keeps BLOCKED lines, counts ones trimmed away, and reads array content", (t) => {

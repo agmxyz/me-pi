@@ -664,16 +664,27 @@ function setup() {
 	let handler: any;
 	let command: any;
 	const events = [];
-	registerGuard({
+	const listeners = {};
+	const pi = {
 		on: (_event, h) => {
 			handler = h;
 		},
 		registerCommand: (_name, definition) => {
 			command = definition;
 		},
-		events: { emit: (...event) => events.push(event) },
-	});
-	return { handler, command, events };
+		events: {
+			emit: (name, value) => {
+				events.push([name, value]);
+				for (const listener of listeners[name] ?? []) listener(value);
+			},
+			on: (name, listener) => {
+				listeners[name] ??= [];
+				listeners[name].push(listener);
+			},
+		},
+	};
+	registerGuard(pi);
+	return { handler, command, events, emit: (name, value) => pi.events.emit(name, value) };
 }
 
 test("confirms with UI, blocks without UI or on refusal", async (t) => {
@@ -817,10 +828,14 @@ test("/guard toggles enforcement for the session", async (t) => {
 	assert.equal(notes.pop(), "usage: /guard [on|off]");
 });
 
-// Restores ME_PI_UNATTENDED and ME_PI_RUN after test `t` and unsets ME_PI_RUN (a main session); returns a setter
-// for ME_PI_UNATTENDED (undefined: unset).
+// Restores ME_PI_UNATTENDED, ME_PI_RUN and ME_PI_GUARD after test `t` and unsets ME_PI_RUN and ME_PI_GUARD (a main
+// session, started as any is); returns a setter for ME_PI_UNATTENDED (undefined: unset).
 const unattendedEnv = (t) => {
-	const saved = { ME_PI_UNATTENDED: process.env.ME_PI_UNATTENDED, ME_PI_RUN: process.env.ME_PI_RUN };
+	const saved = {
+		ME_PI_UNATTENDED: process.env.ME_PI_UNATTENDED,
+		ME_PI_RUN: process.env.ME_PI_RUN,
+		ME_PI_GUARD: process.env.ME_PI_GUARD,
+	};
 	t.after(() => {
 		for (const [name, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[name];
@@ -828,6 +843,7 @@ const unattendedEnv = (t) => {
 		}
 	});
 	delete process.env.ME_PI_RUN;
+	delete process.env.ME_PI_GUARD;
 	return (value) => {
 		if (value === undefined) delete process.env.ME_PI_UNATTENDED;
 		else process.env.ME_PI_UNATTENDED = value;
@@ -940,6 +956,146 @@ test("kept: without ME_PI_UNATTENDED=1 the guard confirms, denies headless, togg
 		assert.deepEqual(notes.splice(0), ["guard on"], label);
 		assert.equal((await handler(push, ctx))?.block, true, label);
 	}
+});
+
+// What guard asks about in a main session with no UI, by kind; each blocks there.
+const RISKY = [
+	"git reset --hard",
+	"git push origin main",
+	"git push --force origin feature/x",
+	"git clean -fd",
+	"git checkout -- src",
+	"git restore src",
+	"git stash clear",
+	"rm -rf ~/x",
+	"git rebase -x 'make test' HEAD~2",
+	"GIT_SSH_COMMAND='sh -c x' git fetch",
+];
+
+test("started off: with ME_PI_GUARD=off a session blocks nothing, with or without a UI, unattended or not (#197)", async (t) => {
+	const setFlag = unattendedEnv(t);
+	const cwd = process.cwd();
+	for (const unattended of [undefined, "1"]) {
+		setFlag(unattended);
+		delete process.env.ME_PI_GUARD;
+		const on = setup();
+		for (const command of RISKY)
+			assert.equal((await on.handler(bashCall(command), { cwd, hasUI: false }))?.block, true, command);
+
+		process.env.ME_PI_GUARD = "off";
+		const off = setup();
+		let confirms = 0;
+		const confirm = async () => {
+			confirms++;
+			return false;
+		};
+		for (const command of RISKY)
+			for (const hasUI of [true, false])
+				assert.equal(
+					await off.handler(bashCall(command), { cwd, hasUI, ui: { confirm } }),
+					undefined,
+					`${command} hasUI=${hasUI} ME_PI_UNATTENDED=${unattended}`,
+				);
+		assert.equal(confirms, 0, "nothing is asked either");
+		const notes = [];
+		await off.command.handler("", { ui: { notify: (message) => notes.push(message) } });
+		assert.deepEqual(notes, ["guard off"]);
+	}
+});
+
+test("started off: only the value `off` starts a session off, and the session it was read in keeps its state (#197)", async (t) => {
+	setUnattended(t, undefined);
+	const cwd = process.cwd();
+	for (const value of ["", "0", "false", "OFF", "on", "1", " off"]) {
+		process.env.ME_PI_GUARD = value;
+		const { handler } = setup();
+		assert.equal((await handler(bashCall("git reset --hard"), { cwd, hasUI: false }))?.block, true, `"${value}"`);
+	}
+	// Read once, when the session starts: the variable changing afterwards changes nothing.
+	delete process.env.ME_PI_GUARD;
+	const { handler } = setup();
+	process.env.ME_PI_GUARD = "off";
+	assert.equal((await handler(bashCall("git reset --hard"), { cwd, hasUI: false }))?.block, true);
+});
+
+test("started off: a delegate worker keeps guard, whatever its coordinator was started with (#197)", async (t) => {
+	setUnattended(t, undefined);
+	process.env.ME_PI_GUARD = "off";
+	process.env.ME_PI_RUN = "1";
+	const { handler } = setup();
+	const cwd = process.cwd();
+	for (const command of [...RISKY, "git commit --amend --no-edit", "git branch -D old"])
+		assert.equal((await handler(bashCall(command), { cwd, hasUI: false }))?.block, true, command);
+});
+
+test("started off: /guard on turns it on; /guard off in an unattended session is refused, off or on (#197)", async (t) => {
+	const setFlag = unattendedEnv(t);
+	const cwd = process.cwd();
+	const push = bashCall("git push origin main");
+	const notes = [];
+	const ctx = { cwd, hasUI: false, ui: { notify: (message) => notes.push(message) } };
+
+	// Attended: the session toggles as any does.
+	setFlag(undefined);
+	process.env.ME_PI_GUARD = "off";
+	const attended = setup();
+	await attended.command.handler("on", ctx);
+	assert.deepEqual(notes.splice(0), ["guard on"]);
+	assert.equal((await attended.handler(push, ctx))?.block, true);
+	await attended.command.handler("off", ctx);
+	assert.deepEqual(notes.splice(0), ["guard off"]);
+	assert.equal(await attended.handler(push, ctx), undefined);
+
+	// Unattended and started off: `/guard off` is refused and says why guard is off; it stays as its launcher set it.
+	setFlag("1");
+	const unattended = setup();
+	await unattended.command.handler("off", ctx);
+	assert.deepEqual(notes.splice(0), [
+		"/guard off is refused in an unattended session (ME_PI_UNATTENDED=1); guard is off because the session was started with ME_PI_GUARD=off",
+		"guard off",
+	]);
+	assert.equal(await unattended.handler(push, ctx), undefined);
+	// Turned on there, it cannot be turned off again.
+	await unattended.command.handler("on", ctx);
+	assert.deepEqual(notes.splice(0), ["guard on"]);
+	await unattended.command.handler("off", ctx);
+	assert.deepEqual(notes.splice(0), [
+		"guard stays on: unattended session (ME_PI_UNATTENDED=1), no one can approve its commands",
+		"guard on",
+	]);
+	assert.equal((await unattended.handler(push, ctx))?.block, true);
+});
+
+test("another extension reads the session's guard state: asked for, and said after every /guard on|off (#197)", async (t) => {
+	const setFlag = unattendedEnv(t);
+	const ctx = { ui: { notify: () => {} } };
+	const asked = (session) => {
+		const said = [];
+		session.emit("me-pi:guard-query", (state) => said.push(state));
+		return said;
+	};
+	const said = (session) => session.events.filter(([name]) => name === "me-pi:guard-state").map(([, state]) => state);
+
+	setFlag(undefined);
+	const session = setup();
+	assert.deepEqual(asked(session), [{ enabled: true }]);
+	await session.command.handler("", ctx);
+	await session.command.handler("maybe", ctx);
+	assert.deepEqual(said(session), [], "a question and a mistake change nothing, and say nothing");
+	await session.command.handler("off", ctx);
+	assert.deepEqual(asked(session), [{ enabled: false }]);
+	await session.command.handler("on", ctx);
+	assert.deepEqual(said(session), [{ enabled: false }, { enabled: true }]);
+
+	// A refused `off` says the state as it stays.
+	setFlag("1");
+	const unattended = setup();
+	await unattended.command.handler("off", ctx);
+	assert.deepEqual(said(unattended), [{ enabled: true }]);
+	assert.deepEqual(asked(unattended), [{ enabled: true }]);
+
+	process.env.ME_PI_GUARD = "off";
+	assert.deepEqual(asked(setup()), [{ enabled: false }]);
 });
 
 test("/guard completes on and off", () => {

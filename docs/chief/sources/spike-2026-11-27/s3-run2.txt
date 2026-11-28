@@ -1,0 +1,1 @@
+The later run saw only the background job's start confirmation; no result message was visible.

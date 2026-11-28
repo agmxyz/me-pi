@@ -4,8 +4,14 @@
  * blocks. Plain history rewrites only block in delegate workers; ones that run a command (`rebase -x`, an editor
  * override, a `filter-branch` command filter or `--setup`) ask in every session (see `classify`). So do git options and env that run a command (`-c alias.x=…`,
  * `--upload-pack`, `submodule foreach`, `GIT_SSH_COMMAND`, `GIT_PAGER`, `git config core.pager …`).
- * `/guard on|off` toggles it for the current session, except that an unattended session refuses `off`; every session
+ * `/guard on|off` toggles it for the current session, except that an unattended session refuses `off`. A session
+ * starts on, unless whoever launched it set `ME_PI_GUARD=off`: it then starts off and blocks nothing, unattended or
+ * not, until `/guard on` (after which an unattended session cannot turn it off again). A delegate worker always
  * starts on.
+ * How a command starts another Pi is not looked at: one started with `ME_PI_GUARD=off`, like one started with
+ * `--no-extensions`, has no guard, and neither command is asked about.
+ * Other extensions read the session's state from here: `GUARD_QUERY_EVENT` asks for it, and `GUARD_STATE_EVENT` says
+ * it after every `/guard on|off`.
  * A recursive rm asks unless every target is a plain relative path, a build directory, or a temp entry.
  * This is the only rule for local git and rm safety. It's a pattern match, not a parser: it sees bash only, and
  * misses commands it can't read (interpreter code, a non-recursive rm).
@@ -13,9 +19,32 @@
 
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ENV_UNATTENDED, isUnattended, isWorkerProcess, workerIdentity } from "./delegate-env.ts";
+import {
+	ENV_GUARD,
+	ENV_UNATTENDED,
+	GUARD_OFF,
+	guardStartsOff,
+	isUnattended,
+	isWorkerProcess,
+	workerIdentity,
+} from "./delegate-env.ts";
 
 export const GUARD_STOP_EVENT = "me-pi:guard-stop";
+
+/** Whether guard is on in this session. */
+export interface GuardState {
+	enabled: boolean;
+}
+
+/** Emitted on `pi.events` with a `GuardState` after every `/guard on` or `/guard off`, whether or not it changed anything. */
+export const GUARD_STATE_EVENT = "me-pi:guard-state";
+
+/**
+ * Emitted on `pi.events` by an extension that wants the session's guard state, with a `GuardQuery`: guard calls it
+ * before `emit` returns. A session whose settings do not load guard never calls it.
+ */
+export const GUARD_QUERY_EVENT = "me-pi:guard-query";
+export type GuardQuery = (state: GuardState) => void;
 
 export interface GuardStopEvent {
 	owner: "guard";
@@ -514,7 +543,11 @@ function branchIn(cwd: string): string | undefined {
 const MODES = ["on", "off"];
 
 export default function (pi: ExtensionAPI) {
-	let enabled = true;
+	let enabled = !guardStartsOff();
+
+	pi.events.on(GUARD_QUERY_EVENT, (reply) => {
+		if (typeof reply === "function") (reply as GuardQuery)({ enabled });
+	});
 
 	pi.registerCommand("guard", {
 		description: `Dangerous-bash guard: /guard ${MODES.join(" | ")} (current session; default on)`,
@@ -522,14 +555,18 @@ export default function (pi: ExtensionAPI) {
 			MODES.filter((s) => s.startsWith(prefix.trim())).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {
 			const arg = args.trim();
-			// Whoever types in an unattended pane (a supervisor) is not the user, so it cannot turn guard off.
+			if (arg && !MODES.includes(arg)) return ctx.ui.notify(`usage: /guard [${MODES.join("|")}]`, "warning");
+			// Whoever types in an unattended pane (a supervisor) is not the user, so it cannot turn guard off. Where
+			// the launcher started the session off, it stays as it is: off.
 			if (arg === "off" && isUnattended())
 				ctx.ui.notify(
-					`guard stays on: unattended session (${ENV_UNATTENDED}=1), no one can approve its commands`,
+					enabled
+						? `guard stays on: unattended session (${ENV_UNATTENDED}=1), no one can approve its commands`
+						: `/guard off is refused in an unattended session (${ENV_UNATTENDED}=1); guard is off because the session was started with ${ENV_GUARD}=${GUARD_OFF}`,
 					"warning",
 				);
-			else if (MODES.includes(arg)) enabled = arg === "on";
-			else if (arg) return ctx.ui.notify(`usage: /guard [${MODES.join("|")}]`, "warning");
+			else if (arg) enabled = arg === "on";
+			if (arg) pi.events.emit(GUARD_STATE_EVENT, { enabled } satisfies GuardState);
 			ctx.ui.notify(`guard ${enabled ? "on" : "off"}`, "info");
 		},
 	});

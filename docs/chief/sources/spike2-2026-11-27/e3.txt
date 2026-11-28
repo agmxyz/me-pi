@@ -1,0 +1,1 @@
+Foreground delegation exited 0, returned the scout's answer without a tool error, and ended with agent_end and agent_settled.

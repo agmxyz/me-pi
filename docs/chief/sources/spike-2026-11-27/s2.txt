@@ -1,0 +1,1 @@
+Concurrent runs A and B exited 0 using the same session file. A subsequent run also exited 0.

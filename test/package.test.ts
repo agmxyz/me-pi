@@ -17,6 +17,7 @@ const rigExtensions = [
 	"extensions/autocompact.ts",
 	"extensions/compact-tools.ts",
 	"extensions/hide-thinking-label.ts",
+	"extensions/chief.ts",
 ];
 const compatibility = JSON.parse(readFileSync(new URL("../extensions/package.json", import.meta.url), "utf8"));
 

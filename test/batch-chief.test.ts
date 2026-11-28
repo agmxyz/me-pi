@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
 	appendFileSync,
 	chmodSync,
@@ -1995,7 +1996,7 @@ test("contract: the guard's confirm title is a dialog to prompt", async (t) => {
 			handler = h;
 		},
 		registerCommand: () => {},
-		events: { emit: () => {} },
+		events: { emit: () => {}, on: () => {} },
 	} as any);
 	const titles: string[] = [];
 	const command = "git push origin main";
@@ -2066,7 +2067,7 @@ test("SKILL.md marks a coordinator's pane unattended before it starts Pi there, 
 			handler = h;
 		},
 		registerCommand: () => {},
-		events: { emit: () => {} },
+		events: { emit: () => {}, on: () => {} },
 	} as any);
 	const before = process.env.ME_PI_UNATTENDED;
 	process.env.ME_PI_UNATTENDED = "1";
@@ -2824,4 +2825,149 @@ test("preflight writes version 2, reads a finished version-1 run, and refuses a 
 	owing.state.exec["git rev-parse --verify --quiet refs/heads/feat/t6"] = { code: 1, stdout: "", stderr: "" };
 	owing.at("11:00");
 	assertRefused(owing.preflight(), "still owes a live check: #5", "batch.ts live 5 --result");
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The chief and `batch-chief` never supervise one repo together (#193).
+
+const CHIEF_SCRIPT = join(import.meta.dirname, "../skills/chief/chief.ts");
+const CHIEF_STATE = `${process.execPath} ${CHIEF_SCRIPT} state`;
+
+/** Writes a chief log beside the fixture's repo: one task per entry, with the events that follow its `task-added`. */
+function chiefLog(f: Fixture, tasks: Record<string, object[]>) {
+	const dir = join(`${f.repo}.worktrees`, ".chief");
+	mkdirSync(dir, { recursive: true });
+	const lines = Object.entries(tasks).flatMap(([task, events]) =>
+		[{ type: "task-added", landing: "none" }, ...events].map((e) => ({ at: "2026-11-11T09:00:00.000Z", task, ...e })),
+	);
+	writeFileSync(join(dir, "events.jsonl"), lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+}
+
+/** The chief's own script reads its log, in a real git checkout: what `preflight` asks is what `state` answers. */
+function withRealChief(f: Fixture) {
+	spawnSync("git", ["init", "-q", "-b", "main", f.repo]);
+	f.state.exec[CHIEF_STATE] = () => {
+		const out = spawnSync(process.execPath, [CHIEF_SCRIPT, "state"], { cwd: f.repo, encoding: "utf8" });
+		return { code: out.status ?? 1, stdout: out.stdout, stderr: out.stderr };
+	};
+}
+
+const CHIEF_AS = { branch: "main", commit: "c0", tree: "" };
+const chiefLaunch = (checkout: string) => ({
+	type: "launch",
+	run: 1,
+	session: "s-1",
+	model: "m",
+	checkout,
+	as: CHIEF_AS,
+	launcher: { pid: 2 ** 22 - 3, start: "Thu Jan  1 00:00:00 1970" },
+});
+const THIS_PROCESS = {
+	pid: process.pid,
+	start: spawnSync("ps", ["-o", "lstart=", "-p", String(process.pid)], {
+		env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
+		encoding: "utf8",
+	}).stdout.trim(),
+};
+const chiefStarted = {
+	type: "run-started",
+	run: 1,
+	wrapper: { pid: 2 ** 22 - 4, start: "Thu Jan  1 00:00:00 1970" },
+	pi: { pid: 2 ** 22 - 5, start: "Thu Jan  1 00:00:00 1970" },
+};
+
+test("preflight is refused while a chief task has a run that is not over, with no chief lease held", () => {
+	const reaches: [state: string, events: (repo: string) => object[]][] = [
+		["LAUNCHING", (repo) => [chiefLaunch(repo)]],
+		// Its processes are gone and nothing recorded its end: no session is the chief to reconcile it.
+		["RUNNING", (repo) => [chiefLaunch(repo), chiefStarted]],
+		["STOPPING", (repo) => [chiefLaunch(repo), chiefStarted, { type: "cancel" }]],
+		// A run whose wrapper is a process that is running.
+		["RUNNING", (repo) => [chiefLaunch(repo), { ...chiefStarted, wrapper: THIS_PROCESS }]],
+	];
+	for (const [state, events] of reaches) {
+		const f = fixture();
+		withRealChief(f);
+		chiefLog(f, { quiet: [], busy: events(f.repo) });
+		assertRefused(
+			f.preflight(),
+			`refused: the chief has a task with a run that is not over in this repo: busy (${state}, run 1); the chief and batch-chief do not supervise one repo together`,
+		);
+		assert.equal(existsSync(join(`${f.repo}.worktrees`, ".batch")), false, `${state}: no run was created`);
+		assert.ok(!f.calls.some((call) => call.startsWith("gh ")), `${state}: nothing was asked of GitHub`);
+	}
+});
+
+test("preflight is taken when the chief has no state, or no task with a run that is not over", () => {
+	// No chief state: the chief's script is not asked.
+	const none = fixture();
+	assertOk(none.preflight());
+	assert.ok(!none.calls.includes(CHIEF_STATE));
+
+	const f = fixture();
+	withRealChief(f);
+	const ended = { type: "run-ended", run: 1, exit: 0, found: CHIEF_AS, outcome: "reported" };
+	chiefLog(f, { queued: [], reported: [chiefLaunch(f.repo), chiefStarted, ended], dropped: [{ type: "drop" }] });
+	assertOk(f.preflight());
+	assert.ok(f.calls.includes(CHIEF_STATE));
+});
+
+test("preflight is refused when the chief's state is there and cannot be read, never taken as no live run", () => {
+	const f = fixture();
+	chiefLog(f, { t: [] });
+	const log = join(`${f.repo}.worktrees`, ".chief", "events.jsonl");
+	const unread = `refused: the repo has chief state (${log}), and whether a chief task has a live run could not be read: `;
+	// The script is missing (a copy of this skill alone), fails, or answers something else.
+	assertRefused(f.preflight(), `${unread}fake runner: unexpected ${CHIEF_STATE}`);
+	f.state.exec[CHIEF_STATE] = { code: 2, stdout: "error: events.jsonl:2 holds an event\n", stderr: "" };
+	assertRefused(f.preflight(), `${unread}error: events.jsonl:2 holds an event`);
+	f.state.exec[CHIEF_STATE] = { code: 0, stdout: "{}", stderr: "" };
+	assertRefused(f.preflight(), `${unread}it names no tasks`);
+	f.state.exec[CHIEF_STATE] = { code: 0, stdout: '{"tasks":[{"id":"t"}]}', stderr: "" };
+	assertRefused(f.preflight(), `${unread}a task does not say whether its run is live`);
+	f.state.exec[CHIEF_STATE] = { code: 0, stdout: "not json", stderr: "" };
+	assertRefused(f.preflight(), unread);
+	assert.equal(existsSync(join(`${f.repo}.worktrees`, ".batch")), false);
+});
+
+test("a chief run reserved while preflight was reading the rules is seen once the run is published, and the run is not started", () => {
+	for (const earlier of [false, true]) {
+		const f = fixture();
+		withRealChief(f);
+		const pointer = join(`${f.repo}.worktrees`, ".batch", "current");
+		if (earlier) {
+			// A finished run before it: its pointer is put back.
+			assertOk(f.preflight("9"));
+			assertOk(f.run("event", "9", "drop", "--user", "drop it"));
+			f.at("10:30");
+		}
+		const before = earlier ? readFileSync(pointer, "utf8") : undefined;
+		// The chief's log has no state when preflight first looks, and a launch by the time it has asked GitHub.
+		f.state.exec["gh api repos/{owner}/{repo}/rules/branches/main"] = () => {
+			chiefLog(f, { busy: [chiefLaunch(f.repo)] });
+			return f.state.rules;
+		};
+		assertRefused(
+			f.preflight(),
+			"refused: the chief has a task with a run that is not over in this repo: busy (LAUNCHING, run 1)",
+			"was not started, and",
+		);
+		assert.equal(existsSync(pointer) ? readFileSync(pointer, "utf8") : undefined, before);
+		assertRefused(f.run("event", "5", "launch"), earlier ? "#5 is not a row of run" : "no current run");
+	}
+});
+
+test("cleanup clears only its own run's pointer: one a preflight has made another run's since is left", () => {
+	const f = fixture();
+	assertOk(f.preflight("9"));
+	assertOk(f.run("event", "9", "drop", "--user", "drop it"));
+	const pointer = join(`${f.repo}.worktrees`, ".batch", "current");
+	// Another run becomes the current one while this cleanup is looking at what its own left.
+	f.state.exec["git ls-remote origin refs/heads/main"] = () => {
+		writeFileSync(pointer, "a-later-run\n");
+		return { code: 0, stdout: `${SHA}\trefs/heads/main\n`, stderr: "" };
+	};
+	const out = assertOk(f.run("cleanup"));
+	assert.match(out, /current run not cleared: removing .*current failed: it names another run by now/);
+	assert.equal(readFileSync(pointer, "utf8"), "a-later-run\n");
 });

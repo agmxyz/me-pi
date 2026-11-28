@@ -1,0 +1,1 @@
+Interactive opening reached a project trust prompt; the session content was not observed.

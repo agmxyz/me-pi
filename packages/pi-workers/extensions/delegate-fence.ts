@@ -129,6 +129,21 @@ function realTarget(absolute: string): string | undefined {
 export const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
 /**
+ * Where a `write` or `edit` of `path` lands: the path as Pi reads it (`given`) and the file it names through its
+ * symlinks (`target`). A `~` or `file:` path is `unexpanded`, for the caller to refuse, so that no check resolves
+ * one differently from Pi; a path through a link that leads nowhere is `unresolved`.
+ */
+export function writeTarget(
+	path: string,
+	cwd: string,
+): { given: string; target: string } | { refused: "unexpanded" | "unresolved" } {
+	const given = path.replace(UNICODE_SPACES, " ").replace(/^@/, "");
+	if (/^(?:~|file:)/i.test(given)) return { refused: "unexpanded" };
+	const target = realTarget(resolve(cwd, given));
+	return target ? { given, target } : { refused: "unresolved" };
+}
+
+/**
  * Why a worker's write/edit call is blocked, or undefined when its path is inside `outDir`. `~` and `file:` paths are
  * refused rather than expanded, so this check cannot resolve them differently from Pi.
  */
@@ -137,17 +152,20 @@ export function writeBlockedIn(toolName: string, input: unknown, cwd: string, ou
 	if (!outDir) return "delegated workers cannot write files without `output: true`";
 	const path = (input as { path?: unknown } | undefined)?.path;
 	if (typeof path !== "string" || !path) return "no path";
-	const given = path.replace(UNICODE_SPACES, " ").replace(/^@/, "");
-	if (/^(?:~|file:)/i.test(given)) return `use an absolute path inside ${outDir}, not ${path}`;
-	const target = realTarget(resolve(cwd, given));
-	if (!target) return `${path} cannot be resolved`;
+	const at = writeTarget(path, cwd);
+	if ("refused" in at)
+		return at.refused === "unexpanded"
+			? `use an absolute path inside ${outDir}, not ${path}`
+			: `${path} cannot be resolved`;
+	const { given, target } = at;
 	const inside = relative(realpathOr(outDir), target);
 	if (notStrictlyInside(inside))
 		return isAbsolute(given) ? `${path} is outside ${outDir}` : relativeHint(path, target, outDir, given);
 	return undefined;
 }
 
-const notStrictlyInside = (rel: string) => !rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+/** Whether `rel`, the path from a directory to a target, leaves the directory or is the directory itself. */
+export const notStrictlyInside = (rel: string) => !rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 
 // Tasks often name a relative path, which Pi resolves against the project: say where it went and where to write.
 function relativeHint(path: string, target: string, outDir: string, given: string): string {

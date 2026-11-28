@@ -2,6 +2,11 @@
 
 Pi shows new entries here after an update. Versions follow [semver](https://semver.org); before 1.0.0, a minor bump may change behavior.
 
+## [Unreleased]
+
+- `guard` can be started off by whoever launches the session: with `ME_PI_GUARD=off` in Pi's environment the session starts with guard off and blocks nothing, with or without a UI or `ME_PI_UNATTENDED=1`, until `/guard on`. Only the value `off` does this, so every session started without it behaves as before, and `/guard off` typed in an unattended session is still refused. A delegate worker always starts with guard on. `guard` also answers `me-pi:guard-query` and emits `me-pi:guard-state` on `pi.events`, so another extension can read whether it is on. See [Run and stop work](docs/delegate.md#run-and-stop-work).
+- `delegate` refuses `background: true` in print (`-p`) and JSON (`--mode json`) modes with an error that tells the caller to run in the foreground, and starts no worker. Before, it returned a job id, and Pi exited when the reply ended, which cancelled any work still running at exit. The refusal depends on the mode alone: TUI and RPC sessions start background jobs as before, including ones with `ME_PI_UNATTENDED=1`, and foreground calls are unchanged in every mode.
+
 ## [0.3.0] - 2026-11-26
 
 - A background job's answer now shows collapsed in the transcript: a `delegate job bgN` line and one line per run (model, cost, time, the answer's first line), like a foreground result, plus up to three of its `BLOCKED:` lines; expand tool output to read it in full. Before, Pi drew the whole answer in a `[delegate]` box (26 lines on average over 30 days, 40 over the last 7), which a coordinator reply follows in 97% of cases. The model still receives the full answer.
