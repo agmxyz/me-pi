@@ -12,5 +12,5 @@ On 2026-11-27 we decided that the per-repo chief is an ordinary interactive Pi s
 
 - Nobody can watch or type into a coordinator mid-run. The user attaches to its session between runs instead.
 - Two runs on one session are not refused by Pi 1.6.1 and silently fork the session (spike of 2026-11-27, `docs/chief/spikes.md`), so a per-task run lock is required and attach must take it.
-- A background delegate job's answer is lost when a one-shot run exits, so one-shot runs refuse `background: true`.
+- A background delegate job's answer was not visible after a one-shot run exited; whether the job was cancelled or finished unseen was not determined. One-shot runs therefore refuse `background: true`.
 - Coordinators run without guard in the first version (the user's choice on 2026-11-27, guard being excluded in their own settings), so nothing refuses a destructive command; the contract tells the coordinator which commands to report to the chief instead of running. Superseded on 2026-11-27 by [#197](https://github.com/agmxyz/me-pi/issues/197): a coordinator follows the guard state of the chief session that starts its run, guarded by default, and the contract lists no command ([Guard](../chief/slice-1.md#guard)).
