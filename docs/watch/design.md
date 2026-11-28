@@ -30,6 +30,7 @@ The model chooses these when it writes the launch command, and registers them wi
 
 - **`pid`** (required): the wrapper shell, not the job inside it. The wrapper writes the exit file before it exits, so "pid gone and no exit file" can only mean the wrapper was killed, or the machine went down.
 - **`progress`** (optional): a file that gains one line per finished item. The extension counts its newlines and reads its mtime. It never puts file content in a message.
+- **`stream`** (optional): the Pi JSON event stream of a headless run (`pi -p --mode json … > stream.jsonl`). While the watch runs, its footer fragment also shows the run's last tool call. See [Stream](#stream).
 - **`total`** (optional): the item count.
 - **`exitFile`** (optional): where the wrapper writes `$?`. **The tool refuses an `exitFile` that already exists.** A rerun into the same directory would otherwise read the old file as a clean finish.
 
@@ -45,15 +46,29 @@ A watched launcher drops its final `herdr agent prompt`, because the extension o
 
 | State | Rule | Footer fragment |
 | --- | --- | --- |
-| running | pid has its recorded start time | `⏵ sweep 7/24 · last +1 23m · 2h41m` |
+| running | pid has its recorded start time | `⏵ sweep 7/24 · last +1 23m · 2h41m`; with a `stream`, `⏵ t181 · bash npm run check 2m ago · 25m` |
 | finished | pid gone or start time changed; `exitFile` holds an integer | `✓ sweep exit 0 · 24/24 · 3h02m` (`✗ … exit 1` when non-zero) |
 | died | pid gone on **two checks in a row**, and no valid `exitFile` | `✗ sweep died, no exit status · 7/24` |
-| unknown | `ps` failed for a reason other than "no such pid", or timed out (2 s); or the progress file can't be read (the end is still detected) | `? sweep unchecked (<reason>)` |
+| unknown | `ps` failed for a reason other than "no such pid", or timed out (2 s); or the progress or stream file can't be read (the end is still detected) | `? sweep unchecked (<reason>)` |
 
 - **"Last +1 23m"** is the age of the progress file's mtime. For a serial sweep this is the age of the current item. With parallel workers it is the time since any item finished, and the label claims no more than that.
 - **The second check before "died"** covers the window between the job's exit and the wrapper's `echo $? > exit`. A finish read on the second check still counts as `finished`.
 - **Sleep and reboot.** The timer pauses with the machine. The first check after wake or restart reports the truth: still running, finished, or died (the pid is gone, or was reused with a different start time).
 - **Stale progress** is shown as an age, and never judged as death.
+
+## Stream
+
+A headless Pi run is silent for tens of minutes; `stream` shows what it is doing without a second process.
+
+- **What is shown.** The last `tool_execution_start` event in the stream: its `toolName` and one short argument, the first of `command`, `path`, `task` or `name` that is a string. Both are stripped of escape sequences and control characters, whitespace is collapsed, and they are capped at 24 and 40 characters (a cut ends in `…`). Then the age: `⏵ t181 · bash npm run check 2m ago · 25m`.
+- **Age.** Counted from the check that first read the call, so it is accurate to one 30 s check. The file's mtime cannot date a call: every `message_update` delta moves it. A call found by the first read (at registration, after `/reload` or resume) may be of any age, so it is shown with none: `⏵ t181 · bash npm run check · 25m`.
+- **Bounded read.** A stream is mostly `message_update` lines, each repeating the whole partial message. One 12.7 MB sample run had 41 tool calls in 23,700 lines, lines of up to ~270 KB, and up to 2.4 MB between two calls. Each check reads only the bytes appended since the previous check, from the start of the line that was half-written then, and never more than the file's last 8 MiB. The offset is held in memory, not in entries, so the first read after `/reload` reads the last 8 MiB. A call before that is not found, and the footer shows `?` in its place: `⏵ t181 · ? · 25m`.
+- **Capped read.** When more than 8 MiB arrived since the last check and held no tool call, a newer call may have gone unread. The last call stays, marked `?` and with no age: `⏵ t181 · ? bash npm run check · 25m`.
+- **Rewritten stream.** A stream removed, or shorter than the last check's offset, was rewritten: its old call is dropped and it is read as at registration. A truncate followed by regrowth past that offset within one check is not detected (a new run is a new pid, and so a new watch).
+- **Skipped lines.** The line cut by the read's start, a half-written last line (read again on the next check), a line that is not JSON and the marker text quoted inside a message are all skipped. Bytes with no tool call keep the last call seen.
+- **No count.** With `stream` and no `progress`, no item count is shown. A count kept from appended bytes would be wrong after `/reload` and after a capped read. Pass a `progress` file for a count.
+- **Errors.** A missing stream shows nothing yet. A stream that cannot be read, or is not a regular file (it is opened non-blocking, so a FIFO cannot hang the check), shows the watch as `? t181 unchecked (stream: <reason>)`, like an unreadable progress file, and never keeps the check from seeing the end.
+- **Never in a message.** The tool name and argument go to the footer only. They are held in memory, not in the `watch` entries, and never enter the wake message or the tool result. `stream` and `progress` are independent.
 
 ## Footer
 
@@ -85,18 +100,18 @@ A watched launcher drops its final `herdr agent prompt`, because the extension o
 ## Interface
 
 ```ts
-watch({ label: string, pid?: number, progress?: string, total?: number, exitFile?: string, drop?: boolean })
+watch({ label: string, pid?: number, progress?: string, stream?: string, total?: number, exitFile?: string, drop?: boolean })
 // → "watching sweep (pid 4242, started Thu Nov 26 14:57:15 2026)" | an error
 ```
 
-Guideline: "After starting long background work, call `watch` once with the wrapper shell's pid and, when it has them, its progress and exit files. Don't poll it: a message arrives when it ends."
+Guideline: "After starting long background work, call `watch` once with the wrapper shell's pid and, when it has them, its progress and exit files, and for a headless Pi run (`pi -p --mode json > file`) that file as `stream`. Don't poll it: a message arrives when it ends."
 
 There are no settings and no command. Without a watch there is nothing on screen and no timer.
 
 ## Security
 
 - **Runs:** only `ps -o lstart= -p <int>` through `execFile`, with fixed argv, no shell, `LC_ALL=C`, `TZ=UTC` (so a Pi restored under another time zone reads the same start time, not a reused pid), and a 2 s timeout.
-- **Reads:** the size, mtime and newline count of `progress`, and one integer from `exitFile`. No content enters a model message.
+- **Reads:** the size, mtime and newline count of `progress`, one integer from `exitFile`, and the bytes `stream` gained since the last check (at most its last 8 MiB). No content enters a model message: the stream's tool name and argument reach the footer only.
 - **Writes:** only session entries.
 - **Guard:** not involved. The launcher itself goes through the `bash` tool, which the guard sees.
 

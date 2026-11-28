@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,9 @@ process.env.TMPDIR = ROOT;
 process.env.PI_CODING_AGENT_DIR = join(ROOT, "agent");
 process.on("exit", () => rmSync(ROOT, { recursive: true, force: true }));
 
-const { assess, createWatch, duration, runPs, sanitizeLabel } = await import("../extensions/watch.ts");
+const { assess, createWatch, duration, readLastTool, runPs, sanitizeLabel, STREAM_MAX_READ } = await import(
+	"../extensions/watch.ts"
+);
 type Ps = Awaited<ReturnType<typeof runPs>>;
 
 const INTERVAL = 1000;
@@ -529,4 +531,206 @@ test("the footer sanitises labels and puts ended watches first", async (t) => {
 	t.mock.timers.tick(INTERVAL);
 	await settle();
 	assert.match(s.footer() ?? "", /^✓ sweep exit 0 · \d+s {2}⏵ build now · \d+s$/);
+});
+
+// A Pi JSON event stream as `pi -p --mode json` writes it: one event per line.
+const toolStart = (id: string, toolName: string, args: Record<string, unknown>) =>
+	`${JSON.stringify({ type: "tool_execution_start", toolCallId: id, toolName, args })}\n`;
+const delta = (text: string) =>
+	`${JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } })}\n`;
+const MiB = 1024 * 1024;
+
+test("readLastTool: the last tool call's name and one short argument, collapsed, sanitised and capped", () => {
+	const dir = fresh();
+	const path = join(dir, "stream.jsonl");
+	writeFileSync(path, toolStart("1", "read", { path: "a.ts" }) + delta("x"));
+	assert.deepEqual(readLastTool(path).tool, { name: "read", arg: "a.ts" });
+	appendFileSync(path, toolStart("2", "bash", { command: "npm  run\n\tcheck \u001b[31m--prefix\u001b[0m x" }));
+	assert.deepEqual(readLastTool(path).tool, { name: "bash", arg: "npm run check --prefix x" });
+	appendFileSync(path, toolStart("3", "delegate", { task: "y".repeat(100) }));
+	assert.equal(readLastTool(path).tool?.arg, `${"y".repeat(39)}…`);
+	appendFileSync(path, toolStart("4", "Skill", { name: "tdd", other: 1 }) + toolStart("5", "plan", { steps: [] }));
+	assert.deepEqual(readLastTool(path).tool, { name: "plan", arg: undefined });
+	assert.deepEqual(readLastTool(join(dir, "missing")), { next: 0, rewritten: false });
+	assert.deepEqual(readLastTool(join(dir, "missing"), 5), { next: 0, rewritten: true }, "a stream removed");
+});
+
+test("readLastTool: skips a half-written last line, a line that is not JSON and the marker inside a message", () => {
+	const dir = fresh();
+	const path = join(dir, "stream.jsonl");
+	writeFileSync(path, delta("no tool yet"));
+	assert.equal(readLastTool(path).tool, undefined, "no tool call");
+	const good = toolStart("1", "read", { path: "a.ts" });
+	appendFileSync(path, good);
+	appendFileSync(path, '{"type":"tool_execution_start" not json\n');
+	appendFileSync(path, delta('quoting {"type":"tool_execution_start","toolName":"fake"}'));
+	const complete = readFileSync(path).length;
+	appendFileSync(path, toolStart("2", "bash", { command: "ls" }).slice(0, 40));
+	const read = readLastTool(path);
+	assert.deepEqual(read.tool, { name: "read", arg: "a.ts" });
+	assert.equal(read.next, complete, "the next read starts at the half-written line");
+	appendFileSync(path, toolStart("2", "bash", { command: "ls" }).slice(40));
+	assert.deepEqual(readLastTool(path, read.next).tool, { name: "bash", arg: "ls" }, "and finds it once complete");
+});
+
+test("readLastTool: reads only from `from`, at most `maxBytes` of the end, so a tool call before it is not found", () => {
+	const dir = fresh();
+	const path = join(dir, "stream.jsonl");
+	const call = toolStart("1", "read", { path: "a.ts" });
+	writeFileSync(path, call + delta("z".repeat(2000)));
+	const size = readFileSync(path).length;
+	assert.deepEqual(
+		readLastTool(path, 0, 1000),
+		{ next: size, skipped: true, rewritten: false },
+		"the cap starts after the call",
+	);
+	assert.deepEqual(
+		readLastTool(path, call.length),
+		{ next: size, skipped: false, rewritten: false },
+		"`from` starts after it",
+	);
+	assert.deepEqual(readLastTool(path, call.length - 1).tool, undefined, "a line cut by `from`");
+	assert.deepEqual(readLastTool(path, 0).tool, { name: "read", arg: "a.ts" });
+	const cut = toolStart("2", "bash", { command: "ls" });
+	writeFileSync(path, delta("z".repeat(2000)) + cut + delta("w"));
+	const exact = cut.length + delta("w").length;
+	assert.equal(readLastTool(path, 0, exact - 1).tool, undefined, "a line cut by the cap");
+	assert.deepEqual(readLastTool(path, 0, exact).tool, { name: "bash", arg: "ls" }, "a line starting at the cap");
+	assert.deepEqual(readLastTool(path, 1e9).tool, { name: "bash", arg: "ls" }, "a shrunk file is read again");
+	assert.equal(readLastTool(path, 1e9).rewritten, true);
+	writeFileSync(path, cut + delta("w"));
+	assert.equal(readLastTool(path, 0, exact - 1).tool, undefined, "a call at byte 0, one byte before the cap");
+	assert.equal(readLastTool(path, 1).tool, undefined, "a call at byte 0, one byte before `from`");
+	assert.deepEqual(
+		readLastTool(path, 0, 10),
+		{ next: readFileSync(path).length, skipped: true, rewritten: false },
+		"inside a line",
+	);
+});
+
+test("readLastTool: a FIFO or a directory is refused at once, without blocking", () => {
+	const dir = fresh();
+	const fifo = join(dir, "fifo");
+	assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
+	assert.throws(() => readLastTool(fifo), /not a regular file/);
+	mkdirSync(join(dir, "d"));
+	assert.throws(() => readLastTool(join(dir, "d")), /not a regular file|EISDIR/);
+});
+
+test("a stream shows the last tool and its age in the footer, and changes at the next check", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const { table, ps } = fakePs();
+	const dir = fresh();
+	const stream = join(dir, "stream.jsonl");
+	const s = setup({ ps, cwd: dir });
+	await s.start();
+	table.set(42, { lstart: START });
+	await s.watch({ label: "t181", pid: 42, stream: "stream.jsonl" });
+	assert.match(s.footer() ?? "", /^⏵ t181 · \d+s$/, "a missing stream shows nothing yet");
+	writeFileSync(stream, toolStart("1", "read", { path: "docs/watch/design.md" }));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · read docs\/watch\/design\.md \d+s ago · \d+s$/);
+	// A new call followed by more than a megabyte of deltas within one check is still found.
+	appendFileSync(stream, toolStart("2", "bash", { command: "npm run check" }) + delta("d".repeat(3 * MiB)));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · bash npm run check \d+s ago · \d+s$/);
+	// Deltas with no tool call and a half-written line keep the last call seen.
+	appendFileSync(stream, `${delta("e".repeat(1000))}{"type":"message_upd`);
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · bash npm run check \d+s ago · \d+s$/);
+	// More was appended than one read takes, with no call in it: a newer call may be unread, so no age.
+	appendFileSync(stream, `ate"}\n${delta("f".repeat(STREAM_MAX_READ + 10))}`);
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · \? bash npm run check · \d+s$/);
+	// A rewritten (shorter) stream drops the old call and is read as new.
+	writeFileSync(stream, delta("fresh run"));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · \d+s$/);
+	// A removed stream drops it too; a call in a new file seen after that is dated from the check that read it.
+	appendFileSync(stream, toolStart("3", "grep", { path: "src" }));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · grep src \d+s ago · \d+s$/);
+	rmSync(stream);
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · \d+s$/);
+	writeFileSync(stream, toolStart("4", "ls", { path: "." }));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · ls \. \d+s ago · \d+s$/);
+	// A shorter replacement read in one check may hold a call of any age: no age.
+	writeFileSync(stream, toolStart("", "rg", { path: "y" }));
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.match(s.footer() ?? "", /^⏵ t181 · rg y · \d+s$/);
+	assert.equal(s.sent.length, 0);
+});
+
+test("stream text never enters the wake message, the tool result or a watch entry", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const { table, ps } = fakePs();
+	const dir = fresh();
+	const s = setup({ ps, cwd: dir });
+	await s.start();
+	const MARKER = "MARKER-7f3a";
+	writeFileSync(join(dir, "stream.jsonl"), toolStart(MARKER, `${MARKER}tool`, { command: `echo ${MARKER}` }));
+	table.set(42, { lstart: START });
+	const result = await s.watch({ label: "t181", pid: 42, stream: "stream.jsonl", exitFile: "exit" });
+	assert.ok(!JSON.stringify(result).includes(MARKER));
+	assert.match(s.footer() ?? "", new RegExp(`${MARKER}tool echo ${MARKER}`), "the footer shows it");
+	table.delete(42);
+	writeFileSync(join(dir, "exit"), "0\n");
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.equal(s.sent.length, 1);
+	assert.ok(!JSON.stringify(s.sent).includes(MARKER), "the wake message");
+	assert.ok(!JSON.stringify(s.branch).includes(MARKER), "the session entries");
+});
+
+test("an unreadable stream is shown as unchecked and does not hide the end", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const { table, ps } = fakePs();
+	const dir = fresh();
+	const s = setup({ ps, cwd: dir });
+	await s.start();
+	assert.equal(spawnSync("mkfifo", [join(dir, "stream.jsonl")]).status, 0);
+	table.set(42, { lstart: START });
+	await s.watch({ label: "t181", pid: 42, stream: "stream.jsonl", exitFile: "exit" });
+	assert.match(s.footer() ?? "", /^\? t181 unchecked \(stream: not a regular file\)$/);
+	table.delete(42);
+	writeFileSync(join(dir, "exit"), "0\n");
+	t.mock.timers.tick(INTERVAL);
+	await settle();
+	assert.equal(s.sent.length, 1);
+	assert.match(s.sent[0].message.content, /^\[watch\] t181 finished: exit 0/);
+});
+
+test("after /reload and /tree a watch with a stream shows the last tool again, with no age", async () => {
+	const { table, ps } = fakePs();
+	const dir = fresh();
+	const s = setup({ ps, cwd: dir });
+	await s.start();
+	table.set(42, { lstart: START });
+	writeFileSync(join(dir, "stream.jsonl"), toolStart("1", "edit", { path: "x.ts" }));
+	await s.watch({ label: "t181", pid: 42, stream: "stream.jsonl" });
+	assert.match(s.footer() ?? "", /^⏵ t181 · edit x\.ts · \d+s$/, "a call found at registration has no age");
+	appendFileSync(join(dir, "stream.jsonl"), delta("d".repeat(3 * MiB)));
+	await s.fire("session_shutdown");
+	const again = setup({ ps, branch: s.branch, cwd: dir });
+	await again.start("reload");
+	assert.match(again.footer() ?? "", /^⏵ t181 · edit x\.ts · \d+s$/);
+	await again.fire("session_tree");
+	assert.match(again.footer() ?? "", /^⏵ t181 · edit x\.ts · \d+s$/);
+	// A call before the last read's cap is not found after /reload; the footer says it does not know.
+	appendFileSync(join(dir, "stream.jsonl"), delta("d".repeat(STREAM_MAX_READ)));
+	await again.fire("session_shutdown");
+	const third = setup({ ps, branch: s.branch, cwd: dir });
+	await third.start("reload");
+	assert.match(third.footer() ?? "", /^⏵ t181 · \? · \d+s$/);
 });
