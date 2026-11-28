@@ -330,7 +330,12 @@ process.stdin.on("end", () => {
     }));
     process.stdout.write(activity.join("\\n") + "\\n");
     process.stderr.write("PRIVATE_STDERR\\n");
-    setTimeout(() => { emit("activity answer"); process.exit(0); }, Number(process.env.FAKE_PI_ACTIVITY_DELAY || 250));
+    const finish = () => { emit("activity answer"); process.exit(0); };
+    if (process.env.FAKE_PI_ACTIVITY_RELEASE) {
+      const release = setInterval(() => {
+        if (existsSync(process.env.FAKE_PI_ACTIVITY_RELEASE)) { clearInterval(release); finish(); }
+      }, 25);
+    } else setTimeout(finish, Number(process.env.FAKE_PI_ACTIVITY_DELAY || 250));
     return;
   }
   if (mode === "expensive" || mode === "retry-then-expensive") {
