@@ -1,0 +1,1 @@
+The queried repo-only skills were absent from the model-visible list. A later spike attributed this to their invocation settings, not worktree trust.

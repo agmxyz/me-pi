@@ -28,7 +28,17 @@ Pi loads this checkout as a local path, so it runs whichever branch and working 
 1. Run `/login` in Pi for each provider you use.
 2. For the `claude-code` provider (a Claude subscription), run `pi install https://github.com/earendil-works/pi-claude-code`.
 3. Optionally create `~/.pi/agent/delegate.json` to choose worker models; without it, workers use the session's model. See [Configure model pools](../packages/pi-workers/docs/delegate.md#configure-model-pools).
-4. Verify: run `/reload`, then `/delegate status` resolves the pools, `/guard` reports `guard on`, and the skills list shows `implement-me-pi`, `ticket-readiness`, and `batch-chief` (plus `pi-live-test` when Pi runs inside this checkout).
+4. Verify: run `/reload`, then `/delegate status` resolves the pools, `/guard` reports `guard on` (the command is absent when your settings exclude `extensions/guard.ts`), and the skills list shows `implement-me-pi`, `ticket-readiness`, and `batch-chief` (plus `pi-live-test` when Pi runs inside this checkout).
+
+## Using `/chief`
+
+In an interactive Pi session started in the repo you want to coordinate, type `/chief` to activate the chief. An unfinished `batch-chief` run prevents activation. Describe the work you want done; the chief prepares tasks and coordinates their runs. Ask the chief for status to see the recorded task states and what needs attention.
+
+When a coordinator needs your decision, the chief explains the question. Answer in the chief session with `/chief answer <task> <words>`, replacing `<task>` and `<words>` with the task name and your answer.
+
+To inspect or continue an idle coordinator whose run started Pi, open another interactive terminal in the coordinated repo or one of its worktrees, with `pi` on `PATH`. Run `node /path/to/me-pi/skills/chief/chief.ts attach <task>`, replacing the me-pi checkout path and task name; the activation message gives the exact script path. The checkout must be available: another task cannot be running or attached there. While you are attached, no other run starts and no other task is accepted in that checkout. Tell the chief when you leave so it can read status again. If you changed the checkout, the chief may need your answer; a fix you committed there requires a further run, started with `/chief answer <task> <words>`, before acceptance.
+
+Activation tells the chief to read status on its next turn. A run ending or becoming overdue also wakes the active chief to read status between turns; wakes can coalesce and are not live progress updates in the chief UI. After `/reload`, type `/chief` again to reactivate it. See the [chief slice-1 spec](chief/slice-1.md) for the state and wake details.
 
 ## Undo
 

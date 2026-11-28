@@ -22,7 +22,7 @@ Restart Pi or run `/reload`, then just work. You don't name roles: Pi decides wh
 - "Review this branch's diff for correctness." A large diff goes to a reviewer; for a small one, Pi reads it itself.
 - "Add a 30 s default timeout; `npm test` must pass." Pi edits, runs your check and commits in your session; past about 50 changed lines it asks a `general` worker to review the diff. When a change is too big for one session's context, Pi says so and proposes a split.
 
-The routing is prompt guidance to your model (`PROMPT_GUIDELINES` in [`delegate.ts`](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/extensions/delegate.ts)), so it can misjudge. Steer it when you want: "use a worker for this", "do this in the background", or "have Opus 5.5 and Sol 6.1 challenge this plan and cross-check each other" (the models must be available in Pi).
+The routing is prompt guidance to your model (`PROMPT_GUIDELINES` in [`delegate.ts`](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/extensions/delegate.ts)), so it can misjudge. Steer it when you want: "use a worker for this", "do this in the background" (in an interactive session; [print and JSON runs refuse it](docs/delegate.md#run-and-stop-work)), or "have Opus 5.5 and Sol 6.1 challenge this plan and cross-check each other" (the models must be available in Pi).
 
 Workers are not sandboxed: they run with your OS permissions and can read your project. See [Safety](#safety).
 
@@ -39,7 +39,7 @@ The coordinator (your session) chooses a built-in read-only role and briefs it f
 
 Workers load your own `AGENTS.md` and skills; `## ` sections marked `(coordinator only)` are stripped from worker prompts. Workers can also write drafts to their own temp directory with `output: true`; web tools require `web: true`.
 
-The package also includes `guard`, which asks before risky bash, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session; with `ME_PI_UNATTENDED=1` it refuses instead of asking and stays on. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md).
+The package also includes `guard`, which asks before risky bash, and `Skill`, which loads an already-discovered skill by name. `/guard on` and `/guard off` toggle the guard for the session; with `ME_PI_UNATTENDED=1` it refuses instead of asking and `/guard off` is refused. A session started with `ME_PI_GUARD=off` starts with guard off; any other session starts with it on. A supervisor's approvals do not reach `guard`, so a destructive command it approved needs a session started with guard off. `/delegate status` shows jobs and model resolution; `/delegate cancel <id>` requests cancellation. Roles, commands and recovery: [docs/delegate.md](https://github.com/agmxyz/me-pi/blob/main/packages/pi-workers/docs/delegate.md).
 
 ## Why use it?
 

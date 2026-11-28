@@ -441,7 +441,7 @@ function buildSchema() {
 			background: {
 				type: "boolean",
 				description:
-					"Return a job id at once; the answer arrives later as a `delegate` message that starts a turn. Jobs end on /reload or exit.",
+					"Return a job id at once; the answer arrives later as a `delegate` message that starts a turn. Jobs end on /reload or exit; refused in print and JSON modes, where the run exits first.",
 			},
 		},
 		required: ["task"],
@@ -659,6 +659,11 @@ export default function (pi: ExtensionAPI) {
 			if (output !== undefined && typeof output !== "boolean") return fail("output must be true or false");
 			if (background !== undefined && typeof background !== "boolean")
 				return fail("background must be true or false");
+			// A print or JSON run exits when its reply ends, which ends the job before its answer can arrive.
+			if (background && (ctx?.mode === "print" || ctx?.mode === "json"))
+				return fail(
+					`background: true is refused in ${ctx.mode} mode: the run exits when its reply ends, so the job's answer would be lost. Run it in the foreground: call delegate again without background and wait for the answer.`,
+				);
 			const job: Job = {
 				role,
 				jobId: randomUUID(),

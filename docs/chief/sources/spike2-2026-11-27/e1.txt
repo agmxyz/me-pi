@@ -1,0 +1,4 @@
+SIGTERM mid-tool: exit 143; no child processes remained; the event stream stopped without a closing event.
+SIGKILL mid-tool: exit 137; two child processes remained alive after two seconds; the event stream stopped without a closing event.
+Resume after SIGKILL: exit 1.
+Invalid model: exit 1.

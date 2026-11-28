@@ -1,0 +1,5 @@
+This summary uses synthetic labels for the shared session tree:
+- Base prompt → base reply → run A prompt.
+- Run B's prompt arrived before run A's tool call; both forked from run A's prompt.
+- Run A's tool result and reply ended on an abandoned branch.
+- Run B repeated A's command, then ran B's command; the next run continued from that branch.

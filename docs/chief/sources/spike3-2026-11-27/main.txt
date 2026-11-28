@@ -1,0 +1,1 @@
+The project skill appeared in the main checkout under a trusted parent, without explicit approval.

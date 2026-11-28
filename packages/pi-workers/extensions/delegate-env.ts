@@ -1,5 +1,6 @@
 // The environment protocol: the variable names the coordinator sets on a worker and the worker's hooks
-// (delegate-worker.ts, guard.ts) read, plus ME_PI_UNATTENDED, which a supervisor sets when launching any session.
+// (delegate-worker.ts, guard.ts) read, plus ME_PI_UNATTENDED and ME_PI_GUARD, which a supervisor sets when launching
+// any session.
 // Dependency-free so guard.ts can import it without a cycle.
 
 export const ENV_RUN = "ME_PI_RUN";
@@ -9,12 +10,23 @@ export const ENV_JOB_ID = "ME_PI_DELEGATE_JOB_ID";
 export const ENV_ATTEMPT = "ME_PI_DELEGATE_ATTEMPT";
 export const ENV_BUDGET = "ME_PI_BUDGET";
 export const ENV_UNATTENDED = "ME_PI_UNATTENDED";
+export const ENV_GUARD = "ME_PI_GUARD";
+/** The value of ME_PI_GUARD that starts a session with guard off. */
+export const GUARD_OFF = "off";
 
 /** Whether this process is a delegated worker; the coordinator always sets ME_PI_RUN to "1". */
 export const isWorkerProcess = (env: NodeJS.ProcessEnv = process.env) => env[ENV_RUN] === "1";
 
 /** Whether no one watches this session's dialogs (ME_PI_UNATTENDED is "1"), so guard must refuse rather than ask. */
 export const isUnattended = (env: NodeJS.ProcessEnv = process.env) => env[ENV_UNATTENDED] === "1";
+
+/**
+ * Whether whoever launched this session started it with guard off (ME_PI_GUARD is "off"); any other value, or none,
+ * starts guard on. A delegate worker always starts with guard on: it inherits its coordinator's environment, and
+ * the decision was made for the coordinator.
+ */
+export const guardStartsOff = (env: NodeJS.ProcessEnv = process.env) =>
+	env[ENV_GUARD] === GUARD_OFF && !isWorkerProcess(env);
 
 /** A worker's job identity, or undefined unless the job id is non-empty and the attempt a positive safe integer. */
 export function workerIdentity(env: NodeJS.ProcessEnv = process.env): { jobId: string; attempt: number } | undefined {
